@@ -109,3 +109,105 @@ def prepare_window(bar, events, state=None, *, factor_quality=None):
             adjusted.append(None)
     return {'prices': adjusted, 'turnovers': [row[2] for row in window],
             'bars_used': len(window), 'factor_reasons': sorted(reasons)}, {'window': window}
+
+
+STATE_JSON_CAPACITY = 12000
+STATE_TIMESTAMP_US = 1794067200000000
+
+class ChipPeakStore:
+    """TD persistence; the supplied TaosStore owns connection and database."""
+
+    def __init__(self, store):
+        from .td_sink import validate_database_name
+        self.store = store
+        self.database = validate_database_name(store.database)
+
+    def ensure_schema(self):
+        db = self.database
+        definitions = ', '.join(name + (' INT' if name in ('bars_used', 'dense_bins') else ' DOUBLE') for name in (('bars_used',) + FIELDS))
+        self.store._run(f'CREATE STABLE IF NOT EXISTS {db}.chip_indicators_v1 '
+                        '(ts TIMESTAMP, version VARCHAR(24), algo_version VARCHAR(128), '
+                        'input_refs NCHAR(12000), available_at VARCHAR(40), quality VARCHAR(16), '
+                        f'warm BOOL, {definitions}) TAGS (symbol VARCHAR(8))')
+        self.store._run(f'CREATE STABLE IF NOT EXISTS {db}.chip_window_state_v1 '
+                        f'(ts TIMESTAMP, state_json VARCHAR({STATE_JSON_CAPACITY})) TAGS (symbol VARCHAR(8))')
+        self.store._run(f'CREATE TABLE IF NOT EXISTS {db}.chip_peak_days '
+                        '(ts TIMESTAMP, trade_date VARCHAR(10), version VARCHAR(24), '
+                        'business_status VARCHAR(16), row_count INT, sha256 VARCHAR(64), '
+                        'available_at VARCHAR(40), quality VARCHAR(4000), missing_whitelist VARCHAR(4000))')
+
+    def read_states(self, symbols):
+        import json
+        from .adjust_factor import AdjustFactorStore
+        from .td_sink import _literal
+        result = {}
+        if symbols is None:
+            sql = f'SELECT symbol, LAST_ROW(state_json) FROM {self.database}.chip_window_state_v1'
+            rows, _ = self.store._day_scan(sql, suffix=' GROUP BY tbname, symbol', strict=True, has_where=False)
+            return {str(symbol): json.loads(payload) for symbol, payload in rows}
+        symbols = sorted({AdjustFactorStore._symbol(s) for s in symbols})
+        for start in range(0, len(symbols), 200):
+            selected = ', '.join(_literal(s) for s in symbols[start:start + 200])
+            sql = (f'SELECT symbol, LAST_ROW(state_json) FROM {self.database}.chip_window_state_v1 '
+                   f'WHERE symbol IN ({selected})')
+            rows, _ = self.store._day_scan(sql, suffix=' GROUP BY tbname, symbol', strict=True)
+            for symbol, payload in rows:
+                result[str(symbol)] = json.loads(payload)
+        return result
+
+    def write_states(self, states):
+        import json
+        from .adjust_factor import AdjustFactorStore
+        from .td_sink import INSERT_CHUNK_ROWS, _literal
+        items = sorted(states.items())
+        for start in range(0, len(items), INSERT_CHUNK_ROWS):
+            parts = []
+            for symbol, state in items[start:start + INSERT_CHUNK_ROWS]:
+                symbol = AdjustFactorStore._symbol(symbol)
+                payload = json.dumps(state, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+                if len(payload.encode('utf-8')) > STATE_JSON_CAPACITY:
+                    raise ValueError('chip_window_state_json_exceeds_capacity')
+                parts.append(f'{self.database}.chip_window_state_{symbol} USING '
+                             f'{self.database}.chip_window_state_v1 TAGS({_literal(symbol)}) '
+                             f'VALUES ({STATE_TIMESTAMP_US}, {_literal(payload)})')
+            if parts:
+                self.store._run('INSERT INTO ' + ' '.join(parts))
+
+    def write_results(self, day, rows):
+        from .adjust_factor import AdjustFactorStore
+        from .td_sink import INSERT_CHUNK_ROWS, _literal, trade_day_ts_us
+        items = sorted(rows.items())
+        for start in range(0, len(items), INSERT_CHUNK_ROWS):
+            parts = []
+            for symbol, row in items[start:start + INSERT_CHUNK_ROWS]:
+                symbol = AdjustFactorStore._symbol(symbol)
+                values = [row.get(key) for key in ('version', 'algo_version', 'input_refs',
+                                                    'available_at', 'quality', 'warm') + (('bars_used',) + FIELDS)]
+                parts.append(f'{self.database}.chip_indicators_{symbol} USING '
+                             f'{self.database}.chip_indicators_v1 TAGS({_literal(symbol)}) '
+                             f'VALUES ({trade_day_ts_us(day)}, ' + ', '.join(map(_literal, values)) + ')')
+            if parts:
+                self.store._run('INSERT INTO ' + ' '.join(parts))
+
+    def read_day_marker(self, day):
+        from .td_sink import trade_day_ts_us
+        rows = self.store._run(f'SELECT trade_date, version, business_status, row_count, sha256, '
+                               f'available_at, quality, missing_whitelist FROM {self.database}.chip_peak_days '
+                               f'WHERE ts = {trade_day_ts_us(day)}', missing_ok=True, strict=True)
+        return rows[0] if rows else None
+
+    def count_day_results(self, day):
+        from .td_sink import trade_day_ts_us
+        rows = self.store._run(f'SELECT COUNT(*) FROM {self.database}.chip_indicators_v1 '
+                               f'WHERE ts = {trade_day_ts_us(day)}', strict=True)
+        return int(rows[0][0])
+
+    def write_day_marker(self, day, version, business_status, row_count, sha256, available_at, quality,
+                         missing_whitelist='[]'):
+        from .td_sink import _literal, trade_day_ts_us
+        if len(quality) > 4000 or len(missing_whitelist) > 4000:
+            raise ValueError('marker_too_large')
+        values = [day, version, business_status, row_count, sha256, available_at, quality, missing_whitelist]
+        self.store._run(f'INSERT INTO {self.database}.chip_peak_days VALUES '
+                        f'({trade_day_ts_us(day)}, ' + ', '.join(map(_literal, values)) + ')')
+

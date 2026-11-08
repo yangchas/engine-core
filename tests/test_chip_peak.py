@@ -70,3 +70,32 @@ def test_window_state_and_factor_quality():
     future = [dict(events[-1], dividOperateDate='2099-01-01')]
     prepared, _ = prepare_window(bars[0], future)
     assert prepared['factor_reasons'] == ['FACTOR_BEFORE_FIRST_EVENT']
+
+
+def test_schema_and_state_capacity():
+    import re
+    from engine_core.data_pipeline.chip_peak import ChipPeakStore, STATE_JSON_CAPACITY
+    class Recorder:
+        database = 'core_data'
+        def __init__(self): self.sql = []
+        def _run(self, sql, **kwargs):
+            self.sql.append(sql)
+            return []
+    recorder = Recorder()
+    store = ChipPeakStore(recorder)
+    store.ensure_schema()
+    assert len(recorder.sql) == 3
+    for sql in recorder.sql:
+        columns, _, tags = sql.partition(' TAGS ')
+        widths = re.findall(r'\b(VARCHAR|NCHAR|BINARY)\s*\(\s*(\d+)\s*\)', columns, re.I)
+        tag_widths = re.findall(r'\b(VARCHAR|NCHAR|BINARY)\s*\(\s*(\d+)\s*\)', tags, re.I)
+        assert widths and all(0 < int(n) <= 60000 for _, n in widths + tag_widths)
+        assert sum(int(n) * (4 if kind.upper() == 'NCHAR' else 1) for kind, n in widths) <= 60100
+    root = Path(__file__).parent / 'fixtures' / 'price_volume_c852'
+    bars = [json.loads(line) for line in (root / 'daily_kline.jsonl').read_text().splitlines()]
+    bars = [b for b in bars if b['symbol'] == '600519' and not b['suspended']][:120]
+    state = {'window': [[b['ts'][:10], b['close'], b['turnover_pct']] for b in bars], 'last_trade_date': bars[-1]['ts'][:10]}
+    assert len(json.dumps(state).encode()) < STATE_JSON_CAPACITY
+    store.write_states({'600519': state})
+    store.write_states({'600519': state})
+    assert recorder.sql[-1] == recorder.sql[-2]

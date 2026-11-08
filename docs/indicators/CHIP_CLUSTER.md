@@ -62,7 +62,7 @@ emit all ten, bars_used=len(rows), quality and warm per §2
 
 ```sql
 CREATE STABLE core_data.chip_indicators_v1 (
- ts TIMESTAMP, version VARCHAR(24), algo_version VARCHAR(128), input_refs NCHAR(16384),
+ ts TIMESTAMP, version VARCHAR(24), algo_version VARCHAR(128), input_refs NCHAR(12000),
  available_at VARCHAR(40), quality VARCHAR(16), warm BOOL, bars_used INT,
  peak_price DOUBLE, peak_weight_pct DOUBLE, chip_percent DOUBLE, avg_cost DOUBLE,
  profit_ratio DOUBLE, loss_ratio DOUBLE, cost_low_70 DOUBLE, cost_high_70 DOUBLE,
