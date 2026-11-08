@@ -16,7 +16,7 @@ PLAN: D8 数据层欠账（PLAN-MASTER §11.2；GOAL-datalayer G5）。状态：
 
 ## §3 逐指标细则表
 
-约定：以下列均拟新增，已有列另标现状；数值为 DOUBLE，不做中间四舍五入；目标指标价格采用 §2 前复权，变量 C/H/L 为复权 close/high/low，V 为 volume_shares，T 为 turnover_pct，P 为源 pct_chg。`n` 为连续有效根数；滚动窗口必须每根所需字段非 NULL；除零/非有限值返回 NULL。递推在未知缺口处中断并重新预热，不跨空补零；有效窗口和递推状态均需同一输入版本。状态名是本合同拟新增；`—` 表示无需递推状态，增量仍须读历史窗口。预热为首次定义所需最少有效根数，不保证收敛精度。现状两位小数、未复权；以下精度与价格口径变化均为差异。
+约定：第一批与第二批指标计算已实现（C854/C862），已有列另标现状；数值为 DOUBLE，不做中间四舍五入；目标指标价格采用 §2 前复权，变量 C/H/L 为复权 close/high/low，V 为 volume_shares，T 为 turnover_pct，P 为源 pct_chg。`n` 为连续有效根数；滚动窗口必须每根所需字段非 NULL；除零/非有限值返回 NULL。递推在未知缺口处中断并重新预热，不跨空补零；缺值后首个 H/L/C 均有效的 bar 是新段首根，ATR 首 TR=H-L，RSI 从下一根的 Δ 开始；停牌日不是 bar，跨停牌继续，非停牌缺口重置；有效窗口和递推状态均需同一输入版本。状态名是本合同拟新增；`—` 表示无需递推状态，增量仍须读历史窗口。预热为首次定义所需最少有效根数，不保证收敛精度。现状两位小数、未复权；以下精度与价格口径变化均为差异。
 
 | 名称 | 输出列（来源） | 类型 | 公式及边界 | 默认参数 | 类型[递推型/窗口型] | 共用中间量 | 需保存的状态列 | 最小预热根数及依据 | 缺失处理(NULL) | 与现有 daily_indicators 差异 |
 |---|---|---|---|---|---|---|---|---|---|
@@ -33,7 +33,7 @@ PLAN: D8 数据层欠账（PLAN-MASTER §11.2；GOAL-datalayer G5）。状态：
 | 均量 | volume_ma5/volume_ma10/volume_ma20（本细则提案） | DOUBLE | sum(V,N)/N，单位股 | 5/10/20 | 窗口型 | V 滚动和 | — | N，窗口长度 | 任一 V 缺失 NULL | 新增 |
 | 日量比 | volume_ratio（本细则提案） | DOUBLE | Vtoday/mean(V前5根)，不含今日；前5均量为0则 NULL；收盘日量比，不冒充盘中量比 | 5 | 窗口型 | V 滚动和 | — | 6，今日及之前5根 | 任一 V 缺失 NULL | 新增，与旧 vol_ratio 不同 |
 | 乖离率 | bias_20（daily_history.py 现有） | DOUBLE | 100(C-MA20)/MA20，MA20=0 则 NULL | 20 | 窗口型 | MA20 | — | 20，MA20 窗口 | C 或 MA20 NULL | 旧值使用先四舍五入到2位的 MA20；目标不舍入且前复权 |
-| 5日涨幅 | change_pct_5d（daily_history.py 现有） | DOUBLE | 100(C/C[-5]-1)，基准0则 NULL | 5 | 窗口型 | C 环形缓冲 | — | 6，两个端点间5根 | 任一端点缺失 NULL | 前复权且不舍入 |
+| 5日涨幅 | change_pct_5d（daily_history.py 现有） | DOUBLE | 100(C/C[-5]-1)，基准0则 NULL | 5 | 窗口型 | C 环形缓冲 | — | 6，两个端点间5根 | 仅检查两个端点，中间根缺失不影响；任一端点缺失 NULL | 前复权且不舍入 |
 | 5日平均换手 | avg_turnover_5d（daily_history.py 现有） | DOUBLE | mean(T,5) | 5 | 窗口型 | T 滚动和 | — | 5 | 任一 T 缺失 NULL | 不舍入 |
 | 5日涨停计数 | limit_up_days_5（daily_history.py 现有） | SMALLINT | 最近5根 P 大于阈值计数；300/301/688/689 为19.8，8/92 为29.8，其余9.8；该调用无名称，ST 规则未启用 | 5 | 窗口型 | P 窗口 | — | 5 | 任一 P 缺失 NULL | 保留现状启发式，非真实涨停事实 |
 | 旧换手比 | vol_ratio（daily_history.py 现有） | DOUBLE | mean(T[-5:])/(mean(T[-20:-5])+0.1)，分母0则 NULL | 5/15 | 窗口型 | T 滚动和 | — | 20 | 任一所需 T 缺失 NULL | 保留旧公式但不舍入，与新 volume_ratio 分列 |

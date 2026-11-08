@@ -57,6 +57,14 @@
       "sha256": "031cc8f0ca9abb1aacdcc2175a1b10001e5a5604751787a4996a260ac8347b86",
       "bytes": 159,
       "lines": 4
+    },
+    "expected_batch2.jsonl": {
+      "bytes": 377092,
+      "sha256": "20ad0eb74a93cc3c982a48b9f83b0c445526ab4a8663a9e678d59497e93280da"
+    },
+    "PROVENANCE_batch2.md": {
+      "bytes": 2170,
+      "sha256": "098c649d347a9e6661452cc2399c5f63ed41b646c5b6539eea17a137ae53bb20"
     }
   },
   "samples": {
