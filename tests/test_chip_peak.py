@@ -15,7 +15,7 @@ def test_reference_boundaries():
                                    [[row['turn'] for row in case['input']]])[0]
         for key, expected in case['spec'].items():
             if isinstance(expected, (int, float)) and not isinstance(expected, bool):
-                assert actual[key] == pytest.approx(expected, abs=1e-9), (case['case'], key)
+                assert actual[key] == pytest.approx(expected, rel=0, abs=1e-9), (case['case'], key)
             else:
                 assert actual[key] == expected, (case['case'], key)
 
@@ -41,7 +41,7 @@ def test_all_c879_reference_values():
         for key in out:
             value = reference[key]
             if isinstance(value, (int, float)) and not isinstance(value, bool):
-                assert out[key] == pytest.approx(value, abs=1e-9), (symbol, day, key, out[key], value)
+                assert out[key] == pytest.approx(value, rel=0, abs=1e-9), (symbol, day, key, out[key], value)
             else:
                 assert out[key] == value, (symbol, day, key)
         comparisons += 1
