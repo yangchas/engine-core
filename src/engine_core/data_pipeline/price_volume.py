@@ -2,8 +2,8 @@
 
 The caller supplies trading-calendar continuity: an unknown missing trading day
 must reset the checkpoint before the next bar. UNPROCESSED skips the bar;
-NO_EVENTS uses 1.0; BEFORE_FIRST_EVENT uses the first event; MIXED_VERSION
-uses the supplied snapshot. All non-OK calculated factors mark the row PARTIAL.
+NO_EVENTS uses 1.0; BEFORE_FIRST_EVENT uses the first event. These calculated
+non-OK factors mark the row PARTIAL. Snapshots contain one version per symbol.
 """
 from __future__ import annotations
 
@@ -32,8 +32,6 @@ def calculate_bar(bar, events, state=None, *, gap_before=False, factor_quality=N
     elif quality == 'BEFORE_FIRST_EVENT':
         first = min(events, key=lambda event: event['dividOperateDate'])
         factor, _ = factor_for([first], first['dividOperateDate'])
-    if factor_quality == 'MIXED_VERSION' and quality == 'FORMAL':
-        quality = factor_quality
     result['factor_quality'] = quality
     result['partial_reasons'] = [] if quality in ('FORMAL', 'OK') else ['FACTOR_' + quality]
     if factor is None:
