@@ -73,6 +73,7 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
     planned_days = planned_symbols = rows_written = 0
     days: list[str] = []
     missing: dict[str, list[str]] = {}
+    empty_symbols: dict[str, list[str]] = {}
     try:
         days = sessions[-max(1, int(depth)):]
         if not store.schema_exists():
@@ -105,8 +106,8 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
                     "coverage": {day: round(len(present[day]) / len(expected[day]), 4) for day in days},
                     "elapsed_seconds": round(clock() - started, 3),
                     "planned_days": 0, "planned_symbols": 0, "requested": 0, "empty_returns": 0,
-                    "rows_written": 0, "incomplete_total": 0, "incomplete": [], "delisted_skipped": None,
-                    "delisting_data": "需要在宇宙读取处补充 outDate/status"}
+                    "rows_written": 0, "incomplete_total": 0, "incomplete": [],
+                    "upstream_empty_total": 0, "upstream_empty": []}
         for day in work:  # drops a stale completion marker / untrusted legacy rows, keeps TD-owned progress
             present[day] = set(sink.prepare_progress(day, sorted(expected[day]), latest_watermarks=watermarks))
 
@@ -171,6 +172,7 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
                         raise _abort("invalid_source_row", {"symbol": symbol, "day": day})
                     by_day[day] = mapped[symbol]
             if not by_day:
+                empty_symbols[symbol] = wanted
                 stats["empty"] += 1
                 consecutive_empty += 1
                 consecutive_failed = 0
@@ -186,19 +188,27 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
             consecutive_failed = consecutive_empty = 0
             last_progress = clock()
         incomplete = []
+        upstream_empty: dict[str, list[str]] = {}
         if require_all:
             read_watermarks(store, days, watermark_mode)
             for day in days:
                 actual = set(store.read_day_rows(day))
-                incomplete.extend({"date": day, "symbol": symbol}
-                                  for symbol in sorted(expected[day] - actual))
-        result = {"status": ("INCOMPLETE" if incomplete else "COMPLETE" if done() else "INCOMPLETE"), "target": target, "days": days,
+                for symbol in sorted(expected[day] - actual):
+                    if day in empty_symbols.get(symbol, ()) and actual - {symbol}:
+                        upstream_empty.setdefault(symbol, []).append(day)
+                    else:
+                        incomplete.append({"date": day, "symbol": symbol})
+        empty_details = [{"symbol": symbol, "days": item_days}
+                         for symbol, item_days in sorted(upstream_empty.items())]
+        status = ("INCOMPLETE" if incomplete else "COMPLETE") if require_all else (
+            "COMPLETE" if done() else "INCOMPLETE")
+        result = {"status": status, "target": target, "days": days,
                   "work_days": work, "publish_days": sorted(set(work) | set(unpublished)), **stats,
                   "planned_days": planned_days, "planned_symbols": planned_symbols,
                   "requested": stats["attempted"], "empty_returns": stats["empty"],
                   "rows_written": rows_written, "incomplete_total": len(incomplete),
-                  "incomplete": incomplete[:20], "delisted_skipped": None,
-                  "delisting_data": "需要在宇宙读取处补充 outDate/status",
+                  "incomplete": incomplete[:20], "upstream_empty_total": len(empty_details),
+                  "upstream_empty": empty_details[:20],
                   "coverage": {day: round(coverage(day), 4) for day in days if day in present},
                   "elapsed_seconds": round(clock() - started, 3)}
         if result["status"] == "INCOMPLETE" and require_all:
@@ -222,8 +232,7 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
                 "planned_days": planned_days, "planned_symbols": planned_symbols,
                 "requested": stats["attempted"], "empty_returns": stats["empty"],
                 "rows_written": rows_written, "incomplete_total": total,
-                "incomplete": unresolved[:20], "delisted_skipped": None,
-                "delisting_data": "需要在宇宙读取处补充 outDate/status"}
+                "incomplete": unresolved[:20], "upstream_empty_total": 0, "upstream_empty": []}
         raise
     finally:
         if logged_in and callable(getattr(client, "logout", None)):

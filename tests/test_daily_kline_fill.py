@@ -501,6 +501,9 @@ def test_c806_replays_lagging_symbol_above_coverage_threshold():
 
 def test_c806_unfilled_plan_is_incomplete_above_coverage_threshold():
     store, client, days = _c806_setup(empty=True)
+    def fail(*args):
+        raise RuntimeError('request failed')
+    client.query = fail
     result = run_daily_kline_fill(days[-1], store=store, client=client, trading_dates=days,
                                   expected_symbols=lambda day: {'688796', '688797'}, depth=len(days),
                                   coverage_threshold=0.5, require_all=True)
@@ -529,3 +532,34 @@ def test_c806_incomplete_result_reaches_cli_and_guardian(monkeypatch, capsys):
     assert output['status'] == 'degraded' and output['detail']['incomplete_total'] == 5
     code, payload = guardian_handler._run_daily_kline_fill({}, '.', '2026-11-06', {})
     assert code == 75 and payload['status'] == 'failed'
+
+
+def test_c817_real_empty_response_on_delivered_days():
+    store, client, days = _c806_setup()
+    raw = {v["symbol"]: v for v in map(json.loads,
+        (Path(__file__).parent / "fixtures/daily_kline_c806/history.jsonl").read_text().splitlines())}
+    assert raw["301139"]["rows"] == []
+    client.query = lambda symbol, start, end: [
+        parse_row(dict(zip(raw[symbol]["fields"], row)))
+        for row in raw[symbol]["rows"] if start <= row[0] <= end
+    ]
+    result = run_daily_kline_fill(days[-1], store=store, client=client, trading_dates=days,
+                                  expected_symbols=lambda day: {"301139", "688797"},
+                                  depth=len(days), require_all=True)
+    assert result["status"] == "COMPLETE"
+    assert result["upstream_empty_total"] == 1
+    assert result["upstream_empty"] == [{"symbol": "301139", "days": days}]
+    assert result["incomplete_total"] == 0
+
+
+def test_c817_request_failure_remains_incomplete():
+    store, client, days = _c806_setup()
+    def fail(*args):
+        raise RuntimeError("request failed")
+    client.query = fail
+    result = run_daily_kline_fill(days[-1], store=store, client=client, trading_dates=days,
+                                  expected_symbols=lambda day: {"301139", "688797"},
+                                  depth=len(days), require_all=True)
+    assert result["status"] == "INCOMPLETE"
+    assert result["incomplete_total"] == len(days)
+    assert result["upstream_empty_total"] == 0
