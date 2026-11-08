@@ -113,7 +113,8 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
                     "planned_days": 0, "planned_symbols": 0, "requested": 0, "empty_returns": 0,
                     "rows_written": 0, "incomplete_total": 0, "incomplete": [],
                     "upstream_empty_total": 0, "upstream_empty": [],
-                    "published_partitions": 0, "publish_skipped": True}
+                    "published_partitions": 0, "publish_skipped": True,
+                    "shard_events": list(getattr(store, "shard_events", []))}
         prepared = set(work) - deferred
         for day in prepared:  # invalidate markers that cannot be safely retained
             present[day] = set(sink.prepare_progress(day, sorted(expected[day]), latest_watermarks=watermarks))
@@ -221,6 +222,7 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
                   "rows_written": rows_written, "incomplete_total": len(incomplete),
                   "incomplete": incomplete[:20], "upstream_empty_total": len(empty_details),
                   "upstream_empty": empty_details[:20],
+                  "shard_events": list(getattr(store, "shard_events", [])),
                   "coverage": {day: round(coverage(day), 4) for day in days if day in present},
                   "elapsed_seconds": round(clock() - started, 3)}
         if result["status"] == "INCOMPLETE" and require_all:
@@ -235,6 +237,7 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
             result["published_partitions"] = len(result.get("partitions", result["publish_days"]))
         else:
             result["publish_skipped"] = not result["publish_days"]
+        result["shard_events"] = list(getattr(store, "shard_events", []))
         return result
     except Exception as exc:
         if require_all:
@@ -246,7 +249,9 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
             except Exception:
                 unresolved, total = [], None
             exc.daily_kline_detail = {
-                **progress, "planned_days": planned_days, "planned_symbols": planned_symbols,
+                **progress, "published_partitions": progress["published_days"],
+                "publish_skipped": False, "shard_events": list(getattr(store, "shard_events", [])),
+                "planned_days": planned_days, "planned_symbols": planned_symbols,
                 "requested": stats["attempted"], "empty_returns": stats["empty"],
                 "rows_written": rows_written, "incomplete_total": total,
                 "incomplete": unresolved[:20], "upstream_empty_total": 0, "upstream_empty": []}
