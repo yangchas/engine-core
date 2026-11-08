@@ -223,6 +223,28 @@ def run(request, root, *, store=None, clock=None):
             bars = facts.read_day_rows(day)
             factors = facts.read_events_many(bars)
         states = facts.read_states(bars)
+        gaps = set()
+        dated = {s: state['last_trade_date'] for s, state in states.items()
+                 if state.get('last_trade_date') and state['last_trade_date'] < day}
+        if dated:
+            if owned:
+                from .trade_calendar import TradeCalendarStore
+                previous_day = TradeCalendarStore(root).previous_trade_date
+                read_day = facts.store.read_day_rows
+            else:
+                previous_day = facts.previous_day
+                read_day = facts.read_day_rows
+            earliest = min(dated.values())
+            cursor = str(previous_day(day))[:10]
+            while cursor > earliest:
+                candidates = {s for s, last in dated.items() if last < cursor and s not in gaps}
+                if candidates:
+                    historical = read_day(cursor)
+                    for symbol in candidates:
+                        historical_bar = historical.get(symbol)
+                        if historical_bar is None or not historical_bar.get('suspended'):
+                            gaps.add(symbol)
+                cursor = str(previous_day(cursor))[:10]
         now = datetime.now(timezone.utc)
         available_at = now.isoformat()
         version = now.strftime('%Y%m%d%H%M%S%f')[:20]
@@ -233,7 +255,7 @@ def run(request, root, *, store=None, clock=None):
             if quality == 'UNPROCESSED':
                 detail['skipped_factor_unprocessed'] += 1
                 continue
-            result, state = calculate_bar(bar, events, states.get(symbol), factor_quality=quality)
+            result, state = calculate_bar(bar, events, states.get(symbol), gap_before=symbol in gaps, factor_quality=quality)
             if result is None:
                 detail['skipped_no_bar'] += 1
                 continue

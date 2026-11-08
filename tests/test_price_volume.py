@@ -136,3 +136,34 @@ def test_run_incremental_real_bar_matches_full_calculation():
     for name in ('ma5', 'ema12', 'macd', 'k', 'boll_upper'):
         assert store.rows['600519'][name] == pytest.approx(expected[name])
     assert store.marker[3] == 1
+
+
+def test_run_resets_only_for_missing_not_suspended_real_bars():
+    from datetime import date
+    from engine_core.data_pipeline.price_volume import run
+
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()
+            if json.loads(x)['symbol'] == '600519']
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
+    old = None
+    for bar in bars[:30]:
+        _, old = calculate_bar(bar, events, old)
+    old['last_trade_date'] = str(bars[29]['ts'])[:10]
+    days = [str(b['ts'])[:10] for b in bars[29:34]]
+    expected, _ = calculate_bar(bars[33], events)
+
+    class Store:
+        def ensure_schema(self): pass
+        def previous_day(self, day): return date.fromisoformat(days[days.index(day) - 1])
+        def read_day_rows(self, day):
+            return {'600519': bars[33]} if day == days[-1] else {}
+        def read_states(self, symbols): return {'600519': old}
+        def read_events_many(self, symbols): return {'600519': (events, 'FORMAL')}
+        def write_results(self, day, rows): self.rows = rows
+        def write_states(self, states): pass
+        def write_day_marker(self, *args): pass
+    store = Store()
+    code, _ = run({'trade_date': days[-1]}, '.', store=store)
+    assert code == 0
+    assert store.rows['600519']['ema12'] == expected['ema12']
+    assert store.rows['600519']['ma5'] is None
