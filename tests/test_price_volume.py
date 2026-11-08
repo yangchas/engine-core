@@ -167,3 +167,32 @@ def test_run_resets_only_for_missing_not_suspended_real_bars():
     assert code == 0
     assert store.rows['600519']['ema12'] == expected['ema12']
     assert store.rows['600519']['ma5'] is None
+
+
+def test_run_batches_reads_and_skips_unprocessed_factor():
+    from engine_core.data_pipeline.price_volume import run
+
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()]
+    day = str(bars[-1]['ts'])[:10]
+    selected = {b['symbol']: b for b in bars if str(b['ts'])[:10] == day}
+    assert len(selected) >= 2
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())
+    skipped = sorted(selected)[0]
+
+    class Store:
+        def __init__(self): self.calls = []
+        def ensure_schema(self): pass
+        def read_day_rows(self, day): self.calls.append('bars'); return selected
+        def read_states(self, symbols): self.calls.append('states'); return {}
+        def read_events_many(self, symbols):
+            self.calls.append('factors')
+            return {s: (events[s], 'FORMAL') for s in symbols if s != skipped}
+        def write_results(self, day, rows): self.calls.append('results'); self.rows = rows
+        def write_states(self, states): self.calls.append('write_states'); self.states = states
+        def write_day_marker(self, *args): self.calls.append('marker')
+    store = Store()
+    code, reply = run({'trade_date': day}, '.', store=store)
+    assert code == 0
+    assert skipped not in store.rows and skipped not in store.states
+    assert reply['detail']['skipped_factor_unprocessed'] == 1
+    assert store.calls == ['bars', 'factors', 'states', 'results', 'write_states', 'marker']
