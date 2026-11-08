@@ -220,15 +220,15 @@
         "NIGHT",
         "PRE_MARKET"
       ],
-      "cadence": "交易日 15:12；daily_kline_close_1505 完成后",
+      "cadence": "每日 02:00（D+1），目标为前一交易日；F1 完成后 F2 才可计算（F2 另卡）",
       "rule": "唯一来源 Kaipan getHisStockDDE；单股一次取回全史，按 history_trading_days 配置只写最近交易日（默认 250），新日期优先。字段缺失为 NULL，回显日期早于目标日视为 stale。",
       "freshness": {
-        "partition": "D",
-        "expected_by": "20:30",
+        "partition": "D-1",
+        "expected_by": "06:30",
         "basis": "trading_day",
         "set_by": "C600"
       },
-      "retry": "event=daily_dde_postclose profile=daily_dde rungs=kaipan; attempts=3, exponential backoff 60s*2 cap=10m; retry until next-day 08:00",
+      "retry": "event=daily_dde_0200 profile=daily_dde rungs=kaipan; 每股最多 3 次，退避 0.5s*2 cap=30s；事件重试 5m*2 cap=30m，截止 06:30",
       "degrade": [
         "无降级链；缺失逐股记录 known_missing 并等待重试至次日盘前。"
       ],
@@ -257,7 +257,7 @@
         "ttl_seconds": 86400
       },
       "notes": "来源响应提供 Date 与 DDJE；large_net/DDX/DDY/DDZ 不存在于源响应。旧库四列恒为 0，不是数据。Redis 只写 core:cache:data:daily_dde:{date} hash，TTL 由本登记项配置。",
-      "guardian_event": "daily_dde_postclose",
+      "guardian_event": "daily_dde_0200",
       "storage": [
         {
           "kind": "td_stable",

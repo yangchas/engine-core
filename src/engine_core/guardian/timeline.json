@@ -1448,40 +1448,6 @@
       "trigger_type": "window",
       "policy": "daily_kline_close"
     },
-    "daily_dde_postclose": {
-      "after": [
-        "daily_kline_close_1505",
-        "baostock_probe_1730",
-        "close_recap",
-        "postmarket_publish"
-      ],
-      "args": {
-        "dataset": "daily_dde",
-        "max_workers": 2,
-        "attempts": 3,
-        "history_trading_days": 250,
-        "write_redis": true
-      },
-      "calendar": "trading_day",
-      "catchup_mode": "run_in_window",
-      "cost": "heavy",
-      "data_date_offset": 0,
-      "depends_on": [],
-      "enabled": true,
-      "gate": "daily_kline_ready",
-      "handler": "postmarket_data",
-      "late_until": "23:59:59",
-      "on_deadline": "missed",
-      "on_phase_mismatch": "defer",
-      "phases": [
-        "CLOSE",
-        "POST_MARKET",
-        "NIGHT",
-        "PRE_MARKET"
-      ],
-      "trigger_type": "window",
-      "policy": "daily_dde"
-    },
     "hot_plates_gap_reconcile": {
       "after": [],
       "args": {
@@ -1968,6 +1934,32 @@
       ],
       "trigger_type": "window",
       "policy": "kline_backfill"
+    },
+    "daily_dde_0200": {
+      "after": [],
+      "args": {
+        "dataset": "daily_dde",
+        "max_workers": 1,
+        "attempts": 3,
+        "history_trading_days": 250,
+        "write_redis": true,
+        "target": "prev_trade_day"
+      },
+      "calendar": "every_day",
+      "catchup_mode": "run_in_window",
+      "cost": "heavy",
+      "data_date_offset": 0,
+      "depends_on": [],
+      "enabled": true,
+      "handler": "postmarket_data",
+      "late_until": "06:30:00",
+      "on_deadline": "missed",
+      "on_phase_mismatch": "defer",
+      "phases": [
+        "any"
+      ],
+      "trigger_type": "window",
+      "policy": "daily_dde"
     }
   },
   "timeline": [
@@ -2072,6 +2064,16 @@
               "lease_ttl_seconds": 300
             }
           }
+        }
+      ]
+    },
+    {
+      "at": "02:00:00",
+      "run": [
+        {
+          "fn": "daily_dde_0200",
+          "id": "daily_dde_0200",
+          "deadline": "06:30:00"
         }
       ]
     },
@@ -3077,11 +3079,6 @@
       "at": "21:00:00",
       "run": [
         {
-          "fn": "daily_dde_postclose",
-          "id": "daily_dde_postclose",
-          "deadline": "23:59:59"
-        },
-        {
           "fn": "runtime_reconcile",
           "id": "runtime_reconcile_2100",
           "args": {
@@ -3198,7 +3195,7 @@
     "limit_up_today_145000",
     "close_mark_1505",
     "daily_kline_close_1505",
-    "daily_dde_postclose",
+    "daily_dde_0200",
     "kaipan_hot_151000",
     "hot_plates_gap_reconcile_151500",
     "limit_up_today_150500",

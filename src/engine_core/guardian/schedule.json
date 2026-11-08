@@ -3045,40 +3045,32 @@
       "catchup_mode": "run_in_window"
     },
     {
-      "event_id": "daily_dde_postclose",
+      "event_id": "daily_dde_0200",
       "handler": "postmarket_data",
       "enabled": true,
-      "calendar": "trading_day",
+      "calendar": "every_day",
       "trigger_type": "window",
-      "at": "21:00:00",
-      "deadline": "23:59:59",
+      "at": "02:00:00",
+      "deadline": "06:30:00",
       "data_date_offset": 0,
       "on_deadline": "missed",
-      "late_until": "23:59:59",
-      "gate": "daily_kline_ready",
+      "late_until": "06:30:00",
       "depends_on": [],
-      "after": [
-        "daily_kline_close_1505",
-        "baostock_probe_1730",
-        "close_recap",
-        "postmarket_publish"
-      ],
+      "after": [],
       "cost": "heavy",
       "phases": [
-        "CLOSE",
-        "POST_MARKET",
-        "NIGHT",
-        "PRE_MARKET"
+        "any"
       ],
       "on_phase_mismatch": "defer",
       "profile": "daily_dde",
       "catchup_mode": "run_in_window",
       "args": {
         "dataset": "daily_dde",
-        "max_workers": 2,
+        "max_workers": 1,
         "attempts": 3,
         "history_trading_days": 250,
-        "write_redis": true
+        "write_redis": true,
+        "target": "prev_trade_day"
       }
     },
     {
