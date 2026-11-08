@@ -595,6 +595,36 @@ def test_c806_incomplete_result_reaches_cli_and_guardian(monkeypatch, capsys):
     assert code == 75 and payload['status'] == 'failed'
 
 
+def test_c830_guardian_preserves_rechecked_gaps(monkeypatch, tmp_path, capsys):
+    from examples import guardian_handler
+    from engine_core.data_pipeline import daily_kline_fill as module
+    from engine_core.guardian.contract import check_reply
+
+    store, client, days = _c806_setup()
+    def fail(*args):
+        raise RuntimeError('request failed')
+    client.query = fail
+    monkeypatch.setattr(module, 'load_listing_snapshot', lambda days: None)
+    monkeypatch.setattr(module, 'make_expected_symbols', lambda *args, **kwargs: lambda day: {'688796', '688797'})
+    run = module.run_daily_kline_fill_from_root
+    monkeypatch.setattr(module, 'run_daily_kline_fill_from_root', lambda root, target, args: run(
+        root, target, args={'fill_lease': 'off', 'history_min_trading_days': len(days)},
+        store=store, client=client, trading_dates=days))
+    code, reply = guardian_handler._run_daily_kline_fill({}, tmp_path, days[-1], {})
+    assert (code, reply['error_code'], reply['retryable']) == (75, 'TIER_PARTIAL', True)
+    detail = reply['detail']
+    assert detail['raw_error_code'] == 'BAOSTOCK_GAP_UNRESOLVED'
+    assert detail['incomplete_total'] == 5
+    assert detail['incomplete'][0] == {'date': '2026-11-02', 'symbol': '688796'}
+    assert all(key in detail for key in ('planned_days', 'planned_symbols', 'requested', 'empty_returns',
+        'rows_written', 'upstream_empty_total', 'listing_source', 'listing_version', 'skipped_not_listed',
+        'coverage', 'elapsed_seconds'))
+    guardian_handler._json(reply)
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1 and json.loads(lines[0]) == reply
+    assert check_reply(code, json.loads(lines[0])) == []
+
+
 def test_c817_real_empty_response_on_delivered_days():
     store, client, days = _c806_setup()
     raw = {v["symbol"]: v for v in map(json.loads,
