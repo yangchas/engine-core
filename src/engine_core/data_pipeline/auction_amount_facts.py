@@ -102,6 +102,10 @@ META_TABLE = 'auction_amount_facts_days'
 LEASE_TTL_SECONDS = 300
 
 
+def core_td_database():
+    return validate_database_name(os.environ.get('CORE_TD_DATABASE') or 'core_data')
+
+
 class AuctionAmountFacts:
     def __init__(self, store):
         self.store = store
@@ -307,7 +311,7 @@ def run(request, root, *, reader=None, store=None, dry_run=False, lease_factory=
         days = sorted(set(days), reverse=True)
     except (ValueError, TypeError, KeyError) as exc:
         return _reply(64, 'CONFIG_ERROR', {'message': str(exc)})
-    facts = store if store is not None else AuctionAmountFacts(TaosStore('core_data'))
+    facts = store if store is not None else AuctionAmountFacts(TaosStore(core_td_database()))
     detail = {'completed': [], 'remaining': [], 'incomplete': {}, 'expired': [], 'queries': [], 'skipped_locked': []}
     try:
         if not dry_run:

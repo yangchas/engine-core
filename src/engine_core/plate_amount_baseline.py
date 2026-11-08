@@ -167,7 +167,7 @@ def build_and_store_plate_amount_baseline(target_date: str, *, artifact_root: st
                 "version": old.get("version"), "row_count": old.get("row_count"),
                 "redis_published": _publish(target, old, catalog.read_rows(Path(old["manifest_uri"])) if old.get("manifest_uri") else [], current_codes) if publish else False}
     dates = [day for day in trading_days(Path(artifact_root), target) if day < target][-WINDOW_DAYS:]
-    facts = auction_amount_facts.AuctionAmountFacts(TaosStore('core_data'))
+    facts = auction_amount_facts.AuctionAmountFacts(TaosStore(auction_amount_facts.core_td_database()))
     if pull_upstream and dates:
         code, reply = auction_amount_facts.run({'days': dates}, artifact_root, store=facts)
         if code not in (0, 10, 20):

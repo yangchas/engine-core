@@ -265,3 +265,44 @@ def test_read_rejects_changed_or_deleted_marker():
         store.change = True
         with pytest.raises(RuntimeError, match='AUCTION_FACTS_CHANGED_DURING_READ:2026-11-05:0925'):
             facts.read_days(['2026-11-05'], '0925')
+
+
+def test_facts_and_baseline_share_configured_database(monkeypatch, tmp_path):
+    from engine_core import ladder_daily_adapter, plate_amount_baseline
+    from engine_core.data_pipeline import auction_amount_facts, td_sink
+
+    stores = []
+    class RecordingStore:
+        def __init__(self, database):
+            self.database = database
+            self.sql = []
+            stores.append(self)
+        def _run(self, sql, **kwargs):
+            self.sql.append(sql)
+            return []
+
+    monkeypatch.setattr(td_sink, 'TaosStore', RecordingStore)
+    monkeypatch.setattr(ladder_daily_adapter, 'trading_days', lambda root, target: ['2026-11-05'])
+    for configured, expected in [('c812_test', 'c812_test'), (None, 'core_data'), ('', 'core_data')]:
+        if configured is None:
+            monkeypatch.delenv('CORE_TD_DATABASE', raising=False)
+        else:
+            monkeypatch.setenv('CORE_TD_DATABASE', configured)
+        stores.clear()
+        auction_amount_facts.run({'days': ['2026-11-05']}, tmp_path)
+        plate_amount_baseline.build_and_store_plate_amount_baseline('2026-11-06', artifact_root=tmp_path, publish=False)
+        assert [store.database for store in stores] == [expected, expected]
+        assert all(f'{expected}.' in sql for store in stores for sql in store.sql)
+        assert any('CREATE STABLE' in sql for sql in stores[0].sql)
+        assert any('CREATE TABLE' in sql for sql in stores[0].sql)
+        assert any('SELECT row_count' in sql for sql in stores[1].sql)
+
+    calls = []
+    original = auction_amount_facts.core_td_database
+    def resolve():
+        calls.append(True)
+        return original()
+    monkeypatch.setattr(auction_amount_facts, 'core_td_database', resolve)
+    auction_amount_facts.run({'days': ['2026-11-05']}, tmp_path)
+    plate_amount_baseline.build_and_store_plate_amount_baseline('2026-11-06', artifact_root=tmp_path, publish=False)
+    assert len(calls) == 2
