@@ -63,14 +63,19 @@ def test_incremental_keeps_completed_on_upstream_failure(monkeypatch):
         def previous_day(self, day): return '2026-11-05'
         def read_events(self, symbol): return [], 'NO_EVENTS'
         def replace_snapshot(self, symbol, events, version): self.writes.append(symbol)
+        def write_status(self, *args): pass
         def invalidate_day_marker(self, day): pass
         def write_day_marker(self, *args): self.writes.append('marker')
     store = Store()
+    class Lease:
+        def acquire(self): return True
+        def renew(self): return True
+        def release(self): pass
     def fetch(symbol):
         if symbol == '600519': raise RuntimeError('baostock_range_failed')
         return rows_by_symbol[symbol]
     code, reply = module.run({'trade_date': '2026-11-06', 'args': {'mode': 'incremental'}}, '.',
-                             store=store, fetcher=fetch, sleep=lambda _: None)
+                             store=store, fetcher=fetch, sleep=lambda _: None, lease_factory=lambda *_: Lease())
     assert code == 75
     assert reply['detail']['aborted'] is True
     assert store.writes == ['000001']
@@ -88,15 +93,20 @@ def test_incremental_spacing_and_unchanged(monkeypatch):
         def previous_day(self, day): return '2026-11-05'
         def read_events(self, symbol): return rows_by_symbol[symbol], 'FORMAL'
         def replace_snapshot(self, symbol, events, version): self.writes.append(symbol)
+        def write_status(self, *args): pass
         def invalidate_day_marker(self, day): self.writes.append('invalidate')
         def write_day_marker(self, *args): self.writes.append('marker')
+    class Lease:
+        def acquire(self): return True
+        def renew(self): return True
+        def release(self): pass
     store, times, now = Store(), [], [0.0]
     def fetch(symbol):
         times.append(now[0])
         return rows_by_symbol[symbol]
     def sleep(seconds): now[0] += seconds
     code, reply = module.run({'trade_date': '2026-11-06', 'args': {'mode': 'incremental'}}, '.',
-                             store=store, fetcher=fetch, sleep=sleep, clock=lambda: now[0])
+                             store=store, fetcher=fetch, sleep=sleep, clock=lambda: now[0], lease_factory=lambda *_: Lease())
     assert code == 0
     assert times[1] - times[0] >= 1.0
     assert store.writes == ['invalidate', '000001', '600519', 'marker']

@@ -44,10 +44,30 @@ class AdjustFactorStore:
         self.store._run(f'CREATE STABLE IF NOT EXISTS {db}.adjust_factor_v1 '
                         '(ts TIMESTAMP, fore_adjust_factor DOUBLE, back_adjust_factor DOUBLE, '
                         'adjust_factor DOUBLE, version VARCHAR(24)) TAGS (symbol VARCHAR(8))')
+        # Proposed DDL requires approval before deployment.
+        self.store._run(f'CREATE TABLE IF NOT EXISTS {db}.adjust_factor_status_v1 '
+                        '(ts TIMESTAMP, symbol VARCHAR(8), state VARCHAR(8), version VARCHAR(24), '
+                        'row_count INT, processed_at VARCHAR(40))')
         self.store._run(f'CREATE TABLE IF NOT EXISTS {db}.adjust_factor_days '
                         '(ts TIMESTAMP, trade_date VARCHAR(10), version VARCHAR(24), '
                         'business_status VARCHAR(16), row_count INT, sha256 VARCHAR(64), '
                         'available_at VARCHAR(40), quality VARCHAR(4000), missing_whitelist VARCHAR(4000))')
+
+    def read_status(self, symbol):
+        from .td_sink import _literal
+        symbol = self._symbol(symbol)
+        rows = self.store._run(f"SELECT state, version, row_count, processed_at FROM {self.database}.adjust_factor_status_v1 WHERE symbol={_literal(symbol)}", missing_ok=True, strict=True)
+        return dict(zip(('state', 'version', 'row_count', 'processed_at'), rows[0])) if rows else None
+
+    def write_status(self, symbol, state, version, row_count, processed_at):
+        from .td_sink import _literal
+        symbol = self._symbol(symbol)
+        if state not in ('OK', 'EMPTY', 'ERROR'):
+            raise ValueError('invalid_status')
+        # A stable, distinct millisecond timestamp per six-digit symbol allows upserts.
+        ts = 946684800000 + int(symbol)
+        fields = (symbol, state, version if state == 'OK' else '', row_count, processed_at)
+        self.store._run(f"INSERT INTO {self.database}.adjust_factor_status_v1 VALUES ({ts}, " + ', '.join(_literal(v) for v in fields) + ')')
 
     @staticmethod
     def _symbol(symbol):
@@ -176,7 +196,17 @@ def _snapshot_digest(rows):
     return hashlib.sha256(payload).hexdigest()
 
 
-def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_run=False):
+def _lease_factory(mode, day):
+    import os
+    import redis
+    from .lease import RedisLease
+    url = os.getenv('CORE_REDIS_URL') or os.getenv('REDIS_URL') or 'redis://127.0.0.1:6379/0'
+    client = redis.Redis.from_url(url, socket_timeout=5, socket_connect_timeout=5)
+    # One shared lock prevents overlap across modes and dates.
+    return RedisLease(client, 'core:lease:fact:adjust_factor:all', ttl_seconds=300)
+
+
+def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_run=False, lease_factory=None):
     import time
     from datetime import datetime, timezone
     from .auction_amount_facts import _reply, _registered_failure, core_td_database
@@ -202,8 +232,19 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
     if dry_run:
         return _reply(0, detail=detail)
     owned = store is None
+    lease = None
+    acquired = False
     facts = store if store is not None else AdjustFactorStore(TaosStore(core_td_database()))
     try:
+        from .auction_amount_facts import LeaseUnavailable
+        try:
+            lease = (lease_factory or _lease_factory)(mode, day)
+            acquired = lease.acquire()
+        except Exception as exc:
+            raise LeaseUnavailable(type(exc).__name__) from exc
+        if not acquired:
+            detail['skipped_locked'] = True
+            return _reply(10, 'INCOMPLETE', detail)
         facts.ensure_schema()
         if owned:
             from .trade_calendar import TradeCalendarStore
@@ -228,13 +269,25 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
             last_request = clock()
             detail['requested'] += 1
             old, _quality = facts.read_events(symbol)
-            rows = list((fetcher or _fetch_live)(symbol))
+            try:
+                rows = list((fetcher or _fetch_live)(symbol))
+            except Exception:
+                facts.write_status(symbol, 'ERROR', '', 0, datetime.now(timezone.utc).isoformat())
+                raise
+            try:
+                if not lease.renew():
+                    raise LeaseUnavailable('lease_lost')
+            except LeaseUnavailable:
+                raise
+            except Exception as exc:
+                raise LeaseUnavailable(type(exc).__name__) from exc
             old_hash, new_hash = _snapshot_digest(old), _snapshot_digest(rows)
             snapshot_hashes.append(symbol + ':' + new_hash)
             if old_hash == new_hash:
                 detail['unchanged'] += 1
             version = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S') + '-' + new_hash[:8]
             facts.replace_snapshot(symbol, rows, version)
+            facts.write_status(symbol, 'OK' if rows else 'EMPTY', version, len(rows), datetime.now(timezone.utc).isoformat())
             detail['snapshots_replaced'] += 1
             if len(detail['samples']) < 20:
                 detail['samples'].append({'symbol': symbol, 'old_rows': len(old), 'new_rows': len(rows),
@@ -250,6 +303,8 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
         detail['failed_total'] += 1
         detail['aborted'] = True
         detail['elapsed_seconds'] = round(clock() - started, 3)
+        if isinstance(exc, LeaseUnavailable):
+            return _registered_failure('REDIS_UNAVAILABLE', detail)
         if isinstance(exc, BaostockLoginError):
             return _registered_failure('BAOSTOCK_LOGIN_ERROR', detail)
         if isinstance(exc, TdResourceExhausted) or td_memory_exhausted(exc):
@@ -261,5 +316,7 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
                 return _registered_failure(code, detail)
         raise
     finally:
+        if lease is not None and acquired:
+            lease.release()
         if owned:
             facts.store.close()
