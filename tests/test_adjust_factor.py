@@ -64,7 +64,7 @@ def test_incremental_keeps_completed_on_upstream_failure(monkeypatch):
         def __init__(self): self.writes = []
         def ensure_schema(self): pass
         def read_day_rows(self, day): return {'600519': {}}
-        def listing_symbols(self, day): return {'600519'}, 'stock_listing'
+        def listing_symbols(self, day, include_delisted=True): return {'600519'}, 'stock_listing'
         def previous_day(self, day): return '2026-11-05'
         def read_events(self, symbol): return [], 'NO_EVENTS'
         def replace_snapshot(self, symbol, events, version): self.writes.append(symbol)
@@ -97,7 +97,7 @@ def test_incremental_spacing_and_unchanged(monkeypatch):
         def __init__(self): self.writes = []
         def ensure_schema(self): pass
         def read_day_rows(self, day): return {'600519': {}}
-        def listing_symbols(self, day): return {'600519'}, 'stock_listing'
+        def listing_symbols(self, day, include_delisted=True): return {'600519'}, 'stock_listing'
         def previous_day(self, day): return '2026-11-05'
         def read_events(self, symbol): return rows_by_symbol[symbol], 'FORMAL'
         def replace_snapshot(self, symbol, events, version): self.writes.append(symbol)
@@ -203,7 +203,7 @@ def test_incremental_rejects_missing_or_incomplete_day_rows(monkeypatch):
         def ensure_schema(self): pass
         def previous_day(self, day): return '2026-11-05'
         def read_day_rows(self, day): return self.rows
-        def listing_symbols(self, day): return set(symbols), 'stock_listing'
+        def listing_symbols(self, day, include_delisted=True): return set(symbols), 'stock_listing'
         def invalidate_day_marker(self, day): raise AssertionError('marker invalidated')
     class Lease:
         def acquire(self): return True
@@ -320,3 +320,67 @@ def test_bootstrap_failure_ratio_threshold():
     assert code == 75 and reply['error_code'] == 'BAOSTOCK_CONNECTION_ERROR'
     assert reply['detail']['requested'] == 20 and reply['detail']['failed_total'] == 5
     assert reply['detail']['aborted'] is True
+
+
+def _listing_fixture(monkeypatch):
+    from engine_core.data_pipeline import reference_snapshot_td
+    fixture = json.loads((Path(__file__).parent / 'fixtures/stock_listing_c819/basic_subset.json').read_text())
+    rows = [dict(zip(fixture['fields'], row)) for row in fixture['rows']]
+    rows = [{'symbol': row['code'], 'ipo_date': row['ipoDate'], 'out_date': row['outDate'] or None} for row in rows]
+    class Reference:
+        def __init__(self, **kwargs): pass
+        def read_latest(self, dataset): return {'rows': rows}
+        def close(self): pass
+    monkeypatch.setattr(reference_snapshot_td, 'ReferenceSnapshotStore', Reference)
+    return rows
+
+
+def test_listing_includes_recent_delisting(monkeypatch):
+    from engine_core.data_pipeline.adjust_factor import AdjustFactorStore
+    _listing_fixture(monkeypatch)
+    class TD: database = 'core_data'
+    store = AdjustFactorStore(TD())
+    symbols, source = store.listing_symbols('2026-11-06')
+    assert '301139' in symbols
+    assert '000972' in symbols
+    assert source == 'stock_listing'
+    assert '301139' not in store.listing_symbols('2026-11-06', include_delisted=False)[0]
+    # The sole delisted fixture row is 301139, dated 2026-10-28.
+    assert '301139' not in store.listing_symbols('2028-01-01')[0]
+
+
+def test_listing_delisted_lookback_boundary(monkeypatch):
+    from datetime import date, timedelta
+    from engine_core.data_pipeline.adjust_factor import AdjustFactorStore
+    _listing_fixture(monkeypatch)
+    class TD: database = 'core_data'
+    store = AdjustFactorStore(TD())
+    out = date.fromisoformat('2026-10-28')
+    assert '301139' in store.listing_symbols((out + timedelta(days=366)).isoformat())[0]
+    assert '301139' not in store.listing_symbols((out + timedelta(days=367)).isoformat())[0]
+
+
+def test_bootstrap_counts_delisted_and_skips_existing(monkeypatch):
+    from engine_core.data_pipeline import adjust_factor as module
+    _listing_fixture(monkeypatch)
+    class TD: database = 'core_data'
+    class Store(module.AdjustFactorStore):
+        def __init__(self): super().__init__(TD()); self.completed = set()
+        def ensure_schema(self): pass
+        def read_events(self, symbol): return [], 'UNPROCESSED' if symbol == '301139' and symbol not in self.completed else 'NO_EVENTS'
+        def replace_snapshot(self, symbol, rows, version): self.completed.add(symbol)
+        def invalidate_day_marker(self, day): pass
+        def write_day_marker(self, *args): pass
+    class Lease:
+        def acquire(self): return True
+        def renew(self): return True
+        def release(self): pass
+    calls = []
+    store = Store()
+    for _ in range(2):
+        code, reply = module.run({'trade_date': '2026-11-06', 'args': {'mode': 'bootstrap'}}, '.',
+                                 store=store, fetcher=lambda symbol: calls.append(symbol) or [],
+                                 lease_factory=lambda *_: Lease())
+        assert code == 0
+        assert reply['detail']['delisted_included'] == 1
+    assert calls == ['301139']

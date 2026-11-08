@@ -1,7 +1,7 @@
 """Read a Baostock adjustment factor without inventing missing history."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
 
@@ -34,6 +34,9 @@ def factor_for(events, day):
 
 # Reject obviously incomplete day coverage; fewer than half of expected symbols is insufficient.
 MIN_DAY_ROWS_FRACTION = 0.5
+# TD daily bars cover roughly six months; one year leaves headroom for delisted
+# stocks whose remaining bars need adjustment factors for price-volume indicators.
+DELISTED_LOOKBACK_DAYS = 366
 
 
 class AdjustFactorStore:
@@ -56,21 +59,29 @@ class AdjustFactorStore:
                         'business_status VARCHAR(16), row_count INT, sha256 VARCHAR(64), '
                         'available_at VARCHAR(40), quality VARCHAR(4000), missing_whitelist VARCHAR(4000))')
 
-    def listing_symbols(self, day):
+    def listing_symbols(self, day, include_delisted=True):
         from .reference_snapshot_td import ReferenceSnapshotStore
         reference = ReferenceSnapshotStore(database=self.database)
         try:
             snapshot = reference.read_latest('stock_listing')
         finally:
             reference.close()
+        self.delisted_included = 0
         if snapshot is None:
             return set(self.store.read_day_rows(day)), 'fallback'
         symbols = set()
+        delisted = set()
+        cutoff = (date.fromisoformat(day) - timedelta(days=DELISTED_LOOKBACK_DAYS)).isoformat()
         for row in snapshot['rows']:
             ipo, out = row.get('ipo_date'), row.get('out_date')
-            if ipo and ipo <= day and (not out or day < out):
+            active = ipo and ipo <= day and (not out or day < out)
+            recent = include_delisted and ipo and out and cutoff <= out <= day and ipo <= out
+            if active or recent:
                 symbol = str(row.get('symbol', '')).split('.')[-1]
                 symbols.add(self._symbol(symbol))
+                if recent and not active:
+                    delisted.add(symbol)
+        self.delisted_included = len(delisted)
         return symbols, 'stock_listing'
 
     @staticmethod
@@ -292,7 +303,7 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
             if not current or not previous:
                 detail['reason'] = 'NO_DAY_ROWS'
                 return _reply(10, 'INCOMPLETE', detail)
-            expected, detail['listing_source'] = facts.listing_symbols(day)
+            expected, detail['listing_source'] = facts.listing_symbols(day, include_delisted=False)
             # A missing listing snapshot falls back to the previous day, not the
             # potentially incomplete target day returned by listing_symbols.
             if detail['listing_source'] == 'fallback':
@@ -306,6 +317,7 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
             detail['suspected_total'] = len(symbols)
         else:
             universe, detail['listing_source'] = facts.listing_symbols(day)
+            detail['delisted_included'] = getattr(facts, 'delisted_included', 0)
             symbols = []
             for symbol in sorted(universe):
                 _, quality = facts.read_events(symbol)
