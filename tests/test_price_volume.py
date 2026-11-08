@@ -36,6 +36,8 @@ def test_factor_quality_and_missing_bar_preserve_state():
     assert result is None and unchanged == state
     result, _ = calculate_bar(bars[1], [], state)
     assert result['quality'] == 'PARTIAL' and 'FACTOR_NO_EVENTS' in result['partial_reasons']
+    result, _ = calculate_bar(bars[1], events, state, factor_quality='MIXED_VERSION')
+    assert result['quality'] == 'PARTIAL' and 'FACTOR_MIXED_VERSION' in result['partial_reasons']
     result, _ = calculate_bar(bars[0], [max(events, key=lambda e: e['dividOperateDate'])])
     assert 'FACTOR_BEFORE_FIRST_EVENT' in result['partial_reasons']
 
