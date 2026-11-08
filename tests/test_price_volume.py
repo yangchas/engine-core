@@ -59,10 +59,13 @@ def test_real_reference_all_symbols_and_new_listing():
     expected = [json.loads(x) for x in (FIXTURES / 'expected.jsonl').read_text().splitlines()]
     events = json.loads((FIXTURES / 'factor_events.json').read_text())
     states, previous = {}, {}
+    suspended_symbols = {bar['symbol'] for bar in bars if bar['suspended']}
     days = sorted({str(row['ts'])[:10] for row in bars if row['symbol'] == '600519'})
     positions = {day: i for i, day in enumerate(days)}
     for bar, reference in zip(bars, expected, strict=True):
         symbol, day = bar['symbol'], str(bar['ts'])[:10]
+        if symbol in suspended_symbols:
+            continue
         old = states.get(symbol)
         gap = symbol in previous and positions[day] != positions[previous[symbol]] + 1
         result, states[symbol] = calculate_bar(bar, events[symbol], old, gap_before=gap)
@@ -405,3 +408,27 @@ def test_partial_warmup_reason_is_persisted_and_counted():
     assert 'WARMUP_SHORT' in row['partial_reasons']
     assert 'WARMUP_SHORT' in json.loads(row['input_refs'])['partial_reasons']
     assert reply['detail']['partial_reasons']['WARMUP_SHORT'] == 1
+
+
+def test_suspended_rows_preserve_state_and_match_filtered_sequence():
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()]
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())
+    for symbol in ('301139', '002623'):
+        sequence = [bar for bar in bars if bar['symbol'] == symbol]
+        assert any(bar['suspended'] for bar in sequence)
+        state = None
+        observed = []
+        for bar in sequence:
+            old = state
+            result, state = calculate_bar(bar, events[symbol], state)
+            if bar['suspended']:
+                assert result is None and state == (old or {})
+            else:
+                observed.append(result)
+        state = None
+        filtered = []
+        for bar in sequence:
+            if not bar['suspended']:
+                result, state = calculate_bar(bar, events[symbol], state)
+                filtered.append(result)
+        assert observed == filtered
