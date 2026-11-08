@@ -205,7 +205,7 @@ def run(request, root, *, store=None, clock=None, dry_run=False):
     from .td_sink import TaosStore, TdResourceExhausted, td_memory_exhausted
     clock = clock or time.monotonic
     started = clock()
-    detail = {'computed': 0, 'skipped_no_bar': 0, 'skipped_factor_unprocessed': 0,
+    detail = {'computed': 0, 'skipped_no_bar': 0, 'skipped_factor_unprocessed': 0, 'skipped_already_processed': 0,
               'partial_total': 0, 'partial_reasons': {}, 'recompute_registered': {'count': 0, 'samples': []},
               'listing_source': 'fallback', 'elapsed_seconds': 0, 'aborted': False}
     try:
@@ -288,6 +288,9 @@ def run(request, root, *, store=None, clock=None, dry_run=False):
         version = now.strftime('%Y%m%d%H%M%S%f')[:20]
         rows, new_states = {}, {}
         for symbol, source in sorted(bars.items()):
+            if states.get(symbol, {}).get('last_trade_date', '') >= day:
+                detail['skipped_already_processed'] += 1
+                continue
             bar = dict(source, ts=day)
             events, quality = factors.get(symbol, (None, 'UNPROCESSED'))
             if quality == 'UNPROCESSED':

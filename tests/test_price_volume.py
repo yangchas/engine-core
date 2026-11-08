@@ -356,3 +356,30 @@ def test_rebuild_state_matches_incremental_replay():
         run({'trade_date': day}, '.', store=replay)
     code, _ = run({'trade_date': days[-1], 'args': {'mode': 'rebuild'}}, '.', store=rebuild)
     assert code == 0 and rebuild.states == replay.states
+
+
+def test_incremental_repeated_and_earlier_days_preserve_checkpoint():
+    from copy import deepcopy
+    from engine_core.data_pipeline.price_volume import run
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()
+            if json.loads(x)['symbol'] == '600519']
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
+    class Store:
+        def __init__(self): self.states, self.writes = {}, []
+        def ensure_schema(self): pass
+        def read_day_rows(self, day): return {'600519': next(b for b in bars if str(b['ts'])[:10] == day)}
+        def read_states(self, symbols): return deepcopy(self.states)
+        def read_events_many(self, symbols): return {'600519': (events, 'FORMAL')}
+        def write_results(self, day, rows): self.writes.append(deepcopy(rows))
+        def write_states(self, states): self.states.update(deepcopy(states))
+        def write_day_marker(self, *args): pass
+    store = Store()
+    day, earlier = str(bars[-1]['ts'])[:10], str(bars[-2]['ts'])[:10]
+    run({'trade_date': day}, '.', store=store)
+    saved = deepcopy(store.states)
+    for target in (day, earlier):
+        _, reply = run({'trade_date': target}, '.', store=store)
+        assert store.states == saved
+        assert not store.writes[-1]
+        assert reply['detail']['skipped_already_processed'] == 1
+        assert reply['detail']['recompute_registered']['count'] == 0
