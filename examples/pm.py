@@ -51,7 +51,11 @@ def accept(args):
         branch = git(worktree, 'branch', '--show-current')
         if not branch:
             raise ValueError('worktree has detached HEAD')
-        base = git(ROOT, 'merge-base', 'HEAD', branch)
+        main_worktree = git(ROOT, 'worktree', 'list', '--porcelain').splitlines()[0].removeprefix('worktree ')
+        main_branch = git(main_worktree, 'symbolic-ref', '--short', 'HEAD')
+        base = git(ROOT, 'merge-base', main_branch, branch)
+        if not git(ROOT, 'diff', '--name-only', f'{base}...{branch}'):
+            raise ValueError(f'empty diff vs base {base}')
         if not re.search(r'^STATUS:', card_text, re.MULTILINE):
             raise ValueError('card has no STATUS line')
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
