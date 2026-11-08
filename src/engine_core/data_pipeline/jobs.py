@@ -493,6 +493,7 @@ class JobRunner:
                                            else classify_daily_kline(provider, quality.get("coverage"),
                                                                      manifest["field_completeness"]))
             if baostock_completion is not None:
+                manifest["expected_symbols"] = sorted(expected_symbols)
                 policy = dict(BAOSTOCK_COMPLETION_POLICY)
                 if baostock_policy is not None:
                     policy.update(baostock_policy)

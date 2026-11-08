@@ -268,8 +268,10 @@ def _prepare_daily_kline_manifest(catalog: "ArtifactCatalog", trade_date: str,
         known_missing = quality.get("known_missing")
         if not isinstance(known_missing, Mapping):
             raise ValueError("known_missing_incomplete")
-        # Without a same-day universe the fetch's own ledger is the only record of what was expected.
-        expected_for_completion = (active if universe_path is not None else
+        # The job classified its ledger against this exact per-day set.
+        declared_expected = result.get("expected_symbols")
+        expected_for_completion = (declared_expected if isinstance(declared_expected, (list, tuple, set)) else
+                                   active if universe_path is not None else
                                    sample_symbols if sample_scope else
                                    row_symbols | {_daily_kline_symbol(symbol) for symbol in known_missing})
         completion = evaluate_baostock_completion(
@@ -277,6 +279,8 @@ def _prepare_daily_kline_manifest(catalog: "ArtifactCatalog", trade_date: str,
             coverage_threshold=completion_policy.get("formal_coverage_threshold"),
             max_source_empty=completion_policy.get("source_empty_max"))
         quality.update(completion["quality"])
+        if isinstance(declared_expected, (list, tuple, set)):
+            quality["expected_basis"] = "fetch_expected_symbols"
         business_status = completion["business_status"]
     else:
         business_status = ("PROVISIONAL" if sample_scope else

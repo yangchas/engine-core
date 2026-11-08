@@ -15,6 +15,34 @@ TARGET = DAYS[-1]
 SYMBOLS = {"000001", "600519", "688981"}
 
 
+def test_publish_uses_listing_expected_set_on_delisting_day(tmp_path):
+    from engine_core.data_pipeline.daily_kline_fill import make_expected_symbols, publish_filled_days
+    from engine_core.data_pipeline.baostock_completion import KnownMissingIncomplete
+    from engine_core.data_pipeline.storage import ArtifactCatalog, _prepare_daily_kline_manifest
+    from tests.test_daily_kline_gapfill import _seed_real_symbol_universe, _seed_td_progress_day
+    from test_stock_listing import Client, fetch
+
+    day = "2026-10-28"
+    listing = {"version": "fixture", "rows": [row for row in fetch(Client())
+               if row["symbol"] in {"sz.301139", "sh.688796"}]}
+    _seed_real_symbol_universe(tmp_path, day, ["301139", "688796"])
+    captured = json.loads((Path(__file__).parent / "fixtures/daily_kline_c806/history.jsonl").read_text().splitlines()[0])
+    raw = next(row for row in captured["rows"] if row[0] == day)
+    row = parse_row(dict(zip(captured["fields"], raw)))
+    store = MemoryTdStore()
+    store.ensure_schema()
+    _seed_td_progress_day(store, tmp_path, day, [row], {"688796"})
+    expected = make_expected_symbols(ArtifactCatalog(tmp_path), listing=listing)
+    assert expected(day) == {"688796"}
+    outcome = publish_filled_days(tmp_path, store, [day], expected, 0.995)
+    assert outcome[0]["td_publish"] == "READY"
+    manifest = json.loads(ArtifactCatalog(tmp_path).locate("daily_kline", day).read_text())
+    assert "301139" not in manifest["quality"]["known_missing"]
+    manifest["quality"]["known_missing"] = {"301139": "SOURCE_EMPTY"}
+    with pytest.raises(KnownMissingIncomplete):
+        _prepare_daily_kline_manifest(ArtifactCatalog(tmp_path), day, [row], manifest)
+
+
 def test_listing_snapshot_excludes_delisted_from_fill_plan(tmp_path):
     from engine_core.data_pipeline.daily_kline_fill import listing_detail, make_expected_symbols
     from engine_core.data_pipeline.storage import ArtifactCatalog
