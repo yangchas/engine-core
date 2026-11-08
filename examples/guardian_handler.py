@@ -393,7 +393,7 @@ def _run_event(request):
     if name == "baostock_probe" and not dry:
         # One path for every Baostock trigger point: the per-symbol fill reads TD, so a complete day costs nothing.
         return _run_daily_kline_fill(request, root, target_day, args)
-    event = SimpleNamespace(event_id=event_id, handler=name, gate=getattr(base, "gate", "always"), start=start,
+    event = SimpleNamespace(event_id=event_id, asof=request.get("asof"), handler=name, gate=getattr(base, "gate", "always"), start=start,
                             deadline=deadline,
                             args=args, timeout_seconds=int(request.get("timeout_seconds") or getattr(base, "timeout_seconds", 300)),
                             data_date_offset=getattr(base, "data_date_offset", 0))

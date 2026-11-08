@@ -304,6 +304,9 @@ def _command_handler(name: str, opts, root: Path):
                 raise CoreError("CONTRACT_INVALID", "prep_report_invalid_json") from exc
             if not isinstance(report, dict):
                 raise CoreError("CONTRACT_INVALID", "prep_report_invalid_shape")
+            summary = json.dumps({"timing_summary": report.get("timing_summary"),
+                                  "report_key": report.get("report_key")}, separators=(",", ":"))
+            suffix_summary = ";prep_summary:" + summary
             errors = report.get("errors") or []
             configured = event_args.get("prep_degradable_steps")
             degradable = {step for step in configured if isinstance(step, str)} if isinstance(configured, list) else set()
@@ -322,7 +325,9 @@ def _command_handler(name: str, opts, root: Path):
                         filtered_report["error_codes"] = [code for error, code in zip(errors, codes)
                                                           if str(error).split(":", 1)[0] not in degradable]
                         filtered_report["error_codes"].extend(codes[len(errors):])
-                raise _prep_failure(filtered_report, blocking)
+                failure = _prep_failure(filtered_report, blocking)
+                failure.args = (str(failure) + suffix_summary,)
+                raise failure
             missing = [str(item.get("step")) for item in report.get("steps", [])
                        if isinstance(item, dict) and item.get("status") == "MISSING"]
             for step in missing:
@@ -330,21 +335,24 @@ def _command_handler(name: str, opts, root: Path):
                     degraded_steps.append(step)
             blocking_missing = [step for step in missing if step not in degradable]
             if blocking_missing:
-                raise CoreError("PREP_CRITICAL_MISSING", ",".join(blocking_missing))
+                failure = CoreError("PREP_CRITICAL_MISSING", ",".join(blocking_missing))
+                failure.args = (str(failure) + suffix_summary,)
+                raise failure
             if degraded_steps:
                 codes = {item.get("step"): item.get("code") for item in (report.get("error_steps") or [])}
                 detail = ",".join(f"{step}={codes.get(step) or '?'}" for step in degraded_steps)
                 suffix = (";prep_warnings:" + ";".join(map(str, report["warnings"]))[-400:]
                           if report.get("warnings") else "")
-                return "DEGRADED:prep_degraded_steps:" + detail + suffix
+                return "DEGRADED:prep_degraded_steps:" + detail + suffix_summary + suffix
             if report.get("warnings"):
-                return "DEGRADED:prep_warnings:" + ";".join(map(str, report["warnings"]))[-400:]
+                return "DEGRADED:prep_warnings:" + suffix_summary + ";".join(map(str, report["warnings"]))[-200:]
             if report.get("status") == "PARTIAL":
                 partial = [str(item.get("step")) for item in report.get("steps", [])
                            if isinstance(item, dict) and item.get("status") == "PARTIAL"]
-                return "DEGRADED:prep_partial:" + ",".join(partial)
+                return "DEGRADED:prep_partial:" + ",".join(partial) + suffix_summary
             if report.get("status") != "READY":
                 raise CoreError("CONTRACT_INVALID", "prep_status_invalid:" + str(report.get("status")))
+            return "prep_summary:" + summary
         return result.stdout[-500:]
     def notifying_handler(event: EventSpec, now: datetime, context, degraded: bool):
         event_id = getattr(event, "event_id", name)

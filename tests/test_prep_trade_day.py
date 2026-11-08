@@ -155,3 +155,72 @@ def test_prep_does_not_mark_future_artifact_ready(tmp_path):
     }, source="fixture")
     from engine_core.auction_baseline import _existing
     assert _existing(catalog, "2026-10-19", asof="2026-10-19T08:00:00+08:00") is None
+
+
+def test_premarket_command_preserves_explicit_asof(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from engine_core.guardian.commands import build_handler_command
+    event = SimpleNamespace(args={}, asof="2026-10-19T08:00:00+08:00", event_id="startup_0830")
+    command = build_handler_command("premarket_data", event, SimpleNamespace(write=False),
+                                    tmp_path, "2026-10-19", "python", tmp_path)
+    assert command[command.index("--asof") + 1] == event.asof
+    from examples import core_guardian, guardian_handler
+    captured = []
+    def fake_command_handler(name, opts, root):
+        def run(event, now, context, degraded):
+            captured.append(build_handler_command(name, event, opts, root, "2026-10-19", "python", tmp_path))
+            return "ok"
+        return run
+    monkeypatch.setattr(core_guardian, "_command_handler", fake_command_handler)
+    monkeypatch.setenv("GUARDIAN_DRY_RUN", "1")
+    request = {"event": "startup_0830", "trade_date": "2026-10-19", "asof": event.asof}
+    assert guardian_handler._run_event(request)[0] == 0
+    assert captured[-1][captured[-1].index("--asof") + 1] == event.asof
+    request.pop("asof")
+    assert guardian_handler._run_event(request)[0] == 0
+    assert "--asof" not in captured[-1]
+    event.asof = None
+    assert "--asof" not in build_handler_command("premarket_data", event, SimpleNamespace(write=False),
+                                                  tmp_path, "2026-10-19", "python", tmp_path)
+
+
+def test_prep_timings_and_progress_with_stubbed_jobs(tmp_path, monkeypatch):
+    import engine_core.prep_trade_day as prep
+    import redis
+    _seed_c325(tmp_path)
+    snapshots = []
+    class Client:
+        def set(self, key, value, ex):
+            snapshots.append((key, json.loads(value), ex))
+    monkeypatch.setenv("CORE_REDIS_URL", "redis://stub")
+    monkeypatch.setattr(redis.Redis, "from_url", lambda *a, **k: Client())
+    monkeypatch.setattr(prep, "_run", lambda *a: (0, '{"reused": false}'))
+    monkeypatch.setattr(prep, "_prepare_theme_snapshot_cache", lambda *a, **k: True)
+    report = prep.build_prep_report(tmp_path, "2026-10-19", write=True,
+                                    asof="2026-10-19T08:00:00+08:00", event_id="startup_0830")
+    records = {item["step"]: item for item in report["step_timings"]}
+    assert {item["step"] for item in report["steps"]} <= records.keys()
+    assert all({"step", "dataset", "trade_date", "status", "check_ms", "filled", "fill_script", "fill_exit", "fill_ms"} <= item.keys() for item in records.values())
+    baseline = records["auction_baseline"]
+    assert (baseline["filled"], baseline["fill_script"], baseline["fill_exit"], baseline["reused_prior_version"]) == (True, "build_auction_baseline.py", 0, False)
+    assert any(p["phase"] == "filling" and p["current_step"] == "auction_baseline" for _, p, _ in snapshots)
+    assert snapshots[-1][1]["step_timings"] == report["step_timings"]
+    assert all(k == report["report_key"] and ttl == 14 * 86400 for k, _, ttl in snapshots)
+
+
+def test_prep_redis_failure_does_not_change_result(tmp_path, monkeypatch):
+    import redis
+    class Broken:
+        def set(self, *args, **kwargs):
+            raise OSError("unavailable")
+    monkeypatch.delenv("CORE_REDIS_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    expected = build_prep_report(tmp_path, "2026-10-19", asof="2026-10-19T08:00:00+08:00")
+    monkeypatch.setenv("CORE_REDIS_URL", "redis://stub")
+    monkeypatch.setattr(redis.Redis, "from_url", lambda *a, **k: Broken())
+    actual = build_prep_report(tmp_path, "2026-10-19", asof="2026-10-19T08:00:00+08:00")
+    for key in ("status", "steps", "errors", "warnings"):
+        if key == "steps":
+            assert [{k: v for k, v in row.items() if k != "elapsed_ms"} for row in actual[key]] == [{k: v for k, v in row.items() if k != "elapsed_ms"} for row in expected[key]]
+        else:
+            assert actual[key] == expected[key]

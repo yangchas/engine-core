@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import uuid
 import hashlib
 import os
 import subprocess
@@ -383,7 +385,7 @@ def _theme_gap_jobs(diag: list[str]) -> list[str]:
 
 
 def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
-                      asof: str | None = None, theme_wait_seconds: float = 0.0,
+                      asof: str | None = None, event_id: str = "manual", theme_wait_seconds: float = 0.0,
                       theme_poll_seconds: float = 30.0, theme_on_missing: str = "fail",
                       sleep: Any = time.sleep) -> dict[str, Any]:
     """``theme_wait_seconds``/``theme_poll_seconds``/``theme_on_missing`` (C587, from schedule.json ``args.theme_deps``):
@@ -401,6 +403,84 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
     catalog = ArtifactCatalog(root)
     previous = previous_trade_date(root, trade_date)
     repo = Path(__file__).resolve().parents[2]
+    records: dict[str, dict[str, Any]] = {}
+    report_key = f"core:prep_report:{trade_date}:{event_id}:{uuid.uuid4().hex}"
+    url = os.getenv("CORE_REDIS_URL") or os.getenv("REDIS_URL")
+    client = None
+    if url:
+        try:
+            import redis as redis_package
+            client = redis_package.Redis.from_url(url, decode_responses=True,
+                                                   socket_connect_timeout=0.2, socket_timeout=0.2)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("prep report Redis unavailable: %s", type(exc).__name__)
+
+    def publish(current=None, phase=None):
+        nonlocal client
+        if client is not None:
+            try:
+                client.set(report_key, json.dumps({"trade_date": trade_date, "event_id": event_id,
+                    "current_step": current, "phase": phase, "step_timings": list(records.values()),
+                    "timing_summary": {"check_ms_total": round(sum(r["check_ms"] for r in records.values()), 3),
+                        "fill_ms_total": round(sum(r["fill_ms"] for r in records.values()), 3),
+                        "steps_filled": sum(r["filled"] for r in records.values())}},
+                    ensure_ascii=False, separators=(",", ":")), ex=14 * 86400)
+            except Exception as exc:
+                logging.getLogger(__name__).warning("prep report Redis write failed: %s", type(exc).__name__)
+                client = None
+
+    def begin(name, dataset, day):
+        record = records.setdefault(name, {"step": name, "dataset": dataset, "trade_date": day,
+            "status": "RUNNING", "check_ms": 0.0, "filled": False, "fill_script": None,
+            "fill_exit": None, "fill_ms": 0.0})
+        publish(name, "running")
+        return record
+
+    original_step, original_latest, original_run = globals()["_step"], globals()["_latest_step"], globals()["_run"]
+    def checked_step(name, dataset, day, *args, **kwargs):
+        record = begin(name, dataset, day)
+        started = time.monotonic()
+        item = original_step(name, dataset, day, *args, **kwargs)
+        record.update(status=item["status"], trade_date=item["trade_date"])
+        record["check_ms"] += round((time.monotonic() - started) * 1000, 3)
+        publish(name, "completed")
+        return item
+    def checked_latest(name, dataset, day, *args, **kwargs):
+        record = begin(name, dataset, day)
+        started = time.monotonic()
+        item = original_latest(name, dataset, day, *args, **kwargs)
+        record.update(status=item["status"], trade_date=item["trade_date"])
+        record["check_ms"] += round((time.monotonic() - started) * 1000, 3)
+        publish(name, "completed")
+        return item
+    def tracked_run(repo, script, args):
+        job = args[args.index("--job") + 1] if "--job" in args else None
+        name = {"symbol_universe": "symbol_universe", "daily_kline": "previous_daily_kline",
+                "limit_up_pool": "yesterday_limit_pool", "limit_reasons": "limit_reasons",
+                "hot_plates": "hot_plates", "plate_members": "plate_members"}.get(job)
+        name = name or {"capture_ths_hot_rank.py": "hot_rank", "build_auction_baseline.py": "auction_baseline",
+                        "build_plate_amount_baseline.py": "plate_amount_baseline"}.get(script, "theme_snapshot")
+        record = begin(name, name, trade_date)
+        record.update(filled=True, fill_script=script, fill_exit=None)
+        publish(name, "filling")
+        started = time.monotonic()
+        try:
+            rc, out = original_run(repo, script, args)
+            record["fill_exit"] = rc
+            for line in out.splitlines():
+                try:
+                    payload = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(payload, dict) and isinstance(payload.get("reused"), bool):
+                    record["reused_prior_version"] = payload["reused"]
+                    if payload["reused"]:
+                        record["filled"] = False
+            return rc, out
+        finally:
+            record["fill_ms"] += round((time.monotonic() - started) * 1000, 3)
+            publish(name, "completed")
+    _step, _latest_step, _run = checked_step, checked_latest, tracked_run
     steps = [
         _step("symbol_universe", "symbol_universe", trade_date, catalog, asof=asof),
         _step("previous_daily_kline", "daily_kline", previous, catalog, asof=asof,
@@ -426,6 +506,10 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
          "status": "SKIPPED_REASON", "reason": "待交易日09:15起产生，盘前准备不读取未来竞价数据",
          "row_count": None, "version": None, "elapsed_ms": 0.0},
     ]
+    skipped = steps[-1]
+    record = begin(skipped["step"], skipped["dataset"], skipped["trade_date"])
+    record["status"] = skipped["status"]
+    publish(skipped["step"], "completed")
     errors: list[str] = []
     error_codes: list[str | None] = []   # the registered code each failed job script declared (None: none declared)
     error_steps: list[dict[str, str | None]] = []
@@ -472,7 +556,6 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                 # A failed upgrade does not invalidate a still-readable committed version.
                 symbol_contract_status = "degraded"
             else:
-                import logging
                 logging.getLogger(__name__).error("symbol_universe preparation failed: %s", out[-2000:])
                 errors.append("symbol_universe:COMMAND_FAILED")
                 error_codes.append(_declared_code(out))
@@ -493,6 +576,13 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
         if _manifest(catalog, "daily_kline", previous, asof=asof) and (
                 not _manifest(catalog, "daily_indicators", previous, asof=asof)
                 or not _manifest(catalog, "daily_report_features", previous, asof=asof)):
+            feature_names = [name for name, dataset in (("daily_indicators", "daily_indicators"),
+                ("daily_report_features", "daily_report_features")) if not _manifest(catalog, dataset, previous, asof=asof)]
+            for name in feature_names:
+                record = begin(name, name, previous)
+                record.update(filled=True, fill_script="daily_history.py", fill_exit=None)
+            publish(",".join(feature_names), "filling")
+            feature_exit = 0
             started = time.monotonic()
             from .daily_history import reindex_daily_indicators, materialize_daily_report_features
             try:
@@ -510,9 +600,13 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                     materialize_daily_report_features(catalog, trade_date=previous,
                         asof=pit_asof_with_late_inputs(catalog, previous), redis=redis)
             except Exception as exc:
+                feature_exit = 1
                 errors.append("daily_features:" + str(exc)[:240])
                 error_steps.append({"step": "daily_features", "code": None})
             elapsed = round((time.monotonic() - started) * 1000, 3)
+            for index, name in enumerate(feature_names):
+                records[name].update(fill_exit=feature_exit, fill_ms=elapsed if index == 0 else 0.0)
+            publish(",".join(feature_names), "completed")
             timings["daily_indicators"] = elapsed
             timings["daily_report_features"] = elapsed
         for job, dataset in (("limit_up_pool", "limit_up_pool"),
@@ -556,6 +650,9 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
             error_codes.append(_declared_code(out))
             error_steps.append({"step": "plate_amount_baseline", "code": error_codes[-1]})
         try:
+            theme_record = begin("theme_snapshot", "theme_snapshot", trade_date)
+            theme_record.update(filled=True, fill_script="_prepare_theme_snapshot_cache", fill_exit=None)
+            publish("theme_snapshot", "filling")
             theme_started = time.monotonic()
             budget = max(0.0, float(theme_wait_seconds))
             waited = 0.0
@@ -580,7 +677,8 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                                     "--artifact-root", str(root), "--max-requests", "15"])
                 waited += max(nap, 0.001) + (time.monotonic() - retry_started)
             timings["theme_snapshot"] = round((time.monotonic() - theme_started) * 1000, 3)
-            import logging
+            theme_record.update(fill_ms=timings["theme_snapshot"], fill_exit=0 if built else 1, status="READY" if built and not diag else "PARTIAL")
+            publish("theme_snapshot", "completed")
             log = logging.getLogger(__name__)
             if built and not diag:
                 pass
@@ -595,6 +693,8 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                 errors.append("theme_snapshot:PRECOMPUTE_UNAVAILABLE:" + ";".join(diag)[:600])
                 error_steps.append({"step": "theme_snapshot", "code": None})
         except Exception as exc:
+            theme_record.update(status="FAILED", fill_exit=1, fill_ms=round((time.monotonic() - theme_started) * 1000, 3))
+            publish("theme_snapshot", "completed")
             errors.append("theme_snapshot:" + str(exc)[:200])
             error_steps.append({"step": "theme_snapshot", "code": None})
     # Re-read after writes and annotate each real artifact state.
@@ -620,9 +720,16 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                 elif symbol_contract_status == "not_applicable":
                     item["status"] = "SKIPPED_REASON"
                     item["reason"] = "not_applicable"
+            records[item["step"]]["status"] = item["status"]
             if item["step"] in timings:
                 item["elapsed_ms"] = timings[item["step"]]
-    return {"trade_date": trade_date, "previous_trade_date": previous,
+    step_timings = list(records.values())
+    summary = {"check_ms_total": round(sum(r["check_ms"] for r in step_timings), 3),
+               "fill_ms_total": round(sum(r["fill_ms"] for r in step_timings), 3),
+               "steps_filled": sum(r["filled"] for r in step_timings)}
+    publish(None, "completed")
+    return {"step_timings": step_timings, "timing_summary": summary, "report_key": report_key,
+            "trade_date": trade_date, "previous_trade_date": previous,
             "mode": "WRITE" if write else "DRY_RUN", "steps": steps,
             "errors": errors, "error_steps": error_steps, "error_codes": [code for code in error_codes if code], "warnings": warnings,
             "status": "READY" if all(s["status"] == "READY" for s in steps) and not errors and not warnings else "PARTIAL"}
