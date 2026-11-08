@@ -489,6 +489,7 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
         skipped_completed = len(candidates) - len(requested)
         failed: dict[str, str] = {}
         known_missing: dict[str, str] = {}
+        unknown_missing: dict[str, str] = {}
         request_count = 0
         written_rows = 0
         written_symbols = 0
@@ -575,7 +576,14 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
         stale = [symbol for symbol, reason in failed.items() if reason.startswith("DdeStaleResponse:")]
         if stale:
             # Kaipan publishes no same-day DDE for a suspended stock: that is the source's answer, not a fault.
-            for symbol in sorted(store.read_suspended(stale, target)):
+            try:
+                suspended = store.read_suspended(stale, target)
+            except Exception as exc:
+                suspended = set()
+                for symbol in stale:
+                    unknown_missing[symbol] = "suspension_lookup_failed:" + type(exc).__name__
+                    del failed[symbol]
+            for symbol in sorted(suspended):
                 known_missing[symbol] = "suspended_no_same_day_dde"
                 del failed[symbol]
 
@@ -588,6 +596,8 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                    "max_workers": int(max_workers), "requested_max_workers": requested_workers, "written_symbols": written_symbols,
                    "rows_written": written_rows, "known_missing": [
                        {"symbol": symbol, "reason": reason} for symbol, reason in sorted(known_missing.items())],
+                   "unknown_missing": [{"symbol": symbol, "reason": reason} for symbol, reason in sorted(unknown_missing.items())],
+                   "unknown_missing_total": len(unknown_missing),
                    "failed": [{"symbol": symbol, "reason": reason} for symbol, reason in sorted(failed.items())],
                    "readback_verified": not failed,
                    "watermarks_before": {symbol: before.get(symbol) for symbol in candidates[:20]},
@@ -603,7 +613,7 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                   f"error_code=DDE_SYNC_INCOMPLETE_RETRYABLE", flush=True)
             raise DdeSyncRetryableError(summary)
 
-        completed_symbols = set(candidates) - set(known_missing)
+        completed_symbols = set(candidates) - set(known_missing) - set(unknown_missing)
         target_rows_by_symbol = store.read_target_rows(sorted(completed_symbols), target)
         missing_target_rows = sorted(completed_symbols - set(target_rows_by_symbol))
         if missing_target_rows:
@@ -639,7 +649,7 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                             "row_count": len(target_rows)}
             if not fields_verified or ttl < 1:
                 raise DdeError("dde_redis_readback_failed")
-        summary.update({"status": "ok", "ddl": ddl, "readback_mismatches": 0,
+        summary.update({"status": "degraded" if unknown_missing else "ok", "ddl": ddl, "readback_mismatches": 0,
                        "redis_readback_verified": bool(redis_result.get("readback_verified")),
                        "redis": redis_result})
         summary.pop("failed", None)

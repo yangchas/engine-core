@@ -25,3 +25,22 @@ def test_requests_are_serial_and_spaced():
                        clock=lambda: now[0])
     assert calls[1][1] - calls[0][1] >= 1.0
     assert calls[1][2] == ['000001']
+
+
+def test_missing_suspension_table_degrades_and_guardian_maps_exit(monkeypatch):
+    from engine_core.data_pipeline.daily_dde import DdeError
+    from engine_core.guardian import daily_dde_sync
+
+    raw = json.loads((Path(__file__).parent / 'fixtures/real/kaipan_stock_dde_2026-11-02_000831_0731.json').read_text())
+    class MissingTable(RecordingDdeStore):
+        def read_suspended(self, symbols, target_date):
+            raise DdeError('td_statement_failed:table missing')
+
+    result = run_daily_dde_sync(['000831'], '2026-11-03', store=MissingTable(),
+                                fetcher=lambda *_: raw, attempts=1, skip_redis=True)
+    assert result['status'] == 'degraded'
+    assert result['unknown_missing_total'] == 1
+    assert result['unknown_missing'][0]['symbol'] == '000831'
+    monkeypatch.setattr('engine_core.data_pipeline.daily_dde.run_daily_dde_sync', lambda *a, **kw: result)
+    code, reply = daily_dde_sync.run({'trade_date': '2026-11-03'}, Path('.'))
+    assert (code, reply['status'], reply['retryable']) == (10, 'degraded', False)

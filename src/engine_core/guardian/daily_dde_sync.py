@@ -31,7 +31,7 @@ def run(request: Mapping[str, Any], root: Path, *, dry_run: bool = False) -> tup
         return 75, {"contract": 1, "status": "failed", "error_code": "DDE_SYNC_RETRYABLE",
                     "retryable": True, "artifacts": [],
                     "detail": {"error": type(exc).__name__ + ":" + str(exc)[:300], "target_date": target_date}}
-    status = "ok" if result["status"] == "ok" else "failed"
-    return (0 if status == "ok" else 75), {
-        "contract": 1, "status": status, "error_code": "" if status == "ok" else "DDE_KNOWN_MISSING",
-        "retryable": status != "ok", "artifacts": [], "detail": result}
+    status = result["status"]
+    return (10 if status == "degraded" else 0), {
+        "contract": 1, "status": status, "error_code": "",
+        "retryable": False, "artifacts": [], "detail": result}
