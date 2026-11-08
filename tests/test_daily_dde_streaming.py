@@ -1,7 +1,6 @@
 # DATA: real:kaipan_stock_dde_2026-10-29_600519_1539.json, kaipan_stock_dde_2026-10-29_688001_1540.json, kaipan_stock_dde_2026-11-02_000831_0731.json, td/dde_suspended.json.gz, td/dde_not_flagged_1103.json.gz
 import json
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -26,6 +25,12 @@ class RecordingDdeStore:
     def ensure_schema(self):
         return "recording-store"
 
+    def invalidate_days(self, days):
+        pass
+
+    def publish_day_marker(self, day, candidates, rows, known_missing):
+        pass
+
     def latest_watermarks(self):
         return dict(self.watermarks)
 
@@ -44,39 +49,27 @@ class RecordingDdeStore:
                 "columns": {}, "reasons": {}}
 
 
-def test_dde_writes_first_completed_symbol_before_other_fetch_finishes():
+def test_dde_writes_each_symbol_before_starting_next_fetch():
     target_date = "2026-10-29"
     raw_by_symbol = {
         "600519": json.loads((REAL / "kaipan_stock_dde_2026-10-29_600519_1539.json").read_text()),
         "688001": json.loads((REAL / "kaipan_stock_dde_2026-10-29_688001_1540.json").read_text()),
     }
-    second_fetch_started = threading.Event()
-    release_second_fetch = threading.Event()
     store = RecordingDdeStore()
+    writes_at_fetch = []
 
     def fetch(symbol, target):
         assert target == target_date
-        if symbol == "600519":
-            second_fetch_started.set()
-            assert release_second_fetch.wait(10), "test did not release delayed real response"
+        writes_at_fetch.append(list(store.writes))
         return raw_by_symbol[symbol]
 
-    def run():
-        return run_daily_dde_sync(
-            ["600519", "688001"], target_date, store=store, fetcher=fetch,
-            max_workers=2, attempts=1, write_redis=False, skip_redis=True,
-            sleep=lambda _seconds: None)
-
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(run)
-        assert second_fetch_started.wait(5), "delayed response did not start"
-        wrote_before_release = store.first_write.wait(3)
-        release_second_fetch.set()
-        result = future.result(timeout=15)
-
-    assert wrote_before_release, "DDE waited for every source response before starting TD writes"
+    result = run_daily_dde_sync(
+        ["600519", "688001"], target_date, store=store, fetcher=fetch,
+        max_workers=2, attempts=1, write_redis=False, skip_redis=True,
+        sleep=lambda _seconds: None)
+    assert writes_at_fetch == [[], ["600519"]]
     assert result["status"] == "ok"
-    assert set(store.writes) == {"600519", "688001"}
+    assert store.writes == ["600519", "688001"]
 
 
 class ReplayedSuspensionStore(RecordingDdeStore):

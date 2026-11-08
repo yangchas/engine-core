@@ -19,7 +19,9 @@ SUPER_TABLE = "daily_dde_v1"
 DATA_COLUMNS = ("ddje",)
 FIELD_UNITS = {"ddje": "yuan"}
 DEFAULT_HISTORY_TRADING_DAYS = 250
-DEFAULT_MAX_WORKERS = 2
+DEFAULT_MAX_WORKERS = 1
+# Assumes the SDK size requests the latest trading sessions; live verification is pending.
+INCREMENTAL_FETCH_SIZE = 5
 KAIPAN_REQUEST_TIMEOUT = (5.0, 15.0)
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _SYMBOL_RE = re.compile(r"^\d{6}$")
@@ -196,7 +198,28 @@ class TaosDdeStore:
         ddl = (f"CREATE STABLE IF NOT EXISTS {self.database}.{SUPER_TABLE} "
                "(ts TIMESTAMP, ddje DOUBLE, version VARCHAR(24)) TAGS (symbol VARCHAR(8))")
         self._run(ddl)
+        self._run(f"CREATE TABLE IF NOT EXISTS {self.database}.daily_dde_days "
+                  "(ts TIMESTAMP, trade_date VARCHAR(10), version VARCHAR(24), business_status VARCHAR(16), "
+                  "quality VARCHAR(16), expected_count INT, row_count INT, exempt_count INT, "
+                  "unresolved_count INT, universe_ref VARCHAR(256), missing_whitelist VARCHAR(16384), "
+                  "sha256 VARCHAR(64), available_at VARCHAR(40))")
         return ddl
+
+    def invalidate_days(self, days: Sequence[str]) -> None:
+        for day in sorted(set(days)):
+            self._run(f"DELETE FROM {self.database}.daily_dde_days WHERE ts = {_ts_us(day)}")
+
+    def publish_day_marker(self, day: str, candidates: Sequence[str], rows: Mapping[str, Mapping[str, Any]],
+                           known_missing: Mapping[str, str]) -> None:
+        # A caller's symbol list is not a versioned universe or a whitelist with evidence.
+        # Record the counts as PARTIAL/UNKNOWN until those inputs exist.
+        valid = {symbol: row for symbol, row in rows.items() if row.get("ddje") is not None}
+        digest = hashlib.sha256(json.dumps(valid, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        available_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        values = [_ts_us(day), _sql(day), _sql(digest[:24]), _sql("PARTIAL"), _sql("UNKNOWN"),
+                  len(candidates), len(valid), 0, len(candidates) - len(valid), _sql(""), _sql("[]"),
+                  _sql(digest), _sql(available_at)]
+        self._run(f"INSERT INTO {self.database}.daily_dde_days VALUES (" + ", ".join(map(str, values)) + ")")
 
     def latest_watermarks(self) -> dict[str, str]:
         rows = self._run(f"SELECT symbol, LAST(ts) FROM {self.database}.{SUPER_TABLE} GROUP BY symbol")
@@ -222,6 +245,14 @@ class TaosDdeStore:
                 if day == target_date and code in chunk:
                     found[code] = {"symbol": code, "date": day, "ddje": _number(ddje)}
         return found
+
+    def read_symbol_rows(self, symbol: str, dates: Sequence[str]) -> dict[str, dict[str, Any]]:
+        if not _SYMBOL_RE.fullmatch(symbol) or not dates:
+            return {}
+        stamps = ",".join(str(_ts_us(day)) for day in dates)
+        rows = self._run(f"SELECT ts, ddje FROM {self.database}.{SUPER_TABLE}_{symbol} WHERE ts IN ({stamps})")
+        return {day: {"symbol": symbol, "date": day, "ddje": _number(value)}
+                for ts, value in rows if (day := _date_text(ts))}
 
     def read_suspended(self, symbols: Sequence[str], target_date: str) -> set[str]:
         """Symbols whose daily_kline row of ``target_date`` says suspended: Kaipan has no same-day DDE for them."""
@@ -372,11 +403,13 @@ def _is_confirmed_empty_response(raw_response: Any) -> bool:
 
 def _fetch_with_retry(fetcher: Callable[[str, str], Any], symbol: str, target_date: str,
                       history_trading_days: int, attempts: int,
-                      sleep: Callable[[float], None], known_symbols: set[str]
+                      sleep: Callable[[float], None], known_symbols: set[str],
+                      before_request: Callable[[], None]
                       ) -> tuple[Partition | None, str | None, int, bool]:
     last_error = "unknown"
     for attempt in range(1, attempts + 1):
         try:
+            before_request()
             raw = fetcher(symbol, target_date)
             if _is_confirmed_empty_response(raw):
                 if symbol in known_symbols:
@@ -424,20 +457,35 @@ def _configure_kaipan_request_timeout(client: Any) -> None:
 def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, database: str | None = None,
                        root: str | Path | None = None, max_workers: int = DEFAULT_MAX_WORKERS, attempts: int = 3,
                        history_trading_days: int = DEFAULT_HISTORY_TRADING_DAYS,
+                       consecutive_failure_limit: int = 5,
                        redis_ttl_seconds: int | None = None, write_redis: bool = True,
                        skip_redis: bool = False, store: TaosDdeStore | None = None,
                        fetcher: Callable[[str, str], Any] | None = None,
-                       sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
+                       sleep: Callable[[float], None] = time.sleep,
+                       clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
     target = _date_text(target_date)
     if target is None:
         raise ValueError("invalid_dde_target_date")
-    if isinstance(max_workers, bool) or not 1 <= int(max_workers) <= 4:
-        raise ValueError("dde_max_workers_must_be_1_to_4")
+    if isinstance(max_workers, bool) or int(max_workers) < 1:
+        raise ValueError("dde_max_workers_must_be_positive")
     if isinstance(attempts, bool) or not 1 <= int(attempts) <= 5:
         raise ValueError("dde_attempts_must_be_1_to_5")
     if isinstance(history_trading_days, bool) or not 1 <= int(history_trading_days) <= 5000:
         raise ValueError("history_trading_days_must_be_1_to_5000")
-    started_at = time.monotonic()
+    if isinstance(consecutive_failure_limit, bool) or int(consecutive_failure_limit) < 1:
+        raise ValueError("dde_consecutive_failure_limit_must_be_positive")
+    started_at = clock()
+    requested_workers = int(max_workers)
+    max_workers = 1
+    last_request_at: float | None = None
+
+    def before_request() -> None:
+        nonlocal last_request_at
+        if last_request_at is not None:
+            delay = 1.0 - (clock() - last_request_at)
+            if delay > 0:
+                sleep(delay)
+        last_request_at = clock()
     redis_namespace, registry_ttl = _redis_hot_view_config()
     redis_ttl_seconds = registry_ttl if redis_ttl_seconds is None else int(redis_ttl_seconds)
     if redis_ttl_seconds < 1:
@@ -452,7 +500,8 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
         _configure_kaipan_request_timeout(pykaipan)
 
         def fetch_from_kaipan(symbol: str, day: str):
-            return pykaipan.getHisStockDDE(symbol, day)
+            size = INCREMENTAL_FETCH_SIZE if symbol in before else int(history_trading_days)
+            return pykaipan.getHisStockDDE(symbol, size=str(size))
 
         fetcher = fetch_from_kaipan
     try:
@@ -468,13 +517,20 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
             except Exception:
                 # Explicit-symbol callers may use an isolated root without a catalog.
                 known_symbols = set()
-        requested = [symbol for symbol in candidates if before.get(symbol, "") < target]
-        skipped_completed = len(candidates) - len(requested)
+        store.invalidate_days([target])
+        invalidated_days = {target}
+        requested = list(candidates)
+        skipped_completed = 0
         failed: dict[str, str] = {}
         known_missing: dict[str, str] = {}
+        unknown_missing: dict[str, str] = {}
+        consecutive_failures = 0
+        aborted = None
         request_count = 0
         written_rows = 0
         written_symbols = 0
+        revised_days: set[str] = set()
+        revised_symbols: set[str] = set()
         comparison = {"pairs": 0, "equal": 0, "different": 0, "unmatched": 0,
                       "columns": {}, "reasons": {}}
         comparison_symbols: list[str] = []
@@ -510,7 +566,7 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                 if symbol is not None:
                     pending[pool.submit(_fetch_with_retry, fetcher, symbol, target,
                                         int(history_trading_days), int(attempts), sleep,
-                                        known_symbols)] = symbol
+                                        known_symbols, before_request)] = symbol
             while pending:
                 done, _ = concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED)
                 for future in done:
@@ -520,16 +576,37 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                     except Exception as exc:
                         partition, error, used, source_empty = None, type(exc).__name__ + ":" + str(exc)[:180], 1, False
                     request_count += used
+                    if partition is None and not source_empty and not (error or "").startswith("DdeStaleResponse:"):
+                        consecutive_failures += 1
+                    else:
+                        consecutive_failures = 0
+                    if consecutive_failures >= int(consecutive_failure_limit):
+                        aborted = "consecutive_failures"
                     if source_empty:
                         known_missing[symbol] = "kaipan_confirmed_empty_response"
                     elif partition is None:
                         failed[symbol] = error or "fetch_failed"
                     else:
                         try:
-                            count = store.write_and_verify(symbol, partition.rows, partition.manifest["version"])
-                            if count != len(partition.rows):
+                            rows = partition.rows[:INCREMENTAL_FETCH_SIZE] if symbol in before else partition.rows
+                            revisions = []
+                            if symbol in before:
+                                previous = store.read_symbol_rows(symbol, [row["date"] for row in rows])
+                                changed = [row for row in rows if row["date"] not in previous or
+                                           previous[row["date"]]["ddje"] != row["ddje"]]
+                                revisions = [row for row in changed if row["date"] in previous]
+                                rows = changed
+                            days_to_invalidate = {row["date"] for row in rows} - invalidated_days
+                            if days_to_invalidate:
+                                store.invalidate_days(sorted(days_to_invalidate))
+                                invalidated_days.update(days_to_invalidate)
+                            count = store.write_and_verify(symbol, rows, partition.manifest["version"]) if rows else 0
+                            if count != len(rows):
                                 raise DdeError("td_readback_row_count_mismatch")
-                            written_symbols += 1
+                            revised_days.update(row["date"] for row in revisions)
+                            if revisions:
+                                revised_symbols.add(symbol)
+                            written_symbols += bool(rows)
                             written_rows += count
                             latest = max(row["date"] for row in partition.rows)
                             after[symbol] = max(after.get(symbol, ""), latest)
@@ -548,17 +625,24 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                               f"remaining={remaining} skipped_completed={skipped_completed} "
                               f"requests={request_count}", flush=True)
                         last_progress_at = now
-                    next_symbol = next(iterator, None)
+                    next_symbol = None if aborted else next(iterator, None)
                     if next_symbol is not None:
                         pending[pool.submit(_fetch_with_retry, fetcher, next_symbol, target,
                                             int(history_trading_days), int(attempts), sleep,
-                                            known_symbols)] = next_symbol
+                                            known_symbols, before_request)] = next_symbol
         flush_comparison()
 
         stale = [symbol for symbol, reason in failed.items() if reason.startswith("DdeStaleResponse:")]
         if stale:
             # Kaipan publishes no same-day DDE for a suspended stock: that is the source's answer, not a fault.
-            for symbol in sorted(store.read_suspended(stale, target)):
+            try:
+                suspended = store.read_suspended(stale, target)
+            except Exception as exc:
+                suspended = set()
+                for symbol in stale:
+                    unknown_missing[symbol] = "suspension_lookup_failed:" + type(exc).__name__
+                    del failed[symbol]
+            for symbol in sorted(suspended):
                 known_missing[symbol] = "suspended_no_same_day_dde"
                 del failed[symbol]
 
@@ -566,18 +650,23 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
         # TD error is retryable; Guardian can resume from the single aggregate watermark query.
         summary = {"database": store.database, "target_date": target,
                    "candidate_symbols": len(candidates), "requested_symbols": len(requested),
+                   "requested": len(requested), "skipped_complete": skipped_completed,
+                   "failed_total": len(failed),
                    "skipped_completed_symbols": skipped_completed,
                    "request_count": request_count, "history_trading_days": int(history_trading_days),
-                   "max_workers": int(max_workers), "written_symbols": written_symbols,
-                   "rows_written": written_rows, "known_missing": [
+                   "max_workers": int(max_workers), "requested_max_workers": requested_workers, "written_symbols": written_symbols,
+                   "rows_written": written_rows, "revised_days": len(revised_days),
+                   "revised_symbols": len(revised_symbols), "known_missing": [
                        {"symbol": symbol, "reason": reason} for symbol, reason in sorted(known_missing.items())],
+                   "unknown_missing": [{"symbol": symbol, "reason": reason} for symbol, reason in sorted(unknown_missing.items())],
+                   "unknown_missing_total": len(unknown_missing),
                    "failed": [{"symbol": symbol, "reason": reason} for symbol, reason in sorted(failed.items())],
                    "readback_verified": not failed,
                    "watermarks_before": {symbol: before.get(symbol) for symbol in candidates[:20]},
                    "watermarks_after": {symbol: after.get(symbol) for symbol in candidates[:20]},
                    "watermark_counts": {"before": len(before), "after": len(after)},
                    "legacy_comparison": comparison,
-                   "elapsed_seconds": round(time.monotonic() - started_at, 3)}
+                   "elapsed_seconds": round(clock() - started_at, 3), "aborted": aborted}
         if failed:
             summary["status"] = "failed"
             summary["error_code"] = "DDE_SYNC_INCOMPLETE_RETRYABLE"
@@ -586,18 +675,21 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                   f"error_code=DDE_SYNC_INCOMPLETE_RETRYABLE", flush=True)
             raise DdeSyncRetryableError(summary)
 
-        completed_symbols = set(candidates) - set(known_missing)
+        completed_symbols = set(candidates) - set(known_missing) - set(unknown_missing)
         target_rows_by_symbol = store.read_target_rows(sorted(completed_symbols), target)
         missing_target_rows = sorted(completed_symbols - set(target_rows_by_symbol))
         if missing_target_rows:
             summary["failed"] = [{"symbol": symbol, "reason": "td_target_date_row_missing"}
                                  for symbol in missing_target_rows]
+            summary["failed_total"] = len(missing_target_rows)
             summary["status"] = "failed"
             summary["error_code"] = "DDE_SYNC_INCOMPLETE_RETRYABLE"
             print(f"DDE_FAILED target={target} written={written_symbols} failed={len(missing_target_rows)} "
                   f"known_missing={len(known_missing)} remaining={len(missing_target_rows)} "
                   f"error_code=DDE_SYNC_INCOMPLETE_RETRYABLE", flush=True)
             raise DdeSyncRetryableError(summary)
+
+        store.publish_day_marker(target, candidates, target_rows_by_symbol, known_missing)
 
         redis_result: dict[str, Any] = {"written": False, "readback_verified": False, "key": None, "ttl": None}
         if skip_redis:
@@ -622,7 +714,7 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                             "row_count": len(target_rows)}
             if not fields_verified or ttl < 1:
                 raise DdeError("dde_redis_readback_failed")
-        summary.update({"status": "ok", "ddl": ddl, "readback_mismatches": 0,
+        summary.update({"status": "degraded" if unknown_missing else "ok", "ddl": ddl, "readback_mismatches": 0,
                        "redis_readback_verified": bool(redis_result.get("readback_verified")),
                        "redis": redis_result})
         summary.pop("failed", None)

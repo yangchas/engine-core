@@ -21,6 +21,7 @@ def run(request: Mapping[str, Any], root: Path, *, dry_run: bool = False) -> tup
             target_date, database=str(args.get("database") or "") or None, root=root,
             max_workers=int(args.get("max_workers", 2)), attempts=int(args.get("attempts", 3)),
             history_trading_days=int(args.get("history_trading_days", 250)),
+            consecutive_failure_limit=int(args.get("consecutive_failure_limit", 5)),
             redis_ttl_seconds=(int(args["redis_ttl_seconds"])
                                if args.get("redis_ttl_seconds") is not None else None),
             write_redis=bool(args.get("write_redis", True)), skip_redis=bool(args.get("skip_redis", False)))
@@ -31,7 +32,7 @@ def run(request: Mapping[str, Any], root: Path, *, dry_run: bool = False) -> tup
         return 75, {"contract": 1, "status": "failed", "error_code": "DDE_SYNC_RETRYABLE",
                     "retryable": True, "artifacts": [],
                     "detail": {"error": type(exc).__name__ + ":" + str(exc)[:300], "target_date": target_date}}
-    status = "ok" if result["status"] == "ok" else "failed"
-    return (0 if status == "ok" else 75), {
-        "contract": 1, "status": status, "error_code": "" if status == "ok" else "DDE_KNOWN_MISSING",
-        "retryable": status != "ok", "artifacts": [], "detail": result}
+    status = result["status"]
+    return (10 if status == "degraded" else 0), {
+        "contract": 1, "status": status, "error_code": "",
+        "retryable": False, "artifacts": [], "detail": result}
