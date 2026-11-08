@@ -326,12 +326,16 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
         raise ValueError("target_not_in_trade_calendar:" + target)
     depth = max(1, int(history_min_trading_days))
     dates = sessions[-depth:]
+    from .daily_kline_fill import listing_detail, load_listing_snapshot, make_expected_symbols
+    listing = load_listing_snapshot(dates)
+    listing_info = listing_detail(listing, dates)
     if not store.schema_exists():
         store.ensure_schema()
     watermarks = read_watermarks(store, dates, watermark_mode)
     from ..guardian.daily_kline_coverage import TdCoverageSource
     from .storage import ArtifactCatalog
     catalog = ArtifactCatalog(base)
+    listing_expected = make_expected_symbols(catalog, listing=listing) if listing is not None else None
     universe_partition_dates = sorted(
         (catalog.read().get("datasets", {}).get("symbol_universe", {}).get("dates", {})).keys())
     manifest_path = catalog.locate("daily_kline", target)
@@ -424,6 +428,10 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
 
     def active_symbols_for_day(day: str, *, fetch: bool = True) -> set[str] | None:
         if day not in expected_symbols_by_day:
+            if listing_expected is not None:
+                expected_symbols_by_day[day] = listing_expected(day)
+                universe_source_day_by_day[day] = None
+                return expected_symbols_by_day[day]
             candidates = [candidate for candidate in universe_partition_dates if candidate <= day]
             for candidate in reversed(candidates):
                 universe_path = catalog.locate("symbol_universe", candidate)
@@ -566,14 +574,14 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
             if gap_plan is None:
                 symbol_gap_dates: dict[str, list[str]] = defaultdict(list)
                 for day, cov in coverage.items():
-                    if cov.state == "OK":
+                    if cov.state == "OK" and listing is None:
                         continue
                     present = td_symbols(day)
                     day_universe = active_symbols_for_day(day)
                     if day_universe is None:
                         raise RuntimeError("DAILY_KLINE_LOCAL_SYMBOL_UNIVERSE_MISSING:" + day)
                     missing_for_day = day_universe - present
-                    if day == target:
+                    if day == target and listing is None:
                         missing_for_day -= {symbol for symbol, category in target_missing_categories.items()
                                              if category == "SOURCE_UNAVAILABLE"}
                     for symbol in missing_for_day:
@@ -582,6 +590,12 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
                 gap_plan = build_gap_fill_plan(watermarks, target, sessions, depth,
                                                symbols=sorted(symbol_gap_dates),
                                                symbol_gap_dates=symbol_gap_dates)
+                if listing is not None:
+                    for item in gap_plan:
+                        item["trade_dates"] = [day for day in item["trade_dates"]
+                                               if item["symbol"] in active_symbols_for_day(day)]
+                        item["start_date"] = item["trade_dates"][0]
+                        item["end_date"] = item["trade_dates"][-1]
                 eligibility_status = "ELIGIBLE" if gap_plan else "NO_GAPS"
         pending_progress_dates = [day for day, item in coverage.items()
                                   if item.state != "OK" and item.rows > 0]
@@ -603,6 +617,8 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
                 symbol = str(raw.get("symbol") or raw.get("code") or "").rsplit(".", 1)[-1].zfill(6)
                 if day not in affected_dates or not _SYMBOL.fullmatch(symbol):
                     raise RuntimeError("BAOSTOCK_RANGE_IDENTITY_OUTSIDE_PLAN")
+                if listing is not None and symbol not in active_symbols_for_day(day):
+                    continue
                 rows_by_day[day].append({**raw, "date": day, "symbol": symbol})
             for day, rows in rows_by_day.items():
                 progress_sink.write_progress(day, rows, {"provider": "baostock",
@@ -680,7 +696,7 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
                 "source_universe_status": source_universe_status,
                 "source_universe_error": source_universe_error,
                 "source_universe_provenance": source_universe_provenance,
-                "universe_fallback_from": universe_fallback_from}
+                "universe_fallback_from": universe_fallback_from, **listing_info}
 
     runner = JobRunner(artifact_root=base,
                        td_adapter=progress_sink,
@@ -780,4 +796,4 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
             "source_universe_status": source_universe_status,
             "source_universe_error": source_universe_error,
             "source_universe_provenance": source_universe_provenance,
-            "universe_fallback_from": universe_fallback_from}
+            "universe_fallback_from": universe_fallback_from, **listing_info}
