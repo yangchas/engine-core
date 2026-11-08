@@ -19,7 +19,9 @@ SUPER_TABLE = "daily_dde_v1"
 DATA_COLUMNS = ("ddje",)
 FIELD_UNITS = {"ddje": "yuan"}
 DEFAULT_HISTORY_TRADING_DAYS = 250
-DEFAULT_MAX_WORKERS = 2
+DEFAULT_MAX_WORKERS = 1
+# Assumes the SDK size requests the latest trading sessions; live verification is pending.
+INCREMENTAL_FETCH_SIZE = 5
 KAIPAN_REQUEST_TIMEOUT = (5.0, 15.0)
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _SYMBOL_RE = re.compile(r"^\d{6}$")
@@ -372,11 +374,13 @@ def _is_confirmed_empty_response(raw_response: Any) -> bool:
 
 def _fetch_with_retry(fetcher: Callable[[str, str], Any], symbol: str, target_date: str,
                       history_trading_days: int, attempts: int,
-                      sleep: Callable[[float], None], known_symbols: set[str]
+                      sleep: Callable[[float], None], known_symbols: set[str],
+                      before_request: Callable[[], None]
                       ) -> tuple[Partition | None, str | None, int, bool]:
     last_error = "unknown"
     for attempt in range(1, attempts + 1):
         try:
+            before_request()
             raw = fetcher(symbol, target_date)
             if _is_confirmed_empty_response(raw):
                 if symbol in known_symbols:
@@ -427,7 +431,8 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                        redis_ttl_seconds: int | None = None, write_redis: bool = True,
                        skip_redis: bool = False, store: TaosDdeStore | None = None,
                        fetcher: Callable[[str, str], Any] | None = None,
-                       sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
+                       sleep: Callable[[float], None] = time.sleep,
+                       clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
     target = _date_text(target_date)
     if target is None:
         raise ValueError("invalid_dde_target_date")
@@ -437,7 +442,18 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
         raise ValueError("dde_attempts_must_be_1_to_5")
     if isinstance(history_trading_days, bool) or not 1 <= int(history_trading_days) <= 5000:
         raise ValueError("history_trading_days_must_be_1_to_5000")
-    started_at = time.monotonic()
+    started_at = clock()
+    requested_workers = int(max_workers)
+    max_workers = 1
+    last_request_at: float | None = None
+
+    def before_request() -> None:
+        nonlocal last_request_at
+        if last_request_at is not None:
+            delay = 1.0 - (clock() - last_request_at)
+            if delay > 0:
+                sleep(delay)
+        last_request_at = clock()
     redis_namespace, registry_ttl = _redis_hot_view_config()
     redis_ttl_seconds = registry_ttl if redis_ttl_seconds is None else int(redis_ttl_seconds)
     if redis_ttl_seconds < 1:
@@ -452,7 +468,8 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
         _configure_kaipan_request_timeout(pykaipan)
 
         def fetch_from_kaipan(symbol: str, day: str):
-            return pykaipan.getHisStockDDE(symbol, day)
+            size = INCREMENTAL_FETCH_SIZE if symbol in before else int(history_trading_days)
+            return pykaipan.getHisStockDDE(symbol, size=str(size))
 
         fetcher = fetch_from_kaipan
     try:
@@ -510,7 +527,7 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                 if symbol is not None:
                     pending[pool.submit(_fetch_with_retry, fetcher, symbol, target,
                                         int(history_trading_days), int(attempts), sleep,
-                                        known_symbols)] = symbol
+                                        known_symbols, before_request)] = symbol
             while pending:
                 done, _ = concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED)
                 for future in done:
@@ -552,7 +569,7 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                     if next_symbol is not None:
                         pending[pool.submit(_fetch_with_retry, fetcher, next_symbol, target,
                                             int(history_trading_days), int(attempts), sleep,
-                                            known_symbols)] = next_symbol
+                                            known_symbols, before_request)] = next_symbol
         flush_comparison()
 
         stale = [symbol for symbol, reason in failed.items() if reason.startswith("DdeStaleResponse:")]
@@ -568,7 +585,7 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                    "candidate_symbols": len(candidates), "requested_symbols": len(requested),
                    "skipped_completed_symbols": skipped_completed,
                    "request_count": request_count, "history_trading_days": int(history_trading_days),
-                   "max_workers": int(max_workers), "written_symbols": written_symbols,
+                   "max_workers": int(max_workers), "requested_max_workers": requested_workers, "written_symbols": written_symbols,
                    "rows_written": written_rows, "known_missing": [
                        {"symbol": symbol, "reason": reason} for symbol, reason in sorted(known_missing.items())],
                    "failed": [{"symbol": symbol, "reason": reason} for symbol, reason in sorted(failed.items())],
@@ -577,7 +594,7 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                    "watermarks_after": {symbol: after.get(symbol) for symbol in candidates[:20]},
                    "watermark_counts": {"before": len(before), "after": len(after)},
                    "legacy_comparison": comparison,
-                   "elapsed_seconds": round(time.monotonic() - started_at, 3)}
+                   "elapsed_seconds": round(clock() - started_at, 3)}
         if failed:
             summary["status"] = "failed"
             summary["error_code"] = "DDE_SYNC_INCOMPLETE_RETRYABLE"
