@@ -77,13 +77,15 @@ def test_incremental_keeps_completed_on_upstream_failure(monkeypatch):
         def renew(self): return True
         def release(self): pass
     def fetch(symbol):
-        if symbol == '600519': raise RuntimeError('baostock_range_failed')
+        if symbol == '000001': raise RuntimeError('baostock_range_failed')
         return rows_by_symbol[symbol]
     code, reply = module.run({'trade_date': '2026-11-06', 'args': {'mode': 'incremental'}}, '.',
                              store=store, fetcher=fetch, sleep=lambda _: None, lease_factory=lambda *_: Lease())
-    assert code == 75
-    assert reply['detail']['aborted'] is True
-    assert store.writes == ['000001']
+    assert code == 10
+    assert reply['detail']['aborted'] is False
+    assert reply['detail']['failed_total'] == 1
+    assert reply['detail']['failed_samples'] == [{'symbol': '000001', 'error_code': 'BAOSTOCK_RANGE_FAILED'}]
+    assert store.writes == ['600519']
 
 
 def test_incremental_spacing_and_unchanged(monkeypatch):
@@ -212,3 +214,109 @@ def test_incremental_rejects_missing_or_incomplete_day_rows(monkeypatch):
                                  store=Store(rows), lease_factory=lambda *_: Lease())
         assert code == 10
         assert reply['detail']['reason'] == reason
+
+
+def test_bootstrap_retries_isolated_range_failure():
+    from engine_core.data_pipeline import adjust_factor as module
+    class Store:
+        def ensure_schema(self): pass
+        def listing_symbols(self, day): return {'600519'}, 'stock_listing'
+        def read_events(self, symbol): return [], 'UNPROCESSED'
+        def replace_snapshot(self, symbol, rows, version): pass
+        def invalidate_day_marker(self, day): pass
+        def write_day_marker(self, *args): pass
+    class Lease:
+        def acquire(self): return True
+        def renew(self): return True
+        def release(self): pass
+    calls, now, sleeps = [], [0.0], []
+    def sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+    def fetch(symbol):
+        calls.append((symbol, now[0]))
+        if len(calls) == 1:
+            raise RuntimeError('baostock_range_failed')
+        return []
+    code, reply = module.run({'trade_date': '2026-11-06', 'args': {'mode': 'bootstrap'}}, '.',
+                             store=Store(), fetcher=fetch, sleep=sleep, clock=lambda: now[0],
+                             lease_factory=lambda *_: Lease())
+    assert code == 0
+    assert reply['detail']['failed_total'] == 0
+    assert reply['detail']['aborted'] is False
+    assert len(calls) == 2
+    assert sleeps == [5] and calls[1][1] - calls[0][1] >= 1
+
+
+def test_bootstrap_aborts_after_five_consecutive_failures():
+    from engine_core.data_pipeline import adjust_factor as module
+    class Store:
+        def __init__(self): self.writes = []
+        def ensure_schema(self): pass
+        def listing_symbols(self, day): return {f'{i:06d}' for i in range(7)}, 'stock_listing'
+        def read_events(self, symbol): return [], 'UNPROCESSED'
+        def replace_snapshot(self, symbol, rows, version): self.writes.append(symbol)
+        def invalidate_day_marker(self, day): pass
+        def write_day_marker(self, *args): raise AssertionError('unexpected marker')
+    class Lease:
+        def acquire(self): return True
+        def renew(self): return True
+        def release(self): pass
+    calls = []
+    def fetch(symbol):
+        calls.append(symbol)
+        if symbol != '000000': raise RuntimeError('baostock_range_failed')
+        return []
+    store = Store()
+    code, reply = module.run({'trade_date': '2026-11-06', 'args': {'mode': 'bootstrap'}}, '.',
+                             store=store, fetcher=fetch, sleep=lambda _: None,
+                             lease_factory=lambda *_: Lease())
+    assert code == 75 and reply['error_code'] == 'BAOSTOCK_RANGE_FAILED'
+    assert reply['detail']['aborted'] is True and reply['detail']['failed_total'] == 5
+    assert store.writes == ['000000'] and len(calls) == 16
+
+
+def test_bootstrap_login_failure_aborts_immediately():
+    from engine_core.data_pipeline import adjust_factor as module
+    class Store:
+        def ensure_schema(self): pass
+        def listing_symbols(self, day): return {'600519'}, 'stock_listing'
+        def read_events(self, symbol): return [], 'UNPROCESSED'
+        def invalidate_day_marker(self, day): pass
+    class Lease:
+        def acquire(self): return True
+        def release(self): pass
+    calls = []
+    def fetch(symbol):
+        calls.append(symbol)
+        raise RuntimeError('baostock_login_failed')
+    code, reply = module.run({'trade_date': '2026-11-06', 'args': {'mode': 'bootstrap'}}, '.',
+                             store=Store(), fetcher=fetch, sleep=lambda _: None,
+                             lease_factory=lambda *_: Lease())
+    assert code == 75 and reply['error_code'] == 'BAOSTOCK_LOGIN_FAILED'
+    assert reply['detail']['aborted'] is True and len(calls) == 1
+
+
+def test_bootstrap_failure_ratio_threshold():
+    from engine_core.data_pipeline import adjust_factor as module
+    class Store:
+        def ensure_schema(self): pass
+        def listing_symbols(self, day): return {f'{i:06d}' for i in range(21)}, 'stock_listing'
+        def read_events(self, symbol): return [], 'UNPROCESSED'
+        def replace_snapshot(self, symbol, rows, version): pass
+        def invalidate_day_marker(self, day): pass
+        def write_day_marker(self, *args): raise AssertionError('unexpected marker')
+    class Lease:
+        def acquire(self): return True
+        def renew(self): return True
+        def release(self): pass
+    def fetch(symbol):
+        if int(symbol) in {0, 4, 8, 12, 19}:
+            raise ConnectionError('receive failure')
+        return []
+    code, reply = module.run({'trade_date': '2026-11-06', 'args': {'mode': 'bootstrap'}}, '.',
+                             store=Store(), fetcher=fetch, sleep=lambda _: None,
+                             lease_factory=lambda *_: Lease())
+    assert code == 75 and reply['error_code'] == 'BAOSTOCK_CONNECTION_ERROR'
+    assert reply['detail']['requested'] == 20 and reply['detail']['failed_total'] == 5
+    assert reply['detail']['aborted'] is True

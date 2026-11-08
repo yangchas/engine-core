@@ -245,7 +245,7 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
     started = clock()
     detail = {'mode': None, 'suspected_total': 0, 'requested': 0, 'snapshots_replaced': 0,
               'unchanged': 0, 'failed_total': 0, 'aborted': False, 'elapsed_seconds': 0,
-              'listing_source': None, 'samples': []}
+              'listing_source': None, 'samples': [], 'failed_samples': []}
     try:
         day = request['trade_date']
         if date.fromisoformat(day).isoformat() != day:
@@ -253,6 +253,12 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
         mode = request['args']['mode']
         if mode not in ('incremental', 'bootstrap'):
             raise ValueError('unsupported mode')
+        options = request['args']
+        max_consecutive = int(options.get('fill_max_consecutive_failures', 5))
+        max_ratio = float(options.get('fill_max_failure_ratio', 0.2))
+        min_samples = int(options.get('fill_min_failure_samples', 20))
+        if max_consecutive < 1 or min_samples < 1 or not 0 <= max_ratio <= 1:
+            raise ValueError('invalid failure thresholds')
         detail['mode'] = mode
     except (KeyError, TypeError, ValueError) as exc:
         detail['message'] = str(exc)
@@ -310,15 +316,56 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
         facts.invalidate_day_marker(day)
         last_request = None
         snapshot_hashes = []
+        consecutive_failed = 0
+        first_failure = None
         for symbol in symbols:
-            if last_request is not None:
-                delay = 1.0 - (clock() - last_request)
-                if delay > 0:
-                    sleep(delay)
-            last_request = clock()
             detail['requested'] += 1
             old, old_quality = facts.read_events(symbol)
-            rows = list((fetcher or _fetch_live)(symbol))
+            failure = None
+            for attempt in range(3):
+                if attempt:
+                    sleep((5, 20)[attempt - 1])
+                if last_request is not None:
+                    delay = 1.0 - (clock() - last_request)
+                    if delay > 0:
+                        sleep(delay)
+                last_request = clock()
+                try:
+                    rows = list((fetcher or _fetch_live)(symbol))
+                    failure = None
+                    break
+                except Exception as exc:
+                    code = getattr(exc, 'error_code', None)
+                    if isinstance(exc, BaostockLoginError):
+                        code = 'BAOSTOCK_LOGIN_ERROR'
+                    elif isinstance(exc, (ConnectionError, TimeoutError)):
+                        code = 'BAOSTOCK_CONNECTION_ERROR'
+                    elif code is None and isinstance(exc, RuntimeError):
+                        code = {'baostock_range_failed': 'BAOSTOCK_RANGE_FAILED',
+                                'baostock_login_failed': 'BAOSTOCK_LOGIN_FAILED'}.get(str(exc))
+                    if code not in {'BAOSTOCK_RANGE_FAILED', 'BAOSTOCK_CONNECTION_ERROR',
+                                    'BAOSTOCK_RECEIVE_EXCEPTION', 'BAOSTOCK_TIMEOUT',
+                                    'BAOSTOCK_LOGIN_FAILED', 'BAOSTOCK_LOGIN_ERROR',
+                                    'BAOSTOCK_RATE_LIMITED'}:
+                        raise
+                    failure = code
+                    if code in {'BAOSTOCK_LOGIN_FAILED', 'BAOSTOCK_LOGIN_ERROR', 'BAOSTOCK_RATE_LIMITED'}:
+                        break
+            if failure:
+                detail['failed_total'] += 1
+                consecutive_failed += 1
+                first_failure = first_failure or failure
+                if len(detail['failed_samples']) < 20:
+                    detail['failed_samples'].append({'symbol': symbol, 'error_code': failure})
+                if (failure in {'BAOSTOCK_LOGIN_FAILED', 'BAOSTOCK_LOGIN_ERROR', 'BAOSTOCK_RATE_LIMITED'}
+                        or consecutive_failed >= max_consecutive
+                        or (detail['requested'] >= min_samples
+                            and detail['failed_total'] / detail['requested'] > max_ratio)):
+                    detail['aborted'] = True
+                    detail['elapsed_seconds'] = round(clock() - started, 3)
+                    return _registered_failure(failure, detail)
+                continue
+            consecutive_failed = 0
             try:
                 if not lease.renew():
                     raise LeaseUnavailable('lease_lost')
@@ -349,6 +396,10 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
             raise
         except Exception as exc:
             raise LeaseUnavailable(type(exc).__name__) from exc
+        if first_failure:
+            detail['reason'] = first_failure
+            detail['elapsed_seconds'] = round(clock() - started, 3)
+            return _reply(10, first_failure, detail)
         import hashlib
         digest = hashlib.sha256('\n'.join(snapshot_hashes).encode()).hexdigest()
         version = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S') + '-' + digest[:8]
