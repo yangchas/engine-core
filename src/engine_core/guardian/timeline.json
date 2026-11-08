@@ -1960,6 +1960,49 @@
       ],
       "trigger_type": "window",
       "policy": "daily_dde"
+    },
+    "adjust_factor_postclose": {
+      "after": [],
+      "args": {
+        "dataset": "adjust_factor"
+      },
+      "calendar": "trading_day",
+      "catchup_mode": "run_in_window",
+      "cost": "medium",
+      "data_date_offset": 0,
+      "depends_on": [],
+      "enabled": true,
+      "handler": "postmarket_data",
+      "late_until": "20:30:00",
+      "on_deadline": "missed",
+      "on_phase_mismatch": "defer",
+      "phases": [
+        "any"
+      ],
+      "trigger_type": "window",
+      "policy": "kline_backfill"
+    },
+    "adjust_factor_0115": {
+      "after": [],
+      "args": {
+        "dataset": "adjust_factor",
+        "target": "prev_trade_day"
+      },
+      "calendar": "every_day",
+      "catchup_mode": "run_in_window",
+      "cost": "medium",
+      "data_date_offset": 0,
+      "depends_on": [],
+      "enabled": true,
+      "handler": "postmarket_data",
+      "late_until": "05:00:00",
+      "on_deadline": "missed",
+      "on_phase_mismatch": "defer",
+      "phases": [
+        "any"
+      ],
+      "trigger_type": "window",
+      "policy": "kline_backfill"
     }
   },
   "timeline": [
@@ -2042,6 +2085,16 @@
           "fn": "night_recap",
           "id": "night_recap",
           "deadline": "08:29:59"
+        }
+      ]
+    },
+    {
+      "at": "01:15:00",
+      "run": [
+        {
+          "fn": "adjust_factor_0115",
+          "id": "adjust_factor_0115",
+          "deadline": "05:00:00"
         }
       ]
     },
@@ -2930,6 +2983,16 @@
       ]
     },
     {
+      "at": "17:10:00",
+      "run": [
+        {
+          "fn": "adjust_factor_postclose",
+          "id": "adjust_factor_postclose",
+          "deadline": "20:30:00"
+        }
+      ]
+    },
+    {
       "at": "17:35:00",
       "run": [
         {
@@ -3226,6 +3289,8 @@
     "td_resource_check_0935",
     "td_resource_check_1455",
     "td_resource_check_1735",
-    "td_resource_check_2025"
+    "td_resource_check_2025",
+    "adjust_factor_postclose",
+    "adjust_factor_0115"
   ]
 }

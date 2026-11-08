@@ -2313,6 +2313,59 @@
           "role": "marker"
         }
       ]
+    },
+    {
+      "id": "adjust_factor",
+      "owner": "postmarket_data",
+      "artifact": {
+        "date_basis": "daily_kline trade_date"
+      },
+      "phases": [
+        "CLOSE",
+        "POST_MARKET",
+        "NIGHT"
+      ],
+      "cadence": "交易日 17:10 收盘日K后及每日 01:15 夜间补数后；检查疑似除权并整股替换快照；窗口依赖对降级成功会 SKIPPED_DEP，故使用时间槽",
+      "rule": "incremental 检查疑似除权股票的完整因子快照",
+      "freshness": "UNKNOWN",
+      "retry": "使用 kline_backfill 策略，缺失标 PARTIAL",
+      "degrade": [
+        "刷新失败使用旧因子并标 PARTIAL，不阻塞下游。"
+      ],
+      "td_sink": {
+        "database": "core_data",
+        "stable": "adjust_factor_v1",
+        "columns": [
+          "version",
+          "event_count",
+          "sha256",
+          "events_json"
+        ],
+        "tags": [
+          "symbol"
+        ],
+        "timestamp": "ts"
+      },
+      "lifecycle": {
+        "init": "整股快照",
+        "force": "不支持",
+        "clear": "不支持"
+      },
+      "notes": "events_json 每股一行；日标记 row_count 为本次成功处理股票数。",
+      "guardian_event": "adjust_factor_postclose",
+      "requires": [],
+      "storage": [
+        {
+          "kind": "td_stable",
+          "name": "adjust_factor_v1",
+          "role": "authority"
+        },
+        {
+          "kind": "td_external",
+          "name": "core_data.adjust_factor_days",
+          "role": "marker"
+        }
+      ]
     }
   ],
   "quiet_phases_for_heavy": [

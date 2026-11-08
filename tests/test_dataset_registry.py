@@ -61,3 +61,8 @@ def test_event_scoped_freshness_rule_is_unknown_not_a_crash():
     now = datetime(2026, 10, 30, 9, 13, tzinfo=timezone.utc)
     result = stale_items(now, catalog, gaps, trade_date="2026-10-30", prev_trade_date="2026-10-29")
     assert [(row["id"], row["status"]) for row in result] == [("hot_plates_gaps", "UNKNOWN")]
+
+
+def test_adjust_factor_registry_entry():
+    item = next(item for item in load_registry() if item['id'] == 'adjust_factor')
+    assert item['cadence'] and item['td_sink']['stable'] == 'adjust_factor_v1'

@@ -238,3 +238,16 @@ def test_daily_dde_registry_uses_new_event():
     entry = next(item for item in registry['items'] if item['id'] == 'daily_dde')
     assert 'daily_dde_postclose' not in entry['cadence'] + entry['retry']
     assert entry['guardian_event'] == 'daily_dde_0200'
+
+
+def test_adjust_factor_events_follow_kline_windows():
+    events = {event['event_id']: event for event in SCHEDULE['events']}
+    post = events['adjust_factor_postclose']
+    night = events['adjust_factor_0115']
+    assert not post.get('after') and not post.get('depends_on')
+    assert not night.get('after') and not night.get('depends_on')
+    assert post['at'] == '17:10:00' and post['late_until'] == '20:30:00'
+    assert post['calendar'] == 'trading_day' and post['data_date_offset'] == 0
+    assert night['at'] == '01:15:00' and night['late_until'] == '05:00:00'
+    assert night['calendar'] == 'every_day' and night['args']['target'] == 'prev_trade_day'
+    assert all(event['cost'] != 'heavy' and not event.get('gate') for event in (post, night))
