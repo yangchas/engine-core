@@ -337,7 +337,8 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
         import hashlib
         digest = hashlib.sha256('\n'.join(snapshot_hashes).encode()).hexdigest()
         version = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S') + '-' + digest[:8]
-        facts.write_day_marker(day, version, 'PARTIAL', detail['snapshots_replaced'], digest,
+        # Count successfully checked symbols, including unchanged snapshots on idempotent reruns.
+        facts.write_day_marker(day, version, 'PARTIAL', detail['requested'], digest,
                                datetime.now(timezone.utc).isoformat(), 'PARTIAL')
         detail['elapsed_seconds'] = round(clock() - started, 3)
         return _reply(0, detail=detail)

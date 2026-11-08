@@ -408,6 +408,14 @@ def _run_event(request):
         if request.get("asof") or request.get("now"):
             today_request["as_of"] = request.get("asof") or request.get("now")
         return run_limit_up_today(today_request, root, dry_run=dry)
+    if name == "postmarket_data" and (args.get("dataset") == "adjust_factor"
+                                       or event_id in ("adjust_factor_postclose", "adjust_factor_0115")
+                                       or event_id.startswith(("adjust_factor_postclose_rh", "adjust_factor_0115_rh"))):
+        from engine_core.data_pipeline.adjust_factor import run as run_adjust_factor
+        if not request.get("data_date"):
+            return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                        "retryable": False, "detail": "adjust_factor_target_unavailable"}
+        return run_adjust_factor({"trade_date": target_day, "args": {"mode": "incremental"}}, root, dry_run=dry)
     if name == "postmarket_data" and args.get("dataset") == "stock_listing":
         if dry:
             return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,

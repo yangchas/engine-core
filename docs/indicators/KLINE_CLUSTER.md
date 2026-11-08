@@ -149,7 +149,7 @@ python -m engine_core.kline_cluster --date 2026-11-06 --window 120 --pull-upstre
 
 ## §8 编排
 
-框架 §9.1 的 timeline schema 示例，以下为价量簇单项完整设计片段，handler、事件与 requires 目前未接线；21:30 夜间窗口错开 Baostock 17:30–18:30。日K转 FORMAL 后新增 `chain_sweep` 接线检查全部依赖并安排此簇；不能只凭日K完成假设因子就绪。
+价量簇拟由日K完成事件驱动：15:05 收盘日K后及 01:00 夜间补数后，分别由 `adjust_factor_postclose` 和 `adjust_factor_0115` 先刷新因子；疑似除权股票因子刷新后再计算，刷新失败使用旧因子并标 PARTIAL。价量簇 handler、事件与 requires 仍待接线；以下为原设计片段。
 
 ```json
 {"functions":{"price_volume_indicators":{"after":[],"args":{"item_id":"price_volume_indicators"},"available_after":null,"calendar":"trading_day","cost":"medium","data_date_offset":0,"depends_on":[],"enabled":true,"gate":"calendar_ready","handler":"fetch_item","late_until":"23:30:00","on_deadline":"degrade","on_phase_mismatch":"defer","order":null,"phases":["NIGHT"],"trigger_type":"window","policy":"policy_12"}},"timeline":[{"at":"21:30:00","run":[{"fn":"price_volume_indicators","id":"price_volume_indicators_2130","deadline":"23:30:00"}]}],"policies":{"policy_12":{"catchup":"run_in_window","retry_backoff":"","retry_until_late":false,"silent_until_last":false,"ladder":[{"name":"legacy","attempts":1,"backoff":"","backoff_cap":"5m","timeout":"540s","budget_enabled":false}]}}}

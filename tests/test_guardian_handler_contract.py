@@ -154,10 +154,11 @@ def test_core_single_event_failure_alert_is_formatted():
 def test_every_schedule_event_dispatches_to_its_handler(monkeypatch):
     from examples import guardian_handler
     from examples import core_guardian
-    from engine_core.data_pipeline import daily_kline_fill
+    from engine_core.data_pipeline import daily_kline_fill, adjust_factor
     from engine_core.guardian import contract, startup
 
     monkeypatch.setattr(startup, "fetch_item", lambda *args, **kwargs: {"contract": 1, "status": "ok", "error_code": "", "retryable": False, "artifacts": [], "detail": {}})
+    monkeypatch.setattr(adjust_factor, "run", lambda *a, **kw: (0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False, "artifacts": [], "detail": {}}))
     events = _schedule_events()
     called = []
     seen_opts = []
@@ -891,3 +892,27 @@ def test_auction_amount_facts_routes_window_and_max_days(monkeypatch, tmp_path):
     assert guardian_handler._run_event(request)[0] == 20
     assert calls == [({"end_date": "2026-11-08", "window": 64, "max_days": 64},
                       tmp_path, {"dry_run": True})]
+
+
+def test_adjust_factor_handler_routes_and_dry_run(monkeypatch):
+    from examples import guardian_handler
+    from engine_core.data_pipeline import adjust_factor
+    from engine_core.guardian.contract import check_reply
+    original = adjust_factor.run
+    seen = []
+    def wrapped(request, root, **kwargs):
+        seen.append((request, kwargs))
+        return original(request, root, **kwargs)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("dry run connected to a service")
+    monkeypatch.setenv("GUARDIAN_DRY_RUN", "1")
+    monkeypatch.setattr(adjust_factor, "run", wrapped)
+    monkeypatch.setattr(adjust_factor, "_lease_factory", forbidden)
+    monkeypatch.setattr(adjust_factor, "_fetch_live", forbidden)
+    for event in ("adjust_factor_postclose", "adjust_factor_0115", "adjust_factor_postclose_rh1", "adjust_factor_0115_rh1"):
+        request = _core_request(event)
+        request.update(handler="postmarket_data", data_date="2026-10-16")
+        code, reply = guardian_handler._run(request)
+        assert code == 0 and check_reply(code, reply) == []
+    assert all(req == {"trade_date": "2026-10-16", "args": {"mode": "incremental"}} and kw["dry_run"] for req, kw in seen)
+    assert len(seen) == 4

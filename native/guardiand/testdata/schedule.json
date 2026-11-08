@@ -4282,6 +4282,61 @@
           "threshold_seconds": 1800
         }
       }
+    },
+    {
+      "event_id": "adjust_factor_postclose",
+      "handler": "postmarket_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "15:20:00",
+      "deadline": "20:59:00",
+      "data_date_offset": 0,
+      "on_deadline": "missed",
+      "late_until": "20:59:00",
+      "depends_on": [
+        "daily_kline_close_1505"
+      ],
+      "after": [
+        "daily_kline_close_1505"
+      ],
+      "cost": "medium",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "kline_backfill",
+      "catchup_mode": "run_in_window",
+      "args": {
+        "dataset": "adjust_factor"
+      }
+    },
+    {
+      "event_id": "adjust_factor_0115",
+      "handler": "postmarket_data",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "01:15:00",
+      "deadline": "01:59:00",
+      "data_date_offset": 0,
+      "on_deadline": "missed",
+      "late_until": "01:59:00",
+      "depends_on": [
+        "daily_kline_backfill"
+      ],
+      "after": [],
+      "cost": "medium",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "kline_backfill",
+      "catchup_mode": "run_in_window",
+      "args": {
+        "dataset": "adjust_factor",
+        "target": "prev_trade_day"
+      }
     }
   ]
 }

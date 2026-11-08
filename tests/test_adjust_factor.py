@@ -99,7 +99,7 @@ def test_incremental_spacing_and_unchanged(monkeypatch):
         def replace_snapshot(self, symbol, events, version): self.writes.append(symbol)
         def write_status(self, *args): pass
         def invalidate_day_marker(self, day): self.writes.append('invalidate')
-        def write_day_marker(self, *args): self.writes.append('marker')
+        def write_day_marker(self, *args): self.writes.append('marker'); self.marker_count = args[3]
     class Lease:
         def acquire(self): return True
         def renew(self): return True
@@ -115,6 +115,7 @@ def test_incremental_spacing_and_unchanged(monkeypatch):
     assert times[1] - times[0] >= 1.0
     assert store.writes == ['invalidate', 'marker']
     assert reply['detail']['unchanged'] == 2
+    assert store.marker_count == 2
     assert all(sample['old_sha256'] == sample['new_sha256'] for sample in reply['detail']['samples'])
 
 
