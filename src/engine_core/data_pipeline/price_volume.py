@@ -14,7 +14,10 @@ from .adjust_factor import factor_for
 
 _FIELDS = ('ma5', 'ma10', 'ma20', 'ma60', 'ema12', 'ema26', 'dif', 'dea',
            'macd', 'k', 'd', 'j', 'boll_upper', 'boll_middle', 'boll_lower',
-           'boll_bandwidth')
+           'boll_bandwidth', 'rsi6', 'rsi12', 'rsi24', 'atr14',
+           'pct_chg_volatility20', 'volume_ma5', 'volume_ma10', 'volume_ma20',
+           'volume_ratio', 'bias_20', 'change_pct_5d', 'avg_turnover_5d',
+           'limit_up_days_5', 'vol_ratio')
 
 
 def calculate_bar(bar, events, state=None, *, gap_before=False, factor_quality=None):
@@ -50,6 +53,49 @@ def calculate_bar(bar, events, state=None, *, gap_before=False, factor_quality=N
     window.append([close, high, low])
     window = window[-60:]
     state['window'] = window
+    def number(name):
+        value = bar.get(name)
+        if value is None:
+            return None
+        value = float(value)
+        return value if math.isfinite(value) else None
+
+    aux = list(state.get('aux_window', []))
+    aux.append([number('volume_shares'), number('turnover_pct'), number('pct_chg')])
+    aux = aux[-20:]
+    state['aux_window'] = aux
+
+    def values(index, count):
+        rows = aux[-count:]
+        result_values = [row[index] for row in rows]
+        return result_values if len(rows) == count and all(v is not None for v in result_values) else None
+
+    for period in (5, 10, 20):
+        volume = values(0, period)
+        if volume is not None:
+            result[f'volume_ma{period}'] = sum(volume) / period
+    volume = values(0, 6)
+    if volume is not None and sum(volume[:-1]) != 0:
+        result['volume_ratio'] = volume[-1] / (sum(volume[:-1]) / 5)
+    turnover = values(1, 5)
+    if turnover is not None:
+        result['avg_turnover_5d'] = sum(turnover) / 5
+    turnover = values(1, 20)
+    if turnover is not None:
+        denominator = sum(turnover[:-5]) / 15 + 0.1
+        if denominator != 0:
+            result['vol_ratio'] = (sum(turnover[-5:]) / 5) / denominator
+    changes = values(2, 5)
+    if changes is not None:
+        symbol = str(bar.get('symbol', '')).split('.')[-1]
+        threshold = 19.8 if symbol.startswith(('300', '301', '688', '689')) else 29.8 if symbol.startswith(('8', '92')) else 9.8
+        result['limit_up_days_5'] = sum(value > threshold for value in changes)
+    changes = values(2, 20)
+    if changes is not None:
+        mean = sum(changes) / 20
+        result['pct_chg_volatility20'] = math.sqrt(sum((value - mean) ** 2 for value in changes) / 20)
+    if len(window) >= 6 and close is not None and window[-6][0] not in (None, 0):
+        result['change_pct_5d'] = 100 * (close / window[-6][0] - 1)
     if close is None:
         for key in ('ema12', 'ema26', 'dea'):
             state.pop(key, None)
@@ -70,6 +116,8 @@ def calculate_bar(bar, events, state=None, *, gap_before=False, factor_quality=N
             result[f'ma{period}'] = sum(values) / period
     if result['ma20'] is not None:
         mean = result['ma20']
+        if mean != 0:
+            result['bias_20'] = 100 * (close - mean) / mean
         deviation = math.sqrt(sum((row[0] - mean) ** 2 for row in window[-20:]) / 20)
         result['boll_middle'] = mean
         result['boll_upper'] = mean + 2 * deviation
@@ -293,7 +341,7 @@ def run(request, root, *, store=None, clock=None, dry_run=False):
             if states.get(symbol, {}).get('last_trade_date', '') >= day:
                 detail['skipped_already_processed'] += 1
                 continue
-            bar = dict(source, ts=day)
+            bar = dict(source, ts=day, symbol=symbol)
             events, quality = factors.get(symbol, (None, 'UNPROCESSED'))
             if quality == 'UNPROCESSED':
                 detail['skipped_factor_unprocessed'] += 1
@@ -411,7 +459,7 @@ def _rebuild(facts, owned, root, day, from_day, started, clock):
         gaps.update((set(states) & active) - set(bars))
         rows, registry = {}, []
         for symbol, source in sorted(bars.items()):
-            bar = dict(source, ts=current_day)
+            bar = dict(source, ts=current_day, symbol=symbol)
             events, quality = factors.get(symbol, (None, 'UNPROCESSED'))
             result, state = calculate_bar(bar, events, states.get(symbol),
                                           gap_before=symbol in gaps, factor_quality=quality)
