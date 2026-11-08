@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 from datetime import date
+from dataclasses import replace
 from pathlib import Path
 
 from engine_core.data_pipeline.job_contract import JobResult, emit, failure_from_exception
@@ -45,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
         outcomes = result.get("partitions", [])
         target = next((row for row in outcomes if row.get("trade_date") == args.date), {})
         return emit(JobResult(
-            contract=1, job="daily_kline", trade_date=args.date, status="ok", tier=0,
+            contract=1, job="daily_kline", trade_date=args.date, status="degraded" if result.get("status") == "INCOMPLETE" else "ok", tier=0,
             source="baostock", dataset="daily_kline", version=target.get("version"),
             row_count=target.get("row_count"), coverage=None, error_code=None, retryable=False,
             attempts=int(result.get("attempted", 0)), elapsed_ms=0.0, detail=result))
@@ -57,8 +58,16 @@ def main(argv: list[str] | None = None) -> int:
                               None, None, "TD_VERIFY_FAILED", False, 1, 0.0, {"error": str(exc)[:300]}))
     except Exception as exc:
         # the producers raise CoreError (BAOSTOCK_GAP_UNRESOLVED ...); anything else is classified by its type only
-        return emit(failure_from_exception(exc, job="daily_kline", trade_date=args.date, dataset="daily_kline",
-                                           source="baostock"))
+        detail = getattr(exc, "daily_kline_detail", None)
+        if isinstance(detail, dict) and detail.get("status") == "INCOMPLETE":
+            return emit(JobResult(1, "daily_kline", args.date, "degraded", 0, "baostock", "daily_kline",
+                                  None, None, None, None, False, int(detail.get("requested", 0)), 0.0, detail))
+        failure = failure_from_exception(exc, job="daily_kline", trade_date=args.date, dataset="daily_kline",
+                                         source="baostock")
+        detail = getattr(exc, "daily_kline_detail", None)
+        if detail is not None:
+            failure = replace(failure, detail={**failure.detail, **detail})
+        return emit(failure)
 
 
 if __name__ == "__main__":

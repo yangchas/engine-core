@@ -49,7 +49,7 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
                          needs_publish: Callable[[str], bool] | None = None,
                          clock: Callable[[], float] = time.monotonic, watermark_mode: str = "window",
                          sleep: Callable[[float], None] = time.sleep,
-                         baostock_min_request_interval_seconds: float = 0.0) -> dict[str, Any]:
+                         baostock_min_request_interval_seconds: float = 0.0, require_all: bool = False) -> dict[str, Any]:
     import math
     from .daily_kline_gapfill import _wait_for_range_start
 
@@ -69,6 +69,10 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
             return {"status": "BUSY", "target": target, "reason": "another_fill_is_running"}
     started = clock()
     logged_in = False
+    stats = {"written_symbols": 0, "empty": 0, "failed": 0, "attempted": 0}
+    planned_days = planned_symbols = rows_written = 0
+    days: list[str] = []
+    missing: dict[str, list[str]] = {}
     try:
         days = sessions[-max(1, int(depth)):]
         if not store.schema_exists():
@@ -89,7 +93,7 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
             label = str((current or {}).get("provider") or (current or {}).get("source") or "").lower()
             untrusted = current is not None and label != "baostock"
             present[day] = set() if untrusted else stored
-            if untrusted or len(stored) / len(expected[day]) < coverage_threshold:
+            if untrusted or len(stored) / len(expected[day]) < (1.0 if require_all else coverage_threshold):
                 work.append(day)
             elif not _marker_is_current(current, label, day, len(all_rows)) or \
                     (needs_publish is not None and needs_publish(day)):
@@ -99,7 +103,10 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
         if not work and not unpublished:
             return {"status": "NO_GAPS", "target": target, "days": days,
                     "coverage": {day: round(len(present[day]) / len(expected[day]), 4) for day in days},
-                    "elapsed_seconds": round(clock() - started, 3)}
+                    "elapsed_seconds": round(clock() - started, 3),
+                    "planned_days": 0, "planned_symbols": 0, "requested": 0, "empty_returns": 0,
+                    "rows_written": 0, "incomplete_total": 0, "incomplete": [], "delisted_skipped": None,
+                    "delisting_data": "需要在宇宙读取处补充 outDate/status"}
         for day in work:  # drops a stale completion marker / untrusted legacy rows, keeps TD-owned progress
             present[day] = set(sink.prepare_progress(day, sorted(expected[day]), latest_watermarks=watermarks))
 
@@ -107,14 +114,16 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
             return len(present[day]) / len(expected[day])
 
         def done() -> bool:
-            return all(coverage(day) >= coverage_threshold for day in work)
+            return all(coverage(day) >= (1.0 if require_all else coverage_threshold) for day in work)
 
         missing: dict[str, list[str]] = {}
         for day in work:
             for symbol in expected[day] - present[day]:
                 missing.setdefault(symbol, []).append(day)
+        planned_days = len({day for values in missing.values() for day in values})
+        planned_symbols = len(missing)
+        rows_written = 0
         order = sorted(missing, key=lambda symbol: (target not in missing[symbol], symbol))
-        stats = {"written_symbols": 0, "empty": 0, "failed": 0, "attempted": 0}
         consecutive_failed = consecutive_empty = 0
         if order:
             client.login()
@@ -170,21 +179,52 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
                     raise _abort("source_not_delivered", stats)
                 continue
             store.upsert_symbol(symbol, BAOSTOCK_PROGRESS_VERSION, by_day)
+            rows_written += len(by_day)
             for day in by_day:
                 present[day].add(symbol)
             stats["written_symbols"] += 1
             consecutive_failed = consecutive_empty = 0
             last_progress = clock()
-        result = {"status": "COMPLETE" if done() else "INCOMPLETE", "target": target, "days": days,
+        incomplete = []
+        if require_all:
+            read_watermarks(store, days, watermark_mode)
+            for day in days:
+                actual = set(store.read_day_rows(day))
+                incomplete.extend({"date": day, "symbol": symbol}
+                                  for symbol in sorted(expected[day] - actual))
+        result = {"status": ("INCOMPLETE" if incomplete else "COMPLETE" if done() else "INCOMPLETE"), "target": target, "days": days,
                   "work_days": work, "publish_days": sorted(set(work) | set(unpublished)), **stats,
+                  "planned_days": planned_days, "planned_symbols": planned_symbols,
+                  "requested": stats["attempted"], "empty_returns": stats["empty"],
+                  "rows_written": rows_written, "incomplete_total": len(incomplete),
+                  "incomplete": incomplete[:20], "delisted_skipped": None,
+                  "delisting_data": "需要在宇宙读取处补充 outDate/status",
                   "coverage": {day: round(coverage(day), 4) for day in days if day in present},
                   "elapsed_seconds": round(clock() - started, 3)}
+        if result["status"] == "INCOMPLETE" and require_all:
+            return result
         if result["status"] == "INCOMPLETE":
             raise _abort("coverage_below_threshold",
                          {**stats, "coverage": result["coverage"], "threshold": coverage_threshold})
         if on_complete is not None:  # runs while the lease is still held, so no other trigger can interleave
             on_complete(result)
         return result
+    except Exception as exc:
+        if require_all:
+            try:
+                unresolved = [{"date": day, "symbol": symbol}
+                              for symbol, item_days in sorted(missing.items()) for day in item_days
+                              if symbol not in store.read_day_rows(day)]
+                total = len(unresolved)
+            except Exception:
+                unresolved, total = [], None
+            exc.daily_kline_detail = {
+                "planned_days": planned_days, "planned_symbols": planned_symbols,
+                "requested": stats["attempted"], "empty_returns": stats["empty"],
+                "rows_written": rows_written, "incomplete_total": total,
+                "incomplete": unresolved[:20], "delisted_skipped": None,
+                "delisting_data": "需要在宇宙读取处补充 outDate/status"}
+        raise
     finally:
         if logged_in and callable(getattr(client, "logout", None)):
             try:
@@ -318,9 +358,14 @@ def run_daily_kline_fill_from_root(root: Any, target: str, *, args: Mapping[str,
             total_timeout_seconds=float(options.get("total_timeout_seconds", 43200)),
             no_progress_timeout_seconds=no_progress,
             baostock_min_request_interval_seconds=float(options.get("baostock_min_request_interval_seconds", 0.0)),
+            require_all=True,
             needs_publish=lambda day: find_published_baostock_manifest(catalog, day, threshold) is None,
             on_complete=lambda done: done.__setitem__(
                 "partitions", publish_filled_days(base, store, done["publish_days"], expected_symbols, threshold)))
+        if result.get("status") == "INCOMPLETE":
+            exc = _abort("planned_gaps_remain", {"incomplete_total": result["incomplete_total"]})
+            exc.daily_kline_detail = result
+            raise exc
         return result
     finally:
         if own_store:

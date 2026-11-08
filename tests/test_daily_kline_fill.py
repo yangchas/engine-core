@@ -461,3 +461,71 @@ def test_window_watermarks_default_and_full_fallback_use_real_symbols(tmp_path):
     run_daily_kline_fill(days[-1], **kwargs, watermark_mode="full")
     DailyKlineTdSink(store, tmp_path).prepare_progress(days[-1], [symbol], watermark_mode="full")
     assert store.full_calls == 2
+
+
+def _c806_setup(empty=False):
+    from tests.test_daily_kline_gapfill import _seed_td_day
+    path = Path(__file__).parent / 'fixtures/daily_kline_c806/history.jsonl'
+    raw = {v['symbol']: v for v in map(json.loads, path.read_text().splitlines())}
+    days = ['2026-10-30', '2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06']
+    def parsed(symbol, day):
+        item = raw[symbol]
+        row = dict(zip(item['fields'], next(r for r in item['rows'] if r[0] == day)))
+        value = parse_row(row)
+        value['pre_close'] = parse_row({**row, 'pre_close': row.get('preclose')})['pre_close']
+        return value
+    store = MemoryTdStore()
+    store.ensure_schema()
+    for day in days:
+        symbols = ['688797', '688796'] if day == days[0] else ['688797']
+        _seed_td_day(store, day, [parsed(symbol, day) for symbol in symbols])
+    class Client:
+        def __init__(self): self.queries = []
+        def login(self): pass
+        def logout(self): pass
+        def query(self, symbol, start, end):
+            self.queries.append(symbol)
+            return [] if empty else [parsed(symbol, day) for day in days if start <= day <= end]
+    return store, Client(), days
+
+
+def test_c806_replays_lagging_symbol_above_coverage_threshold():
+    store, client, days = _c806_setup()
+    result = run_daily_kline_fill(days[-1], store=store, client=client, trading_dates=days,
+                                  expected_symbols=lambda day: {'688796', '688797'}, depth=len(days),
+                                  coverage_threshold=0.5, require_all=True)
+    assert client.queries == ['688796']
+    assert all('688796' in store.read_day_rows(day) for day in days)
+    assert result['incomplete_total'] == 0
+
+
+def test_c806_unfilled_plan_is_incomplete_above_coverage_threshold():
+    store, client, days = _c806_setup(empty=True)
+    result = run_daily_kline_fill(days[-1], store=store, client=client, trading_dates=days,
+                                  expected_symbols=lambda day: {'688796', '688797'}, depth=len(days),
+                                  coverage_threshold=0.5, require_all=True)
+    assert result['status'] == 'INCOMPLETE'
+    assert result['incomplete_total'] == 5
+
+
+def test_c806_incomplete_result_reaches_cli_and_guardian(monkeypatch, capsys):
+    from examples import backfill_td_daily_kline, guardian_handler
+    from engine_core.data_pipeline import daily_kline_fill
+    from engine_core.guardian import daily_kline_coverage
+    from engine_core.errors import CoreError
+
+    def incomplete(*args, **kwargs):
+        exc = CoreError('BAOSTOCK_GAP_UNRESOLVED', 'planned_gaps_remain')
+        exc.daily_kline_detail = {'status': 'INCOMPLETE', 'incomplete_total': 5,
+                                  'incomplete': [{'symbol': '688796', 'date': '2026-11-02'}]}
+        raise exc
+
+    monkeypatch.setattr(daily_kline_fill, 'run_daily_kline_fill_from_root', incomplete)
+    monkeypatch.setattr(daily_kline_coverage, 'td_settings', lambda **kwargs: {})
+    monkeypatch.setattr(daily_kline_coverage, 'make_store', lambda settings: MemoryTdStore())
+    monkeypatch.setenv('TD_CONFIG', 'unused')
+    assert backfill_td_daily_kline.main(['--date', '2026-11-06']) == 10
+    output = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert output['status'] == 'degraded' and output['detail']['incomplete_total'] == 5
+    code, payload = guardian_handler._run_daily_kline_fill({}, '.', '2026-11-06', {})
+    assert code == 75 and payload['status'] == 'failed'
