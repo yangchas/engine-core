@@ -161,7 +161,7 @@ def test_run_incremental_real_bar_matches_full_calculation():
     store = Store()
     code, reply = run({'trade_date': str(bars[-1]['ts'])[:10]}, '.', store=store)
     assert code == 0 and reply['status'] == 'ok'
-    for name in ('ma5', 'ema12', 'macd', 'k', 'boll_upper'):
+    for name in ('ma5', 'ema12', 'macd', 'k', 'boll_upper', 'rsi6', 'rsi12', 'rsi24', 'atr14', 'pct_chg_volatility20', 'volume_ma5', 'volume_ma10', 'volume_ma20', 'volume_ratio', 'bias_20', 'change_pct_5d', 'avg_turnover_5d', 'limit_up_days_5', 'vol_ratio'):
         assert store.rows['600519'][name] == pytest.approx(expected[name])
     assert store.marker[3] == 1
 
@@ -456,3 +456,115 @@ def test_suspended_symbols_against_independent_reference():
                     assert result[name] is None, (key, name, result[name], expected)
                 else:
                     assert result[name] == pytest.approx(expected, rel=1e-9, abs=0), (key, name, result[name], expected)
+
+
+def test_batch2_real_reference_all_symbols():
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()]
+    expected = {(row['symbol'], row['trade_date']): row for row in map(json.loads, (FIXTURES / 'expected_batch2.jsonl').read_text().splitlines())}
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())
+    names = ('rsi6', 'rsi12', 'rsi24', 'atr14', 'pct_chg_volatility20', 'volume_ma5',
+             'volume_ma10', 'volume_ma20', 'volume_ratio', 'bias_20', 'change_pct_5d',
+             'avg_turnover_5d', 'limit_up_days_5', 'vol_ratio')
+    states = {}
+    for bar in bars:
+        symbol = bar['symbol']
+        result, states[symbol] = calculate_bar(bar, events[symbol], states.get(symbol))
+        if bar['suspended']:
+            assert result is None
+            continue
+        reference = expected[(symbol, str(bar['ts'])[:10])]
+        for name in names:
+            value = reference[name]
+            if value is None:
+                assert result[name] is None, (symbol, bar['ts'], name)
+            else:
+                assert result[name] == pytest.approx(value, rel=1e-9, abs=0), (symbol, bar['ts'], name)
+
+
+def test_batch2_first_values_and_short_listing():
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()]
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())
+    first = {'rsi6': 7, 'rsi12': 13, 'rsi24': 25, 'atr14': 14,
+             'pct_chg_volatility20': 20, 'volume_ma5': 5, 'volume_ma10': 10,
+             'volume_ma20': 20, 'volume_ratio': 6, 'bias_20': 20,
+             'change_pct_5d': 6, 'avg_turnover_5d': 5, 'limit_up_days_5': 5, 'vol_ratio': 20}
+    state = None
+    found = {}
+    for index, bar in enumerate((b for b in bars if b['symbol'] == '600519'), 1):
+        result, state = calculate_bar(bar, events['600519'], state)
+        for name in first:
+            if result[name] is not None:
+                found.setdefault(name, index)
+    assert found == first
+    state = None
+    for bar in (b for b in bars if b['symbol'] == '001381'):
+        result, state = calculate_bar(bar, events['001381'], state)
+        assert all(result[name] is None for name in first)
+        assert result['quality'] == 'PARTIAL' and 'WARMUP_SHORT' in result['partial_reasons']
+
+
+def test_batch2_missing_price_restarts_segment_from_next_valid_bar():
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()
+            if json.loads(x)['symbol'] == '600519']
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
+    state = None
+    for bar in bars[:30]:
+        _, state = calculate_bar(bar, events, state)
+    missing = dict(bars[30], high=None)
+    _, state = calculate_bar(missing, events, state)
+    fresh = None
+    for index, bar in enumerate(bars[31:56]):
+        result, state = calculate_bar(bar, events, state)
+        expected, fresh = calculate_bar(bar, events, fresh)
+        for name in ('atr14', 'rsi6', 'rsi12', 'rsi24'):
+            assert result[name] == expected[name], (index, name)
+    assert state['atr14'] == fresh['atr14']
+
+
+def test_unwarmed_recursive_checkpoint_is_rebuilt_from_seed_bars():
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()
+            if json.loads(x)['symbol'] == '600519']
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
+    state = None
+    for bar in bars[:30]:
+        _, state = calculate_bar(bar, events, state)
+    expected, _ = calculate_bar(bars[30], events, state)
+    for key in ('rsi6', 'rsi12', 'rsi24', 'atr14'):
+        state[key] = {'count': 999}
+    state['wilder_prev_close'] = -1
+    actual, _ = calculate_bar(bars[30], events, state)
+    for name in ('rsi6', 'rsi12', 'rsi24', 'atr14'):
+        assert actual[name] == expected[name]
+
+
+def test_batch2_rebuild_then_incremental_equals_full_rebuild():
+    from copy import deepcopy
+    from datetime import date
+    from engine_core.data_pipeline.price_volume import run
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()
+            if json.loads(x)['symbol'] == '600519'][:65]
+    days = [str(bar['ts'])[:10] for bar in bars]
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
+    names = ('rsi6', 'rsi12', 'rsi24', 'atr14', 'pct_chg_volatility20', 'volume_ma5',
+             'volume_ma10', 'volume_ma20', 'volume_ratio', 'bias_20', 'change_pct_5d',
+             'avg_turnover_5d', 'limit_up_days_5', 'vol_ratio', 'rsi_6')
+    class Store:
+        def __init__(self): self.states, self.results = {}, {}
+        def ensure_schema(self): pass
+        def trading_dates(self, day): return days[:days.index(day) + 1]
+        def previous_day(self, day): return date.fromisoformat(days[days.index(day) - 1])
+        def read_day_rows(self, day): return {'600519': bars[days.index(day)]}
+        def read_states(self, symbols): return deepcopy(self.states)
+        def read_events_many(self, symbols): return {'600519': (events, 'FORMAL')}
+        def write_results(self, day, rows): self.results[day] = deepcopy(rows)
+        def write_states(self, states): self.states.update(deepcopy(states))
+        def write_day_marker(self, *args): pass
+    incremental, rebuilt = Store(), Store()
+    run({'trade_date': days[58], 'args': {'mode': 'rebuild'}}, '.', store=incremental)
+    for day in days[59:]:
+        run({'trade_date': day}, '.', store=incremental)
+    run({'trade_date': days[-1], 'args': {'mode': 'rebuild'}}, '.', store=rebuilt)
+    assert incremental.states == rebuilt.states
+    for day in days[59:]:
+        for name in names:
+            assert incremental.results[day]['600519'][name] == rebuilt.results[day]['600519'][name], (day, name)

@@ -272,3 +272,14 @@ def test_c860_reference_provenance_integrity():
     for name, digest in hashes.items():
         assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest
     assert '不是上游数据' in (root / 'PROVENANCE_skip_suspended.md').read_text()
+
+
+def test_c861_reference_provenance_integrity():
+    root = Path(__file__).parent / 'fixtures' / 'price_volume_c852'
+    hashes = {
+        'expected_batch2.jsonl': '20ad0eb74a93cc3c982a48b9f83b0c445526ab4a8663a9e678d59497e93280da',
+        'PROVENANCE_batch2.md': '098c649d347a9e6661452cc2399c5f63ed41b646c5b6539eea17a137ae53bb20',
+    }
+    for name, digest in hashes.items():
+        assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest
+    assert '不是上游数据' in (root / 'PROVENANCE_batch2.md').read_text()
