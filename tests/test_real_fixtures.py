@@ -260,3 +260,14 @@ def test_c852_fixture_manifest_integrity():
         body = (root / name).read_bytes()
         assert len(body) == meta['bytes'], name
         assert hashlib.sha256(body).hexdigest() == meta['sha256'], name
+
+
+def test_c859_reference_provenance_integrity():
+    root = Path(__file__).parent / 'fixtures' / 'price_volume_c852'
+    hashes = {
+        'expected_ex_suspended.jsonl': '79ae08193e9295c970235df00810f0bd8825e9f0b226c90f2eb931478ad64e24',
+        'PROVENANCE_ex_suspended.md': '3d61fa56f429558a98613066874eef8fd062b313260646345b97a3ade95b6fb9',
+    }
+    for name, digest in hashes.items():
+        assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest
+    assert '不是上游数据' in (root / 'PROVENANCE_ex_suspended.md').read_text()
