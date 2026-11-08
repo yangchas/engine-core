@@ -24,3 +24,31 @@ def test_real_reference_first_symbol():
                 assert result[name] is None, (bar['ts'], name)
             else:
                 assert result[name] == pytest.approx(reference[name], rel=1e-9, abs=1e-12), (bar['ts'], name)
+
+
+def test_factor_quality_and_missing_bar_preserve_state():
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines() if json.loads(x)['symbol'] == '600519']
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
+    _, state = calculate_bar(bars[0], events)
+    result, unchanged = calculate_bar(bars[1], None, state)
+    assert result is None and unchanged == state
+    result, unchanged = calculate_bar(None, events, state)
+    assert result is None and unchanged == state
+    result, _ = calculate_bar(bars[1], [], state)
+    assert result['quality'] == 'PARTIAL' and 'FACTOR_NO_EVENTS' in result['partial_reasons']
+    result, _ = calculate_bar(bars[0], [max(events, key=lambda e: e['dividOperateDate'])])
+    assert 'FACTOR_BEFORE_FIRST_EVENT' in result['partial_reasons']
+
+
+def test_controlled_gap_resets_to_post_gap_real_bars():
+    # Real upstream rows, with three consecutive rows deliberately removed.
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines() if json.loads(x)['symbol'] == '600519']
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
+    state = None
+    for bar in bars[:30]:
+        _, state = calculate_bar(bar, events, state)
+    after = fresh = None
+    for i, bar in enumerate(bars[33:55]):
+        result, after = calculate_bar(bar, events, state if i == 0 else after, gap_before=i == 0)
+        expected, fresh = calculate_bar(bar, events, fresh)
+        assert result == expected

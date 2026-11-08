@@ -1,7 +1,9 @@
 """Incremental first-batch price indicators over adjusted daily bars.
 
 The caller supplies trading-calendar continuity: an unknown missing trading day
-must reset the checkpoint before the next bar.
+must reset the checkpoint before the next bar. UNPROCESSED skips the bar;
+NO_EVENTS uses 1.0; BEFORE_FIRST_EVENT uses the first event; MIXED_VERSION
+uses the supplied snapshot. All non-OK calculated factors mark the row PARTIAL.
 """
 from __future__ import annotations
 
@@ -15,16 +17,27 @@ _FIELDS = ('ma5', 'ma10', 'ma20', 'ma60', 'ema12', 'ema26', 'dif', 'dea',
            'boll_bandwidth')
 
 
-def calculate_bar(bar, events, state=None):
+def calculate_bar(bar, events, state=None, *, gap_before=False, factor_quality=None):
     """Return (indicators, JSON-serializable checkpoint) for one observed bar."""
     state = dict(state or {})
+    if bar is None or bar.get('suspended') or events is None or factor_quality == 'UNPROCESSED':
+        return None, state
+    if gap_before:
+        state = {}
     result = {name: None for name in _FIELDS}
     result['adjusted_close'] = None
     factor, quality = factor_for(events, str(bar['ts'])[:10])
+    if quality == 'NO_EVENTS':
+        factor = 1.0
+    elif quality == 'BEFORE_FIRST_EVENT':
+        first = min(events, key=lambda event: event['dividOperateDate'])
+        factor, _ = factor_for([first], first['dividOperateDate'])
+    if factor_quality == 'MIXED_VERSION' and quality == 'FORMAL':
+        quality = factor_quality
     result['factor_quality'] = quality
-    if bar.get('suspended') or factor is None:
-        result['quality'] = 'PARTIAL'
-        return result, {}
+    result['partial_reasons'] = [] if quality in ('FORMAL', 'OK') else ['FACTOR_' + quality]
+    if factor is None:
+        return None, state
 
     def adjusted(name):
         value = bar.get(name)
@@ -77,5 +90,5 @@ def calculate_bar(bar, events, state=None):
     if result['k'] is None:
         state.pop('k', None)
         state.pop('d', None)
-    result['quality'] = 'FORMAL' if all(result[name] is not None for name in _FIELDS) else 'PARTIAL'
+    result['quality'] = 'FORMAL' if not result['partial_reasons'] and all(result[name] is not None for name in _FIELDS) else 'PARTIAL'
     return result, state
