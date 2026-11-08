@@ -253,6 +253,7 @@ def test_td_recordings_have_matching_provenance():
 
 def test_c852_fixture_manifest_integrity():
     root = Path(__file__).parent / 'fixtures' / 'price_volume_c852'
+    assert not list(root.rglob('*.py'))
     manifest = json.loads((root / 'MANIFEST.json').read_text(encoding='utf-8'))
     assert manifest['id'] == 'C852'
     assert '不是上游数据' in (root / 'PROVENANCE.md').read_text(encoding='utf-8')

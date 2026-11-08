@@ -50,4 +50,4 @@ expected.jsonl 为本卡 export.py 的独立 Python 参考计算输出，不是�
 
 ## 文件散列与行数
 
-MANIFEST.json 给出每个数据/脚本文件的字节数、行数与 SHA256；SHA256SUMS 包含本包文件散列（自身及会被规格检查覆盖的 spec-lint.txt 除外）。
+MANIFEST.json 给出原 C852 包保留的数据和验证文本的字节数、行数与 SHA256；参考脚本不入库，见 /home/exedev/validation/acceptance/289f271/c852/export.py。SHA256SUMS 记录保留文件的散列（自身除外）。

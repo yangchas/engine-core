@@ -23,20 +23,10 @@
       "bytes": 243500,
       "lines": 847
     },
-    "document.py": {
-      "sha256": "6bccb973d8cc9dafca73f1eaf39814627dff54fe30afc4bbcff4a7198d772f3c",
-      "bytes": 3774,
-      "lines": 16
-    },
     "expected.jsonl": {
       "sha256": "3ddb27d779d49445224680092d32a44a1862377252bd1b631f6c7bee2eea63d9",
       "bytes": 431709,
       "lines": 847
-    },
-    "export.py": {
-      "sha256": "34e5070f96378d0db7c0ec987fede8a6816660a256403d96a7e3d2f7325bea58",
-      "bytes": 6647,
-      "lines": 88
     },
     "factor_days.json": {
       "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
@@ -62,11 +52,6 @@
       "sha256": "e9b49371d201c168ab08449ee24938ec7c16f1b97c02af43c43f4ade9a3457f6",
       "bytes": 2081,
       "lines": 119
-    },
-    "verify.py": {
-      "sha256": "02b9938706ee5dddc4a60998d29ee2b562ca45bbb65fe8945962aefa14ed5e2f",
-      "bytes": 1111,
-      "lines": 11
     },
     "verify.txt": {
       "sha256": "031cc8f0ca9abb1aacdcc2175a1b10001e5a5604751787a4996a260ac8347b86",
@@ -144,5 +129,6 @@
     "No 2025 daily kline available for 600519 in authorized TD table.",
     "No internal missing trading date found in scanned TD symbols; 000001 is a substitute, not a gap example.",
     "No snapshot as-of historical trade dates is established."
-  ]
+  ],
+  "reference_scripts": "参考脚本不入库，见 /home/exedev/validation/acceptance/289f271/c852/export.py"
 }
