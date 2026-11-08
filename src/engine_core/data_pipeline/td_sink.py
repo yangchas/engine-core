@@ -538,10 +538,22 @@ class TaosStore:
             if not quoted:
                 return {}
             symbol_filter = f" AND symbol IN ({quoted})"
-        rows, _ = self._day_scan(f"SELECT symbol, {', '.join(DATA_COLUMNS)}, version FROM {self.database}.{SUPER_TABLE} "
-                                 f"WHERE {self._day_filter(trade_date)}{symbol_filter}")
-        return {row[0]: {**dict(zip(DATA_COLUMNS, row[1:1 + len(DATA_COLUMNS)])), "version": row[-1]}
-                for row in rows}
+        def read_range(lo: int | None = None, hi: int | None = None) -> dict[str, dict[str, Any]]:
+            range_filter = (f" AND symbol >= '{lo:06d}'" if lo is not None else "")
+            range_filter += f" AND symbol < '{hi:06d}'" if hi is not None else ""
+            try:
+                rows = self._run(f"SELECT symbol, {', '.join(DATA_COLUMNS)}, version FROM {self.database}.{SUPER_TABLE} "
+                                 f"WHERE {self._day_filter(trade_date)}{symbol_filter}{range_filter}", missing_ok=True)
+            except TdResourceExhausted:
+                low, high = (0 if lo is None else lo), (1000000 if hi is None else hi)
+                if high - low <= 1:
+                    raise
+                middle = (low + high) // 2
+                return {**read_range(lo, middle), **read_range(middle, hi)}
+            return {row[0]: {**dict(zip(DATA_COLUMNS, row[1:1 + len(DATA_COLUMNS)])), "version": row[-1]}
+                    for row in rows}
+
+        return read_range()
 
     def day_counts(self, dates: Sequence[str]) -> dict[str, int]:
         ordered = list(dict.fromkeys(dates))
@@ -569,8 +581,8 @@ class TaosStore:
 
     def symbols_on_day(self, day: str) -> set[str]:
         _check_date(day)
-        rows, _ = self._day_scan(f"SELECT symbol FROM {self.database}.{SUPER_TABLE} "
-                                 f"WHERE ts = {trade_day_ts_us(day)}", strict=True)
+        rows = self._run(f"SELECT symbol FROM {self.database}.{SUPER_TABLE} "
+                         f"WHERE ts = {trade_day_ts_us(day)}", missing_ok=True, strict=True)
         return {str(row[0]) for row in rows}
 
     def window_watermarks(self, days: Sequence[str]) -> tuple[dict[str, str], dict[str, list[str]]]:
