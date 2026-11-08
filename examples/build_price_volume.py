@@ -22,8 +22,10 @@ class ContractParser(argparse.ArgumentParser):
 def main(argv=None):
     parser = ContractParser(description=__doc__)
     parser.add_argument('--date', required=True)
+    parser.add_argument('--mode', choices=('incremental', 'rebuild'), default='incremental')
+    parser.add_argument('--from-date')
     args = parser.parse_args(argv)
-    code, reply = run({'trade_date': args.date},
+    code, reply = run({'trade_date': args.date, 'args': {'mode': args.mode, 'from_date': args.from_date}},
                       os.environ.get('CORE_DATA_ROOT', str(Path.home() / 'core-data')),
                       dry_run=os.environ.get('GUARDIAN_DRY_RUN') == '1')
     print(json.dumps(reply, ensure_ascii=False, sort_keys=True))

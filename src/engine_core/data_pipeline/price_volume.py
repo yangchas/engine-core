@@ -137,6 +137,10 @@ class PriceVolumeStore:
         from .adjust_factor import AdjustFactorStore
         from .td_sink import _literal
         result = {}
+        if symbols is None:
+            sql = f'SELECT symbol, LAST_ROW(state_json) FROM {self.database}.price_volume_state_v1'
+            rows, _ = self.store._day_scan(sql, suffix=' GROUP BY tbname, symbol', strict=True, has_where=False)
+            return {str(symbol): json.loads(payload) for symbol, payload in rows}
         symbols = sorted({AdjustFactorStore._symbol(s) for s in symbols})
         for start in range(0, len(symbols), 200):
             selected = ', '.join(_literal(s) for s in symbols[start:start + 200])
@@ -206,6 +210,13 @@ def run(request, root, *, store=None, clock=None, dry_run=False):
               'listing_source': 'fallback', 'elapsed_seconds': 0, 'aborted': False}
     try:
         day = request['trade_date']
+        args = request.get('args', {})
+        mode = args.get('mode', 'incremental')
+        if mode not in ('incremental', 'rebuild'):
+            raise ValueError('invalid mode')
+        from_day = args.get('from_date')
+        if from_day is not None and (date.fromisoformat(from_day).isoformat() != from_day or from_day > day or mode != 'rebuild'):
+            raise ValueError('invalid from_date')
         if date.fromisoformat(day).isoformat() != day:
             raise ValueError('invalid trade date')
     except (KeyError, TypeError, ValueError) as exc:
@@ -217,6 +228,8 @@ def run(request, root, *, store=None, clock=None, dry_run=False):
     facts = store if store is not None else PriceVolumeStore(TaosStore(core_td_database()))
     try:
         facts.ensure_schema()
+        if mode == 'rebuild':
+            return _rebuild(facts, owned, root, day, from_day, started, clock)
         if owned:
             from .adjust_factor import AdjustFactorStore
             bars = facts.store.read_day_rows(day)
@@ -224,7 +237,9 @@ def run(request, root, *, store=None, clock=None, dry_run=False):
         else:
             bars = facts.read_day_rows(day)
             factors = facts.read_events_many(bars)
-        states = facts.read_states(bars)
+        states = facts.read_states(None)
+        if not states:
+            detail['hint'] = 'NEEDS_REBUILD'
         gaps = set()
         dated = {s: state['last_trade_date'] for s, state in states.items()
                  if state.get('last_trade_date') and state['last_trade_date'] < day}
@@ -310,9 +325,9 @@ def run(request, root, *, store=None, clock=None, dry_run=False):
         digest = hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
         detail['computed'] = len(rows)
         detail['elapsed_seconds'] = round(clock() - started, 3)
-        facts.write_day_marker(day, version, 'PARTIAL' if detail['partial_total'] else 'FORMAL', len(rows),
+        facts.write_day_marker(day, version, 'PARTIAL' if detail['partial_total'] or 'hint' in detail else 'FORMAL', len(rows),
                                digest, available_at, json.dumps(detail, separators=(',', ':')))
-        return _reply(0, detail=detail)
+        return _reply(10 if 'hint' in detail else 0, detail=detail)
     except Exception as exc:
         detail['aborted'] = True
         detail['elapsed_seconds'] = round(clock() - started, 3)
@@ -322,3 +337,110 @@ def run(request, root, *, store=None, clock=None, dry_run=False):
     finally:
         if owned:
             facts.store.close()
+
+
+def _rebuild(facts, owned, root, day, from_day, started, clock):
+    """Replay calendar history from scratch, publishing only the requested range."""
+    import hashlib
+    import json
+    from datetime import datetime, timezone
+    from .auction_amount_facts import _reply
+    from .stock_listing import listed_on, read_active
+    if owned:
+        from .trade_calendar import TradeCalendarStore
+        days = TradeCalendarStore(root).all_trading_dates()
+        read_day = facts.store.read_day_rows
+    else:
+        days = facts.trading_dates(day)
+        read_day = facts.read_day_rows
+    days = sorted(d for d in days if d <= day)
+    if not days or day not in days:
+        raise ValueError('rebuild calendar does not cover target date')
+    if owned:
+        from .td_sink import SUPER_TABLE, trade_day_ts_us
+        sql = (f'SELECT COUNT(*) FROM {facts.store.database}.{SUPER_TABLE} '
+               f'WHERE ts < {trade_day_ts_us(days[0])}')
+        counts, _ = facts.store._day_scan(sql, strict=True)
+        if any(row[0] for row in counts):
+            raise ValueError('rebuild calendar does not cover earliest available daily bar')
+    from_day = from_day or days[0]
+    history = [(d, read_day(d)) for d in days]
+    symbols = set().union(*(set(bars) for _, bars in history))
+    if owned:
+        from .adjust_factor import AdjustFactorStore
+        factors = AdjustFactorStore(facts.store).read_events_many(symbols)
+    else:
+        factors = facts.read_events_many(symbols)
+    computable = {symbol for _, bars in history for symbol, bar in bars.items() if not bar.get('suspended')}
+    existing = facts.read_states(None)
+    unsafe = [symbol for symbol, state in existing.items()
+              if state.get('last_trade_date', '') > day
+              and (symbol not in computable or factors.get(symbol, (None, 'UNPROCESSED'))[1] == 'UNPROCESSED')]
+    if unsafe:
+        raise ValueError('rebuild cannot replace future states without usable historical inputs')
+    listing = None
+    snapshot = None
+    try:
+        if owned:
+            from .reference_snapshot_td import ReferenceSnapshotStore
+            snapshot = ReferenceSnapshotStore()
+            listing = read_active(snapshot)
+        elif hasattr(facts, 'read_listing'):
+            listing = facts.read_listing()
+        if not listing or not listing.get('rows'):
+            listing = None
+    except Exception:
+        listing = None
+    finally:
+        if snapshot is not None:
+            snapshot.close()
+    now = datetime.now(timezone.utc)
+    available_at = now.isoformat()
+    version = now.strftime('%Y%m%d%H%M%S%f')[:20]
+    states, gaps, publications = {}, set(), []
+    rebuilt_symbols = set()
+    rows_overwritten = 0
+    for current_day, bars in history:
+        active = ({s.rsplit('.', 1)[-1].zfill(6) for s in listed_on(listing['rows'], current_day)}
+                  if listing is not None else set(states))
+        gaps.update((set(states) & active) - set(bars))
+        rows, registry = {}, []
+        for symbol, source in sorted(bars.items()):
+            bar = dict(source, ts=current_day)
+            events, quality = factors.get(symbol, (None, 'UNPROCESSED'))
+            result, state = calculate_bar(bar, events, states.get(symbol),
+                                          gap_before=symbol in gaps, factor_quality=quality)
+            if result is None:
+                continue
+            previous_close = states.get(symbol, {}).get('previous_close')
+            pre_close = bar.get('pre_close')
+            if (previous_close is not None and pre_close is not None and float(previous_close) != 0
+                    and abs(float(pre_close) - float(previous_close)) / abs(float(previous_close)) > 1e-6
+                    and not any(str(event.get('dividOperateDate'))[:10] == current_day for event in events)):
+                result['partial_reasons'].append('FACTOR_MAY_BE_STALE')
+                result['quality'] = 'PARTIAL'
+                registry.append(symbol)
+            state['last_trade_date'] = current_day
+            state['previous_close'] = bar.get('close')
+            states[symbol] = state
+            gaps.discard(symbol)
+            result.update(version=version, algo_version='price_volume_v1',
+                          input_refs=json.dumps({'daily_kline': bar.get('version')}, separators=(',', ':')),
+                          available_at=available_at, warm=result['quality'] == 'FORMAL')
+            for key in ('ema12', 'ema26', 'dea', 'k', 'd'):
+                result['state_' + key] = state.get(key)
+            rows[symbol] = result
+        if current_day >= from_day:
+            facts.write_results(current_day, rows)
+            rebuilt_symbols.update(rows)
+            rows_overwritten += len(rows)
+            digest = hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+            quality = json.dumps({'recompute_registered': {'count': len(registry), 'samples': registry[:20]}}, separators=(',', ':'))
+            status = 'PARTIAL' if any(r['quality'] == 'PARTIAL' for r in rows.values()) else 'FORMAL'
+            publications.append((current_day, version, status, len(rows), digest, available_at, quality))
+    facts.write_states(states)
+    for marker in publications:
+        facts.write_day_marker(*marker)
+    detail = {'mode': 'rebuild', 'rebuilt_days': len(publications), 'rebuilt_symbols': len(rebuilt_symbols),
+              'rows_overwritten': rows_overwritten, 'elapsed_seconds': round(clock() - started, 3), 'aborted': False}
+    return _reply(0, detail=detail)

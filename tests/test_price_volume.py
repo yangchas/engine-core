@@ -217,7 +217,7 @@ def test_run_batches_reads_and_skips_unprocessed_factor():
         def write_day_marker(self, *args): self.calls.append('marker')
     store = Store()
     code, reply = run({'trade_date': day}, '.', store=store)
-    assert code == 0
+    assert code == 10 and reply['detail']['hint'] == 'NEEDS_REBUILD'
     assert skipped not in store.rows and skipped not in store.states
     assert reply['detail']['skipped_factor_unprocessed'] == 1
     assert store.calls == ['bars', 'factors', 'states', 'results', 'write_states', 'marker']
@@ -285,3 +285,74 @@ def test_cli_dry_run_is_service_free():
                             env=env, text=True, capture_output=True)
     assert result.returncode == 0
     assert json.loads(result.stdout)['status'] == 'ok'
+
+
+def test_rebuild_replays_history_and_preserves_earlier_results():
+    from engine_core.data_pipeline.price_volume import run
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()
+            if json.loads(x)['symbol'] == '600519'][:25]
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
+    days = [str(b['ts'])[:10] for b in bars]
+    class Store:
+        def __init__(self): self.results = {days[0]: {'sentinel': True}}; self.markers = []
+        def ensure_schema(self): pass
+        def trading_dates(self, day): return days
+        def read_day_rows(self, day): return {'600519': bars[days.index(day)]}
+        def read_events_many(self, symbols): return {'600519': (events, 'FORMAL')}
+        def read_states(self, symbols): return {}
+        def write_results(self, day, rows): self.results[day] = rows
+        def write_states(self, states): self.states = states
+        def write_day_marker(self, *args): self.markers.append(args)
+    store = Store()
+    code, reply = run({'trade_date': days[-1], 'args': {'mode': 'rebuild', 'from_date': days[10]}}, '.', store=store)
+    expected = None
+    for bar in bars:
+        _, expected = calculate_bar(bar, events, expected)
+        expected['last_trade_date'] = str(bar['ts'])[:10]
+        expected['previous_close'] = bar['close']
+    assert code == 0 and store.states['600519'] == expected
+    assert store.results[days[0]] == {'sentinel': True}
+    assert set(store.results) == {days[0], *days[10:]}
+    assert len(store.markers) == len(days[10:])
+    assert reply['detail']['rows_overwritten'] == len(days[10:])
+
+
+def test_incremental_empty_state_requires_rebuild():
+    from engine_core.data_pipeline.price_volume import run
+    bar = json.loads((FIXTURES / 'daily_kline.jsonl').read_text().splitlines()[0])
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())[bar['symbol']]
+    class Store:
+        def ensure_schema(self): pass
+        def read_day_rows(self, day): return {bar['symbol']: bar}
+        def read_events_many(self, symbols): return {bar['symbol']: (events, 'FORMAL')}
+        def read_states(self, symbols): return {}
+        def write_results(self, day, rows): pass
+        def write_states(self, states): pass
+        def write_day_marker(self, *args): pass
+    code, reply = run({'trade_date': str(bar['ts'])[:10]}, '.', store=Store())
+    assert code == 10 and reply['detail']['hint'] == 'NEEDS_REBUILD'
+
+
+def test_rebuild_state_matches_incremental_replay():
+    from datetime import date
+    from engine_core.data_pipeline.price_volume import run
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()
+            if json.loads(x)['symbol'] == '600519'][:20]
+    days = [str(bar['ts'])[:10] for bar in bars]
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
+    class Store:
+        def __init__(self): self.states = {}
+        def ensure_schema(self): pass
+        def trading_dates(self, day): return days
+        def previous_day(self, day): return date.fromisoformat(days[days.index(day) - 1])
+        def read_day_rows(self, day): return {'600519': bars[days.index(day)]}
+        def read_states(self, symbols): return self.states.copy()
+        def read_events_many(self, symbols): return {'600519': (events, 'FORMAL')}
+        def write_results(self, day, rows): pass
+        def write_states(self, states): self.states.update(states)
+        def write_day_marker(self, *args): pass
+    replay, rebuild = Store(), Store()
+    for day in days:
+        run({'trade_date': day}, '.', store=replay)
+    code, _ = run({'trade_date': days[-1], 'args': {'mode': 'rebuild'}}, '.', store=rebuild)
+    assert code == 0 and rebuild.states == replay.states
