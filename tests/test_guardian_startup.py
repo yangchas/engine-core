@@ -344,6 +344,39 @@ def test_fetch_job_stdout_shape_and_exit_status_are_checked_before_catalog_postc
         startup._run_fetch_job(item | {"fetch_job": {"argv": [sys.executable, "-c", 'import json;print(json.dumps(dict(status="failed")))'], "timeout_seconds": 20}}, "2026-10-23", 20)
 
 
+
+def test_fetch_exit_10_degraded_artifact_requires_postcondition(monkeypatch, tmp_path):
+    import json
+    import sys
+    from engine_core.guardian import startup
+
+    payload = {"contract": 1, "status": "degraded", "retryable": False,
+               "error_code": "", "version": "v1", "row_count": 1416}
+    code = "import json; print(json.dumps({'status': 'PARTIAL'})); print(json.dumps(" + repr(payload) + ")); raise SystemExit(10)"
+    item = {"id": "x", "fetch_job": {"argv": [sys.executable, "-c", code], "timeout_seconds": 20}}
+    item["fetch_job"]["argv"][-1] = code.replace("{", "{{").replace("}", "}}")
+    assert startup._run_fetch_job(item, "2026-11-06", 20, tmp_path) == payload
+    monkeypatch.setattr(startup, "load_registry", lambda: [item])
+    checked = []
+    monkeypatch.setattr(startup, "_verify_partition", lambda *args: checked.append(args))
+    assert startup.fetch_item("x", "2026-11-06", tmp_path, dry_run=False)["status"] == "degraded"
+    assert len(checked) == 1
+
+
+def test_fetch_exit_10_requires_degraded_and_artifact(tmp_path):
+    import sys
+    import pytest
+    from engine_core.guardian import startup
+
+    for payload in ({"status": "ok", "version": "v1", "row_count": 1},
+                    {"status": "degraded", "version": None, "row_count": None}):
+        code = "import json; print(json.dumps(" + repr(payload) + ")); raise SystemExit(10)"
+        item = {"id": "x", "fetch_job": {"argv": [sys.executable, "-c", code], "timeout_seconds": 20}}
+        item["fetch_job"]["argv"][-1] = code.replace("{", "{{").replace("}", "}}")
+        with pytest.raises(startup.FetchJobError) as exc:
+            startup._run_fetch_job(item, "2026-11-06", 20, tmp_path)
+        assert exc.value.error_code == "FETCH_EXIT_10"
+
 def test_fetch_job_passes_schedule_no_progress_budget_to_daily_kline_command(monkeypatch, tmp_path):
     import json
     import sys
