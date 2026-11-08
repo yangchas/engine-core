@@ -53,6 +53,23 @@ class AdjustFactorStore:
                         'business_status VARCHAR(16), row_count INT, sha256 VARCHAR(64), '
                         'available_at VARCHAR(40), quality VARCHAR(4000), missing_whitelist VARCHAR(4000))')
 
+    def listing_symbols(self, day):
+        from .reference_snapshot_td import ReferenceSnapshotStore
+        reference = ReferenceSnapshotStore(database=self.database)
+        try:
+            snapshot = reference.read_latest('stock_listing')
+        finally:
+            reference.close()
+        if snapshot is None:
+            return set(self.store.read_day_rows(day)), 'fallback'
+        symbols = set()
+        for row in snapshot['rows']:
+            ipo, out = row.get('ipo_date'), row.get('out_date')
+            if ipo and ipo <= day and (not out or day < out):
+                symbol = str(row.get('symbol', '')).split('.')[-1]
+                symbols.add(self._symbol(symbol))
+        return symbols, 'stock_listing'
+
     def read_status(self, symbol):
         from .td_sink import _literal
         symbol = self._symbol(symbol)
@@ -64,8 +81,8 @@ class AdjustFactorStore:
         symbol = self._symbol(symbol)
         if state not in ('OK', 'EMPTY', 'ERROR'):
             raise ValueError('invalid_status')
-        # A stable, distinct millisecond timestamp per six-digit symbol allows upserts.
-        ts = 946684800000 + int(symbol)
+        # A stable, distinct microsecond timestamp per six-digit symbol allows upserts.
+        ts = 1794096000000000 + int(symbol)
         fields = (symbol, state, version if state == 'OK' else '', row_count, processed_at)
         self.store._run(f"INSERT INTO {self.database}.adjust_factor_status_v1 VALUES ({ts}, " + ', '.join(_literal(v) for v in fields) + ')')
 
@@ -223,7 +240,7 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
         if date.fromisoformat(day).isoformat() != day:
             raise ValueError('invalid trade date')
         mode = request['args']['mode']
-        if mode != 'incremental':
+        if mode not in ('incremental', 'bootstrap'):
             raise ValueError('unsupported mode')
         detail['mode'] = mode
     except (KeyError, TypeError, ValueError) as exc:
@@ -246,18 +263,28 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
             detail['skipped_locked'] = True
             return _reply(10, 'INCOMPLETE', detail)
         facts.ensure_schema()
-        if owned:
-            from .trade_calendar import TradeCalendarStore
-            previous_day = TradeCalendarStore(root).previous_trade_date(day).isoformat()
-            read_day = facts.store.read_day_rows
+        if mode == 'incremental':
+            if owned:
+                from .trade_calendar import TradeCalendarStore
+                previous_day = TradeCalendarStore(root).previous_trade_date(day).isoformat()
+                read_day = facts.store.read_day_rows
+            else:
+                previous_day = facts.previous_day(day)
+                read_day = facts.read_day_rows
+            current, previous = read_day(day), read_day(previous_day)
+            if not current or not previous:
+                raise RuntimeError('daily_kline_missing')
+            symbols = sorted(detect_suspected(current, previous))
+            detail['suspected_total'] = len(symbols)
         else:
-            previous_day = facts.previous_day(day)
-            read_day = facts.read_day_rows
-        current, previous = read_day(day), read_day(previous_day)
-        if not current or not previous:
-            raise RuntimeError('daily_kline_missing')
-        symbols = sorted(detect_suspected(current, previous))
-        detail['suspected_total'] = len(symbols)
+            universe, detail['listing_source'] = facts.listing_symbols(day)
+            symbols = []
+            for symbol in sorted(universe):
+                status = facts.read_status(symbol)
+                if not status or status['state'] not in ('OK', 'EMPTY'):
+                    symbols.append(symbol)
+            detail['bootstrap_remaining'] = len(symbols)
+            detail['bootstrap_processed'] = 0
         facts.invalidate_day_marker(day)
         last_request = None
         snapshot_hashes = []
@@ -289,9 +316,21 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
             facts.replace_snapshot(symbol, rows, version)
             facts.write_status(symbol, 'OK' if rows else 'EMPTY', version, len(rows), datetime.now(timezone.utc).isoformat())
             detail['snapshots_replaced'] += 1
+            if mode == 'bootstrap':
+                detail['bootstrap_processed'] += 1
+                if detail['bootstrap_processed'] % 100 == 0:
+                    import logging
+                    logging.getLogger(__name__).info('adjust_factor bootstrap processed=%s total=%s', detail['bootstrap_processed'], len(symbols))
             if len(detail['samples']) < 20:
                 detail['samples'].append({'symbol': symbol, 'old_rows': len(old), 'new_rows': len(rows),
                                           'old_sha256': old_hash, 'new_sha256': new_hash})
+        try:
+            if not lease.renew():
+                raise LeaseUnavailable('lease_lost')
+        except LeaseUnavailable:
+            raise
+        except Exception as exc:
+            raise LeaseUnavailable(type(exc).__name__) from exc
         import hashlib
         digest = hashlib.sha256('\n'.join(snapshot_hashes).encode()).hexdigest()
         version = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S') + '-' + digest[:8]

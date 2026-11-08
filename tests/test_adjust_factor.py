@@ -112,3 +112,33 @@ def test_incremental_spacing_and_unchanged(monkeypatch):
     assert store.writes == ['invalidate', '000001', '600519', 'marker']
     assert reply['detail']['unchanged'] == 2
     assert all(sample['old_sha256'] == sample['new_sha256'] for sample in reply['detail']['samples'])
+
+
+def test_bootstrap_resumes_empty_and_completed():
+    from engine_core.data_pipeline import adjust_factor as module
+    records = json.loads((Path(__file__).parent / 'fixtures/adjust_factor_c846/events.json').read_text())
+    record = next(r for r in records if r['code'] == 'sh.600519')
+    events = [dict(zip(record['fields'], row)) for row in record['rows']]
+    class Store:
+        def __init__(self): self.states = {'000001': 'EMPTY'}; self.markers = []
+        def ensure_schema(self): pass
+        def listing_symbols(self, day): return {'000001', '600519'}, 'stock_listing'
+        def read_status(self, symbol): return {'state': self.states[symbol]} if symbol in self.states else None
+        def read_events(self, symbol): return [], 'NO_EVENTS'
+        def replace_snapshot(self, symbol, rows, version): pass
+        def write_status(self, symbol, state, version, count, processed): self.states[symbol] = state
+        def invalidate_day_marker(self, day): pass
+        def write_day_marker(self, *args): self.markers.append(args)
+    class Lease:
+        def acquire(self): return True
+        def renew(self): return True
+        def release(self): pass
+    store, calls = Store(), []
+    def fetch(symbol): calls.append(symbol); return events
+    for _ in range(2):
+        code, reply = module.run({'trade_date': '2026-11-06', 'args': {'mode': 'bootstrap'}}, '.',
+                                 store=store, fetcher=fetch, lease_factory=lambda *_: Lease())
+        assert code == 0
+    assert calls == ['600519']
+    assert store.states['600519'] == 'OK'
+    assert len(store.markers) == 2
