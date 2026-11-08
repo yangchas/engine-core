@@ -92,3 +92,102 @@ def calculate_bar(bar, events, state=None, *, gap_before=False, factor_quality=N
         state.pop('d', None)
     result['quality'] = 'FORMAL' if not result['partial_reasons'] and all(result[name] is not None for name in _FIELDS) else 'PARTIAL'
     return result, state
+
+
+# A single stable primary timestamp makes snapshot replacement an upsert.  The
+# checkpoint's actual last trade date is part of the JSON, never the TD ts.
+STATE_TIMESTAMP_US = 1794067200000000  # 2026-11-08, valid processing epoch
+STATE_JSON_CAPACITY = 60000
+_RESULT_COLUMNS = (
+    'ma5', 'ma10', 'ma20', 'ma60', 'ema12', 'ema26', 'dif', 'dea', 'macd',
+    'k', 'd', 'j', 'rsi6', 'rsi12', 'rsi24', 'boll_upper', 'boll_middle',
+    'boll_lower', 'boll_bandwidth', 'atr14', 'pct_chg_volatility20',
+    'volume_ma5', 'volume_ma10', 'volume_ma20', 'volume_ratio', 'bias_20',
+    'rsi_6', 'change_pct_5d', 'avg_turnover_5d', 'limit_up_days_5', 'vol_ratio',
+    'state_ema12', 'state_ema26', 'state_dea', 'state_k', 'state_d',
+    'state_rsi6_gain', 'state_rsi6_loss', 'state_rsi12_gain', 'state_rsi12_loss',
+    'state_rsi24_gain', 'state_rsi24_loss', 'state_atr14', 'state_prev_close', 'state_count',
+)
+
+
+class PriceVolumeStore:
+    """TD persistence; the supplied TaosStore owns connection and database."""
+
+    def __init__(self, store):
+        from .td_sink import validate_database_name
+        self.store = store
+        self.database = validate_database_name(store.database)
+
+    def ensure_schema(self):
+        db = self.database
+        definitions = ', '.join(name + (' SMALLINT' if name == 'limit_up_days_5' else
+                                       ' INT' if name == 'state_count' else ' DOUBLE')
+                                for name in _RESULT_COLUMNS)
+        self.store._run(f'CREATE STABLE IF NOT EXISTS {db}.price_volume_indicators_v1 '
+                        '(ts TIMESTAMP, version VARCHAR(24), algo_version VARCHAR(128), '
+                        'input_refs NCHAR(16384), available_at VARCHAR(40), quality VARCHAR(16), '
+                        f'warm BOOL, {definitions}) TAGS (symbol VARCHAR(8))')
+        self.store._run(f'CREATE STABLE IF NOT EXISTS {db}.price_volume_state_v1 '
+                        f'(ts TIMESTAMP, state_json VARCHAR({STATE_JSON_CAPACITY})) TAGS (symbol VARCHAR(8))')
+        self.store._run(f'CREATE TABLE IF NOT EXISTS {db}.price_volume_days '
+                        '(ts TIMESTAMP, trade_date VARCHAR(10), version VARCHAR(24), '
+                        'business_status VARCHAR(16), row_count INT, sha256 VARCHAR(64), '
+                        'available_at VARCHAR(40), quality VARCHAR(4000), missing_whitelist VARCHAR(4000))')
+
+    def read_states(self, symbols):
+        import json
+        from .adjust_factor import AdjustFactorStore
+        from .td_sink import _literal
+        result = {}
+        symbols = sorted({AdjustFactorStore._symbol(s) for s in symbols})
+        for start in range(0, len(symbols), 200):
+            selected = ', '.join(_literal(s) for s in symbols[start:start + 200])
+            sql = (f'SELECT symbol, LAST_ROW(state_json) FROM {self.database}.price_volume_state_v1 '
+                   f'WHERE symbol IN ({selected})')
+            rows, _ = self.store._day_scan(sql, suffix=' GROUP BY tbname, symbol', strict=True)
+            for symbol, payload in rows:
+                result[str(symbol)] = json.loads(payload)
+        return result
+
+    def write_states(self, states):
+        import json
+        from .adjust_factor import AdjustFactorStore
+        from .td_sink import INSERT_CHUNK_ROWS, _literal
+        items = sorted(states.items())
+        for start in range(0, len(items), INSERT_CHUNK_ROWS):
+            parts = []
+            for symbol, state in items[start:start + INSERT_CHUNK_ROWS]:
+                symbol = AdjustFactorStore._symbol(symbol)
+                payload = json.dumps(state, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+                if len(payload.encode('utf-8')) > STATE_JSON_CAPACITY:
+                    raise ValueError('price_volume_state_json_exceeds_capacity')
+                parts.append(f'{self.database}.price_volume_state_{symbol} USING '
+                             f'{self.database}.price_volume_state_v1 TAGS({_literal(symbol)}) '
+                             f'VALUES ({STATE_TIMESTAMP_US}, {_literal(payload)})')
+            if parts:
+                self.store._run('INSERT INTO ' + ' '.join(parts))
+
+    def write_results(self, day, rows):
+        from .adjust_factor import AdjustFactorStore
+        from .td_sink import INSERT_CHUNK_ROWS, _literal, trade_day_ts_us
+        items = sorted(rows.items())
+        for start in range(0, len(items), INSERT_CHUNK_ROWS):
+            parts = []
+            for symbol, row in items[start:start + INSERT_CHUNK_ROWS]:
+                symbol = AdjustFactorStore._symbol(symbol)
+                values = [row.get(key) for key in ('version', 'algo_version', 'input_refs',
+                                                    'available_at', 'quality', 'warm') + _RESULT_COLUMNS]
+                parts.append(f'{self.database}.price_volume_indicators_{symbol} USING '
+                             f'{self.database}.price_volume_indicators_v1 TAGS({_literal(symbol)}) '
+                             f'VALUES ({trade_day_ts_us(day)}, ' + ', '.join(map(_literal, values)) + ')')
+            if parts:
+                self.store._run('INSERT INTO ' + ' '.join(parts))
+
+    def write_day_marker(self, day, version, business_status, row_count, sha256, available_at, quality,
+                         missing_whitelist='[]'):
+        from .td_sink import _literal, trade_day_ts_us
+        if len(quality) > 4000 or len(missing_whitelist) > 4000:
+            raise ValueError('marker_too_large')
+        values = [day, version, business_status, row_count, sha256, available_at, quality, missing_whitelist]
+        self.store._run(f'INSERT INTO {self.database}.price_volume_days VALUES '
+                        f'({trade_day_ts_us(day)}, ' + ', '.join(map(_literal, values)) + ')')

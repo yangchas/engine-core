@@ -83,3 +83,29 @@ def test_real_reference_all_symbols_and_new_listing():
                 assert result[name] is None, (symbol, day, name)
             else:
                 assert result[name] == pytest.approx(value, rel=1e-9, abs=1e-12), (symbol, day, name)
+
+
+def test_state_snapshot_capacity_and_fixed_timestamp():
+    from engine_core.data_pipeline.price_volume import PriceVolumeStore, STATE_JSON_CAPACITY
+
+    class RecordingStore:
+        database = 'core_data'
+        def __init__(self):
+            self.sql = []
+        def _run(self, sql, **kwargs):
+            self.sql.append(sql)
+            return []
+
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()
+            if json.loads(x)['symbol'] == '600519']
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
+    state = None
+    for bar in bars[:60]:
+        _, state = calculate_bar(bar, events, state)
+    assert len(json.dumps(state).encode()) < STATE_JSON_CAPACITY
+    recorder = RecordingStore()
+    store = PriceVolumeStore(recorder)
+    store.write_states({'600519': state})
+    store.write_states({'600519': state})
+    assert recorder.sql[0] == recorder.sql[1]
+    assert 'price_volume_state_600519' in recorder.sql[0]
