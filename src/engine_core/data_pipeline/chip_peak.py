@@ -211,3 +211,120 @@ class ChipPeakStore:
         self.store._run(f'INSERT INTO {self.database}.chip_peak_days VALUES '
                         f'({trade_day_ts_us(day)}, ' + ', '.join(map(_literal, values)) + ')')
 
+
+
+def _calculate_day(day, bars, factors, states, version, available_at, detail):
+    import json
+    prepared, updates = {}, {}
+    for symbol, source in sorted(bars.items()):
+        if states.get(symbol, {}).get('last_trade_date', '') >= day:
+            detail['skipped_already_processed'] += 1
+            continue
+        if source.get('suspended'):
+            detail['skipped_no_bar'] += 1
+            continue
+        events, quality = factors.get(symbol, (None, 'UNPROCESSED'))
+        if quality == 'UNPROCESSED' or events is None:
+            detail['skipped_factor_unprocessed'] += 1
+            continue
+        window, state = prepare_window(dict(source, ts=day), events, states.get(symbol), factor_quality=quality)
+        if window is None:
+            detail['skipped_factor_unprocessed'] += 1
+            continue
+        state['last_trade_date'] = day
+        prepared[symbol] = (source, window)
+        updates[symbol] = state
+    outputs = calculate_windows([w['prices'] for _, w in prepared.values()],
+                                [w['turnovers'] for _, w in prepared.values()])
+    rows = {}
+    for (symbol, (source, window)), result in zip(prepared.items(), outputs, strict=True):
+        reasons = list(window['factor_reasons'])
+        if window['bars_used'] < 120:
+            reasons.append('WARMUP_SHORT')
+        if result['quality'] == 'PARTIAL' and not reasons:
+            reasons.append('INVALID_WINDOW')
+        if reasons:
+            result['quality'] = 'PARTIAL'
+            result['warm'] = False
+        if result['quality'] == 'PARTIAL':
+            detail['partial_total'] += 1
+            for reason in reasons:
+                detail['partial_reasons'][reason] = detail['partial_reasons'].get(reason, 0) + 1
+        detail['warm_total'] += int(result['warm'])
+        result.update(version=version, algo_version='chip_peak_v1', available_at=available_at,
+                      input_refs=json.dumps({'daily_kline': source.get('version'),
+                                             'window_start': updates[symbol]['window'][0][0],
+                                             'window_end': day, 'bars_used': window['bars_used'],
+                                             'partial_reasons': reasons}, separators=(',', ':')))
+        rows[symbol] = result
+    detail['computed'] += len(rows)
+    return rows, updates
+
+
+def _detail():
+    return {'computed': 0, 'skipped_no_bar': 0, 'skipped_factor_unprocessed': 0,
+            'skipped_already_processed': 0, 'partial_total': 0, 'partial_reasons': {},
+            'warm_total': 0, 'elapsed_seconds': 0, 'aborted': False}
+
+
+def run(request, root, *, store=None, clock=None, dry_run=False):
+    """Build one trading day's indicators with batch reads and marker last."""
+    import hashlib
+    import json
+    import time
+    from datetime import date, datetime, timezone
+    from .auction_amount_facts import _reply, _registered_failure, core_td_database
+    from .td_sink import TaosStore, TdResourceExhausted, td_memory_exhausted
+    clock = clock or time.monotonic
+    started = clock()
+    detail = _detail()
+    try:
+        day = request['trade_date']
+        args = request.get('args', {})
+        mode, from_day = args.get('mode', 'incremental'), args.get('from_date')
+        if date.fromisoformat(day).isoformat() != day or mode not in ('incremental', 'rebuild'):
+            raise ValueError('invalid date or mode')
+        if from_day is not None and (date.fromisoformat(from_day).isoformat() != from_day or from_day > day or mode != 'rebuild'):
+            raise ValueError('invalid from_date')
+    except (KeyError, TypeError, ValueError) as exc:
+        detail['message'] = str(exc)
+        return _reply(64, 'CONFIG_ERROR', detail)
+    if dry_run:
+        return _reply(0, detail=detail)
+    owned = store is None
+    facts = ChipPeakStore(TaosStore(core_td_database())) if owned else store
+    try:
+        facts.ensure_schema()
+        if mode == 'rebuild':
+            return _rebuild(facts, owned, root, day, from_day, started, clock)
+        if owned:
+            from .adjust_factor import AdjustFactorStore
+            bars = facts.store.read_day_rows(day)
+            factors = AdjustFactorStore(facts.store).read_events_many(bars)
+        else:
+            bars = facts.read_day_rows(day)
+            factors = facts.read_events_many(bars)
+        states = facts.read_states(None)
+        if not states:
+            detail['hint'] = 'NEEDS_REBUILD'
+        now = datetime.now(timezone.utc)
+        version, available_at = now.strftime('%Y%m%d%H%M%S%f')[:20], now.isoformat()
+        rows, updates = _calculate_day(day, bars, factors, states, version, available_at, detail)
+        if rows:
+            facts.write_results(day, rows)
+            facts.write_states(updates)
+            digest = hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+            detail['elapsed_seconds'] = round(clock() - started, 3)
+            facts.write_day_marker(day, version, 'PARTIAL' if detail['partial_total'] or 'hint' in detail else 'FORMAL',
+                                   facts.count_day_results(day), digest, available_at, json.dumps(detail, separators=(',', ':')))
+        detail['elapsed_seconds'] = round(clock() - started, 3)
+        return _reply(10 if 'hint' in detail else 0, detail=detail)
+    except Exception as exc:
+        detail['aborted'] = True
+        detail['elapsed_seconds'] = round(clock() - started, 3)
+        if isinstance(exc, TdResourceExhausted) or td_memory_exhausted(exc):
+            return _registered_failure('TD_RESOURCE_EXHAUSTED', detail)
+        raise
+    finally:
+        if owned:
+            facts.store.close()

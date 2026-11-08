@@ -99,3 +99,34 @@ def test_schema_and_state_capacity():
     store.write_states({'600519': state})
     store.write_states({'600519': state})
     assert recorder.sql[-1] == recorder.sql[-2]
+
+
+def test_incremental_replay_preserves_state_and_marker():
+    from engine_core.data_pipeline.chip_peak import run, prepare_window
+    root = Path(__file__).parent / 'fixtures' / 'price_volume_c852'
+    bars = [json.loads(line) for line in (root / 'daily_kline.jsonl').read_text().splitlines()]
+    bars = [b for b in bars if b['symbol'] == '600519' and not b['suspended']]
+    events = json.loads((root / 'factor_events.json').read_text())['600519']
+    state = None
+    for bar in bars[:10]:
+        _, state = prepare_window(bar, events, state)
+    state['last_trade_date'] = bars[9]['ts'][:10]
+    class Store:
+        def __init__(self): self.states = {'600519': state}; self.rows = {}; self.markers = {}
+        def ensure_schema(self): pass
+        def read_day_rows(self, day): return {'600519': bars[10]}
+        def read_states(self, symbols): return self.states.copy()
+        def read_events_many(self, symbols): return {'600519': (events, 'FORMAL')}
+        def write_results(self, day, rows): self.rows.update(rows)
+        def write_states(self, states): self.states.update(states)
+        def read_day_marker(self, day): return self.markers.get(day)
+        def count_day_results(self, day): return len(self.rows)
+        def write_day_marker(self, *args): self.markers[args[0]] = args
+    store = Store()
+    day = bars[10]['ts'][:10]
+    code, reply = run({'trade_date': day}, '.', store=store)
+    assert code == 0 and reply['detail']['computed'] == 1
+    saved = json.dumps([store.states, store.rows, store.markers], sort_keys=True)
+    code, reply = run({'trade_date': day}, '.', store=store)
+    assert code == 0 and reply['detail']['skipped_already_processed'] == 1
+    assert json.dumps([store.states, store.rows, store.markers], sort_keys=True) == saved
