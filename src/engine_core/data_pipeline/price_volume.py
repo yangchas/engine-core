@@ -259,6 +259,17 @@ def run(request, root, *, store=None, clock=None):
             if result is None:
                 detail['skipped_no_bar'] += 1
                 continue
+            previous_close = states.get(symbol, {}).get('previous_close')
+            pre_close = bar.get('pre_close')
+            if (previous_close is not None and pre_close is not None and float(previous_close) != 0
+                    and abs(float(pre_close) - float(previous_close)) / abs(float(previous_close)) > 1e-6
+                    and not any(str(event.get('dividOperateDate'))[:10] == day for event in events)):
+                result['partial_reasons'].append('FACTOR_MAY_BE_STALE')
+                result['quality'] = 'PARTIAL'
+                registry = detail['recompute_registered']
+                registry['count'] += 1
+                if len(registry['samples']) < 20:
+                    registry['samples'].append(symbol)
             state['last_trade_date'] = day
             state['previous_close'] = bar.get('close')
             result.update(version=version, algo_version='price_volume_v1',

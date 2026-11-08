@@ -196,3 +196,26 @@ def test_run_batches_reads_and_skips_unprocessed_factor():
     assert skipped not in store.rows and skipped not in store.states
     assert reply['detail']['skipped_factor_unprocessed'] == 1
     assert store.calls == ['bars', 'factors', 'states', 'results', 'write_states', 'marker']
+
+
+def test_run_registers_stale_factor_from_real_bars():
+    from engine_core.data_pipeline.price_volume import run
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()
+            if json.loads(x)['symbol'] == '600519']
+    bar = bars[-1]
+    day = str(bar['ts'])[:10]
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
+    class Store:
+        def ensure_schema(self): pass
+        def read_day_rows(self, day): return {'600519': bar}
+        def read_states(self, symbols): return {'600519': {'previous_close': bars[0]['close']}}
+        def read_events_many(self, symbols): return {'600519': (events, 'FORMAL')}
+        def write_results(self, day, rows): self.rows = rows
+        def write_states(self, states): pass
+        def write_day_marker(self, *args): self.marker = args
+    store = Store()
+    code, reply = run({'trade_date': day}, '.', store=store)
+    assert code == 0
+    assert 'FACTOR_MAY_BE_STALE' in store.rows['600519']['partial_reasons']
+    assert reply['detail']['recompute_registered'] == {'count': 1, 'samples': ['600519']}
+    assert json.loads(store.marker[6])['recompute_registered']['samples'] == ['600519']
