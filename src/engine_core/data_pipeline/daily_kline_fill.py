@@ -296,7 +296,40 @@ def publish_filled_days(root: Any, store: Any, days: Sequence[str], expected_sym
     return outcomes
 
 
-def make_expected_symbols(catalog: Any) -> Callable[[str], set[str]]:
+def load_listing_snapshot(days: Sequence[str]) -> Mapping[str, Any] | None:
+    from .stock_listing import ReferenceSnapshotStore, listed_on, read_active
+
+    snapshot_store = None
+    try:
+        snapshot_store = ReferenceSnapshotStore()
+        snapshot = read_active(snapshot_store)
+        if snapshot is None:
+            return None
+        if not snapshot["version"]:
+            return None
+        for day in days:
+            listed_on(snapshot["rows"], day)
+        return snapshot
+    except Exception:
+        return None
+    finally:
+        if snapshot_store is not None:
+            try:
+                snapshot_store.close()
+            except Exception:
+                pass
+
+
+def listing_detail(listing: Mapping[str, Any] | None, days: Sequence[str]) -> dict[str, Any]:
+    from .stock_listing import listed_on
+
+    return {"listing_source": "snapshot" if listing is not None else "fallback",
+            "listing_version": listing["version"] if listing is not None else None,
+            "skipped_not_listed": sum(len(listing["rows"]) - len(listed_on(listing["rows"], day))
+                                      for day in days) if listing is not None else 0}
+
+
+def make_expected_symbols(catalog: Any, *, listing: Mapping[str, Any] | None = None) -> Callable[[str], set[str]]:
     """``day -> symbols the day must have``: the newest symbol_universe partition at or before the day (tradable ones);
     for days older than every partition (a deep history load) the stock_static listing dates."""
     universe_dates = sorted((catalog.read().get("datasets", {}).get("symbol_universe", {}).get("dates", {})))
@@ -304,6 +337,11 @@ def make_expected_symbols(catalog: Any) -> Callable[[str], set[str]]:
 
     def expected_symbols(day: str) -> set[str]:
         if day not in memo:
+            if listing is not None:
+                from .stock_listing import listed_on
+                memo[day] = {symbol.rsplit(".", 1)[-1].zfill(6)
+                             for symbol in listed_on(listing["rows"], day)}
+                return memo[day]
             for candidate in reversed([item for item in universe_dates if item <= day]):
                 path = catalog.locate("symbol_universe", candidate)
                 if path is not None:
@@ -340,7 +378,10 @@ def run_daily_kline_fill_from_root(root: Any, target: str, *, args: Mapping[str,
         trading_dates = TradeCalendarStore(base).all_trading_dates()
     from .storage import ArtifactCatalog
     catalog = ArtifactCatalog(base)
-    expected_symbols = make_expected_symbols(catalog)
+    days = sorted(day for day in trading_dates if day <= target)[-max(1, int(options.get("history_min_trading_days", 10))):]
+    listing = load_listing_snapshot(days)
+    detail = listing_detail(listing, days)
+    expected_symbols = make_expected_symbols(catalog, listing=listing)
     no_progress = float(options.get("baostock_no_progress_seconds", 300))
     if client is None:
         import baostock as bs
@@ -371,11 +412,16 @@ def run_daily_kline_fill_from_root(root: Any, target: str, *, args: Mapping[str,
             needs_publish=lambda day: find_published_baostock_manifest(catalog, day, threshold) is None,
             on_complete=lambda done: done.__setitem__(
                 "partitions", publish_filled_days(base, store, done["publish_days"], expected_symbols, threshold)))
+        result.update(detail)
         if result.get("status") == "INCOMPLETE":
             exc = _abort("planned_gaps_remain", {"incomplete_total": result["incomplete_total"]})
             exc.daily_kline_detail = result
             raise exc
         return result
+    except Exception as exc:
+        if hasattr(exc, "daily_kline_detail"):
+            exc.daily_kline_detail.update(detail)
+        raise
     finally:
         if own_store:
             store.close()

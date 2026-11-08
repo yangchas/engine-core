@@ -15,6 +15,67 @@ TARGET = DAYS[-1]
 SYMBOLS = {"000001", "600519", "688981"}
 
 
+def test_listing_snapshot_excludes_delisted_from_fill_plan(tmp_path):
+    from engine_core.data_pipeline.daily_kline_fill import listing_detail, make_expected_symbols
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from test_stock_listing import Client, fetch
+
+    listing = {"version": "fixture", "rows": [row for row in fetch(Client())
+               if row["symbol"] in {"sz.301139", "sh.688796"}]}
+    expected = make_expected_symbols(ArtifactCatalog(tmp_path), listing=listing)
+    assert expected("2026-10-27") == {"301139", "688796"}
+    assert expected("2026-10-28") == {"688796"}
+    assert expected("2026-10-29") == {"688796"}
+    assert listing_detail(listing, ["2026-10-27", "2026-10-28", "2026-10-29"])["skipped_not_listed"] == 2
+    store, client, days = _c806_setup()
+    result = run_daily_kline_fill(days[-1], store=store, client=client, trading_dates=days,
+                                 expected_symbols=expected, depth=len(days), require_all=True)
+    assert client.queries == ["688796"]
+    assert result["incomplete_total"] == 0
+
+
+def test_listing_snapshot_includes_new_stock_only_from_ipo(tmp_path):
+    from engine_core.data_pipeline.daily_kline_fill import make_expected_symbols
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from test_stock_listing import Client, fetch
+
+    listing = {"version": "fixture", "rows": [row for row in fetch(Client())
+               if row["symbol"] in {"sz.001381", "sh.688796", "sh.688797"}]}
+    expected = make_expected_symbols(ArtifactCatalog(tmp_path), listing=listing)
+    assert "001381" not in expected("2026-11-02")
+    assert "001381" in expected("2026-11-03")
+    store, client, days = _c806_setup()
+    query = client.query
+    requests = []
+    def recorded(symbol, start, end):
+        requests.append((symbol, start, end))
+        return [] if symbol == "001381" else query(symbol, start, end)
+    client.query = recorded
+    run_daily_kline_fill(days[-1], store=store, client=client, trading_dates=days,
+                         expected_symbols=expected, depth=len(days), require_all=True)
+    assert next(start for symbol, start, _ in requests if symbol == "001381") == "2026-11-03"
+
+
+def test_listing_unavailable_falls_back_in_production_reply(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import daily_kline_fill as module
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from test_stock_listing import Client, fetch
+
+    rows = fetch(Client())
+    ArtifactCatalog(tmp_path).commit("symbol_universe", "2026-10-27",
+        [{"symbol": row["symbol"].split(".")[-1], "trade_status": row["status"]} for row in rows],
+        {"trade_date": "2026-10-27"}, source="baostock")
+    monkeypatch.setattr(module, "load_listing_snapshot", lambda days: None)
+    def run(target, **kwargs):
+        assert "301139" not in kwargs["expected_symbols"](target)
+        assert "001381" in kwargs["expected_symbols"](target)
+        return {"status": "NO_GAPS"}
+    monkeypatch.setattr(module, "run_daily_kline_fill", run)
+    result = module.run_daily_kline_fill_from_root(tmp_path, "2026-10-28", store=MemoryTdStore(),
+        client=object(), trading_dates=["2026-10-28"], args={"fill_lease": "off"})
+    assert result["listing_source"] == "fallback" and result["listing_version"] is None
+
+
 class FixtureClient:
     """Serves the recorded Baostock rows through the same parser the real range client uses."""
 
