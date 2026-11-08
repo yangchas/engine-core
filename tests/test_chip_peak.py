@@ -162,3 +162,17 @@ def test_rebuild_and_incremental_match_real_windows():
     saved = json.dumps([replay.states, replay.rows, replay.markers], sort_keys=True)
     assert run({'trade_date': days[-3]}, '.', store=replay)[1]['detail']['skipped_already_processed'] == 1
     assert json.dumps([replay.states, replay.rows, replay.markers], sort_keys=True) == saved
+
+
+def test_cli_dry_run_without_services():
+    import os
+    import subprocess
+    import sys
+    env = dict(os.environ, GUARDIAN_DRY_RUN='1')
+    env.pop('TD_CONFIG', None)
+    env.pop('REDIS_URL', None)
+    script = Path(__file__).parents[1] / 'examples' / 'build_chip_peak.py'
+    result = subprocess.run([sys.executable, str(script), '--date', '2026-11-06', '--mode', 'rebuild',
+                             '--from-date', '2026-01-01'], env=env, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)['status'] == 'ok'
