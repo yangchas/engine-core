@@ -36,3 +36,16 @@ def test_store_replaces_before_deleting_stale_dates():
     assert writes[0].startswith('INSERT')
     assert writes[-1].startswith('DELETE')
     assert rows[0]['dividOperateDate'] not in [r['dividOperateDate'] for r in rows[1:3]]
+
+
+def test_detect_suspected_real_adjacent_days():
+    import gzip
+    from engine_core.data_pipeline.adjust_factor import detect_suspected
+    root = Path(__file__).parent / 'fixtures/real'
+    path = root / 'core_artifacts/c522/daily_kline/2026-10-23/formal/rows.jsonl.gz'
+    with gzip.open(path, 'rt') as stream:
+        previous = next(json.loads(line) for line in stream if '"600519"' in line)
+    raw = json.loads((root / 'wencai_daily_kline_2026-10-26_2109.json').read_text())['rows']
+    current = next(row for row in raw if row['code'] == '600519')
+    assert detect_suspected({'600519': {'pre_close': current['前收盘价:不复权[20261026]']}},
+                            {'600519': previous}) == set()

@@ -112,3 +112,18 @@ class AdjustFactorStore:
         values = [day, version, business_status, row_count, sha256, available_at, quality, missing_whitelist]
         self.store._run(f'INSERT INTO {self.database}.adjust_factor_days VALUES '
                         f"({trade_day_ts_us(day)}, " + ', '.join(_literal(value) for value in values) + ')')
+
+
+def detect_suspected(day_rows, prev_rows):
+    """Find relative pre-close differences; missing or invalid prices are not zero."""
+    result = set()
+    for symbol, row in day_rows.items():
+        try:
+            previous = Decimal(str(prev_rows[symbol]['close']))
+            current = Decimal(str(row['pre_close']))
+            if (previous.is_finite() and current.is_finite() and previous > 0 and current > 0
+                    and abs(current - previous) / previous > Decimal('0.000001')):
+                result.add(symbol)
+        except (KeyError, TypeError, ValueError, InvalidOperation):
+            continue
+    return result
