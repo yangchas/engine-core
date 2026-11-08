@@ -333,6 +333,7 @@ class TaosStore:
         self.database = validate_database_name(database)
         self._connect_fn = connect or self._default_connect
         self._conn: Any = None
+        self.shard_events: list[dict[str, int]] = []
 
     @staticmethod
     def _default_connect() -> Any:
@@ -488,31 +489,36 @@ class TaosStore:
     def _day_filter(self, trade_date: str) -> str:
         return f"ts = {trade_day_ts_us(trade_date)}"
 
+    def _day_scan(self, sql: str, *, suffix: str = "", strict: bool = False) -> tuple[list[tuple], bool]:
+        """Retry a day-filtered stable scan over disjoint, exhaustive symbol ranges."""
+        try:
+            return self._run(sql + suffix, missing_ok=True, strict=strict), False
+        except TdResourceExhausted:
+            pass
+        for segments in (4, 8, 16):
+            bounds = {4: list("257"), 8: list("1234567"), 16: list("123456789ABCDEF")}[segments]
+            self.shard_events.append({"segments": segments})
+            rows = []
+            try:
+                for index in range(segments):
+                    where = (f" AND symbol >= '{bounds[index - 1]}'" if index else "")
+                    where += (f" AND symbol < '{bounds[index]}'" if index < len(bounds) else "")
+                    rows.extend(self._run(sql + where + suffix, missing_ok=True, strict=strict))
+                return rows, True
+            except TdResourceExhausted:
+                if segments == 16:
+                    raise
+        raise AssertionError("unreachable")
+
     def day_aggregates(self, trade_date: str) -> dict[str, Any]:
         _check_date(trade_date)
         sql = (
             "SELECT COUNT(*), SUM(close), COUNT(close), SUM(amount_yuan), COUNT(amount_yuan), SUM(volume_shares), "
             "COUNT(volume_shares), SUM(pct_chg), COUNT(pct_chg), COUNT(open), COUNT(turnover_pct) "
             f"FROM {self.database}.{SUPER_TABLE} WHERE {self._day_filter(trade_date)}")
-        try:
-            rows = self._run(sql, missing_ok=True)
-        except TdResourceExhausted:
-            for segments in (4, 8, 16):
-                # Unbounded end intervals cover the whole tag domain, including nonstandard symbols.
-                bounds = {4: list("257"), 8: list("1234567"),
-                          16: list("123456789ABCDEF")}[segments]
-                shards = []
-                try:
-                    for index in range(segments):
-                        where = (f" AND symbol >= '{bounds[index - 1]}'" if index else "")
-                        where += (f" AND symbol < '{bounds[index]}'" if index < len(bounds) else "")
-                        shards.extend(self._run(sql + where, missing_ok=True))
-                except TdResourceExhausted:
-                    if segments == 16:
-                        raise
-                    continue
-                rows = [tuple(sum((row[i] or 0) for row in shards) for i in range(11))] if shards else []
-                break
+        rows, sharded = self._day_scan(sql)
+        if sharded and rows:
+            rows = [tuple(sum((row[i] or 0) for row in rows) for i in range(11))]
         if not rows:
             return {"count": 0, "sum_close": 0.0, "n_close": 0, "sum_amount": 0.0, "n_amount": 0, "sum_volume": 0,
                     "n_volume": 0, "sum_pct": 0.0, "n_pct": 0, "n_open": 0, "n_turnover": 0}
@@ -556,10 +562,10 @@ class TaosStore:
         out = {day: 0 for day in ordered}
         if not ordered:
             return out
-        timestamps = {trade_day_ts_us(day): day for day in ordered}
-        values = ", ".join(str(ts) for ts in timestamps)
-        rows = self._run(f"SELECT CAST(ts AS BIGINT), COUNT(*) FROM {self.database}.{SUPER_TABLE} "
-                         f"WHERE ts IN ({values}) GROUP BY ts", missing_ok=True)
+        values = ", ".join(str(trade_day_ts_us(day)) for day in ordered)
+        sql = (f"SELECT CAST(ts AS BIGINT), COUNT(*) FROM {self.database}.{SUPER_TABLE} "
+               f"WHERE ts IN ({values})")
+        rows, _ = self._day_scan(sql, suffix=" GROUP BY ts")
         for value, count in rows:
             if isinstance(value, datetime):
                 day = value.date().isoformat()
@@ -570,7 +576,7 @@ class TaosStore:
             else:
                 day = str(value or "")[:10]
             if day in out:
-                out[day] = int(count or 0)
+                out[day] += int(count or 0)
         return out
 
     def symbols_on_day(self, day: str) -> set[str]:

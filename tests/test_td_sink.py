@@ -371,6 +371,23 @@ def test_day_aggregates_memory_retry_merges_shards(monkeypatch):
     assert len(calls) == 5
 
 
+def test_day_counts_memory_retry_merges_shards(monkeypatch):
+    from engine_core.data_pipeline.td_sink import TaosStore, TdResourceExhausted, trade_day_ts_us
+    store = TaosStore('core_data')
+    ts = trade_day_ts_us('2026-11-05')
+    monkeypatch.setattr(store, '_run', lambda sql, **kw: [(ts, 4)])
+    expected = store.day_counts(['2026-11-05'])
+    calls = []
+    def query(sql, **kw):
+        calls.append(sql)
+        if len(calls) == 1:
+            raise TdResourceExhausted('Query memory exhausted')
+        return [(ts, 1)]
+    monkeypatch.setattr(store, '_run', query)
+    assert store.day_counts(['2026-11-05']) == expected
+    assert len(calls) == 5
+
+
 def test_day_aggregates_other_error_is_not_retried(monkeypatch):
     from engine_core.data_pipeline.td_sink import TaosStore, TdUnavailable
     store = TaosStore('core_data')

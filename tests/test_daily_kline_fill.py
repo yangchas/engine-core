@@ -689,6 +689,7 @@ def test_resource_failure_reply_includes_publish_progress(monkeypatch, tmp_path)
     from engine_core.guardian.contract import check_reply
 
     store, client, days = _c806_setup()
+    store.shard_events = [{"segments": 4}]
     def publish(root, store, days, expected, threshold, progress):
         progress.update(completed_days=1, published_days=1, current_day=days[1])
         raise TdResourceExhausted('Query memory exhausted')
@@ -704,4 +705,7 @@ def test_resource_failure_reply_includes_publish_progress(monkeypatch, tmp_path)
     assert reply['detail']['completed_days'] == reply['detail']['published_days'] == 1
     assert reply['detail']['current_day'] == days[1]
     assert all(k in reply['detail'] for k in ('planned_days', 'requested', 'rows_written'))
+    assert reply['detail']['published_partitions'] == 1
+    assert reply['detail']['publish_skipped'] is False
+    assert reply['detail']['shard_events'] == [{"segments": 4}]
     assert check_reply(code, reply) == []
