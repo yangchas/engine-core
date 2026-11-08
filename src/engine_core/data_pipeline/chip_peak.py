@@ -328,3 +328,60 @@ def run(request, root, *, store=None, clock=None, dry_run=False):
     finally:
         if owned:
             facts.store.close()
+
+
+def _rebuild(facts, owned, root, day, from_day, started, clock):
+    import hashlib
+    import json
+    from datetime import datetime, timezone
+    from .auction_amount_facts import _reply
+    if owned:
+        from .trade_calendar import TradeCalendarStore
+        from .td_sink import SUPER_TABLE, trade_day_ts_us
+        days = TradeCalendarStore(root).all_trading_dates()
+        read_day = facts.store.read_day_rows
+    else:
+        days = facts.trading_dates(day)
+        read_day = facts.read_day_rows
+    days = sorted(d for d in days if d <= day)
+    if not days or day not in days:
+        raise ValueError('rebuild calendar does not cover target date')
+    if owned:
+        sql = f'SELECT COUNT(*) FROM {facts.store.database}.{SUPER_TABLE} WHERE ts < {trade_day_ts_us(days[0])}'
+        counts, _ = facts.store._day_scan(sql, strict=True)
+        if any(row[0] for row in counts):
+            raise ValueError('rebuild calendar does not cover earliest available daily bar')
+    history = [(d, read_day(d)) for d in days]
+    symbols = set().union(*(set(bars) for _, bars in history))
+    if owned:
+        from .adjust_factor import AdjustFactorStore
+        factors = AdjustFactorStore(facts.store).read_events_many(symbols)
+    else:
+        factors = facts.read_events_many(symbols)
+    existing = facts.read_states(None)
+    computable = {s for _, bars in history for s, bar in bars.items() if not bar.get('suspended')}
+    if any(state.get('last_trade_date', '') > day and
+           (s not in computable or factors.get(s, (None, 'UNPROCESSED'))[1] == 'UNPROCESSED')
+           for s, state in existing.items()):
+        raise ValueError('rebuild cannot replace future states without usable historical inputs')
+    now = datetime.now(timezone.utc)
+    version, available_at = now.strftime('%Y%m%d%H%M%S%f')[:20], now.isoformat()
+    states, markers, detail = {}, [], _detail()
+    for current, bars in history:
+        daily = _detail()
+        rows, updates = _calculate_day(current, bars, factors, states, version, available_at, daily)
+        states.update(updates)
+        for key in ('computed', 'skipped_no_bar', 'skipped_factor_unprocessed', 'partial_total', 'warm_total'):
+            detail[key] += daily[key]
+        for reason, count in daily['partial_reasons'].items():
+            detail['partial_reasons'][reason] = detail['partial_reasons'].get(reason, 0) + count
+        if current >= (from_day or days[0]) and rows:
+            facts.write_results(current, rows)
+            digest = hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+            markers.append((current, version, 'PARTIAL' if daily['partial_total'] else 'FORMAL',
+                            facts.count_day_results(current), digest, available_at, json.dumps(daily, separators=(',', ':'))))
+    facts.write_states(states)
+    for marker in markers:
+        facts.write_day_marker(*marker)
+    detail['elapsed_seconds'] = round(clock() - started, 3)
+    return _reply(0, detail=detail)

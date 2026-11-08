@@ -130,3 +130,35 @@ def test_incremental_replay_preserves_state_and_marker():
     code, reply = run({'trade_date': day}, '.', store=store)
     assert code == 0 and reply['detail']['skipped_already_processed'] == 1
     assert json.dumps([store.states, store.rows, store.markers], sort_keys=True) == saved
+
+
+def test_rebuild_and_incremental_match_real_windows():
+    from engine_core.data_pipeline.chip_peak import FIELDS, run
+    root = Path(__file__).parent / 'fixtures' / 'price_volume_c852'
+    bars = [json.loads(line) for line in (root / 'daily_kline.jsonl').read_text().splitlines()]
+    bars = [b for b in bars if b['symbol'] == '600519' and not b['suspended']][:12]
+    events = json.loads((root / 'factor_events.json').read_text())['600519']
+    days = [b['ts'][:10] for b in bars]
+    class Store:
+        def __init__(self): self.states = {}; self.rows = {}; self.markers = {}
+        def ensure_schema(self): pass
+        def trading_dates(self, day): return days
+        def read_day_rows(self, day): return {'600519': bars[days.index(day)]}
+        def read_states(self, symbols): return self.states.copy()
+        def read_events_many(self, symbols): return {'600519': (events, 'FORMAL')}
+        def write_results(self, day, rows): self.rows.setdefault(day, {}).update(rows)
+        def write_states(self, states): self.states.update(states)
+        def count_day_results(self, day): return len(self.rows.get(day, {}))
+        def write_day_marker(self, *args): self.markers[args[0]] = args
+    full, replay = Store(), Store()
+    assert run({'trade_date': days[-1], 'args': {'mode': 'rebuild'}}, '.', store=full)[0] == 0
+    assert run({'trade_date': days[-3], 'args': {'mode': 'rebuild'}}, '.', store=replay)[0] == 0
+    for day in days[-2:]:
+        assert run({'trade_date': day}, '.', store=replay)[0] == 0
+    assert replay.states == full.states
+    for day in days:
+        a, b = full.rows[day]['600519'], replay.rows[day]['600519']
+        assert {k: a[k] for k in FIELDS + ('quality', 'warm', 'bars_used', 'input_refs')} == {k: b[k] for k in FIELDS + ('quality', 'warm', 'bars_used', 'input_refs')}
+    saved = json.dumps([replay.states, replay.rows, replay.markers], sort_keys=True)
+    assert run({'trade_date': days[-3]}, '.', store=replay)[1]['detail']['skipped_already_processed'] == 1
+    assert json.dumps([replay.states, replay.rows, replay.markers], sort_keys=True) == saved
