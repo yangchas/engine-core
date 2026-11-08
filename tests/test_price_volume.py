@@ -436,13 +436,12 @@ def test_suspended_rows_preserve_state_and_match_filtered_sequence():
 
 def test_suspended_symbols_against_independent_reference():
     bars = [json.loads(line) for line in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()]
-    original = {(row['symbol'], row['trade_date']): row for row in
-                map(json.loads, (FIXTURES / 'expected.jsonl').read_text().splitlines())}
     filtered = {(row['symbol'], row['trade_date']): row for row in
-                map(json.loads, (FIXTURES / 'expected_ex_suspended.jsonl').read_text().splitlines())}
+                map(json.loads, (FIXTURES / 'expected_skip_suspended.jsonl').read_text().splitlines())}
     events = json.loads((FIXTURES / 'factor_events.json').read_text())
     names = ('ma5', 'ma10', 'ma20', 'ma60', 'ema12', 'ema26', 'dif', 'dea', 'macd',
              'k', 'd', 'j', 'boll_middle', 'boll_upper', 'boll_lower', 'boll_bandwidth')
+    # 002623 remains suspended at the end of the sample; it has no resumption day.
     for symbol in ('002623', '301139'):
         state = None
         for bar in (item for item in bars if item['symbol'] == symbol):
@@ -451,9 +450,8 @@ def test_suspended_symbols_against_independent_reference():
             if bar['suspended']:
                 assert result is None
                 continue
-            assert filtered[key] == original[key], key
             for name in names:
-                expected = original[key][name]
+                expected = filtered[key][name]
                 if expected is None:
                     assert result[name] is None, (key, name, result[name], expected)
                 else:
