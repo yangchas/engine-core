@@ -207,7 +207,11 @@ def _run_daily_kline_fill(request, root, target: str, args) -> tuple[int, dict]:
                         "retryable": True, "artifacts": [],
                         "detail": {**getattr(exc, "daily_kline_detail", {}), "message": str(exc)[:300],
                                    "raw_error_code": "BAOSTOCK_GAP_UNRESOLVED"}}
-        return _failure_response(request, error=exc)
+        code, reply = _failure_response(request, error=exc)
+        detail = getattr(exc, "daily_kline_detail", None)
+        if isinstance(detail, dict):
+            reply["detail"] = {**detail, "message": str(exc)[:300]}
+        return code, reply
     if result.get("status") == "BUSY":
         return 20, {"contract": 1, "status": "not_applicable", "error_code": "ALREADY_SATISFIED", "retryable": False,
                     "artifacts": [], "detail": result}

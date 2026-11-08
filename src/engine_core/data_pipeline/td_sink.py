@@ -490,10 +490,29 @@ class TaosStore:
 
     def day_aggregates(self, trade_date: str) -> dict[str, Any]:
         _check_date(trade_date)
-        rows = self._run(
+        sql = (
             "SELECT COUNT(*), SUM(close), COUNT(close), SUM(amount_yuan), COUNT(amount_yuan), SUM(volume_shares), "
             "COUNT(volume_shares), SUM(pct_chg), COUNT(pct_chg), COUNT(open), COUNT(turnover_pct) "
-            f"FROM {self.database}.{SUPER_TABLE} WHERE {self._day_filter(trade_date)}", missing_ok=True)
+            f"FROM {self.database}.{SUPER_TABLE} WHERE {self._day_filter(trade_date)}")
+        try:
+            rows = self._run(sql, missing_ok=True)
+        except TdResourceExhausted:
+            for segments in (4, 8, 16):
+                # Unbounded end intervals cover the whole tag domain, including nonstandard symbols.
+                bounds = {4: list("257"), 8: list("1234567"),
+                          16: list("123456789ABCDEF")}[segments]
+                shards = []
+                try:
+                    for index in range(segments):
+                        where = (f" AND symbol >= '{bounds[index - 1]}'" if index else "")
+                        where += (f" AND symbol < '{bounds[index]}'" if index < len(bounds) else "")
+                        shards.extend(self._run(sql + where, missing_ok=True))
+                except TdResourceExhausted:
+                    if segments == 16:
+                        raise
+                    continue
+                rows = [tuple(sum((row[i] or 0) for row in shards) for i in range(11))] if shards else []
+                break
         if not rows:
             return {"count": 0, "sum_close": 0.0, "n_close": 0, "sum_amount": 0.0, "n_amount": 0, "sum_volume": 0,
                     "n_volume": 0, "sum_pct": 0.0, "n_pct": 0, "n_open": 0, "n_turnover": 0}

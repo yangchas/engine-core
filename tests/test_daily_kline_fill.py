@@ -680,3 +680,28 @@ def test_c827_cli_failure_reply_includes_statistics(monkeypatch, capsys):
         'rows_written', 'incomplete_total', 'upstream_empty_total', 'listing_source',
         'published_partitions', 'publish_skipped'))
     assert detail['incomplete_total'] is None and isinstance(detail['publish_skipped'], bool)
+
+
+def test_resource_failure_reply_includes_publish_progress(monkeypatch, tmp_path):
+    from examples import guardian_handler
+    from engine_core.data_pipeline import daily_kline_fill as module
+    from engine_core.data_pipeline.td_sink import TdResourceExhausted
+    from engine_core.guardian.contract import check_reply
+
+    store, client, days = _c806_setup()
+    def publish(root, store, days, expected, threshold, progress):
+        progress.update(completed_days=1, published_days=1, current_day=days[1])
+        raise TdResourceExhausted('Query memory exhausted')
+    monkeypatch.setattr(module, 'publish_filled_days', publish)
+    monkeypatch.setattr(module, 'load_listing_snapshot', lambda days: None)
+    monkeypatch.setattr(module, 'make_expected_symbols', lambda *a, **kw: lambda day: {'688796', '688797'})
+    run = module.run_daily_kline_fill_from_root
+    monkeypatch.setattr(module, 'run_daily_kline_fill_from_root', lambda root, target, args: run(
+        root, target, args={'fill_lease': 'off', 'history_min_trading_days': len(days)},
+        store=store, client=client, trading_dates=days))
+    code, reply = guardian_handler._run_daily_kline_fill({}, tmp_path, days[-1], {})
+    assert (code, reply['error_code'], reply['retryable']) == (75, 'TD_RESOURCE_EXHAUSTED', True)
+    assert reply['detail']['completed_days'] == reply['detail']['published_days'] == 1
+    assert reply['detail']['current_day'] == days[1]
+    assert all(k in reply['detail'] for k in ('planned_days', 'requested', 'rows_written'))
+    assert check_reply(code, reply) == []

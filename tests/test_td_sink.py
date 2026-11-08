@@ -350,3 +350,36 @@ def test_other_non_baostock_labelled_version_is_still_rejected(tmp_path):
     with pytest.raises(TdSourceRejected, match="wencai"):
         DailyKlineTdSink(store, tmp_path).prepare_progress(DAY, [rows[0]["symbol"]])
     assert store.day_counts([DAY]) == {DAY: 1}   # rejected before anything was dropped
+
+
+def test_day_aggregates_memory_retry_merges_shards(monkeypatch):
+    from engine_core.data_pipeline.td_sink import TaosStore, TdResourceExhausted
+
+    store = TaosStore('core_data')
+    whole = (4, 10.0, 4, 100.0, 4, 40, 4, 2.0, 4, 4, 4)
+    part = (1, 2.5, 1, 25.0, 1, 10, 1, 0.5, 1, 1, 1)
+    monkeypatch.setattr(store, '_run', lambda sql, **kw: [whole])
+    expected = store.day_aggregates('2026-11-05')
+    calls = []
+    def query(sql, **kw):
+        calls.append(sql)
+        if len(calls) == 1:
+            raise TdResourceExhausted('Query memory exhausted')
+        return [part]
+    monkeypatch.setattr(store, '_run', query)
+    assert store.day_aggregates('2026-11-05') == expected
+    assert len(calls) == 5
+
+
+def test_day_aggregates_other_error_is_not_retried(monkeypatch):
+    from engine_core.data_pipeline.td_sink import TaosStore, TdUnavailable
+    store = TaosStore('core_data')
+    error = TdUnavailable('other')
+    calls = []
+    def query(sql, **kwargs):
+        calls.append(sql)
+        raise error
+    monkeypatch.setattr(store, '_run', query)
+    with pytest.raises(TdUnavailable) as caught:
+        store.day_aggregates('2026-11-05')
+    assert caught.value is error and len(calls) == 1
