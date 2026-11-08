@@ -649,6 +649,8 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
         # TD error is retryable; Guardian can resume from the single aggregate watermark query.
         summary = {"database": store.database, "target_date": target,
                    "candidate_symbols": len(candidates), "requested_symbols": len(requested),
+                   "requested": len(requested), "skipped_complete": skipped_completed,
+                   "failed_total": len(failed),
                    "skipped_completed_symbols": skipped_completed,
                    "request_count": request_count, "history_trading_days": int(history_trading_days),
                    "max_workers": int(max_workers), "requested_max_workers": requested_workers, "written_symbols": written_symbols,
@@ -678,6 +680,7 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
         if missing_target_rows:
             summary["failed"] = [{"symbol": symbol, "reason": "td_target_date_row_missing"}
                                  for symbol in missing_target_rows]
+            summary["failed_total"] = len(missing_target_rows)
             summary["status"] = "failed"
             summary["error_code"] = "DDE_SYNC_INCOMPLETE_RETRYABLE"
             print(f"DDE_FAILED target={target} written={written_symbols} failed={len(missing_target_rows)} "

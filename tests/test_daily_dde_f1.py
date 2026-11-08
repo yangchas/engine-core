@@ -106,3 +106,11 @@ def test_day_marker_invalidated_before_writes_and_published_after_verification()
     assert store.events[0] == ('invalidate', {'2026-11-06'})
     assert store.events[-1] == ('publish', '2026-11-06')
     assert next(i for i, event in enumerate(store.events) if event[0] == 'invalidate' and '2026-11-06' in event[1]) < next(i for i, event in enumerate(store.events) if event[0] == 'write')
+
+
+def test_detail_has_fixed_fields_and_worker_clamp():
+    raw = json.loads((Path(__file__).parent / 'fixtures/dde_c841/000001.json').read_text())
+    result = run_daily_dde_sync(['000001'], '2026-11-06', store=RecordingDdeStore(),
+                                fetcher=lambda *_: raw, attempts=1, skip_redis=True)
+    assert {'requested', 'written_symbols', 'rows_written', 'skipped_complete', 'failed_total',
+            'unknown_missing_total', 'revised_days', 'revised_symbols', 'elapsed_seconds', 'aborted'} <= result.keys()
