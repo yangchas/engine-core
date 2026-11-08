@@ -207,3 +207,14 @@ def test_auction_amount_facts_daily_schedule_and_policy():
         assert events[event_id]["args"]["prep_degradable_steps"] == ["plate_amount_baseline"]
     assert (events["plate_amount_baseline_0815"]["at"], events["plate_amount_baseline_0815"]["deadline"],
             events["plate_amount_baseline_0815"]["profile"]) == ("08:15:00", "08:25:00", "policy_12")
+
+
+def test_stock_listing_precedes_backfill_on_trading_days():
+    events = {event["event_id"]: event for event in SCHEDULE["events"]}
+    listing = events["stock_listing_0045"]
+    backfill = events["daily_kline_backfill"]
+    assert listing["calendar"] == "trading_day"
+    assert (listing["trigger_type"], listing["phases"]) == (backfill["trigger_type"], backfill["phases"])
+    assert listing["args"]["target"] == backfill["args"]["target"] == "prev_trade_day"
+    assert listing["at"] < backfill["at"]
+    assert listing.get("cost") != "heavy"

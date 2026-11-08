@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from engine_core.data_pipeline.stock_listing import fetch, listed_on, run
 
 FIXTURE = json.loads((Path(__file__).parent / 'fixtures/stock_listing_c819/basic_subset.json').read_text())
@@ -72,3 +74,15 @@ def test_run_rejects_too_few_rows():
     code, reply = run('2026-11-08', store=store, fetcher=lambda: fetch(Client()))
     assert reply['status'] == 'failed' and code != 0
     assert store.active is None and store.writes == 0
+
+
+@pytest.mark.parametrize(('message', 'error_code'), [
+    ('baostock_login_failed', 'BAOSTOCK_LOGIN_FAILED'),
+    ('baostock_stock_basic_failed', 'BAOSTOCK_RANGE_FAILED'),
+])
+def test_run_maps_baostock_failures(message, error_code):
+    def fail():
+        raise RuntimeError(message)
+
+    code, reply = run('2026-11-08', store=Store(), fetcher=fail)
+    assert code == 75 and reply['error_code'] == error_code

@@ -7,6 +7,7 @@ import contextlib
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -401,6 +402,22 @@ def _run_event(request):
         if request.get("asof") or request.get("now"):
             today_request["as_of"] = request.get("asof") or request.get("now")
         return run_limit_up_today(today_request, root, dry_run=dry)
+    if name == "postmarket_data" and args.get("dataset") == "stock_listing":
+        if dry:
+            return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
+                       "artifacts": [], "detail": "stock_listing dry run"}
+        if not request.get("data_date"):
+            return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                        "retryable": False, "detail": "stock_listing_target_unavailable"}
+        result = subprocess.run([sys.executable, str(ROOT / "examples" / "build_stock_listing.py"),
+                                 "--date", target_day], capture_output=True, text=True, check=False)
+        try:
+            reply = json.loads(result.stdout.strip().splitlines()[-1])
+            if not isinstance(reply, dict):
+                raise ValueError("reply is not an object")
+        except (IndexError, ValueError):
+            return _failure_response(request, error=ValueError("invalid stock listing job reply"))
+        return result.returncode, reply
     if name == "postmarket_data" and args.get("dataset") == "auction_amount_facts":
         from engine_core.data_pipeline.auction_amount_facts import run as run_auction_amount_facts
         end_date = (date.fromisoformat(str(trade_date)) - timedelta(days=1)).isoformat()

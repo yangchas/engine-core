@@ -1953,6 +1953,21 @@
       ],
       "trigger_type": "window",
       "policy": "policy_13"
+    },
+    "stock_listing": {
+      "args": {
+        "dataset": "stock_listing",
+        "target": "prev_trade_day"
+      },
+      "calendar": "trading_day",
+      "enabled": true,
+      "handler": "postmarket_data",
+      "late_until": "00:59:00",
+      "phases": [
+        "any"
+      ],
+      "trigger_type": "window",
+      "policy": "kline_backfill"
     }
   },
   "timeline": [
@@ -1991,6 +2006,11 @@
           "fn": "limit_reasons_d",
           "id": "limit_reasons_d1",
           "deadline": "08:50:00"
+        },
+        {
+          "fn": "stock_listing",
+          "id": "stock_listing_0045",
+          "deadline": "00:59:00"
         }
       ]
     },
@@ -3199,6 +3219,7 @@
     "runtime_reconcile_1745",
     "runtime_reconcile_1930",
     "runtime_reconcile_2100",
+    "stock_listing_0045",
     "daily_kline_backfill",
     "limit_up_detail_d1",
     "td_resource_check_0055",

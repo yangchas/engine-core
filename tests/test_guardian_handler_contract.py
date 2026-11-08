@@ -162,6 +162,17 @@ def test_every_schedule_event_dispatches_to_its_handler(monkeypatch):
     called = []
     seen_opts = []
     backfill_calls = []
+    listing_calls = []
+    original_run = subprocess.run
+
+    def isolated_run(argv, *args, **kwargs):
+        if isinstance(argv, (list, tuple)) and any(str(x).endswith("build_stock_listing.py") for x in argv):
+            listing_calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"contract": 1, "status": "ok",
+                "error_code": "", "retryable": False, "artifacts": [], "detail": "stub"}), "")
+        return original_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", isolated_run)
 
     # The dispatch smoke test uses the event's real schedule args. Its date and
     # neighbours come from the captured BaoStock calendar response, normalized
@@ -233,6 +244,22 @@ def test_every_schedule_event_dispatches_to_its_handler(monkeypatch):
     for call, event in zip(backfill_calls, fills):
         assert call[0] == root and call[2] == event["args"], event["event_id"]
     assert [c[1] for c, e in zip(backfill_calls, fills) if e["handler"] == "daily_kline_backfill"] == ["2026-10-16"]
+    assert len(listing_calls) == 1 and listing_calls[0][-2:] == ["--date", trade_date]
+
+
+def test_stock_listing_dry_run_never_invokes_baostock(monkeypatch):
+    from examples import guardian_handler
+    from engine_core.data_pipeline import stock_listing
+    from engine_core.guardian.contract import check_reply
+
+    monkeypatch.setenv("GUARDIAN_DRY_RUN", "1")
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Baostock must not be invoked")
+    monkeypatch.setattr(stock_listing, "_fetch_live", forbidden)
+    monkeypatch.setattr(guardian_handler.subprocess, "run", forbidden)
+    code, reply = guardian_handler._run(_core_request("stock_listing_0045"))
+    assert code == 0 and reply["status"] == "ok"
+    assert check_reply(code, reply) == []
 
 
 def test_successful_command_fails_when_postcondition_is_missing(monkeypatch):
