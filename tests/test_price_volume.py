@@ -83,6 +83,31 @@ def test_real_reference_all_symbols_and_new_listing():
                 assert result[name] == pytest.approx(value, rel=1e-9, abs=1e-12), (symbol, day, name)
 
 
+def test_schema_variable_column_widths():
+    import re
+    from engine_core.data_pipeline.price_volume import PriceVolumeStore
+
+    class Recorder:
+        database = 'core_data'
+        def __init__(self):
+            self.sql = []
+        def _run(self, sql):
+            self.sql.append(sql)
+
+    recorder = Recorder()
+    PriceVolumeStore(recorder).ensure_schema()
+    assert len(recorder.sql) == 3
+    for sql in recorder.sql:
+        columns, _, tags = sql.partition(' TAGS ')
+        widths = re.findall(r'\b(VARCHAR|NCHAR|BINARY)\s*\(\s*(\d+)\s*\)', columns, re.I)
+        tag_widths = re.findall(r'\b(VARCHAR|NCHAR|BINARY)\s*\(\s*(\d+)\s*\)', tags, re.I)
+        assert widths
+        assert all(0 < int(n) <= 60000 for _, n in widths + tag_widths)
+        # TD NCHAR reserves four bytes per character.
+        assert sum(int(n) * (4 if kind.upper() == 'NCHAR' else 1)
+                   for kind, n in widths) <= 60100, sql
+
+
 def test_state_snapshot_capacity_and_fixed_timestamp():
     from engine_core.data_pipeline.price_volume import PriceVolumeStore, STATE_JSON_CAPACITY
 

@@ -123,7 +123,7 @@ class PriceVolumeStore:
                                 for name in _RESULT_COLUMNS)
         self.store._run(f'CREATE STABLE IF NOT EXISTS {db}.price_volume_indicators_v1 '
                         '(ts TIMESTAMP, version VARCHAR(24), algo_version VARCHAR(128), '
-                        'input_refs NCHAR(16384), available_at VARCHAR(40), quality VARCHAR(16), '
+                        'input_refs NCHAR(12000), available_at VARCHAR(40), quality VARCHAR(16), '
                         f'warm BOOL, {definitions}) TAGS (symbol VARCHAR(8))')
         self.store._run(f'CREATE STABLE IF NOT EXISTS {db}.price_volume_state_v1 '
                         f'(ts TIMESTAMP, state_json VARCHAR({STATE_JSON_CAPACITY})) TAGS (symbol VARCHAR(8))')
