@@ -307,6 +307,10 @@ def run(request, root, *, store=None, clock=None, dry_run=False):
         states = facts.read_states(None)
         if not states:
             detail['hint'] = 'NEEDS_REBUILD'
+            detail['elapsed_seconds'] = round(clock() - started, 3)
+            code, reply = _reply(10, detail=detail)
+            reply['reason'] = 'NEEDS_REBUILD'
+            return code, reply
         now = datetime.now(timezone.utc)
         version, available_at = now.strftime('%Y%m%d%H%M%S%f')[:20], now.isoformat()
         rows, updates = _calculate_day(day, bars, factors, states, version, available_at, detail)

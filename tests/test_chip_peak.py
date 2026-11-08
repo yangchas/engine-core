@@ -8,6 +8,28 @@ from engine_core.data_pipeline.chip_peak import calculate_windows
 PACK = Path(__file__).parent / 'fixtures' / 'chip_peak_c879'
 
 
+def test_incremental_empty_state_never_writes():
+    from engine_core.data_pipeline.chip_peak import run
+    root = Path(__file__).parent / 'fixtures' / 'price_volume_c852'
+    bar = json.loads((root / 'daily_kline.jsonl').read_text().splitlines()[0])
+    events = json.loads((root / 'factor_events.json').read_text())[bar['symbol']]
+    class Store:
+        def __init__(self): self.writes = []
+        def ensure_schema(self): pass
+        def read_day_rows(self, day): return {bar['symbol']: bar}
+        def read_events_many(self, symbols): return {bar['symbol']: (events, 'FORMAL')}
+        def read_states(self, symbols): return {}
+        def write_results(self, *args): self.writes.append('results')
+        def write_states(self, *args): self.writes.append('states')
+        def write_day_marker(self, *args): self.writes.append('marker')
+        def count_day_results(self, day): return 1
+    store = Store()
+    code, reply = run({'trade_date': bar['ts'][:10]}, '.', store=store)
+    assert code == 10 and reply['detail']['hint'] == 'NEEDS_REBUILD'
+    assert reply['reason'] == 'NEEDS_REBUILD'
+    assert store.writes == []
+
+
 def test_reference_boundaries():
     cases = [json.loads(line) for line in (PACK / 'boundary_cases.jsonl').read_text().splitlines()]
     for case in cases:

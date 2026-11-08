@@ -13,6 +13,26 @@ class _MarkerStore:
     def count_day_results(self, day): return len(getattr(self, 'rows', {}))
 
 
+def test_incremental_empty_state_never_writes():
+    from engine_core.data_pipeline.price_volume import run
+    bar = json.loads((FIXTURES / 'daily_kline.jsonl').read_text().splitlines()[0])
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())[bar['symbol']]
+    class Store(_MarkerStore):
+        def __init__(self): self.writes = []
+        def ensure_schema(self): pass
+        def read_day_rows(self, day): return {bar['symbol']: bar}
+        def read_events_many(self, symbols): return {bar['symbol']: (events, 'FORMAL')}
+        def read_states(self, symbols): return {}
+        def write_results(self, *args): self.writes.append('results')
+        def write_states(self, *args): self.writes.append('states')
+        def write_day_marker(self, *args): self.writes.append('marker')
+    store = Store()
+    code, reply = run({'trade_date': bar['ts'][:10]}, '.', store=store)
+    assert code == 10 and reply['detail']['hint'] == 'NEEDS_REBUILD'
+    assert reply['reason'] == 'NEEDS_REBUILD'
+    assert store.writes == []
+
+
 def test_real_reference_first_symbol():
     bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()]
     expected = [json.loads(x) for x in (FIXTURES / 'expected.jsonl').read_text().splitlines()]
@@ -216,7 +236,7 @@ def test_run_batches_reads_and_skips_unprocessed_factor():
         def __init__(self): self.calls = []
         def ensure_schema(self): pass
         def read_day_rows(self, day): self.calls.append('bars'); return selected
-        def read_states(self, symbols): self.calls.append('states'); return {}
+        def read_states(self, symbols): self.calls.append('states'); return {'existing': {}}
         def read_events_many(self, symbols):
             self.calls.append('factors')
             return {s: (events[s], 'FORMAL') for s in symbols if s != skipped}
@@ -225,7 +245,7 @@ def test_run_batches_reads_and_skips_unprocessed_factor():
         def write_day_marker(self, *args): self.calls.append('marker')
     store = Store()
     code, reply = run({'trade_date': day}, '.', store=store)
-    assert code == 10 and reply['detail']['hint'] == 'NEEDS_REBUILD'
+    assert code == 0
     assert skipped not in store.rows and skipped not in store.states
     assert reply['detail']['skipped_factor_unprocessed'] == 1
     assert store.calls == ['bars', 'factors', 'states', 'results', 'write_states', 'marker']
@@ -434,7 +454,8 @@ def test_rebuild_state_matches_incremental_replay():
         def write_states(self, states): self.states.update(states)
         def write_day_marker(self, *args): pass
     replay, rebuild = Store(), Store()
-    for day in days:
+    assert run({'trade_date': days[0], 'args': {'mode': 'rebuild'}}, '.', store=replay)[0] == 0
+    for day in days[1:]:
         run({'trade_date': day}, '.', store=replay)
     code, _ = run({'trade_date': days[-1], 'args': {'mode': 'rebuild'}}, '.', store=rebuild)
     assert code == 0 and rebuild.states == replay.states
@@ -447,7 +468,7 @@ def test_incremental_repeated_and_earlier_days_preserve_checkpoint():
             if json.loads(x)['symbol'] == '600519']
     events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
     class Store(_MarkerStore):
-        def __init__(self): self.states, self.writes = {}, []
+        def __init__(self): self.states, self.writes = {'existing': {}}, []
         def ensure_schema(self): pass
         def read_day_rows(self, day): return {'600519': next(b for b in bars if str(b['ts'])[:10] == day)}
         def read_states(self, symbols): return deepcopy(self.states)
@@ -475,7 +496,7 @@ def test_partial_warmup_reason_is_persisted_and_counted():
     class Store(_MarkerStore):
         def ensure_schema(self): pass
         def read_day_rows(self, day): return {'600519': bar}
-        def read_states(self, symbols): return {}
+        def read_states(self, symbols): return {'existing': {}}
         def read_events_many(self, symbols): return {'600519': (events, 'FORMAL')}
         def write_results(self, day, rows): self.rows = rows
         def write_states(self, states): pass

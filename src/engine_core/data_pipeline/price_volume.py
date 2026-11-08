@@ -375,6 +375,10 @@ def run(request, root, *, store=None, clock=None, dry_run=False):
         states = facts.read_states(None)
         if not states:
             detail['hint'] = 'NEEDS_REBUILD'
+            detail['elapsed_seconds'] = round(clock() - started, 3)
+            code, reply = _reply(10, detail=detail)
+            reply['reason'] = 'NEEDS_REBUILD'
+            return code, reply
         gaps = set()
         dated = {s: state['last_trade_date'] for s, state in states.items()
                  if state.get('last_trade_date') and state['last_trade_date'] < day}
