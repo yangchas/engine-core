@@ -466,8 +466,8 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
     target = _date_text(target_date)
     if target is None:
         raise ValueError("invalid_dde_target_date")
-    if isinstance(max_workers, bool) or not 1 <= int(max_workers) <= 4:
-        raise ValueError("dde_max_workers_must_be_1_to_4")
+    if isinstance(max_workers, bool) or int(max_workers) < 1:
+        raise ValueError("dde_max_workers_must_be_positive")
     if isinstance(attempts, bool) or not 1 <= int(attempts) <= 5:
         raise ValueError("dde_attempts_must_be_1_to_5")
     if isinstance(history_trading_days, bool) or not 1 <= int(history_trading_days) <= 5000:
