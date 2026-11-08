@@ -274,6 +274,10 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
                "--artifact-root", str(root)]
         if opts.write:
             cmd.append("--write")
+        if getattr(event, "asof", None):
+            cmd.extend(["--asof", str(event.asof)])
+        if getattr(event, "event_id", None):
+            cmd.extend(["--event-id", str(event.event_id)])
         deps = _event_args(event).get("theme_deps") if isinstance(_event_args(event), dict) else None
         if isinstance(deps, dict):
             # C587: dependency wait / degrade policy for the yesterday pool, reasons and members (schedule.json).
