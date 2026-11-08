@@ -96,6 +96,41 @@ def calculate_bar(bar, events, state=None, *, gap_before=False, factor_quality=N
         result['pct_chg_volatility20'] = math.sqrt(sum((value - mean) ** 2 for value in changes) / 20)
     if len(window) >= 6 and close is not None and window[-6][0] not in (None, 0):
         result['change_pct_5d'] = 100 * (close / window[-6][0] - 1)
+    if None in (close, high, low):
+        for key in ('wilder_prev_close', 'rsi6', 'rsi12', 'rsi24', 'atr14'):
+            state.pop(key, None)
+    else:
+        previous = state.get('wilder_prev_close')
+        tr = high - low if previous is None else max(high - low, abs(high - previous), abs(low - previous))
+        atr = state.setdefault('atr14', {'count': 0, 'sum': 0.0})
+        if atr['count'] < 14:
+            atr['count'] += 1
+            atr['sum'] += tr
+            if atr['count'] == 14:
+                atr['value'] = atr['sum'] / 14
+        else:
+            atr['value'] = (13 * atr['value'] + tr) / 14
+        result['atr14'] = atr.get('value')
+        if previous is not None:
+            delta = close - previous
+            gain, loss = max(delta, 0), max(-delta, 0)
+            for period in (6, 12, 24):
+                item = state.setdefault(f'rsi{period}', {'count': 0, 'gain': 0.0, 'loss': 0.0})
+                if item['count'] < period:
+                    item['count'] += 1
+                    item['gain'] += gain
+                    item['loss'] += loss
+                    if item['count'] == period:
+                        item['gain'] /= period
+                        item['loss'] /= period
+                else:
+                    item['gain'] = (item['gain'] * (period - 1) + gain) / period
+                    item['loss'] = (item['loss'] * (period - 1) + loss) / period
+                if item['count'] == period:
+                    total = item['gain'] + item['loss']
+                    result[f'rsi{period}'] = 100 * item['gain'] / total if total else 0.0
+        state['wilder_prev_close'] = close
+    result['rsi_6'] = result['rsi6']
     if close is None:
         for key in ('ema12', 'ema26', 'dea'):
             state.pop(key, None)
