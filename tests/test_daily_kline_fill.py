@@ -624,3 +624,29 @@ def test_c817_request_failure_remains_incomplete():
     assert result["status"] == "INCOMPLETE"
     assert result["incomplete_total"] == len(days)
     assert result["upstream_empty_total"] == 0
+
+
+def test_c827_empty_request_keeps_current_published_marker():
+    store, client, days = _c806_setup()
+    client.query = lambda symbol, start, end: []
+    before = {day: store.read_versions(day) for day in days}
+    published = []
+    result = run_daily_kline_fill(days[-1], store=store, client=client, trading_dates=days,
+        expected_symbols=lambda day: {'301139', '688797'}, depth=len(days), require_all=True,
+        needs_publish=lambda day: False, on_complete=lambda r: published.append(r['publish_days']))
+    assert result['status'] == 'COMPLETE'
+    assert result['rows_written'] == 0
+    assert published == []
+    assert {day: store.read_versions(day) for day in days} == before
+    assert result['published_partitions'] == 0 and result['publish_skipped'] is True
+
+
+def test_c827_cli_failure_reply_includes_statistics(monkeypatch, capsys):
+    from examples import backfill_td_daily_kline
+    monkeypatch.delenv('TD_CONFIG', raising=False)
+    backfill_td_daily_kline.main(['--date', '2026-11-06'])
+    detail = json.loads(capsys.readouterr().out.splitlines()[-1])['detail']
+    assert all(key in detail for key in ('planned_days', 'planned_symbols', 'requested', 'empty_returns',
+        'rows_written', 'incomplete_total', 'upstream_empty_total', 'listing_source',
+        'published_partitions', 'publish_skipped'))
+    assert detail['incomplete_total'] is None and isinstance(detail['publish_skipped'], bool)

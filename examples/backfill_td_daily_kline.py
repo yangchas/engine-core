@@ -10,8 +10,17 @@ from datetime import date
 from dataclasses import replace
 from pathlib import Path
 
-from engine_core.data_pipeline.job_contract import JobResult, emit, failure_from_exception
+from engine_core.data_pipeline.job_contract import JobResult, emit as emit_result, failure_from_exception
 from engine_core.data_pipeline.td_sink import TdSourceRejected, TdUnavailable, TdVerifyError
+
+
+def emit(result: JobResult) -> int:
+    # None means the run failed before the statistic could be established.
+    stats = {key: None for key in ("planned_days", "planned_symbols", "requested", "empty_returns",
+             "rows_written", "incomplete_total", "upstream_empty_total", "listing_source",
+             "published_partitions")}
+    stats["publish_skipped"] = False
+    return emit_result(replace(result, detail={**stats, **(result.detail or {})}))
 
 
 def main(argv: list[str] | None = None) -> int:
