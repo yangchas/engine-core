@@ -52,3 +52,32 @@ def test_controlled_gap_resets_to_post_gap_real_bars():
         result, after = calculate_bar(bar, events, state if i == 0 else after, gap_before=i == 0)
         expected, fresh = calculate_bar(bar, events, fresh)
         assert result == expected
+
+
+def test_real_reference_all_symbols_and_new_listing():
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()]
+    expected = [json.loads(x) for x in (FIXTURES / 'expected.jsonl').read_text().splitlines()]
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())
+    states, previous = {}, {}
+    days = sorted({str(row['ts'])[:10] for row in bars if row['symbol'] == '600519'})
+    positions = {day: i for i, day in enumerate(days)}
+    for bar, reference in zip(bars, expected, strict=True):
+        symbol, day = bar['symbol'], str(bar['ts'])[:10]
+        old = states.get(symbol)
+        gap = symbol in previous and positions[day] != positions[previous[symbol]] + 1
+        result, states[symbol] = calculate_bar(bar, events[symbol], old, gap_before=gap)
+        if result is None:
+            assert bar['suspended']
+            assert states[symbol] == (old or {})
+            continue
+        previous[symbol] = day
+        if symbol == '001381':
+            assert result['ma5'] is None and result['quality'] == 'PARTIAL'
+        for name in ('adjusted_close', 'ema12', 'ema26', 'dif', 'dea', 'macd',
+                     'ma5', 'ma10', 'ma20', 'ma60', 'boll_middle', 'boll_upper',
+                     'boll_lower', 'boll_bandwidth', 'k', 'd', 'j'):
+            value = reference[name]
+            if value is None:
+                assert result[name] is None, (symbol, day, name)
+            else:
+                assert result[name] == pytest.approx(value, rel=1e-9, abs=1e-12), (symbol, day, name)
