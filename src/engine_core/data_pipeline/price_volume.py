@@ -203,7 +203,7 @@ def run(request, root, *, store=None, clock=None):
     started = clock()
     detail = {'computed': 0, 'skipped_no_bar': 0, 'skipped_factor_unprocessed': 0,
               'partial_total': 0, 'partial_reasons': {}, 'recompute_registered': {'count': 0, 'samples': []},
-              'elapsed_seconds': 0, 'aborted': False}
+              'listing_source': 'fallback', 'elapsed_seconds': 0, 'aborted': False}
     try:
         day = request['trade_date']
         if date.fromisoformat(day).isoformat() != day:
@@ -227,6 +227,26 @@ def run(request, root, *, store=None, clock=None):
         dated = {s: state['last_trade_date'] for s, state in states.items()
                  if state.get('last_trade_date') and state['last_trade_date'] < day}
         if dated:
+            from .stock_listing import listed_on, read_active
+            listing = None
+            snapshot_store = None
+            try:
+                if owned:
+                    from .reference_snapshot_td import ReferenceSnapshotStore
+                    snapshot_store = ReferenceSnapshotStore()
+                    listing = read_active(snapshot_store)
+                elif hasattr(facts, 'read_listing'):
+                    listing = facts.read_listing()
+                if listing and listing.get('rows'):
+                    listed_on(listing['rows'], day)
+                    detail['listing_source'] = 'snapshot'
+                else:
+                    listing = None
+            except Exception:
+                listing = None
+            finally:
+                if snapshot_store is not None:
+                    snapshot_store.close()
             if owned:
                 from .trade_calendar import TradeCalendarStore
                 previous_day = TradeCalendarStore(root).previous_trade_date
@@ -240,9 +260,10 @@ def run(request, root, *, store=None, clock=None):
                 candidates = {s for s, last in dated.items() if last < cursor and s not in gaps}
                 if candidates:
                     historical = read_day(cursor)
+                    listed = ({s.rsplit('.', 1)[-1].zfill(6) for s in listed_on(listing['rows'], cursor)}
+                              if listing is not None else candidates)
                     for symbol in candidates:
-                        historical_bar = historical.get(symbol)
-                        if historical_bar is None or not historical_bar.get('suspended'):
+                        if symbol in listed and symbol not in historical:
                             gaps.add(symbol)
                 cursor = str(previous_day(cursor))[:10]
         now = datetime.now(timezone.utc)

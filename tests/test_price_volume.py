@@ -219,3 +219,31 @@ def test_run_registers_stale_factor_from_real_bars():
     assert 'FACTOR_MAY_BE_STALE' in store.rows['600519']['partial_reasons']
     assert reply['detail']['recompute_registered'] == {'count': 1, 'samples': ['600519']}
     assert json.loads(store.marker[6])['recompute_registered']['samples'] == ['600519']
+
+
+def test_gap_uses_listing_and_observed_bars():
+    from datetime import date
+    from engine_core.data_pipeline.price_volume import run
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()
+            if json.loads(x)['symbol'] == '600519']
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
+    state = None
+    for bar in bars[:30]:
+        _, state = calculate_bar(bar, events, state)
+    days = [str(b['ts'])[:10] for b in bars[29:33]]
+    state['last_trade_date'] = days[0]
+    class Store:
+        def ensure_schema(self): pass
+        def previous_day(self, day): return date.fromisoformat(days[days.index(day) - 1])
+        def read_day_rows(self, day): return {'600519': bars[32]} if day == days[-1] else {}
+        def read_states(self, symbols): return {'600519': state}
+        def read_events_many(self, symbols): return {'600519': (events, 'FORMAL')}
+        def read_listing(self): return {'rows': [{'symbol': 'sh.600519', 'ipo_date': days[-1], 'out_date': None}]}
+        def write_results(self, day, rows): self.rows = rows
+        def write_states(self, states): pass
+        def write_day_marker(self, *args): pass
+    store = Store()
+    code, reply = run({'trade_date': days[-1]}, '.', store=store)
+    expected, _ = calculate_bar(bars[32], events, state)
+    assert code == 0 and reply['detail']['listing_source'] == 'snapshot'
+    assert store.rows['600519']['ma5'] == pytest.approx(expected['ma5'])
