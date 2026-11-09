@@ -1,6 +1,24 @@
 from engine_core.close_review import derive_close_review, render_close_markdown
 
 
+def test_close_baseline_accepts_real_warm_window():
+    import gzip
+    import json
+    from pathlib import Path
+    from engine_core.auction_baseline import build_auction_baseline
+    from engine_core.close_review import _attach_auction_baseline
+
+    fixture = Path(__file__).parent / "fixtures/real/auction_baseline_20261106"
+    expected = json.loads((fixture / "live_expected.json").read_text())
+    with gzip.open(fixture / "td_rows.jsonl.gz", "rt") as stream:
+        rows = [json.loads(line) for line in stream]
+    baseline = build_auction_baseline(rows, target_date="2026-11-06", source_dates=expected["td_dates"])
+    data = {"trade_date": "2026-11-06", "market": {},
+            "stocks": [{"auction_amount_yuan": 16_000_000_000}]}
+    _attach_auction_baseline(data, baseline["rows"], baseline_status=baseline["status"])
+    assert data["market"]["auction_baseline_status"] == "READY"
+
+
 def test_close_baseline_does_not_upgrade_partial_window_to_ready():
     from engine_core.close_review import _attach_auction_baseline
 

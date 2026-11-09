@@ -711,8 +711,10 @@ def _attach_auction_baseline(data: dict[str, Any], path: Path | list[dict[str, A
     window_days = int(baseline_summary.get("window_days") or 64)
     if comparison:
         comparison["window_days"] = window_days
-    incomplete = (baseline_status == "PARTIAL" or
-                  (comparison is not None and comparison["sample_days"] < window_days))
+    observed_days = int(baseline_summary.get("observed_days", baseline_summary.get(
+        "sample_days", comparison["sample_days"] if comparison else 0)))
+    min_days = int(baseline_summary.get("min_days") or 5)
+    incomplete = baseline_status == "PARTIAL" or observed_days < min_days
     market["auction_baseline_status"] = (
         "MISSING" if not comparison else "PARTIAL" if incomplete else "READY")
     market["auction_baseline_source"] = ("CORE_SLICE:auction_baseline" if isinstance(path, list) else str(path))

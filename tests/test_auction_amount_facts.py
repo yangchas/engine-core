@@ -156,7 +156,8 @@ def test_empty_normalized_source_with_raw_rows_stays_incomplete(monkeypatch, tmp
                       source_counter=lambda day, slot: 5224, store=facts,
                       now=datetime(2026, 11, 9, 5, 30, tzinfo=ZoneInfo('Asia/Shanghai')),
                       lease_factory=fake_lease_factory)
-    assert code == 10 and reply['detail']['incomplete']['2026-10-29'] == {'0925': 0, '0945': 0}
+    assert code == 0 and reply['detail']['incomplete']['2026-10-29'] == {'0925': 0, '0945': 0}
+    assert reply['detail']['best_effort_incomplete'] == ['2026-10-29']
     assert not reply['detail']['source_absent'] and reply['detail']['reason']
 
 

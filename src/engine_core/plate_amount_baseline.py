@@ -14,6 +14,7 @@ from .data_pipeline.storage import ArtifactCatalog, canonical_json
 DATASET = "plate_amount_baseline"
 SCHEMA = "plate_amount_baseline_v1"
 WINDOW_DAYS = 64
+MIN_DAYS = 5
 SLOTS = ("0925", "0945")
 
 def _day(value: Any) -> str:
@@ -86,8 +87,10 @@ def build_plate_amount_baseline(*, target_date: str,
             vals = [value for _, value in values]
             result_rows.append({
                 "row_kind": "plate_baseline", "trade_date": target, "plate_code": code,
-                "slot": slot, "median_yuan": statistics.median(vals) if vals else None,
-                "p25_yuan": _percentile(vals, .25), "p75_yuan": _percentile(vals, .75),
+                "slot": slot, "n_obs": len(vals), "warm": len(vals) >= MIN_DAYS,
+                "quality": "READY" if len(vals) >= MIN_DAYS else "PARTIAL",
+                "median_yuan": statistics.median(vals) if len(vals) >= MIN_DAYS else None,
+                "p25_yuan": _percentile(vals, .25) if len(vals) >= MIN_DAYS else None, "p75_yuan": _percentile(vals, .75) if len(vals) >= MIN_DAYS else None,
                 "sample_days": len(vals), "amounts_yuan": vals,
                 "dates_used": [day for day, _ in values], "missing_dates": missing,
                 "membership_versions": {day: (membership_versions or {}).get(day) for day, _ in values},
@@ -97,7 +100,11 @@ def build_plate_amount_baseline(*, target_date: str,
              for dataset in ("auction_snapshot_v2", "stock_tick_v2") for day in dates] +
             [{"dataset": "plate_members", "trade_date": day, "version": version}
              for day, version in sorted((membership_versions or {}).items())])
-    return {"input_refs": refs, "status": "READY" if result_rows and all(not row["missing_dates"] for row in result_rows) else "PARTIAL",
+    valid_days = {day for day in dates if all(any(key[0] == day and key[1] == slot for key in amounts) for slot in SLOTS)}
+    warm = len(valid_days) >= MIN_DAYS
+    return {"input_refs": refs, "status": "READY" if warm else "PARTIAL", "warm": warm,
+            "observed_days": len(valid_days), "window_days_max": WINDOW_DAYS, "min_days": MIN_DAYS,
+            "missing_dates": [day for day in dates if day not in valid_days],
             "target_date": target, "window_dates": dates, "rows": result_rows}
 
 
@@ -124,7 +131,7 @@ def _existing(catalog: ArtifactCatalog, target: str):
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
         catalog_versions = catalog.read().get("datasets", {}).get(DATASET, {}).get("dates", {}).get(target, [])
-        if manifest.get("schema") == SCHEMA and any(v.get("version") == manifest.get("version") for v in catalog_versions):
+        if manifest.get("schema") == SCHEMA and manifest.get("min_days") == MIN_DAYS and any(v.get("version") == manifest.get("version") for v in catalog_versions):
             return manifest
     except (OSError, ValueError, TypeError):
         pass
@@ -173,6 +180,8 @@ def build_and_store_plate_amount_baseline(target_date: str, *, artifact_root: st
         if code not in (0, 10, 20):
             return {'status': 'UPSTREAM_FAILED', 'error_code': reply['error_code'], 'detail': reply['detail']}
     complete = {slot: facts.complete_days(dates, slot) for slot in SLOTS}
+    absent = {slot: facts.source_absent_days(dates, slot) for slot in SLOTS} if hasattr(facts, 'source_absent_days') else {slot: set() for slot in SLOTS}
+    source_absent = sorted({day for slot in SLOTS for day in absent[slot]})
     missing = [{'dataset': 'auction_amount' if slot == '0925' else 'slot0945_amount', 'trade_date': day}
                for slot in SLOTS for day in dates if day not in complete[slot]]
     candidates = sorted(complete['0925'] & complete['0945'])
@@ -190,9 +199,7 @@ def build_and_store_plate_amount_baseline(target_date: str, *, artifact_root: st
     membership_by_date, versions = _membership_inputs(catalog, candidates)
     available = available_at if available_at is not None else datetime.now(timezone.utc).isoformat()
     built = build_plate_amount_baseline(target_date=target, membership_by_date=membership_by_date,
-        observations=observations, candidate_dates=candidates, membership_versions=versions, available_at=available)
-    if missing or len(dates) < WINDOW_DAYS:
-        built['status'] = 'PARTIAL'
+        observations=observations, candidate_dates=dates, membership_versions=versions, available_at=available)
     built['input_refs'] = sorted(
         [{'dataset': 'auction_amount' if slot == '0925' else 'slot0945_amount', 'trade_date': day, 'version': None}
          for slot in SLOTS for day in candidates] +
@@ -201,7 +208,9 @@ def build_and_store_plate_amount_baseline(target_date: str, *, artifact_root: st
     manifest = {"schema": SCHEMA, "dataset": DATASET, "trade_date": target,
         "point_in_time_date": max(dates) if dates else None, "available_at": available,
         "source": ["auction_amount", "slot0945_amount", "plate_members"],
-        "business_status": built["status"], "window": {"sessions": WINDOW_DAYS,
+        "business_status": built["status"], "warm": built["warm"], "observed_days": built["observed_days"],
+        "window_days_max": WINDOW_DAYS, "min_days": MIN_DAYS, "missing_dates": built["missing_dates"],
+        "source_absent_dates": source_absent, "window": {"sessions": WINDOW_DAYS,
         "excludes_target_date": True, "dates": dates}, "membership_versions": versions,
         "input_refs": built["input_refs"]}
     committed = catalog.commit(DATASET, target, built["rows"], manifest, source="core_td_plate_amount")
@@ -212,5 +221,7 @@ def build_and_store_plate_amount_baseline(target_date: str, *, artifact_root: st
     return {"status": built["status"], "reused": False, "version": committed["version"],
             "sha256": committed["sha256"], "row_count": committed["row_count"],
             "available_at": committed["available_at"], "date_count": len(dates),
+            "observed_days": built["observed_days"], "window_days_max": WINDOW_DAYS, "min_days": MIN_DAYS, "warm": built["warm"],
+            "missing_dates": built["missing_dates"], "source_absent_dates": source_absent,
             "membership_date_count": len(membership_by_date), "missing": missing,
             "redis_published": published}

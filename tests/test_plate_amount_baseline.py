@@ -57,7 +57,8 @@ def test_baseline_sums_each_dates_real_members_with_the_real_amounts(monkeypatch
         observations=observations, candidate_dates=DAYS)
     row = next(r for r in result["rows"] if r["plate_code"] == code and r["slot"] == "0945")
     assert row["amounts_yuan"] == expected and row["dates_used"] == DAYS and row["missing_dates"] == []
-    assert row["sample_days"] == 2 and row["median_yuan"] == sum(expected) / 2
+    assert row["sample_days"] == row["n_obs"] == 2 and row["median_yuan"] is None
+    assert row["p25_yuan"] is None and row["p75_yuan"] is None and row["warm"] is False and row["quality"] == "PARTIAL"
 
 
 def test_a_member_without_an_amount_makes_the_date_missing_and_is_never_zero_filled(monkeypatch):
@@ -221,3 +222,25 @@ def test_pull_upstream_rechecks_facts(monkeypatch, tmp_path):
     assert cli.main(['--date', '2026-11-06', '--write', '--artifact-root', str(tmp_path), '--pull-upstream']) == 10
     rows = module.ArtifactCatalog(tmp_path).read_rows(module.ArtifactCatalog(tmp_path).locate(module.DATASET, '2026-11-06'))
     assert calls == [{'days': [day]}] and all(row['dates_used'] == [day] for row in rows)
+
+
+def test_recorded_auction_five_day_plate_statistics():
+    fixture = Path(__file__).parent / "fixtures/real/plate_amount_baseline_c731/td_inputs_auction.jsonl.gz"
+    with gzip.open(fixture, "rt") as source:
+        raw = [json.loads(line) for line in source]
+    dates = sorted({module._day(row[2]) for row in raw})[-5:]
+    observations = [{"trade_date": module._day(day), "slot": "0925", "symbol": symbol, "amount_yuan": amount}
+                    for _, symbol, day, _, amount in raw if module._day(day) in dates and amount is not None]
+    members = _members()
+    seen = {(r["trade_date"], r["symbol"]) for r in observations}
+    by_plate = {}
+    for member in members:
+        by_plate.setdefault(member["plate_code"], set()).add(member["symbol"])
+    code, symbols = next((code, symbols) for code, symbols in sorted(by_plate.items())
+                         if symbols and all((day, symbol) in seen for day in dates for symbol in symbols))
+    result = build_plate_amount_baseline(target_date="2026-11-06", membership_by_date={day: members for day in dates},
+                                         observations=observations, candidate_dates=dates)
+    row = next(r for r in result["rows"] if r["plate_code"] == code and r["slot"] == "0925")
+    import statistics
+    assert row["n_obs"] == 5 and row["warm"] and row["quality"] == "READY"
+    assert row["median_yuan"] == statistics.median(row["amounts_yuan"])

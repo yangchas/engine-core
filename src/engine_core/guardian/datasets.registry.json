@@ -1114,6 +1114,14 @@
           "role": "view",
           "ttl_seconds": 345600
         }
+      ],
+      "requires": [
+        {
+          "dataset": "auction_amount",
+          "window_days": 64,
+          "min_days": 5,
+          "min_quality": "FORMAL"
+        }
       ]
     },
     {
@@ -1690,6 +1698,26 @@
           "name": "core:cache:data:plate_amount_baseline",
           "role": "view",
           "ttl_seconds": 2592000
+        }
+      ],
+      "requires": [
+        {
+          "dataset": "auction_amount",
+          "window_days": 64,
+          "min_days": 5,
+          "min_quality": "FORMAL"
+        },
+        {
+          "dataset": "slot0945_amount",
+          "window_days": 64,
+          "min_days": 5,
+          "min_quality": "FORMAL"
+        },
+        {
+          "dataset": "plate_members",
+          "window_days": 64,
+          "min_days": 5,
+          "min_quality": "FORMAL"
         }
       ]
     },
