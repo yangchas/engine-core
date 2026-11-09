@@ -20,11 +20,14 @@ and no event is due within the next two minutes. The user's go-word is recorded 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
 import subprocess
 import sys
+import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -39,7 +42,41 @@ ERRORS_BEFORE_REVIEW = 2          # the rule: the second unreviewed error stops 
 BRANCH = "codex/feature-session-engine-integration"
 QUIET_BEFORE, QUIET_AFTER = 30, 120        # seconds around "now" in which no event may be due
 SMOKE_MODULES = ("engine_core.guardian.startup", "engine_core.data_pipeline.jobs", "engine_core.errors")
-GLOBAL_INVARIANT_TESTS = ("tests/test_real_fixtures.py",)
+GLOBAL_INVARIANT_TESTS = ("tests/test_real_fixtures.py", "tests/test_trade_day_context.py",
+                          "tests/test_registry_storage.py", "tests/test_guardian_contract_static.py",
+                          "tests/test_dataset_registry.py", "tests/test_baseline_window_declaration.py")
+PYTEST_LOCK = Path("/tmp/engine_core_pytest.lock")
+
+
+@contextmanager
+def pytest_lock(path: Path = PYTEST_LOCK, timeout: float = 1200):
+    with path.open("a") as lock:
+        deadline = time.monotonic() + timeout
+        waiting = False
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if not waiting:
+                    print("waiting for another pytest run", flush=True)
+                    waiting = True
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("waiting for another pytest run timed out")
+                time.sleep(min(1, remaining))
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def pytest_summary(log: Path, file_count: int, deep: bool) -> str:
+    content = log.read_text(encoding="utf-8") if log.exists() else ""
+    match = re.search(r"^.*?((?:\d+ (?:passed|failed|skipped|xfailed|xpassed|error|errors|deselected)(?:, )?)+)(?:, \d+ warnings?)? in ([\d.]+)s.*$", content, re.MULTILINE)
+    count = str(sum(int(n) for n in re.findall(r"(\d+) (?:passed|failed|skipped|xfailed|xpassed|error|errors|deselected)", match.group(1)))) if match else "UNKNOWN"
+    elapsed = match.group(2) if match else "UNKNOWN"
+    return f"选中 {file_count} 个测试文件、共 {count} 个测试、耗时 {elapsed} 秒; --deep={'yes' if deep else 'no'}"
 
 
 def git(repo: Path, *args: str) -> str:
@@ -341,15 +378,31 @@ def cmd_merge(args: argparse.Namespace) -> int:
     if merged:
         tests = []
         if files:
-            select = subprocess.run([sys.executable, str(ROOT / "examples" / "affected_tests.py"), "--files", *files, "--command"],
+            selector = [sys.executable, str(ROOT / "examples" / "affected_tests.py"), "--files", *files, "--command"]
+            if not getattr(args, "deep", False):
+                selector += ["--depth", "1"]
+            select = subprocess.run(selector,
                                     cwd=str(ROOT), capture_output=True, text=True)
             tests = [t for t in select.stdout.split() if t.startswith("tests/")] if select.returncode == 0 else []
-        tests = list(dict.fromkeys([*tests, *GLOBAL_INVARIANT_TESTS]))
+            if select.returncode:
+                problems.append(f"test selection failed (exit {select.returncode})")
+        changed_tests = [f for f in files if f.startswith("tests/") and Path(f).name.startswith("test_") and f.endswith(".py")]
+        tests = list(dict.fromkeys(t for t in [*tests, *changed_tests, *GLOBAL_INVARIANT_TESTS] if (ROOT / t).is_file()))
         if tests:
-            code, failing = run_checked([sys.executable, "-m", "pytest", "-q", "--no-header", "-p", "no:cacheprovider",
-                                         *tests], ROOT, log_dir / f"{stamp}-pytest.log")
-            if code:
-                problems.append(f"tests failed (exit {code}): {', '.join(tests)}; {len(failing)} failing line(s)")
+            log = log_dir / f"{stamp}-pytest.log"
+            try:
+                with pytest_lock():
+                    code, failing = run_checked([sys.executable, "-m", "pytest", "-q", "--no-header", "-p", "no:cacheprovider",
+                                                 "--durations=10", *tests], ROOT, log)
+                summary = pytest_summary(log, len(tests), getattr(args, "deep", False))
+                log.parent.mkdir(parents=True, exist_ok=True)
+                with log.open("a", encoding="utf-8") as output:
+                    output.write(summary + "\n")
+                print(summary)
+                if code:
+                    problems.append(f"tests failed (exit {code}): {', '.join(tests)}; {len(failing)} failing line(s)")
+            except TimeoutError as exc:
+                problems.append(str(exc))
         if any(f.startswith("native/") for f in files):
             # TMPDIR=/tmp: the guardiand tests open unix sockets under t.TempDir(), whose path must stay under 108 bytes
             code, go_failing = run_checked(["/bin/go", "test", "./..."], ROOT / "native" / "guardiand",
@@ -377,6 +430,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=["plan", "accept", "apply", "rollback", "merge", "errors"])
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--branch")
+    parser.add_argument("--deep", action="store_true", help="merge: select tests with two import hops")
     parser.add_argument("--card")
     parser.add_argument("--message", default="")
     parser.add_argument("--kind")
