@@ -72,13 +72,15 @@ def redis_probe(redis: Any, trade_date: str, cutoff: str, cfg: Mapping[str, Any]
 
 def _td_rows(td: Any, trade_date: str, cut: datetime, tolerance: float) -> list[dict[str, Any]]:
     """Last tick per symbol inside [cut, cut+tolerance] from stock_tick_v2 (columns as live_session._sql_states)."""
+    from ..live_session import _open_range_scan
     upper = cut + timedelta(seconds=tolerance)
     cursor = td.cursor() if callable(getattr(td, "cursor", None)) else td
-    cursor.execute("select last(ts),last(px_milli),last(pc_milli),last(amt_yuan),last(vol_units),last(h_milli),"
+    query = ("select last(ts),last(px_milli),last(pc_milli),last(amt_yuan),last(vol_units),last(h_milli),"
                    "last(l_milli),symbol from stock_tick_v2 "
-                   f"where ts>='{cut:%Y-%m-%d %H:%M:%S}' and ts<='{upper:%Y-%m-%d %H:%M:%S}' group by symbol")
+                   f"where ts>='{cut:%Y-%m-%d %H:%M:%S}' and ts<='{upper:%Y-%m-%d %H:%M:%S}'")
     rows = []
-    for ts, px, pc, amt, vol, high, low, symbol in cursor.fetchall():
+    for ts, px, pc, amt, vol, high, low, symbol in _open_range_scan(
+            cursor, query, "CHECKPOINT_QUERY[td_fallback]", " group by symbol", initial_shards=True):
         if symbol is None or ts is None:
             continue
         observed = ts if isinstance(ts, datetime) else datetime.fromisoformat(str(ts))
@@ -143,7 +145,7 @@ def run_checkpoint(request: Mapping[str, Any], root: Path, *, dry_run: bool = Fa
         except Exception as exc:                                    # connection errors etc. -> retryable
             attempts.append({"provider": source, "result": "SOURCE_UNREADABLE",
                              "elapsed_ms": round((time.monotonic() - t0) * 1000),
-                             "reason": f"{type(exc).__name__}:{str(exc)[:160]}", "row_count": 0})
+                             "reason": f"{type(exc).__name__}:{str(exc)[:500]}", "row_count": 0})
             last_error = CheckpointError("SOURCE_UNREADABLE", type(exc).__name__, exit_code=30, retryable=True)
             continue
         attempts.append({"provider": source, "result": "ok" if part.notes["state"] == "ready" else part.notes["state"],

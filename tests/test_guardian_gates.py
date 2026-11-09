@@ -255,3 +255,19 @@ def test_after_17_without_a_baostock_version_the_wencai_recap_still_does_not_cou
 def test_before_17_the_quick_recap_is_still_enough(monkeypatch, tmp_path):
     result = _gate_with(monkeypatch, tmp_path, "2026-11-02T16:30:33+08:00", baostock=False)
     assert result["status"] == "ready" and result["version"] == "sha256-5a4b196545b5c719"
+
+
+def test_checkpoint_shards_share_one_timeout_budget(monkeypatch):
+    import time
+    from engine_core.guardian import gates
+    from engine_core.guardian.scheduler import default_events
+    import dataclasses
+    event = dataclasses.replace(next(e for e in default_events() if e.event_id == 'intraday_33'), args=None)
+    monkeypatch.setenv('GUARDIAN_TD_QUERY_TIMEOUT_SECONDS', '0.05')
+    monkeypatch.setattr(gates, '_query', lambda sql: (time.sleep(0.03), [])[1])
+    gates._CACHE.clear()
+    start = time.monotonic()
+    result = gates.checkpoint_ready(event, datetime.fromisoformat('2026-10-19T09:33:05+08:00'), {})
+    assert result['reason'] == 'TD_QUERY_TIMEOUT'
+    assert 'CHECKPOINT_QUERY[gate]' in result['error_detail']
+    assert time.monotonic() - start < 0.14

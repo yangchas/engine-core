@@ -369,3 +369,44 @@ def test_open_pool_splits_resource_exhaustion():
     td = TD()
     assert _observed_seal_paths(td, "2026-10-15", "09:32:00", {"000001", "600000"}) == {}
     assert td.calls == 3
+
+
+def test_checkpoint_shards_retry_and_keep_query_label():
+    from engine_core.live_session import _open_range_scan
+    class Exhausted(Exception):
+        errno = 0x073a
+    class Cursor:
+        def __init__(self): self.queries = []
+        def execute(self, sql):
+            self.queries.append(sql)
+            if len(self.queries) == 1: raise Exhausted('exhausted')
+        def fetchall(self): return []
+    cursor = Cursor()
+    assert _open_range_scan(cursor, 'select symbol from ticks where ts > 0', 'CHECKPOINT_QUERY[gate]', initial_shards=True) == []
+    assert len(cursor.queries) == 9
+    assert "symbol < '1'" in cursor.queries[1]
+    class Fails(Cursor):
+        def execute(self, sql): raise Exhausted('exhausted')
+    with pytest.raises(Exhausted, match=r'OPEN_QUERY\[CHECKPOINT_QUERY\[gate\]\]'):
+        _open_range_scan(Fails(), 'select symbol from ticks where ts > 0', 'CHECKPOINT_QUERY[gate]', initial_shards=True)
+
+
+def test_checkpoint_ranges_cover_recorded_td_symbols():
+    import gzip
+    import json
+    import re
+    from pathlib import Path
+    from engine_core.live_session import _open_range_scan
+    fixture = Path(__file__).parent / 'fixtures/real/plate_amount_baseline_c731/td_inputs_0945.jsonl.gz'
+    with gzip.open(fixture, 'rt') as source:
+        rows = [tuple(json.loads(line)) for line in source]
+    class Cursor:
+        def execute(self, sql): self.sql = sql
+        def fetchall(self):
+            low = re.search(r"symbol >= '([^']+)'", self.sql)
+            high = re.search(r"symbol < '([^']+)'", self.sql)
+            return [row for row in rows if (not low or row[1] >= low[1]) and (not high or row[1] < high[1])]
+    cursor = Cursor()
+    merged = _open_range_scan(cursor, 'select ts,symbol from ticks where ts > 0', 'CHECKPOINT_QUERY[gate]', initial_shards=True)
+    assert sorted(merged) == sorted(rows)
+    assert len(merged) == len(rows)

@@ -263,7 +263,7 @@ def test_capture_dry_run_and_bad_config_do_not_touch_redis_or_disk(tmp_path):
     class Boom:
         def smembers(self, key):
             raise AssertionError("no redis in dry run")
-    assert run.run_checkpoint(req(), tmp_path, dry_run=True, redis=Boom())[0] == 0
+    assert run.run_checkpoint(req(), tmp_path, dry_run=True, redis=Boom(), td=Boom())[0] == 0
     code, reply = run.run_checkpoint(req({"checkpoint": {"bogus": 1}}), tmp_path, redis=Boom())
     assert code == 64 and reply["error_code"] == "CONFIG_ERROR"
     assert list(tmp_path.iterdir()) == []
@@ -337,3 +337,17 @@ def test_kaipan_fetch_postcondition_follows_event_datasets(tmp_path):
     from engine_core.guardian.commands import validate_handler_postcondition
     ok, reason = validate_handler_postcondition("kaipan_fetch", "2026-10-19", tmp_path, ["limit_reasons"])
     assert not ok and reason == "limit_reasons_missing_or_empty" or reason in {"previous_trade_date_unavailable"}
+
+
+def test_checkpoint_td_query_starts_with_symbol_shards():
+    class Cursor:
+        def __init__(self):
+            self.queries = []
+        def execute(self, sql):
+            self.queries.append(sql)
+        def fetchall(self):
+            return []
+    cursor = Cursor()
+    assert run._td_rows(cursor, DAY, datetime.fromisoformat('2026-10-19T09:33:00'), 3) == []
+    assert len(cursor.queries) == 4
+    assert "symbol < '2'" in cursor.queries[0]
