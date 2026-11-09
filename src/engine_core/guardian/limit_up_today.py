@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from ..data_pipeline import limit_up_today as core
 from ..data_pipeline.providers.limit_up_today_sources import (
     SourceUnavailable, WencaiThrottled, authorize_wencai_request, fetch_wencai_today,
-    read_q2_snapshot,
+    read_q2_snapshot, publish_hot_snapshot,
 )
 from ..data_pipeline.storage import ArtifactCatalog
 
@@ -24,11 +24,106 @@ class TodayDeps:
     redis_snapshot: Callable[[str], Mapping[str, Any]] = read_q2_snapshot
     wencai_snapshot: Callable[[str], Mapping[str, Any]] = fetch_wencai_today
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(SHANGHAI))
-    # Redis writes remain opt-in while this card's runtime permission is read-only.
+    # Injectable publisher for offline replay and tests.
     publish_hot: Callable[[Mapping[str, Any], list[dict[str, Any]]], Mapping[str, Any]] | None = None
     publish_td: Callable[[Mapping[str, Any], list[dict[str, Any]]], Mapping[str, Any]] | None = None
     state: Any = None  # StateStore holding the wencai daily budget; Redis from the environment when None
 
+
+class _VerifiedRedis:
+    """Verify the existing publisher's writes and restore prior values on failure."""
+    def __init__(self, client):
+        self.client = client
+
+    def get(self, key):
+        return self.client.get(key)
+
+    def pipeline(self, transaction=True):
+        return _VerifiedPipeline(self.client)
+
+
+class _VerifiedPipeline:
+    def __init__(self, client):
+        self.client, self.plan = client, []
+
+    def set(self, key, value, ex):
+        self.plan.append((key, value, ex))
+        return self
+
+    def execute(self):
+        originals = {key: (self.client.get(key), self.client.ttl(key)) for key, _, _ in self.plan}
+        written = []
+        try:
+            for key, value, ttl in self.plan:
+                self.client.set(key, value, ex=ttl)
+                written.append((key, value))
+            for key, value, _ in self.plan:
+                actual = self.client.get(key)
+                if isinstance(actual, bytes):
+                    actual = actual.decode('utf-8')
+                if actual != value or self.client.ttl(key) <= 0:
+                    raise RuntimeError('redis_readback_mismatch')
+        except Exception:
+            for key, value in reversed(written):
+                current = self.client.get(key)
+                if isinstance(current, bytes):
+                    current = current.decode('utf-8')
+                if current != value:
+                    continue
+                previous, ttl = originals[key]
+                if previous is None:
+                    self.client.delete(key)
+                elif ttl > 0:
+                    self.client.set(key, previous, ex=ttl)
+                else:
+                    self.client.set(key, previous)
+            raise
+
+
+def _default_publish_hot(manifest, rows):
+    from ..data_pipeline.providers.limit_up_today_sources import SourceUnavailable
+    url = os.environ.get('CORE_REDIS_URL') or os.environ.get('REDIS_URL')
+    if not url:
+        raise SourceUnavailable('core_redis_url_unavailable')
+    import redis
+    client = redis.Redis.from_url(url, decode_responses=True, socket_timeout=5)
+    try:
+        return publish_hot_snapshot(manifest, rows, client=_VerifiedRedis(client))
+    finally:
+        client.close()
+
+
+def _build_pool(day, sample_time, snapshot, names):
+    symbols = snapshot.get('active_symbols', [])
+    hashes = snapshot.get('hashes', {})
+    suspended, stale = [], []
+    for raw in symbols:
+        symbol = core.normalize_symbol(raw)
+        fields = hashes.get(str(raw)) or hashes.get(symbol) or {}
+        if not isinstance(fields, Mapping):
+            continue
+        stamp = core._source_time(fields.get('ts'))
+        if not stamp or stamp[0] > int(sample_time.timestamp() * 1000):
+            continue
+        quote_day = datetime.fromtimestamp(stamp[0] / 1000, tz=SHANGHAI).date().isoformat()
+        if quote_day != day:
+            if core._decimal(fields.get('vol')) == 0:
+                suspended.append(raw)
+            else:
+                stale.append({'symbol': symbol, 'trade_date': quote_day})
+    suspended_set = set(suspended)
+    retained = [symbol for symbol in symbols if symbol not in suspended_set]
+    built = core.build_redis_pool(day, sample_time, retained, hashes, st_names=names)
+    built['quality']['active_count'] += len(suspended)
+    built['quality']['suspended_stale'] = len(suspended)
+    built['stale_cross_day'] = stale[:20]
+    return built
+
+
+def _reason(quality):
+    return ', '.join(f'{name}={quality.get(name, 0)}' for name in
+                     ('missing_hash', 'missing_quote', 'future_quote', 'stale_quote', 'st_unavailable')
+                     if quality.get(name, 0)) or 'none'
 
 def _local_datetime(value: Any, fallback: datetime) -> datetime:
     if value in (None, ""):
@@ -113,16 +208,15 @@ def _manifest(day: str, sample_time: datetime, rows: list[dict[str, Any]], *, pr
 
 def _commit(root: Path, day: str, rows: list[dict[str, Any]], manifest: dict[str, Any],
             *, provider: str, clock: Callable[[], datetime]) -> dict[str, Any]:
+    # Transitional catalog commit retained until readers migrate to Redis.
     committed = ArtifactCatalog(root).commit(core.DATASET, day, rows, manifest, source=provider,
                                                clock=clock, context={"sample_as_of": manifest["as_of"]})
     return committed
 
 
 def _publish_hot(deps: TodayDeps, manifest: Mapping[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
-    if deps.publish_hot is None:
-        return {"status": "not_configured"}
     try:
-        result = deps.publish_hot(manifest, rows)
+        result = (deps.publish_hot or _default_publish_hot)(manifest, rows)
         return dict(result) if isinstance(result, Mapping) else {"status": "unknown"}
     except Exception as exc:  # noqa: BLE001 - artifact catalog remains the durable commit point
         return {"status": "failed", "error": type(exc).__name__}
@@ -152,8 +246,7 @@ def _redis_sample(day: str, root: Path, deps: TodayDeps, *, as_of: Any = None,
     sample_time = _local_datetime(as_of, deps.clock())
     names = _same_date_universe_names(root, day, sample_time)
     try:
-        built = core.build_redis_pool(day, sample_time, snapshot.get("active_symbols", []),
-                                      snapshot.get("hashes", {}), st_names=names)
+        built = _build_pool(day, sample_time, snapshot, names)
     except (TypeError, ValueError) as exc:
         return 40, {"contract": 1, "status": "failed", "error_code": "Q2_SNAPSHOT_INVALID",
                     "retryable": False, "artifacts": [], "detail": type(exc).__name__}
@@ -165,7 +258,8 @@ def _redis_sample(day: str, root: Path, deps: TodayDeps, *, as_of: Any = None,
     complete_zero = not built["rows"] and missing == 0 and active > 0
     if not built["rows"] and not complete_zero:
         return 40, {"contract": 1, "status": "failed", "error_code": "Q2_POOL_EMPTY_INCOMPLETE",
-                    "retryable": False, "artifacts": [], "detail": quality}
+                    "retryable": False, "artifacts": [], "detail": {**quality, "reason": _reason(quality),
+                               "stale_cross_day": built["stale_cross_day"]}}
     st_unavailable = int(quality["st_unavailable"]) > 0
     status = "FORMAL" if built["redis_terminal"] and names is not None and not st_unavailable else (
         "DEGRADED" if st_unavailable or missing else "PROVISIONAL")
@@ -190,7 +284,8 @@ def _redis_sample(day: str, root: Path, deps: TodayDeps, *, as_of: Any = None,
             "detail": {"version": committed["version"], "as_of": committed["as_of"],
                        "row_count": len(built["rows"]), "business_status": status,
                        "redis_terminal": built["redis_terminal"], "fallback": fallback_policy,
-                       "hot_publish": hot}}
+                       "hot_publish": hot, "reason": _reason(quality),
+                       "stale_cross_day": built["stale_cross_day"]}}
 
 
 def _close_confirmation(day: str, root: Path, deps: TodayDeps, args: Mapping[str, Any], *,
@@ -224,9 +319,7 @@ def _close_confirmation(day: str, root: Path, deps: TodayDeps, args: Mapping[str
         if redis_snapshot is not None:
             names = _same_date_universe_names(root, day, pre_request_time)
             try:
-                failed_query_redis = core.build_redis_pool(
-                    day, pre_request_time, redis_snapshot.get("active_symbols", []),
-                    redis_snapshot.get("hashes", {}), st_names=names)
+                failed_query_redis = _build_pool(day, pre_request_time, redis_snapshot, names)
             except (TypeError, ValueError):
                 failed_query_redis = None
             if failed_query_redis and failed_query_redis["redis_terminal"]:
@@ -261,7 +354,8 @@ def _close_confirmation(day: str, root: Path, deps: TodayDeps, args: Mapping[str
                         "detail": {"version": committed["version"], "as_of": committed["as_of"],
                                    "row_count": len(failed_query_redis["rows"]), "business_status": status,
                                    "redis_terminal": True, "wencai_error": type(exc).__name__,
-                                   "hot_publish": hot, "td_publish": cold}}
+                                   "hot_publish": hot, "td_publish": cold, "reason": _reason(quality),
+                                   "stale_cross_day": failed_query_redis["stale_cross_day"]}}
         code = "WENCAI_THROTTLED" if isinstance(exc, WencaiThrottled) else "WENCAI_UNAVAILABLE"
         return (40 if code == "WENCAI_THROTTLED" else 75), {"contract": 1, "status": "failed",
                 "error_code": code, "retryable": code != "WENCAI_THROTTLED", "artifacts": [],
@@ -272,8 +366,7 @@ def _close_confirmation(day: str, root: Path, deps: TodayDeps, args: Mapping[str
     if redis_snapshot is not None:
         names = _same_date_universe_names(root, day, sample_time)
         try:
-            redis_built = core.build_redis_pool(day, sample_time, redis_snapshot.get("active_symbols", []),
-                                                redis_snapshot.get("hashes", {}), st_names=names)
+            redis_built = _build_pool(day, sample_time, redis_snapshot, names)
             redis_rows = redis_built["rows"]
         except (TypeError, ValueError) as exc:
             redis_error = type(exc).__name__
@@ -320,6 +413,7 @@ def _close_confirmation(day: str, root: Path, deps: TodayDeps, args: Mapping[str
     manifest = _manifest(day, sample_time, published_rows, provider=provider, provider_chain=chain,
                          status=status, attempts=attempts, quality=quality,
                          details={"redis_terminal": bool(redis_built and redis_built["redis_terminal"]),
+                                  "limit_pool": redis_built["quality"] if redis_built else {},
                                   "st_filter": "UNAVAILABLE" if names is None or st_unavailable else "AVAILABLE",
                                   "wencai_date_suffixes": wencai["date_suffixes"],
                                   "wencai_date_suffix_verified": wencai["date_suffix_verified"],
@@ -339,7 +433,9 @@ def _close_confirmation(day: str, root: Path, deps: TodayDeps, args: Mapping[str
                        "row_count": row_count, "business_status": status,
                        "redis_only": merged["redis_only"], "wencai_only": merged["wencai_only"],
                        "request_count": fetched.get("request_count", 1), "truncated": fetched.get("truncated", False),
-                       "hot_publish": hot, "td_publish": cold}}
+                       "hot_publish": hot, "td_publish": cold,
+                       "reason": _reason(redis_built["quality"]) if redis_built else "redis_unavailable",
+                       "stale_cross_day": redis_built["stale_cross_day"] if redis_built else []}}
 
 
 def run(request: Mapping[str, Any], root: str | Path, *, dry_run: bool = False,

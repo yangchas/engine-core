@@ -557,7 +557,7 @@
         "force": "recompute a new as_of version",
         "clear": "clear then rebuild"
       },
-      "notes": "C582: hot view uses Core Redis namespace core:cache:data:limit_up_pool_today:* with 604800 second TTL; intraday and close-confirm results remain Redis-only, with no TD sink or catalog partition.",
+      "notes": "C900: hot view uses Core Redis namespace core:cache:data:limit_up_pool_today:* with the registered TTL; catalog commits are transitional until readers migrate.",
       "guardian_event": "limit_up_today_091600",
       "late_policy": {
         "mode": "fetch_now",
@@ -592,7 +592,7 @@
           "kind": "catalog",
           "name": "limit_up_pool_today",
           "role": "legacy",
-          "note": "older runs wrote catalog partitions; user 2026-10-29: today-related data lives in Redis only"
+          "note": "transitional catalog commits retained until readers migrate to Redis"
         }
       ]
     },
