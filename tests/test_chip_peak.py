@@ -8,6 +8,75 @@ from engine_core.data_pipeline.chip_peak import calculate_windows
 PACK = Path(__file__).parent / 'fixtures' / 'chip_peak_c879'
 
 
+def test_state_insert_byte_limit():
+    import re
+    from engine_core.data_pipeline.chip_peak import ChipPeakStore, prepare_window
+    root = Path(__file__).parent / 'fixtures' / 'price_volume_c852'
+    bars = [json.loads(line) for line in (root / 'daily_kline.jsonl').read_text().splitlines()]
+    bars = [b for b in bars if b['symbol'] == '600519' and not b['suspended']][:120]
+    events = json.loads((root / 'factor_events.json').read_text())['600519']
+    state = None
+    for bar in bars:
+        _, state = prepare_window(bar, events, state)
+    # Size expansion of the existing C852 capture, not new upstream observations.
+    states = {f'{n:06d}': state for n in range(600)}
+    class Recorder:
+        database = 'core_data'
+        def __init__(self): self.sql = []
+        def _run(self, sql): self.sql.append(sql)
+    recorder = Recorder()
+    ChipPeakStore(recorder).write_states(states)
+    assert all(len(sql.encode('utf-8')) <= 512 * 1024 for sql in recorder.sql)
+    symbols = [s for sql in recorder.sql for s in re.findall(r'chip_window_state_(\d{6}) USING', sql)]
+    assert symbols == sorted(states)
+
+
+def test_state_capacity_error():
+    from engine_core.data_pipeline.chip_peak import ChipPeakStore, STATE_JSON_CAPACITY
+    class Recorder:
+        database = 'core_data'
+        def _run(self, sql): pytest.fail('oversized state must not be written')
+    with pytest.raises(ValueError, match='chip_window_state_json_exceeds_capacity'):
+        ChipPeakStore(Recorder()).write_states({'600519': {'window': 'x' * STATE_JSON_CAPACITY}})
+
+
+def test_result_insert_byte_limit():
+    import re
+    from engine_core.data_pipeline.chip_peak import ChipPeakStore
+    from engine_core.data_pipeline.td_sink import INSERT_MAX_SQL_BYTES
+    row = json.loads((PACK / 'expected_chip.jsonl').read_text().splitlines()[0])
+    # Expand an existing captured reference only to exercise future wider SQL values.
+    row['input_refs'] = json.dumps(row, ensure_ascii=False) * 8
+    rows = {f'{n:06d}': row for n in range(600)}
+    class Recorder:
+        database = 'core_data'
+        def __init__(self): self.sql = []
+        def _run(self, sql): self.sql.append(sql)
+    recorder = Recorder()
+    ChipPeakStore(recorder).write_results('2026-11-06', rows)
+    assert all(len(sql.encode('utf-8')) <= INSERT_MAX_SQL_BYTES for sql in recorder.sql)
+    assert [s for sql in recorder.sql for s in re.findall(r'chip_indicators_(\d{6}) USING', sql)] == sorted(rows)
+
+
+def test_price_volume_state_insert_byte_limit():
+    import re
+    from engine_core.data_pipeline.price_volume import PriceVolumeStore
+    from engine_core.data_pipeline.td_sink import INSERT_MAX_SQL_BYTES
+    root = Path(__file__).parent / 'fixtures' / 'price_volume_c852'
+    bars = [json.loads(line) for line in (root / 'daily_kline.jsonl').read_text().splitlines()]
+    # Reuse real captured bars as size expansion; these are not new observations.
+    state = {'window': [b for b in bars if b['symbol'] == '600519'][:120]}
+    states = {f'{n:06d}': state for n in range(100)}
+    class Recorder:
+        database = 'core_data'
+        def __init__(self): self.sql = []
+        def _run(self, sql): self.sql.append(sql)
+    recorder = Recorder()
+    PriceVolumeStore(recorder).write_states(states)
+    assert all(len(sql.encode('utf-8')) <= INSERT_MAX_SQL_BYTES for sql in recorder.sql)
+    assert [s for sql in recorder.sql for s in re.findall(r'price_volume_state_(\d{6}) USING', sql)] == sorted(states)
+
+
 def test_incremental_empty_state_never_writes():
     from engine_core.data_pipeline.chip_peak import run
     root = Path(__file__).parent / 'fixtures' / 'price_volume_c852'

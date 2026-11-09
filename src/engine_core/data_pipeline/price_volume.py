@@ -276,20 +276,20 @@ class PriceVolumeStore:
     def write_states(self, states):
         import json
         from .adjust_factor import AdjustFactorStore
-        from .td_sink import INSERT_CHUNK_ROWS, _literal
-        items = sorted(states.items())
-        for start in range(0, len(items), INSERT_CHUNK_ROWS):
-            parts = []
-            for symbol, state in items[start:start + INSERT_CHUNK_ROWS]:
+        from .td_sink import _literal, insert_statements
+
+        def parts():
+            for symbol, state in sorted(states.items()):
                 symbol = AdjustFactorStore._symbol(symbol)
                 payload = json.dumps(state, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
                 if len(payload.encode('utf-8')) > STATE_JSON_CAPACITY:
                     raise ValueError('price_volume_state_json_exceeds_capacity')
-                parts.append(f'{self.database}.price_volume_state_{symbol} USING '
-                             f'{self.database}.price_volume_state_v1 TAGS({_literal(symbol)}) '
-                             f'VALUES ({STATE_TIMESTAMP_US}, {_literal(payload)})')
-            if parts:
-                self.store._run('INSERT INTO ' + ' '.join(parts))
+                yield (f'{self.database}.price_volume_state_{symbol} USING '
+                       f'{self.database}.price_volume_state_v1 TAGS({_literal(symbol)}) '
+                       f'VALUES ({STATE_TIMESTAMP_US}, {_literal(payload)})')
+
+        for sql in insert_statements(parts()):
+            self.store._run(sql)
 
     def write_results(self, day, rows):
         from .adjust_factor import AdjustFactorStore
