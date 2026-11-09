@@ -60,6 +60,30 @@ def _manifest(catalog: ArtifactCatalog, dataset: str, day: str | None = None,
         return None
 
 
+def _plate_members_snapshot(*, asof: str) -> dict[str, Any] | None:
+    """Read the same verified ACTIVE snapshot published by the fill job."""
+    from .data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+
+    store = ReferenceSnapshotStore()
+    try:
+        value = store.read_latest("plate_members")
+    except Exception:  # An unavailable or corrupt snapshot is not ready.
+        return None
+    finally:
+        store.close()
+    if not value:
+        return None
+    try:
+        available, cutoff = _pit_time(value.get("available_at")), _pit_time(asof)
+        quality = value.get("quality") or {}
+        if (int(value.get("row_count", 0)) <= 0 or quality.get("status") == "FAILED" or
+                not value.get("version") or available is None or cutoff is None or available > cutoff):
+            return None
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return value
+
+
 def _run(repo: Path, script: str, args: list[str]) -> tuple[int, str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(repo / "src") + os.pathsep + str(repo)
@@ -85,14 +109,15 @@ def _declared_code(output: str) -> str | None:
 def _step(name: str, dataset: str, day: str | None, catalog: ArtifactCatalog,
           *, asof: str, reason: str | None = None) -> dict[str, Any]:
     started = time.monotonic()
-    manifest = _manifest(catalog, dataset, day, asof=asof) if day else None
+    manifest = ((_plate_members_snapshot(asof=asof) if dataset == "plate_members" else
+                 _manifest(catalog, dataset, day, asof=asof)) if day else None)
     quality = manifest.get("quality") if manifest and isinstance(manifest.get("quality"), dict) else {}
     if manifest:
         status = ("PARTIAL" if manifest.get("business_status") == "PARTIAL" or
                   quality.get("status") == "PARTIAL" else "READY")
     else:
         status = "SKIPPED_REASON" if reason else "MISSING"
-        if day and catalog.locate(dataset, day) is not None:
+        if day and dataset != "plate_members" and catalog.locate(dataset, day) is not None:
             reason = "ARTIFACT_NOT_PIT_READY"
     actual_reason = reason
     if manifest and status == "PARTIAL":
@@ -613,7 +638,8 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                              ("limit_reasons", "limit_reasons"),
                              ("hot_plates", "hot_plates"),
                              ("plate_members", "plate_members")):
-            if not _manifest(catalog, dataset, previous, asof=asof):
+            if not (_plate_members_snapshot(asof=asof) if dataset == "plate_members" else
+                    _manifest(catalog, dataset, previous, asof=asof)):
                 started = time.monotonic()
                 extra = ["--max-requests", "15"]
                 rc, out = _run(repo, "run_data_jobs.py", ["--job", job, "--date", previous,
