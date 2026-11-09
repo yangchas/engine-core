@@ -57,7 +57,7 @@ def _query_bounded(sql: str):
 
     def run():
         try:
-            result.put((True, _query(sql)))
+            result.put((True, sql() if callable(sql) else _query(sql)))
         except BaseException as exc:
             result.put((False, exc))
 
@@ -181,10 +181,21 @@ def _td_checkpoint_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
                                   elapsed_ms=round((time.monotonic() - started) * 1000), **detail)
         detail["query_window"] = [stamp, end]
         try:
-            symbols, timeout = _query_bounded(f"SELECT symbol, ts FROM market_data1.stock_tick_v2 WHERE ts >= '{stamp}' AND ts < '{end}' AND ts <= '{_timestamp(now.replace(tzinfo=None))}'")
+            from ..live_session import _open_range_scan
+            query = f"SELECT symbol, ts FROM market_data1.stock_tick_v2 WHERE ts >= '{stamp}' AND ts < '{end}' AND ts <= '{_timestamp(now.replace(tzinfo=None))}'"
+
+            class QueryCursor:
+                def execute(self, sql):
+                    self.rows = _query(sql)
+
+                def fetchall(self):
+                    return self.rows
+
+            symbols, timeout = _query_bounded(lambda: _open_range_scan(
+                QueryCursor(), query, "CHECKPOINT_QUERY[gate]", initial_shards=True))
         except Exception as exc:
             return GateResult(status="not_ready", reason="TD_QUERY_TIMEOUT" if isinstance(exc, TimeoutError) else "TD_QUERY_FAILED",
-                              exception_type=type(exc).__name__, elapsed_ms=round((time.monotonic() - started) * 1000),
+                              exception_type=type(exc).__name__, error_detail=f"OPEN_QUERY[CHECKPOINT_QUERY[gate]]: {exc}", elapsed_ms=round((time.monotonic() - started) * 1000),
                               timeout_seconds=float(os.environ.get("GUARDIAN_TD_QUERY_TIMEOUT_SECONDS", TD_QUERY_TIMEOUT_SECONDS)),
                               **detail)
         # Any row in the cutoff window proves the day's latest timestamp is at
@@ -249,7 +260,7 @@ def checkpoint_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
                     continue
                 td_result = _td_checkpoint_ready(event, now, ctx)
                 tried.append({"source": "td", "state": td_result.get("status"), "reason": td_result.get("reason"),
-                              "row_count": td_result.get("row_count")})
+                              "row_count": td_result.get("row_count"), "error_detail": td_result.get("error_detail")})
                 if td_result.get("status") == "ready":
                     return GateResult(status="ready", reason="checkpoint_threshold_met", source="td",
                                       row_count=td_result.get("row_count"), probes=tried,

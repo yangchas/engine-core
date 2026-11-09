@@ -441,19 +441,23 @@ def _open_query(cursor: Any, query: str, label: str) -> list:
         cursor.execute(query)
         return list(cursor.fetchall())
     except Exception as exc:
-        message = f"OPEN_QUERY[{label}] {query[:200]}: {exc}"
+        from .data_pipeline.td_sink import td_error_number
+        number = td_error_number(exc)
+        code = f" [0x{number:04x}]" if number else ""
+        message = f"OPEN_QUERY[{label}] {query[:200]}:{code} {exc}"
         exc.args = (message,)
         if hasattr(exc, "_full_msg"):
             exc._full_msg = message
         raise
 
 
-def _open_range_scan(cursor: Any, query: str, label: str, suffix: str = "") -> list:
-    try:
-        return _open_query(cursor, query + suffix, label)
-    except Exception as exc:
-        if not _open_memory_exhausted(exc):
-            raise
+def _open_range_scan(cursor: Any, query: str, label: str, suffix: str = "", *, initial_shards: bool = False) -> list:
+    if not initial_shards:
+        try:
+            return _open_query(cursor, query + suffix, label)
+        except Exception as exc:
+            if not _open_memory_exhausted(exc):
+                raise
     for segments in (4, 8, 16):
         bounds = {4: list("257"), 8: list("1234567"), 16: list("123456789ABCDEF")}[segments]
         rows = []
