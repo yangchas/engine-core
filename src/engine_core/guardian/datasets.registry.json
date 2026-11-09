@@ -1599,7 +1599,7 @@
         "force": "not supported",
         "clear": "not supported"
       },
-      "notes": "无上游数据集依赖；每次最多补 64 个交易日。",
+      "notes": "无上游数据集依赖；每次最多补 64 个交易日。超过保护期且源表原始行数为零的时点标记 SOURCE_ABSENT，不再重试；窗口读者按缺失而非零处理，统计须标 PARTIAL。",
       "guardian_event": "auction_amount_facts_0530",
       "requires": [],
       "produces": [

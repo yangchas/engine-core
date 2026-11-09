@@ -11,6 +11,8 @@ from typing import Any, Sequence
 MIN_FINAL_SYMBOLS = 4000
 SLOT_0945_WINDOW_START = "09:30:01"
 SLICE_DAYS = 5
+SOURCE_ABSENT = -1
+SOURCE_ABSENT_PROTECTION_DAYS = 3
 
 def _td_connect():
     if not os.environ.get("TD_CONFIG"):
@@ -137,6 +139,16 @@ class AuctionAmountFacts:
         return {day for day in days if (count := self._marker_count(day, slot)) is not None
                 and count >= MIN_FINAL_SYMBOLS}
 
+    def source_absent_days(self, days, slot):
+        return {day for day in days if self._marker_count(day, slot) == SOURCE_ABSENT}
+
+    def mark_source_absent(self, day, slot):
+        _, marker_ts = self._key(day, slot)
+        self.store._run(f'INSERT INTO {self.database}.{META_TABLE} '
+                        '(ts, trade_date, slot, row_count, source_note, written_at) VALUES '
+                        f'({marker_ts}, {_literal(day)}, {_literal(slot)}, {SOURCE_ABSENT}, '
+                        "'SOURCE_ABSENT', NOW)")
+
     def read_days(self, days, slot):
         result = {}
         for day in days:
@@ -215,6 +227,22 @@ def _read_source(day, slot):
         conn.close()
 
 
+def _source_row_count(day, slot):
+    conn = _td_connect()
+    try:
+        cursor = conn.cursor()
+        if slot == '0925':
+            sql = ('SELECT COUNT(*) FROM market_data1.auction_snapshot_v2 '
+                   f'WHERE trade_date="{day.replace("-", "")}" AND auction_tag="0925"')
+        else:
+            sql = ('SELECT COUNT(*) FROM market_data1.stock_tick_v2 '
+                   f'WHERE ts >= "{day} 09:30:01" AND ts < "{day} 09:45:01"')
+        cursor.execute(sql)
+        return int(cursor.fetchall()[0][0])
+    finally:
+        conn.close()
+
+
 def _lease_factory(day, slot):
     import os
     import redis
@@ -228,7 +256,8 @@ class LeaseUnavailable(Exception):
     pass
 
 
-def acquire_day(day, *, reader, store, slots=('0925', '0945'), lease_factory=None, skipped_locked=None):
+def acquire_day(day, *, reader, store, slots=('0925', '0945'), lease_factory=None, skipped_locked=None,
+                absent_before=None, source_counter=None, source_absent=None):
     """Acquire per-slot leases; Redis errors fail closed and require retry, without reading the source."""
     incomplete = {}
     skipped_locked = skipped_locked if skipped_locked is not None else []
@@ -242,10 +271,20 @@ def acquire_day(day, *, reader, store, slots=('0925', '0945'), lease_factory=Non
             skipped_locked.append({'day': day, 'slot': slot})
             continue
         try:
-            if day in store.complete_days([day], slot):
+            if day in store.complete_days([day], slot) or day in store.source_absent_days([day], slot):
                 continue
             amounts = reader(day, slot)
             if len(amounts) < MIN_FINAL_SYMBOLS:
+                if not amounts and absent_before and day < absent_before and source_counter(day, slot) == 0:
+                    try:
+                        renewed = lease.renew()
+                    except Exception as exc:
+                        raise LeaseUnavailable(type(exc).__name__) from exc
+                    if not renewed:
+                        raise LeaseUnavailable('lease_lost')
+                    store.mark_source_absent(day, slot)
+                    source_absent.append({'day': day, 'slot': slot})
+                    continue
                 incomplete[slot] = len(amounts)
                 continue
             try:
@@ -277,12 +316,15 @@ def _registered_failure(error_code, detail):
     return _reply(entry['exit'], error_code, detail)
 
 
-def run(request, root, *, reader=None, store=None, dry_run=False, lease_factory=None):
+def run(request, root, *, reader=None, store=None, dry_run=False, lease_factory=None, now=None, source_counter=None):
     from datetime import date, datetime, timedelta
     from pathlib import Path
     from zoneinfo import ZoneInfo
     from ..ladder_daily_adapter import trading_days
     from .td_sink import TaosStore, TdResourceExhausted, TdUnavailable, td_memory_exhausted
+    now = now or datetime.now(ZoneInfo('Asia/Shanghai'))
+    now = now.astimezone(ZoneInfo('Asia/Shanghai'))
+    effective_end = None
     try:
         if not isinstance(request, Mapping):
             raise ValueError('request must be an object')
@@ -301,9 +343,14 @@ def run(request, root, *, reader=None, store=None, dry_run=False, lease_factory=
             window = request.get('window', 64)
             if type(window) is not int or window < 1:
                 raise ValueError('invalid window')
-            days = trading_days(Path(root).expanduser(), end)[-window:]
+            today_text = now.date().isoformat()
+            calendar = trading_days(Path(root).expanduser(), min(end, today_text))
+            if now.time() < datetime.strptime('09:46', '%H:%M').time():
+                calendar = [day for day in calendar if day < today_text]
+            days = calendar[-window:]
             if len(days) != window:
                 raise ValueError('calendar window unavailable')
+            effective_end = days[-1]
         for day in days:
             _check_date(day)
             if date.fromisoformat(day).isoformat() != day:
@@ -312,15 +359,20 @@ def run(request, root, *, reader=None, store=None, dry_run=False, lease_factory=
     except (ValueError, TypeError, KeyError) as exc:
         return _reply(64, 'CONFIG_ERROR', {'message': str(exc)})
     facts = store if store is not None else AuctionAmountFacts(TaosStore(core_td_database()))
-    detail = {'completed': [], 'remaining': [], 'incomplete': {}, 'expired': [], 'queries': [], 'skipped_locked': []}
+    detail = {'completed': [], 'remaining': [], 'incomplete': {}, 'expired': [], 'queries': [], 'skipped_locked': [], 'source_absent': []}
+    if effective_end is not None:
+        detail['effective_end'] = effective_end
     try:
         if not dry_run:
             facts.ensure_schema()
         complete = {slot: facts.complete_days(days, slot) for slot in ('0925', '0945')}
+        absent = {slot: facts.source_absent_days(days, slot) for slot in complete}
+        detail['source_absent'] = [{'day': day, 'slot': slot} for day in days for slot in absent if day in absent[slot]]
+        complete = {slot: complete[slot] | absent[slot] for slot in complete}
         missing = [day for day in days if any(day not in complete[s] for s in complete)]
         if not missing:
             return _reply(20, 'ALREADY_SATISFIED', detail)
-        today = datetime.now(ZoneInfo('Asia/Shanghai')).date()
+        today = now.date()
         expired = [day for day in missing if date.fromisoformat(day) < today - timedelta(days=60)]
         detail['expired'] = [{'day': day, 'reason': 'SOURCE_EXPIRED'} for day in expired]
         eligible = [day for day in missing if day not in expired]
@@ -330,15 +382,27 @@ def run(request, root, *, reader=None, store=None, dry_run=False, lease_factory=
             detail['queries'] = [{'day': day, 'slot': slot, 'sql': _query_description(day, slot)}
                                  for day in selected for slot in complete if day not in complete[slot]]
             return _reply(0, detail=detail)
+        absent_before = None
+        try:
+            recent = trading_days(Path(root).expanduser(), today.isoformat())
+            if len(recent) > SOURCE_ABSENT_PROTECTION_DAYS:
+                absent_before = recent[-SOURCE_ABSENT_PROTECTION_DAYS - 1]
+        except Exception:
+            # Unknown calendar coverage cannot establish an old, permanent gap.
+            pass
         for day in selected:
             slots = tuple(slot for slot in complete if day not in complete[slot])
             incomplete = acquire_day(day, reader=reader or _read_source, store=facts, slots=slots, lease_factory=lease_factory,
-                                     skipped_locked=detail['skipped_locked'])
+                                     skipped_locked=detail['skipped_locked'], absent_before=absent_before,
+                                     source_counter=source_counter or _source_row_count, source_absent=detail['source_absent'])
             if incomplete:
                 detail['incomplete'][day] = incomplete
             elif not any(item['day'] == day for item in detail['skipped_locked']):
-                detail['completed'].append(day)
+                if not any(item['day'] == day for item in detail['source_absent']):
+                    detail['completed'].append(day)
                 detail['remaining'].remove(day)
+        if detail['incomplete']:
+            detail['reason'] = 'Source data was insufficient to produce complete facts.'
         return _reply(10 if detail['incomplete'] or detail['skipped_locked'] else 0,
                       'INCOMPLETE' if detail['incomplete'] or detail['skipped_locked'] else '', detail)
     except Exception as exc:

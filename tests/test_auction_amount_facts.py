@@ -24,6 +24,22 @@ def fake_lease_factory(day, slot):
     return FakeLease()
 
 
+def test_preopen_end_date_uses_previous_trade_day(monkeypatch, tmp_path):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from engine_core import ladder_daily_adapter
+    from engine_core.data_pipeline.auction_amount_facts import run
+    monkeypatch.setattr(ladder_daily_adapter, 'trading_days',
+                        lambda root, end: [d for d in ('2026-11-05', '2026-11-06', '2026-11-09') if d <= end])
+    calls = []
+    code, reply = run({'end_date': '2026-11-09', 'window': 1}, tmp_path,
+                      now=datetime(2026, 11, 9, 5, 30, tzinfo=ZoneInfo('Asia/Shanghai')),
+                      reader=lambda day, slot: calls.append((day, slot)) or {},
+                      store=AuctionAmountFacts(FakeStore()), lease_factory=fake_lease_factory)
+    assert reply['detail']['effective_end'] == '2026-11-06'
+    assert all(day != '2026-11-09' for day, _ in calls)
+
+
 def test_real_auction_roundtrip():
     store = FakeStore()
     facts = AuctionAmountFacts(store)
@@ -70,7 +86,7 @@ class FakeStore:
             slot, symbol, ts = re.search(r'auction_amount_(\d+)_(\d+) WHERE ts = (\d+)', sql).groups()
             self.data.pop((int(ts), slot, symbol), None)
         elif sql.startswith('INSERT INTO core_data.auction_amount_facts_days'):
-            ts, count = re.search(r"VALUES \((\d+), '[^']+', '\d+', (\d+),", sql).groups()
+            ts, count = re.search(r"VALUES \((\d+), '[^']+', '\d+', (-?\d+),", sql).groups()
             self.markers[int(ts)] = int(count)
         elif sql.startswith('INSERT INTO'):
             if self.fail_insert:
@@ -81,6 +97,84 @@ class FakeStore:
         else:
             raise AssertionError(sql)
         return []
+
+
+def test_end_date_after_cutoff_and_weekend(monkeypatch, tmp_path):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from engine_core import ladder_daily_adapter
+    from engine_core.data_pipeline.auction_amount_facts import run
+    calendar = ['2026-11-05', '2026-11-06', '2026-11-09']
+    monkeypatch.setattr(ladder_daily_adapter, 'trading_days', lambda root, end: [d for d in calendar if d <= end])
+    for end, hour, minute, expected in [('2026-11-09', 9, 46, '2026-11-09'),
+                                        ('2026-11-08', 5, 30, '2026-11-06')]:
+        now = datetime.fromisoformat(f'{end}T{hour:02}:{minute:02}:00').replace(tzinfo=ZoneInfo('Asia/Shanghai'))
+        _, reply = run({'end_date': end, 'window': 1}, tmp_path, now=now,
+                       store=AuctionAmountFacts(FakeStore()), dry_run=True)
+        assert reply['detail']['effective_end'] == expected
+
+
+def test_confirmed_empty_source_is_resolved_but_not_a_fact(monkeypatch, tmp_path):
+    # Interface substitutes replay the recorded C890/C615 10-29 snapshot absence.
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from engine_core import ladder_daily_adapter
+    from engine_core.data_pipeline.auction_amount_facts import run
+    calendar = ['2026-10-29', '2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06', '2026-11-09']
+    monkeypatch.setattr(ladder_daily_adapter, 'trading_days', lambda root, end: [d for d in calendar if d <= end])
+    facts = AuctionAmountFacts(FakeStore())
+    # 09:45 is already complete in the C890 record; only 09:25 needs a query.
+    facts.store.markers[facts._key('2026-10-29', '0945')[1]] = 5216
+    calls = []
+    counter_calls = []
+    def reader(day, slot):
+        calls.append((day, slot))
+        return {}
+    def counter(day, slot):
+        counter_calls.append((day, slot))
+        return 0
+    kwargs = dict(now=datetime(2026, 11, 9, 5, 30, tzinfo=ZoneInfo('Asia/Shanghai')),
+                  store=facts, reader=reader, source_counter=counter, lease_factory=fake_lease_factory)
+    code, reply = run({'days': ['2026-10-29']}, tmp_path, **kwargs)
+    assert code == 0 and reply['detail']['source_absent'] == [{'day': '2026-10-29', 'slot': '0925'}]
+    assert facts.complete_days(['2026-10-29'], '0925') == set()
+    assert facts.read_days(['2026-10-29'], '0925') == {}
+    code, reply = run({'days': ['2026-10-29']}, tmp_path, **kwargs)
+    assert code == 20 and len(calls) == len(counter_calls) == 1
+
+
+def test_empty_normalized_source_with_raw_rows_stays_incomplete(monkeypatch, tmp_path):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from engine_core import ladder_daily_adapter
+    from engine_core.data_pipeline.auction_amount_facts import run
+    calendar = ['2026-10-29', '2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06', '2026-11-09']
+    monkeypatch.setattr(ladder_daily_adapter, 'trading_days', lambda root, end: [d for d in calendar if d <= end])
+    facts = AuctionAmountFacts(FakeStore())
+    # C906 recorded 5,224 source snapshot rows; the reader is an interface substitute.
+    code, reply = run({'days': ['2026-10-29']}, tmp_path, reader=lambda day, slot: {},
+                      source_counter=lambda day, slot: 5224, store=facts,
+                      now=datetime(2026, 11, 9, 5, 30, tzinfo=ZoneInfo('Asia/Shanghai')),
+                      lease_factory=fake_lease_factory)
+    assert code == 10 and reply['detail']['incomplete']['2026-10-29'] == {'0925': 0, '0945': 0}
+    assert not reply['detail']['source_absent'] and reply['detail']['reason']
+
+
+def test_recent_partial_source_remains_incomplete(monkeypatch, tmp_path):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from engine_core import ladder_daily_adapter
+    from engine_core.data_pipeline.auction_amount_facts import run
+    calendar = ['2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06', '2026-11-09']
+    monkeypatch.setattr(ladder_daily_adapter, 'trading_days', lambda root, end: [d for d in calendar if d <= end])
+    tick = {symbol: amount for _, symbol, amount in rows('td_inputs_0945.jsonl.gz')}
+    def counter(day, slot):
+        raise AssertionError('protected source must not be classified absent')
+    code, reply = run({'days': ['2026-11-06']}, tmp_path, reader=lambda day, slot: tick,
+                      source_counter=counter, store=AuctionAmountFacts(FakeStore()),
+                      now=datetime(2026, 11, 9, 5, 30, tzinfo=ZoneInfo('Asia/Shanghai')),
+                      lease_factory=fake_lease_factory)
+    assert code == 10 and reply['detail']['incomplete']['2026-11-06']['0945'] == len(tick) < 4000
 
 
 def test_incomplete_real_slice_does_not_write():
