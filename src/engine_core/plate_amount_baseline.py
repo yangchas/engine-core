@@ -9,12 +9,11 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from .auction_baseline import MIN_DAYS, WINDOW_DAYS
 from .data_pipeline.storage import ArtifactCatalog, canonical_json
 
 DATASET = "plate_amount_baseline"
 SCHEMA = "plate_amount_baseline_v1"
-WINDOW_DAYS = 64
-MIN_DAYS = 5
 SLOTS = ("0925", "0945")
 
 def _day(value: Any) -> str:

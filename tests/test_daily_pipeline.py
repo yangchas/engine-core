@@ -950,3 +950,24 @@ def test_close_catalog_asof_selects_latest_visible_daily_version(tmp_path):
     assert early["datasets"]["daily_kline"]["status"] == "UNAVAILABLE"
 
 
+
+
+def test_real_baseline_metadata_reaches_both_report_readers():
+    from test_auction_baseline import _real_input
+    from test_auction_panorama import _facts
+    from engine_core.auction_baseline import build_auction_baseline
+    from engine_core.daily_pipeline import _auction_baseline_history, _auction_baseline_product
+    from engine_core.auction_panorama import build_auction_panorama
+    from engine_core.auction_quickbrief import build_auction_quickbrief
+    expected, rows = _real_input()
+    built = build_auction_baseline(rows, target_date="2026-11-06", source_dates=expected["td_dates"],
+                                   available_at="2026-11-06T00:00:00+00:00")
+    history = _auction_baseline_history(built["rows"], trade_date="2026-11-06",
+                                        asof="2026-11-06T09:26:00+08:00")
+    meta = {key: built[key] for key in ("observed_days", "min_days", "window_days_max")}
+    meta["business_status"] = built["status"]
+    product = _auction_baseline_product(built["rows"], meta, history)
+    assert {key: product[key] for key in meta} == meta
+    assert len(history) == 28
+    assert build_auction_panorama(_facts(), plate_members=[], yesterday_pool=[], market_amount_history=product)["overview"]["amount_multiple_64d"]["status"] == "READY"
+    assert build_auction_quickbrief(_facts(), plate_members=[], yesterday_pool=[], market_amount_history=product)["metrics"]["market"]["baseline_status"] == "READY"
