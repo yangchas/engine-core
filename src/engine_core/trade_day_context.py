@@ -95,8 +95,8 @@ def load_context(root: str | Path | None = None, day: str | date | None = None) 
 
 def previous_trade_date(root: str | Path | None, day: str | date) -> str:
     """Trade day before ``day`` — the single sanctioned way to ask. Raises CalendarCoverageError when unknown."""
-    return load_context(root, day)["prev_trade_date"]
+    return TradeCalendarStore(_root(root)).previous_trade_date(day).isoformat()
 
 
 def next_trade_date(root: str | Path | None, day: str | date) -> str:
-    return load_context(root, day)["next_trade_date"]
+    return TradeCalendarStore(_root(root)).next_trade_date(day).isoformat()
