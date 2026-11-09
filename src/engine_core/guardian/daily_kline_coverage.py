@@ -47,6 +47,7 @@ def day_coverage_ratio(store: Any, day: str, expected_symbols: Iterable[str], *,
                        threshold: float = 0.995, source_unavailable: Iterable[str] = ()) -> dict[str, Any]:
     """Measure expected symbols against rows belonging to the selected Baostock version."""
     from ..data_pipeline.baostock_completion import _symbol
+    from ..data_pipeline.derived_daily import normalize_status
     from ..data_pipeline.td_sink import has_baostock_date_evidence, pick_best
 
     expected = {_symbol(symbol) for symbol in expected_symbols} - {
@@ -84,7 +85,12 @@ def day_coverage_ratio(store: Any, day: str, expected_symbols: Iterable[str], *,
     coverage = len(present) / len(expected) if expected else None
     result.update(coverage=coverage, present=len(present), missing_symbols=missing[:50],
                   missing_total=len(missing))
-    if coverage is None:
+    status = normalize_status(current.get("business_status"))
+    if status != "FORMAL":
+        result["reason"] = f"not_formal:{status.lower()}"
+    elif current.get("needs_upgrade"):
+        result["reason"] = "needs_upgrade"
+    elif coverage is None:
         result["reason"] = "no_expected_symbols"
     elif coverage < threshold:
         result["reason"] = "below_threshold"

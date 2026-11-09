@@ -6,16 +6,19 @@ SYMBOLS = [f"{n:06d}" for n in range(5224)]
 
 
 class Store:
-    def __init__(self, count, provider="baostock"):
+    def __init__(self, count, provider="baostock", status="FORMAL", needs_upgrade=False):
         self.rows = {symbol: {"version": "v1"} for symbol in SYMBOLS[:count]}
         self.provider = provider
+        self.status = status
+        self.needs_upgrade = needs_upgrade
         self.reads = 0
 
     def schema_exists(self):
         return True
 
     def read_versions(self, day):
-        return [{"version": "v1", "provider": self.provider, "business_status": "FORMAL",
+        return [{"version": "v1", "provider": self.provider, "business_status": self.status,
+                 "needs_upgrade": self.needs_upgrade,
                  "quality": {"source_dates_consistent": True, "source_date_values": [day],
                              "source_dates": {field: day for field in DAILY_KLINE_QUALITY_FIELDS}}}]
 
@@ -31,6 +34,22 @@ def test_ready_coverage_and_missing():
                       "missing_symbols": SYMBOLS[5218:], "missing_total": 6,
                       "provider": "baostock", "version": "v1", "ready": True, "reason": ""}
     assert store.reads == 1
+
+
+def test_provisional_version_is_not_ready_despite_coverage():
+    result = day_coverage_ratio(Store(5218, status="PROVISIONAL"), DAY, SYMBOLS)
+    assert result["coverage"] == 5218 / 5224 and result["present"] == 5218
+    assert result["provider"] == "baostock" and result["version"] == "v1"
+    assert result["missing_total"] == 6 and result["missing_symbols"] == SYMBOLS[5218:]
+    assert not result["ready"] and result["reason"] == "not_formal:provisional"
+
+
+def test_formal_version_needing_upgrade_is_not_ready():
+    result = day_coverage_ratio(Store(5218, needs_upgrade=True), DAY, SYMBOLS)
+    assert result["coverage"] == 5218 / 5224 and result["present"] == 5218
+    assert result["provider"] == "baostock" and result["version"] == "v1"
+    assert result["missing_total"] == 6 and result["missing_symbols"] == SYMBOLS[5218:]
+    assert not result["ready"] and result["reason"] == "needs_upgrade"
 
 
 def test_below_threshold():
