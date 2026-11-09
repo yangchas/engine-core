@@ -4072,3 +4072,71 @@ func TestC884DegradedDependencyAndRecovery(t *testing.T) {
 		return recovered.states[date+"/b"].Status == "SUCCEEDED"
 	})
 }
+
+// Contract-minimal synthetic replies exercise ledger persistence, not data parsing.
+func TestAttemptEndPersistsDegradedReply(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	fc := newFakeClock(time.Date(2026, 10, 20, 9, 0, 0, 0, loc))
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	e := config.Event{ID: "example", Handler: "h", Timeout: "3s"}
+	r := &liveRunner{c: config.Config{Handlers: map[string]config.Handler{"h": {}}}, root: root, loc: loc, clock: fc, ledger: l}
+	script := filepath.Join(root, "handler.sh")
+	if err := os.WriteFile(script, []byte(`#!/bin/sh
+printf '%s\n' '{"contract":1,"status":"degraded","reason":"missing data","error_code":"","retryable":false,"detail":{"rows_count":3}}'
+exit 10
+`), 0700); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _ = r.invokeDetailedTier([]string{script}, &e, Instance{ID: "example", EventID: "example", DataDate: date}, date, 1, false, false, 0, "", false, nil)
+	b, err := os.ReadFile(filepath.Join(root, "ledger", date+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, line := range bytes.Split(bytes.TrimSpace(b), []byte("\n")) {
+		var rec struct {
+			Type string         `json:"type"`
+			Data map[string]any `json:"data"`
+		}
+		if json.Unmarshal(line, &rec) == nil && rec.Type == "ATTEMPT_END" {
+			reply, _ := rec.Data["reply"].(map[string]any)
+			detail, _ := reply["detail"].(map[string]any)
+			found = reply["reason"] == "missing data" && detail["rows_count"] == float64(3)
+		}
+	}
+	if !found {
+		t.Fatalf("degraded reply missing from ledger: %s", b)
+	}
+	if err := os.WriteFile(script, []byte(`#!/bin/sh
+printf '%s\n' '{"contract":1,"status":"ok","reason":"complete","error_code":"","retryable":false,"detail":{"rows_count":4}}'
+`), 0700); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _ = r.invokeDetailedTier([]string{script}, &e, Instance{ID: "example", EventID: "example", DataDate: date}, date, 2, false, false, 0, "", false, nil)
+	b, err = os.ReadFile(filepath.Join(root, "ledger", date+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(b, []byte(`"reason":"complete"`)) || !bytes.Contains(b, []byte(`"rows_count":4`)) {
+		t.Fatalf("success reply missing: %s", b)
+	}
+}
+
+func TestReplySummaryBoundsAndRedacts(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{"contract": 1, "status": "ok", "reason": "ready", "error_code": "", "retryable": false, "token": "top-secret", "detail": map[string]any{"rows_count": 42, "name": "kept", "long": strings.Repeat("x", 5000), "nested": map[string]any{"Cookie": "hidden", "safe": 1}, "password": "hidden"}})
+	summary := summarizeReply(raw)
+	detail := summary["detail"].(map[string]any)
+	b, _ := json.Marshal(detail)
+	all, _ := json.Marshal(summary)
+	if len(b) > 2048 || detail["truncated"] != true || detail["rows_count"] != float64(42) || detail["name"] != "kept" || detail["original_length"].(int) <= 2048 {
+		t.Fatalf("detail=%s", b)
+	}
+	if strings.Contains(string(all), "hidden") || strings.Contains(string(all), "top-secret") || summary["redacted_fields"] != 3 {
+		t.Fatalf("redaction=%s", all)
+	}
+}

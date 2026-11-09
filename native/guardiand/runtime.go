@@ -2648,7 +2648,7 @@ func (r *liveRunner) unresolvedTargetDate(x Instance, date string, attempt, rung
 	if !gate {
 		at := r.clock.Now().Format(time.RFC3339Nano)
 		_, _ = r.appendLedger(date, "ATTEMPT_START", map[string]any{"instance": x.ID, "attempt": attempt, "rung": rung, "tier": tier, "starttime": at, "internal": true})
-		_, _ = r.appendLedger(date, "ATTEMPT_END", map[string]any{"instance": x.ID, "attempt": attempt, "rung": rung, "tier": tier, "exit_code": 30, "exit_error": "TARGET_DATE_UNRESOLVED", "internal": true})
+		_, _ = r.appendLedger(date, "ATTEMPT_END", map[string]any{"instance": x.ID, "attempt": attempt, "rung": rung, "tier": tier, "exit_code": 30, "exit_error": "TARGET_DATE_UNRESOLVED", "internal": true, "reply": summarizeReply(out)})
 	}
 	return out, nil, localExitError{code: 30, text: "TARGET_DATE_UNRESOLVED"}
 }
@@ -2747,7 +2747,7 @@ func (r *liveRunner) invokeDetailedTier(argv []string, e *config.Event, x Instan
 	select {
 	case err = <-wait:
 		if !gate {
-			_, _ = r.appendLedger(date, "ATTEMPT_END", map[string]any{"instance": x.ID, "attempt": attempt, "rung": rung, "tier": tier, "exit_code": exitCode(err), "exit_error": fmt.Sprint(err)})
+			_, _ = r.appendLedger(date, "ATTEMPT_END", map[string]any{"instance": x.ID, "attempt": attempt, "rung": rung, "tier": tier, "exit_code": exitCode(err), "exit_error": fmt.Sprint(err), "reply": summarizeReply(out.Bytes())})
 		}
 		return out.Bytes(), stderr.Bytes(), err
 	case <-ctx.Done():
@@ -2761,10 +2761,138 @@ func (r *liveRunner) invokeDetailedTier(argv []string, e *config.Event, x Instan
 		// A child can exit on TERM while grandchildren keep the process group alive.
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		if !gate {
-			_, _ = r.appendLedger(date, "ATTEMPT_END", map[string]any{"instance": x.ID, "attempt": attempt, "rung": rung, "tier": tier, "status": "HANDLER_TIMEOUT"})
+			_, _ = r.appendLedger(date, "ATTEMPT_END", map[string]any{"instance": x.ID, "attempt": attempt, "rung": rung, "tier": tier, "status": "HANDLER_TIMEOUT", "reply": summarizeReply(out.Bytes())})
 		}
 		return out.Bytes(), stderr.Bytes(), fmt.Errorf("HANDLER_TIMEOUT")
 	}
+}
+
+// redactReplyValue removes sensitive keys at every nesting level before persistence.
+func redactReplyValue(v any) (any, int) {
+	switch x := v.(type) {
+	case map[string]any:
+		result := map[string]any{}
+		count := 0
+		for k, val := range x {
+			lower := strings.ToLower(k)
+			if strings.Contains(lower, "cookie") || strings.Contains(lower, "token") || strings.Contains(lower, "secret") || strings.Contains(lower, "password") {
+				count++
+				continue
+			}
+			clean, n := redactReplyValue(val)
+			count += n
+			result[k] = clean
+		}
+		return result, count
+	case []any:
+		result := make([]any, len(x))
+		count := 0
+		for i, val := range x {
+			clean, n := redactReplyValue(val)
+			result[i] = clean
+			count += n
+		}
+		return result, count
+	default:
+		return v, 0
+	}
+}
+func jsonValue(b []byte) any { var v any; _ = json.Unmarshal(b, &v); return v }
+
+// summarizeReply retains bounded, sanitized JSON while preserving high-value keys first.
+func summarizeReply(out []byte) map[string]any {
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	var raw map[string]any
+	if json.Unmarshal([]byte(lines[len(lines)-1]), &raw) != nil || raw["contract"] != float64(1) {
+		return nil
+	}
+	clean, removed := redactReplyValue(raw)
+	reply := clean.(map[string]any)
+	result := map[string]any{"redacted_fields": removed}
+	for _, key := range []string{"status", "reason", "error_code", "retryable"} {
+		if val, ok := reply[key]; ok {
+			if s, ok := val.(string); ok && len(s) > 512 {
+				val = truncateText(s, 512)
+			}
+			result[key] = val
+		}
+	}
+	if detail, ok := reply["detail"]; ok {
+		original, _ := json.Marshal(raw["detail"])
+		encoded, _ := json.Marshal(detail)
+		if len(encoded) <= 2048 {
+			result["detail"] = detail
+		} else {
+			summary := map[string]any{"truncated": true, "original_length": len(original)}
+			if obj, ok := detail.(map[string]any); ok {
+				keys := make([]string, 0, len(obj))
+				for k := range obj {
+					keys = append(keys, k)
+				}
+				priority := func(k string) int {
+					lower := strings.ToLower(k)
+					v := obj[k]
+					switch v.(type) {
+					case nil, bool, float64:
+						return 0
+					case string:
+						if len(v.(string)) <= 128 {
+							return 0
+						}
+					}
+					if strings.HasSuffix(lower, "_total") || strings.HasSuffix(lower, "_count") || lower == "partial_reasons" || strings.Contains(lower, "degrade") {
+						return 1
+					}
+					return 2
+				}
+				sort.Slice(keys, func(i, j int) bool {
+					a, b := priority(keys[i]), priority(keys[j])
+					if a != b {
+						return a < b
+					}
+					return keys[i] < keys[j]
+				})
+				for _, k := range keys {
+					if k == "truncated" || k == "original_length" {
+						continue
+					}
+					v := obj[k]
+					if text, ok := v.(string); ok && len(text) > 256 {
+						v = truncateText(text, 256)
+					}
+					summary[k] = v
+					b, _ := json.Marshal(summary)
+					if len(b) > 2048 {
+						delete(summary, k)
+						if items, ok := v.([]any); ok {
+							kept := []any{}
+							for _, item := range items {
+								candidate := append(kept, item)
+								summary[k] = candidate
+								b, _ := json.Marshal(summary)
+								if len(b) > 2048 {
+									break
+								}
+								kept = candidate
+							}
+							if len(kept) > 0 {
+								summary[k] = kept
+							} else {
+								delete(summary, k)
+							}
+						}
+					}
+				}
+			} else if text, ok := detail.(string); ok {
+				summary["text"] = truncateText(text, 1024)
+				for b, _ := json.Marshal(summary); len(b) > 2048; b, _ = json.Marshal(summary) {
+					summary["text"] = truncateText(summary["text"].(string), len(summary["text"].(string))/2)
+				}
+			}
+			result["detail"] = summary
+		}
+	}
+	return result
 }
 
 type limitedBuffer struct {
@@ -2792,9 +2920,14 @@ func decodeResult(out []byte, err error) (status, code string, retry bool, detai
 	}
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	parsed := json.Unmarshal([]byte(lines[len(lines)-1]), &v) == nil && v.Contract == 1
-	detailText := strings.TrimSpace(string(v.Detail))
+	cleanDetail, _ := redactReplyValue(jsonValue(v.Detail))
+	cleanJSON, _ := json.Marshal(cleanDetail)
+	detailText := strings.TrimSpace(string(cleanJSON))
+	if len(v.Detail) == 0 {
+		detailText = ""
+	}
 	var asString string
-	if json.Unmarshal(v.Detail, &asString) == nil {
+	if json.Unmarshal(cleanJSON, &asString) == nil {
 		detailText = asString
 	}
 	if len(detailText) > 300 {
