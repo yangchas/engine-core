@@ -224,3 +224,54 @@ def test_prep_redis_failure_does_not_change_result(tmp_path, monkeypatch):
             assert [{k: v for k, v in row.items() if k != "elapsed_ms"} for row in actual[key]] == [{k: v for k, v in row.items() if k != "elapsed_ms"} for row in expected[key]]
         else:
             assert actual[key] == expected[key]
+
+
+def test_prep_plate_members_rechecks_activated_snapshot(tmp_path, monkeypatch):
+    import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+
+    _seed_c325(tmp_path)
+    snapshot = json.loads((Path(__file__).parent / 'fixtures/real/td/outputs/reference_snapshot_plate_members_latest.json').read_text())['value']
+    state = {'snapshot': None}
+    monkeypatch.setattr(ReferenceSnapshotStore, 'read_latest', lambda self, dataset: state['snapshot'])
+    monkeypatch.setattr(ReferenceSnapshotStore, 'close', lambda self: None)
+    def run(repo, script, args):
+        if script == 'run_data_jobs.py' and args[args.index('--job') + 1] == 'plate_members':
+            state['snapshot'] = snapshot
+        return 0, '{}'
+    monkeypatch.setattr(prep, '_run', run)
+    monkeypatch.setattr(prep, '_prepare_theme_snapshot_cache', lambda *a, **k: True)
+    report = prep.build_prep_report(tmp_path, '2026-11-04', write=True,
+                                    asof='2026-11-04T08:00:00+08:00')
+    member = next(item for item in report['steps'] if item['step'] == 'plate_members')
+    assert member['status'] == 'READY'
+    assert member['version'] == snapshot['version']
+    # Exercise the guardian's critical-missing check with the actual revised step.
+    from datetime import datetime
+    from types import SimpleNamespace
+    from examples import core_guardian
+    isolated = {**report, 'steps': [member], 'errors': [], 'error_steps': []}
+    monkeypatch.setattr(core_guardian.subprocess, 'run', lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=json.dumps(isolated), stderr=''))
+    handler = core_guardian._command_handler('premarket_data', SimpleNamespace(write=True), tmp_path)
+    event = SimpleNamespace(data_date_offset=0, timeout_seconds=10, args={})
+    assert 'PREP_CRITICAL_MISSING' not in handler(
+        event, datetime.fromisoformat('2026-11-04T08:00:00+08:00'), {}, False)
+
+
+def test_prep_plate_members_missing_and_pit(tmp_path, monkeypatch):
+    import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+
+    snapshot = json.loads((Path(__file__).parent / 'fixtures/real/td/outputs/reference_snapshot_plate_members_latest.json').read_text())['value']
+    state = {'snapshot': None}
+    monkeypatch.setattr(ReferenceSnapshotStore, 'read_latest', lambda self, dataset: state['snapshot'])
+    monkeypatch.setattr(ReferenceSnapshotStore, 'close', lambda self: None)
+    def check(asof):
+        return prep._step('plate_members', 'plate_members', '2026-11-03', ArtifactCatalog(tmp_path), asof=asof)
+    assert check('2026-11-04T08:00:00+08:00')['status'] == 'MISSING'
+    state['snapshot'] = snapshot
+    assert check('2026-11-04T00:00:00+08:00')['status'] == 'MISSING'
+    assert check('2026-11-04T08:00:00+08:00')['status'] == 'READY'
+    state['snapshot'] = {**snapshot, 'quality': {'status': 'FAILED'}}
+    assert check('2026-11-04T08:00:00+08:00')['status'] == 'MISSING'
