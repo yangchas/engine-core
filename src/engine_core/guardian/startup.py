@@ -714,9 +714,15 @@ def _append_gap(root: Path, trade_date: str, gap: dict[str, Any], observed_at: s
 
 def _verify_partition(item: dict[str, Any], day: str, root: str | Path | None,
                       now: datetime | None = None) -> None:
-    """After a fetch job exited cleanly, the catalog must now hold the partition (non-empty, complete enough)."""
+    """Verify the fetched dataset in its authoritative store at the PIT cutoff."""
     dataset = (item.get("artifact") or {}).get("catalog_dataset")
     if not dataset:
+        return
+    if dataset == "plate_members":
+        from ..prep_trade_day import _plate_members_snapshot
+        cutoff = now or datetime.now().astimezone()
+        if not _plate_members_snapshot(asof=cutoff.isoformat()):
+            raise FetchJobError(f"partition_missing_after_fetch:{dataset}:{day}", "POSTCONDITION_FAILED")
         return
     base = Path(root or os.environ.get("CORE_DATA_ROOT") or "~/core-data").expanduser()
     try:
