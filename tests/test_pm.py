@@ -35,6 +35,43 @@ def test_set_status_changes_only_first_line():
     assert set_status(text, 'STATUS: DONE') == 'title\nSTATUS: DONE\nbody\nSTATUS: later\n'
 
 
+def test_accept_forwards_deep_and_prints_summary_last(tmp_path, monkeypatch, capsys):
+    import subprocess
+    from types import SimpleNamespace
+    import examples.pm as pm
+
+    cards = tmp_path / 'cards'
+    cards.mkdir()
+    (cards / 'C999.md').write_text('STATUS: ready\nSCOPE_WRITE: /tmp/engine_core-wt-C999/a\n')
+    monkeypatch.setattr(pm, 'CARDS', cards)
+    summary = '选中 4 个测试文件、共 12 个测试、耗时 2.50 秒; --deep=yes'
+    def run(command, **kwargs):
+        if command[0] == 'git':
+            key = command[3:]
+            value = ('builder' if key[:2] == ['branch', '--show-current'] else
+                     'worktree /tmp/main' if key[:2] == ['worktree', 'list'] else
+                     'main' if key[0] == 'symbolic-ref' else
+                     'base' if key[0] == 'merge-base' else
+                     'changed.py' if key[0] == 'diff' else 'abc123')
+            return SimpleNamespace(returncode=0, stdout=value, stderr='')
+        return SimpleNamespace(returncode=0, stdout='', stderr='')
+    monkeypatch.setattr(subprocess, 'run', run)
+    def merge(command):
+        assert '--deep' in command
+        return SimpleNamespace(returncode=0, stdout=summary + '\nmerged\n', stderr='')
+    monkeypatch.setattr(pm, 'run_merge', merge)
+    assert pm.main(['accept', 'C999', '--no-audit', '--deep']) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == summary
+
+
+def test_run_merge_forwards_waiting_notice(capsys):
+    import sys
+    from examples.pm import run_merge
+    result = run_merge([sys.executable, '-c', "print('waiting for another pytest run', flush=True); print('done')"])
+    assert result.returncode == 0 and result.stdout.endswith('done\n')
+    assert capsys.readouterr().out == 'waiting for another pytest run\n'
+
+
 def test_accept_dry_run(tmp_path, monkeypatch, capsys):
     import subprocess
     import examples.pm as pm

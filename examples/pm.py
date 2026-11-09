@@ -5,6 +5,7 @@ from datetime import datetime
 import json
 import os
 import re
+import selectors
 import subprocess
 from pathlib import Path
 import time
@@ -33,6 +34,34 @@ def worktree_from_card(text):
 
 def set_status(text, new_line):
     return re.sub(r'^STATUS:[^\r\n]*', lambda _: new_line, text, count=1, flags=re.MULTILINE)
+
+
+def run_merge(command):
+    """Forward lock notices promptly while retaining the merge output for its summary."""
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          env={**os.environ, 'TMPDIR': '/tmp'}) as process:
+        chunks = []
+        pending = b''
+        deadline = time.monotonic() + 3600
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    process.kill()
+                    raise subprocess.TimeoutExpired(command, 3600)
+                for key, _ in selector.select(remaining):
+                    chunk = os.read(key.fd, 65536)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    chunks.append(chunk)
+                    pending += chunk
+                    while b'\n' in pending:
+                        line, pending = pending.split(b'\n', 1)
+                        if line == b'waiting for another pytest run':
+                            print(line.decode(), flush=True)
+        return subprocess.CompletedProcess(command, process.wait(), b''.join(chunks).decode(errors='replace'), '')
 
 
 def accept(args):
@@ -64,6 +93,8 @@ def accept(args):
     audit_cmd = [PYTHON, str(ROOT / 'examples/audit_card.py'), '--card', args.card,
                  '--branch', branch, '--base', base, '--repo', str(ROOT)]
     merge_cmd = [PYTHON, str(ROOT / 'examples/release.py'), 'merge', '--branch', branch, '--card', args.card]
+    if args.deep:
+        merge_cmd.append('--deep')
     if args.dry_run:
         print(f'worktree {worktree} branch {branch} base {base}')
         print('audit skipped' if args.no_audit else 'audit ' + ' '.join(audit_cmd))
@@ -84,8 +115,8 @@ def accept(args):
             print(f'ACCEPT {args.card} REFUSED audit: {str(exc)[:120]}')
             return 3
     try:
-        result = subprocess.run(merge_cmd, capture_output=True, text=True, timeout=900,
-                                env={**os.environ, 'TMPDIR': '/tmp'})
+        result = run_merge(merge_cmd)
+        merge_lines = result.stdout.splitlines()
         if result.returncode:
             lines = (result.stdout + result.stderr).splitlines()
             detail = lines[-1] if lines else f'exit {result.returncode}'
@@ -107,6 +138,9 @@ def accept(args):
         print(f'ACCEPT {args.card} MERGED; status/callback failed: {exc}')
         return 5
     print(f"ACCEPT {args.card} MERGED {sha} audit={'SKIPPED' if args.no_audit else 'PASS'}")
+    summary = next((line for line in reversed(merge_lines) if line.startswith('选中 ')),
+                   f'选中 UNKNOWN 个测试文件、共 UNKNOWN 个测试、耗时 UNKNOWN 秒; --deep={"yes" if args.deep else "no"}')
+    print(summary)
     return 0
 
 
@@ -139,6 +173,7 @@ def main(argv=None):
     accept_parser.add_argument('card')
     accept_parser.add_argument('--dry-run', action='store_true')
     accept_parser.add_argument('--no-audit', action='store_true')
+    accept_parser.add_argument('--deep', action='store_true')
     args = parser.parse_args(argv)
     if args.command == 'accept':
         return accept(args)

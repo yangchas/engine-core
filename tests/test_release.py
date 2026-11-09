@@ -38,6 +38,7 @@ def repos(tmp_path, monkeypatch):
     _git(origin, "init", "-q", "-b", "main")
     schedule = {"events": [{"event_id": "e_noon", "at": "12:00:00"}]}
     base = _commit(origin, {"src/engine_core/guardian/schedule.json": json.dumps(schedule), "a.py": "1\n",
+                            "tests/test_a.py": "x\n", **{name: "# invariant\n" for name in release.GLOBAL_INVARIANT_TESTS},
                             "examples/affected_tests.py": "print('python -m pytest -q tests/test_a.py')\n"}, "base")
     live = tmp_path / "live"                                  # like production: a detached worktree of the same repository
     _git(origin, "worktree", "add", "-q", "--detach", str(live), base)
@@ -229,6 +230,62 @@ def _add_examples_code_change(origin, lines=6):
     _git(origin, "checkout", "-q", "feature")
     _commit(origin, {"examples/role_gate_sample.py": "".join(f"line{i}\n" for i in range(lines))}, "large inline change")
     _git(origin, "checkout", "-q", "main")
+
+
+def test_merge_selector_depth(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    (cards / "C900.md").write_text("ID: C900\n")
+    original = release.subprocess.run
+    selectors = []
+
+    def run(command, *args, **kwargs):
+        if any(str(part).endswith("affected_tests.py") for part in command):
+            selectors.append(command)
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(release.subprocess, "run", run)
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (1, []))
+    for deep in (False, True):
+        assert release.cmd_merge(_merge_args(origin, evidence, cards, deep=deep)) == 1
+    assert selectors[0][selectors[0].index("--depth") + 1] == "1"
+    assert "--depth" not in selectors[1]
+
+
+def test_merge_includes_changed_tests_and_existing_invariants_once(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    _git(origin, "checkout", "-q", "feature")
+    _commit(origin, {"tests/test_added.py": "# added\n"}, "new test")
+    _git(origin, "checkout", "-q", "main")
+    (cards / "C900.md").write_text("ID: C900\n")
+    missing = "tests/test_missing_invariant.py"
+    monkeypatch.setattr(release, "GLOBAL_INVARIANT_TESTS", (*release.GLOBAL_INVARIANT_TESTS, missing, "tests/test_a.py"))
+    commands = []
+    monkeypatch.setattr(release, "run_checked", lambda command, *a, **k: (commands.append(command) or 1, []))
+    for deep in (False, True):
+        assert release.cmd_merge(_merge_args(origin, evidence, cards, deep=deep)) == 1
+    for command in commands:
+        assert command.count("tests/test_added.py") == 1
+        assert all(command.count(name) == 1 for name in release.GLOBAL_INVARIANT_TESTS if name != missing)
+        assert missing not in command
+
+
+def test_pytest_lock_waits_then_refuses(tmp_path, capsys):
+    path = tmp_path / "lock"
+    with release.pytest_lock(path):
+        with pytest.raises(TimeoutError, match="timed out"):
+            with release.pytest_lock(path, timeout=0.02):
+                pass
+    assert "waiting for another pytest run" in capsys.readouterr().out
+    with release.pytest_lock(path, timeout=0):
+        pass
+
+
+def test_pytest_summary_counts_outcomes(tmp_path):
+    log = tmp_path / "pytest.log"
+    log.write_text("=== 12 passed, 2 skipped, 1 xfailed, 3 warnings in 4.25s ===\n")
+    assert release.pytest_summary(log, 3, True) == "选中 3 个测试文件、共 15 个测试、耗时 4.25 秒; --deep=yes"
+    log.write_text("interrupted\n")
+    assert "共 UNKNOWN 个测试" in release.pytest_summary(log, 3, False)
 
 
 def test_merge_runs_global_invariants_for_unrelated_changes(mergeable, monkeypatch):
