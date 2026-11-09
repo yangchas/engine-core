@@ -43,6 +43,62 @@ class CoverageSource(Protocol):
     def coverage(self, dates: Sequence[str]) -> dict[str, DayCoverage]: ...
 
 
+def day_coverage_ratio(store: Any, day: str, expected_symbols: Iterable[str], *,
+                       threshold: float = 0.995, source_unavailable: Iterable[str] = ()) -> dict[str, Any]:
+    """Measure expected symbols against rows belonging to the selected Baostock version."""
+    from ..data_pipeline.baostock_completion import _symbol
+    from ..data_pipeline.derived_daily import normalize_status
+    from ..data_pipeline.td_sink import has_baostock_date_evidence, pick_best
+
+    expected = {_symbol(symbol) for symbol in expected_symbols} - {
+        _symbol(symbol) for symbol in source_unavailable}
+    result: dict[str, Any] = {"coverage": None, "expected": len(expected), "present": None,
+                              "missing_symbols": [], "missing_total": None, "provider": "",
+                              "version": "", "ready": False, "reason": ""}
+    try:
+        if not store.schema_exists():
+            result["reason"] = "no_version"
+            return result
+        current = pick_best(store.read_versions(day))
+        if current is None:
+            result["reason"] = "no_version"
+            return result
+        provider = str(current.get("provider") or current.get("source") or "").lower()
+        version = str(current.get("version") or "")
+        result.update(provider=provider, version=version)
+        if provider != "baostock":
+            result["reason"] = "non_baostock_provider"
+            return result
+        if not version:
+            result["reason"] = "no_version"
+            return result
+        if not has_baostock_date_evidence(day, current):
+            result["reason"] = "no_date_evidence"
+            return result
+        rows = store.read_day_rows(day)
+    except Exception:
+        result["reason"] = "td_unavailable"
+        return result
+
+    present = {_symbol(symbol) for symbol, row in rows.items() if row.get("version") == version} & expected
+    missing = sorted(expected - present)
+    coverage = len(present) / len(expected) if expected else None
+    result.update(coverage=coverage, present=len(present), missing_symbols=missing[:50],
+                  missing_total=len(missing))
+    status = normalize_status(current.get("business_status"))
+    if status != "FORMAL":
+        result["reason"] = f"not_formal:{status.lower()}"
+    elif current.get("needs_upgrade"):
+        result["reason"] = "needs_upgrade"
+    elif coverage is None:
+        result["reason"] = "no_expected_symbols"
+    elif coverage < threshold:
+        result["reason"] = "below_threshold"
+    else:
+        result["ready"] = True
+    return result
+
+
 class TdCoverageSource:
     """Reads the Core TD version table and the stored row counts. Raises TdUnavailable when TD cannot be read."""
     origin = "td"
