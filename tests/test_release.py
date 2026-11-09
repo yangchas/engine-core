@@ -251,6 +251,38 @@ def test_merge_selector_depth(mergeable, monkeypatch):
     assert "--depth" not in selectors[1]
 
 
+@pytest.mark.parametrize("deep,cap,mode", [(False, 1, "exact"), (False, 3, "depth1"), (True, 1, "deep")])
+def test_merge_selection_cap(mergeable, monkeypatch, capsys, deep, cap, mode):
+    origin, evidence, cards = mergeable
+    _commit(origin, {"tests/test_widget.py": "# matching\n", "tests/test_extra.py": "# selected\n"}, "existing tests")
+    _git(origin, "checkout", "-q", "-b", "cap-feature")
+    _commit(origin, {"src/engine_core/widget.py": "x = 1\n", "src/engine_core/absent.py": "x = 1\n",
+                     "tests/test_added.py": "# changed\n"}, "changes")
+    _git(origin, "checkout", "-q", "main")
+    (cards / "C900.md").write_text("ID: C900\nROLE: builder\n")
+    original = release.subprocess.run
+
+    def run(command, *args, **kwargs):
+        if any(str(part).endswith("affected_tests.py") for part in command):
+            return subprocess.CompletedProcess(command, 0, "python -m pytest -q tests/test_a.py tests/test_extra.py\n", "")
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(release.subprocess, "run", run)
+    commands = []
+    monkeypatch.setattr(release, "run_checked", lambda command, *a, **k: (commands.append(command) or 1, []))
+    assert release.cmd_merge(_merge_args(origin, evidence, cards, branch="cap-feature", deep=deep, max_tests_files=cap)) == 1
+    selected = {part for part in commands[0] if part.startswith("tests/")}
+    assert {"tests/test_added.py", *release.GLOBAL_INVARIANT_TESTS} <= selected
+    assert ("tests/test_widget.py" in selected) == (mode == "exact")
+    assert "tests/test_absent.py" not in selected
+    assert ("tests/test_a.py" in selected) == (mode != "exact")
+    assert ("tests/test_extra.py" in selected) == (mode != "exact")
+    output = capsys.readouterr().out
+    assert f"mode={mode}" in output
+    assert ("EXACT_SET (depth1 selected 2 > cap)" in output) == (mode == "exact")
+    assert f"mode={mode}" in next((evidence / "merge").glob("*-pytest.log")).read_text()
+
+
 def test_merge_includes_changed_tests_and_existing_invariants_once(mergeable, monkeypatch):
     origin, evidence, cards = mergeable
     _git(origin, "checkout", "-q", "feature")
@@ -269,7 +301,8 @@ def test_merge_includes_changed_tests_and_existing_invariants_once(mergeable, mo
         assert missing not in command
 
 
-def test_pytest_lock_waits_then_refuses(tmp_path, capsys):
+def test_pytest_lock_waits_then_refuses(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("ENGINE_CORE_PYTEST_LOCK_HELD", raising=False)
     path = tmp_path / "lock"
     with release.pytest_lock(path):
         with pytest.raises(TimeoutError, match="timed out"):
@@ -280,10 +313,28 @@ def test_pytest_lock_waits_then_refuses(tmp_path, capsys):
         pass
 
 
+def test_pytest_lock_reenters_when_inherited(tmp_path, monkeypatch):
+    path = tmp_path / "lock"
+    monkeypatch.delenv("ENGINE_CORE_PYTEST_LOCK_HELD", raising=False)
+    with release.pytest_lock(path):
+        monkeypatch.setenv("ENGINE_CORE_PYTEST_LOCK_HELD", "1")
+        with release.pytest_lock(path, timeout=0):
+            pass
+
+
+def test_merge_passes_lock_marker_to_pytest(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    (cards / "C900.md").write_text("ID: C900\n")
+    environments = []
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (environments.append(k.get("env")) or 1, []))
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 1
+    assert environments == [{"ENGINE_CORE_PYTEST_LOCK_HELD": "1"}]
+
+
 def test_pytest_summary_counts_outcomes(tmp_path):
     log = tmp_path / "pytest.log"
     log.write_text("=== 12 passed, 2 skipped, 1 xfailed, 3 warnings in 4.25s ===\n")
-    assert release.pytest_summary(log, 3, True) == "选中 3 个测试文件、共 15 个测试、耗时 4.25 秒; --deep=yes"
+    assert release.pytest_summary(log, 3, True) == "选中 3 个测试文件、共 15 个测试、耗时 4.25 秒; --deep=yes; mode=deep"
     log.write_text("interrupted\n")
     assert "共 UNKNOWN 个测试" in release.pytest_summary(log, 3, False)
 
@@ -392,7 +443,7 @@ def test_merge_tests_the_merged_tree_not_the_base_and_aborts_when_they_fail(merg
     (cards / "C900.md").write_text("ID: C900\n")
     seen = {}
 
-    def fake_run(command, cwd, log):
+    def fake_run(command, cwd, log, env=None):
         seen["merge_in_progress"] = (origin / ".git" / "MERGE_HEAD").exists()
         seen["has_branch_file"] = (origin / "b.py").exists()           # b.py exists only on the branch
         return 1, ["FAILED tests/test_a.py::test_x"]

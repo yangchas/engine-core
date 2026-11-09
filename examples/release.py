@@ -50,6 +50,9 @@ PYTEST_LOCK = Path("/tmp/engine_core_pytest.lock")
 
 @contextmanager
 def pytest_lock(path: Path = PYTEST_LOCK, timeout: float = 1200):
+    if os.environ.get("ENGINE_CORE_PYTEST_LOCK_HELD") == "1":
+        yield
+        return
     with path.open("a") as lock:
         deadline = time.monotonic() + timeout
         waiting = False
@@ -71,12 +74,12 @@ def pytest_lock(path: Path = PYTEST_LOCK, timeout: float = 1200):
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def pytest_summary(log: Path, file_count: int, deep: bool) -> str:
+def pytest_summary(log: Path, file_count: int, deep: bool, mode: str | None = None) -> str:
     content = log.read_text(encoding="utf-8") if log.exists() else ""
     match = re.search(r"^.*?((?:\d+ (?:passed|failed|skipped|xfailed|xpassed|error|errors|deselected)(?:, )?)+)(?:, \d+ warnings?)? in ([\d.]+)s.*$", content, re.MULTILINE)
     count = str(sum(int(n) for n in re.findall(r"(\d+) (?:passed|failed|skipped|xfailed|xpassed|error|errors|deselected)", match.group(1)))) if match else "UNKNOWN"
     elapsed = match.group(2) if match else "UNKNOWN"
-    return f"选中 {file_count} 个测试文件、共 {count} 个测试、耗时 {elapsed} 秒; --deep={'yes' if deep else 'no'}"
+    return f"选中 {file_count} 个测试文件、共 {count} 个测试、耗时 {elapsed} 秒; --deep={'yes' if deep else 'no'}; mode={mode or ('deep' if deep else 'depth1')}"
 
 
 def git(repo: Path, *args: str) -> str:
@@ -377,15 +380,25 @@ def cmd_merge(args: argparse.Namespace) -> int:
             merged = True
     if merged:
         tests = []
+        deep = getattr(args, "deep", False)
+        mode = "deep" if deep else "depth1"
+        exact_notice = ""
         if files:
             selector = [sys.executable, str(ROOT / "examples" / "affected_tests.py"), "--files", *files, "--command"]
-            if not getattr(args, "deep", False):
+            if not deep:
                 selector += ["--depth", "1"]
             select = subprocess.run(selector,
                                     cwd=str(ROOT), capture_output=True, text=True)
             tests = [t for t in select.stdout.split() if t.startswith("tests/")] if select.returncode == 0 else []
             if select.returncode:
                 problems.append(f"test selection failed (exit {select.returncode})")
+            selected_count = len({t for t in tests if (ROOT / t).is_file()})
+            if not deep and selected_count > getattr(args, "max_tests_files", 40):
+                mode = "exact"
+                exact_notice = f"EXACT_SET (depth1 selected {selected_count} > cap)"
+                print(exact_notice)
+                tests = [f"tests/test_{Path(f).stem}.py" for f in files
+                         if f.startswith(("src/", "examples/")) and f.endswith(".py")]
         changed_tests = [f for f in files if f.startswith("tests/") and Path(f).name.startswith("test_") and f.endswith(".py")]
         tests = list(dict.fromkeys(t for t in [*tests, *changed_tests, *GLOBAL_INVARIANT_TESTS] if (ROOT / t).is_file()))
         if tests:
@@ -393,10 +406,13 @@ def cmd_merge(args: argparse.Namespace) -> int:
             try:
                 with pytest_lock():
                     code, failing = run_checked([sys.executable, "-m", "pytest", "-q", "--no-header", "-p", "no:cacheprovider",
-                                                 "--durations=10", *tests], ROOT, log)
-                summary = pytest_summary(log, len(tests), getattr(args, "deep", False))
+                                                 "--durations=10", *tests], ROOT, log,
+                                                env={"ENGINE_CORE_PYTEST_LOCK_HELD": "1"})
+                summary = pytest_summary(log, len(tests), deep, mode)
                 log.parent.mkdir(parents=True, exist_ok=True)
                 with log.open("a", encoding="utf-8") as output:
+                    if exact_notice:
+                        output.write(exact_notice + "\n")
                     output.write(summary + "\n")
                 print(summary)
                 if code:
@@ -431,6 +447,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--branch")
     parser.add_argument("--deep", action="store_true", help="merge: select tests with two import hops")
+    parser.add_argument("--max-tests-files", type=int, default=40, help="merge: depth-1 selector file cap (default 40)")
     parser.add_argument("--card")
     parser.add_argument("--message", default="")
     parser.add_argument("--kind")
