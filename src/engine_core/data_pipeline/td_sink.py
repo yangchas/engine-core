@@ -33,9 +33,30 @@ _DB_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _SYMBOL = re.compile(r"^[0-9A-Za-z]{1,8}$")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 INSERT_CHUNK_ROWS = 400
+INSERT_MAX_SQL_BYTES = 512 * 1024
 SUM_REL_TOLERANCE = 1e-9
 SAMPLE_ROWS = 120
 BAOSTOCK_PROGRESS_VERSION = "baostock_progress"
+
+
+def insert_statements(parts):
+    """Bound multi-table INSERTs by both row count and UTF-8 SQL size."""
+    prefix = 'INSERT INTO '
+    batch = []
+    size = len(prefix.encode('utf-8'))
+    for part in parts:
+        part_size = len(part.encode('utf-8'))
+        if size + (1 if batch else 0) + part_size > INSERT_MAX_SQL_BYTES or len(batch) >= INSERT_CHUNK_ROWS:
+            if batch:
+                yield prefix + ' '.join(batch)
+                batch = []
+                size = len(prefix.encode('utf-8'))
+        if size + part_size > INSERT_MAX_SQL_BYTES:
+            raise ValueError('insert_sql_exceeds_capacity')
+        size += (1 if batch else 0) + part_size
+        batch.append(part)
+    if batch:
+        yield prefix + ' '.join(batch)
 
 
 class TdUnavailable(CoreError):

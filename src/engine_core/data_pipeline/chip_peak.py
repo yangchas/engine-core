@@ -158,36 +158,36 @@ class ChipPeakStore:
     def write_states(self, states):
         import json
         from .adjust_factor import AdjustFactorStore
-        from .td_sink import INSERT_CHUNK_ROWS, _literal
-        items = sorted(states.items())
-        for start in range(0, len(items), INSERT_CHUNK_ROWS):
-            parts = []
-            for symbol, state in items[start:start + INSERT_CHUNK_ROWS]:
+        from .td_sink import _literal, insert_statements
+
+        def parts():
+            for symbol, state in sorted(states.items()):
                 symbol = AdjustFactorStore._symbol(symbol)
                 payload = json.dumps(state, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
                 if len(payload.encode('utf-8')) > STATE_JSON_CAPACITY:
                     raise ValueError('chip_window_state_json_exceeds_capacity')
-                parts.append(f'{self.database}.chip_window_state_{symbol} USING '
-                             f'{self.database}.chip_window_state_v1 TAGS({_literal(symbol)}) '
-                             f'VALUES ({STATE_TIMESTAMP_US}, {_literal(payload)})')
-            if parts:
-                self.store._run('INSERT INTO ' + ' '.join(parts))
+                yield (f'{self.database}.chip_window_state_{symbol} USING '
+                       f'{self.database}.chip_window_state_v1 TAGS({_literal(symbol)}) '
+                       f'VALUES ({STATE_TIMESTAMP_US}, {_literal(payload)})')
+
+        for sql in insert_statements(parts()):
+            self.store._run(sql)
 
     def write_results(self, day, rows):
         from .adjust_factor import AdjustFactorStore
-        from .td_sink import INSERT_CHUNK_ROWS, _literal, trade_day_ts_us
-        items = sorted(rows.items())
-        for start in range(0, len(items), INSERT_CHUNK_ROWS):
-            parts = []
-            for symbol, row in items[start:start + INSERT_CHUNK_ROWS]:
+        from .td_sink import _literal, insert_statements, trade_day_ts_us
+
+        def parts():
+            for symbol, row in sorted(rows.items()):
                 symbol = AdjustFactorStore._symbol(symbol)
                 values = [row.get(key) for key in ('version', 'algo_version', 'input_refs',
                                                     'available_at', 'quality', 'warm') + (('bars_used',) + FIELDS)]
-                parts.append(f'{self.database}.chip_indicators_{symbol} USING '
-                             f'{self.database}.chip_indicators_v1 TAGS({_literal(symbol)}) '
-                             f'VALUES ({trade_day_ts_us(day)}, ' + ', '.join(map(_literal, values)) + ')')
-            if parts:
-                self.store._run('INSERT INTO ' + ' '.join(parts))
+                yield (f'{self.database}.chip_indicators_{symbol} USING '
+                       f'{self.database}.chip_indicators_v1 TAGS({_literal(symbol)}) '
+                       f'VALUES ({trade_day_ts_us(day)}, ' + ', '.join(map(_literal, values)) + ')')
+
+        for sql in insert_statements(parts()):
+            self.store._run(sql)
 
     def read_day_marker(self, day):
         from .td_sink import trade_day_ts_us
