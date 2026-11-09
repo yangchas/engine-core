@@ -50,6 +50,9 @@ PYTEST_LOCK = Path("/tmp/engine_core_pytest.lock")
 
 @contextmanager
 def pytest_lock(path: Path = PYTEST_LOCK, timeout: float = 1200):
+    if os.environ.get("ENGINE_CORE_PYTEST_LOCK_HELD") == "1":
+        yield
+        return
     with path.open("a") as lock:
         deadline = time.monotonic() + timeout
         waiting = False
@@ -403,7 +406,8 @@ def cmd_merge(args: argparse.Namespace) -> int:
             try:
                 with pytest_lock():
                     code, failing = run_checked([sys.executable, "-m", "pytest", "-q", "--no-header", "-p", "no:cacheprovider",
-                                                 "--durations=10", *tests], ROOT, log)
+                                                 "--durations=10", *tests], ROOT, log,
+                                                env={"ENGINE_CORE_PYTEST_LOCK_HELD": "1"})
                 summary = pytest_summary(log, len(tests), deep, mode)
                 log.parent.mkdir(parents=True, exist_ok=True)
                 with log.open("a", encoding="utf-8") as output:
