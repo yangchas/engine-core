@@ -293,8 +293,8 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
         facts.ensure_schema()
         if mode == 'incremental':
             if owned:
-                from .trade_calendar import TradeCalendarStore
-                previous_day = TradeCalendarStore(root).previous_trade_date(day).isoformat()
+                from ..trade_day_context import previous_trade_date
+                previous_day = previous_trade_date(root, day)
                 read_day = facts.store.read_day_rows
             else:
                 previous_day = facts.previous_day(day)

@@ -378,8 +378,8 @@ def run(request, root, *, store=None, clock=None, dry_run=False):
             factor_store = AdjustFactorStore(facts.store)
             expected, detail['listing_source'] = factor_store.listing_symbols(day)
             if detail['listing_source'] == 'fallback':
-                from .trade_calendar import TradeCalendarStore
-                previous = TradeCalendarStore(root).previous_trade_date(day)
+                from ..trade_day_context import previous_trade_date
+                previous = previous_trade_date(root, day)
                 expected = set(facts.store.read_day_rows(str(previous)[:10]))
         elif hasattr(facts, 'listing_symbols'):
             expected, detail['listing_source'] = facts.listing_symbols(day)
