@@ -125,7 +125,7 @@ def expand(doc: Mapping[str, Any]) -> dict[str, Any]:
 EVENT_KEY_ORDER = (
     "event_id", "handler", "enabled", "calendar", "trigger_type", "at", "available_after", "deadline",
     "data_date_offset", "on_start", "on_deadline", "late_until", "late_until_date_offset_days",
-    "late_until_date_offset_error_codes", "late_until_clock_by_error_code", "gate", "depends_on", "after", "order",
+    "late_until_date_offset_error_codes", "late_until_clock_by_error_code", "gate", "depends_on", "accept_degraded_dependencies", "after", "order",
     "cost", "phases", "on_phase_mismatch", "profile", "catchup_mode", "max_attempts", "timeout_seconds",
     "retry_until_late", "silent_until_last", "retry_backoff", "args",
 )

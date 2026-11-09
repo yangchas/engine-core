@@ -149,7 +149,7 @@ python -m engine_core.kline_cluster --date 2026-11-06 --window 120 --pull-upstre
 
 ## §8 编排
 
-日K收盘获取后，`adjust_factor_postclose` 在 17:10–20:30 刷新因子，`price_volume_postclose` 在交易日 17:25–20:45 增量计算当天指标。夜间补数后，`adjust_factor_0115` 在 01:15–05:00 刷新因子，`price_volume_0130` 每日 01:30–05:30 增量计算上一交易日指标。两组使用时间槽；驱动器的窗口依赖对降级成功只接受 SUCCEEDED，会产生 SKIPPED_DEP，因此不使用 depends_on。目标日日K缺失或明显不全时降级且不写日标记或状态，后续时间槽可重试。因子未处理的股票跳过，缺失指标标 PARTIAL。首次部署须手动全市场 rebuild；空状态增量返回 NEEDS_REBUILD。
+盘后由 `baostock_probe_1730` 完成后依次触发 `adjust_factor_postclose` → `price_volume_postclose` → `chip_peak_postclose`；夜间由 `daily_kline_backfill` 完成后依次触发 `adjust_factor_0115` → `price_volume_0130` → `chip_peak_0145`。各依赖接受成功或降级成功，失败则下游跳过；窗口仅限定最早开始和最晚截止。目标日日K缺失或明显不全时降级且不写日标记或状态。首次部署须手动全市场 rebuild；空状态增量返回 NEEDS_REBUILD。
 
 ## §9 验证
 

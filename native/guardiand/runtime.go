@@ -287,10 +287,16 @@ func (c *fakeClock) sleepOn(id uint64) <-chan struct{} {
 	return c.changed
 }
 func (c *fakeClock) currentEpoch() uint64 { c.mu.Lock(); defer c.mu.Unlock(); return c.epoch }
+
 // noteWait counts a wait that really blocks (tests use it to know a waiter is parked).
 func (c *fakeClock) noteWait() { c.mu.Lock(); c.waits++; c.mu.Unlock() }
-func (c *fakeClock) newSleeper() uint64 { c.mu.Lock(); defer c.mu.Unlock(); c.nextID++; return c.nextID }
-func (c *fakeClock) wake(id uint64)     { c.mu.Lock(); defer c.mu.Unlock(); delete(c.sleepers, id) }
+func (c *fakeClock) newSleeper() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.nextID++
+	return c.nextID
+}
+func (c *fakeClock) wake(id uint64) { c.mu.Lock(); defer c.mu.Unlock(); delete(c.sleepers, id) }
 
 // settledSleepers is how many sleepers have already seen the latest clock change and gone back to sleep. A sleeper that
 // is still blocked on an older change has not yet re-evaluated its target, so it is not settled.
@@ -1350,6 +1356,11 @@ func (r *liveRunner) applyStartup(now time.Time, missed, active []Instance) erro
 		}
 	}
 	for _, x := range active {
+		// The regular scheduler resolves window dependencies and handles pending or failed parents.
+		// Startup catch-up must not bypass that decision.
+		if event := findEvent(r.c, x.EventID); event != nil && len(event.DependsOn) > 0 {
+			continue
+		}
 		if st, exists := r.states[now.Format("2006-01-02")+"/"+x.ID]; exists && isTerminal(st.Status) {
 			continue
 		}

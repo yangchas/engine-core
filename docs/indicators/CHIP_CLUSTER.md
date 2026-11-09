@@ -116,7 +116,7 @@ python -m engine_core.chip_cluster --date 2026-11-06 --window 120 --pull-upstrea
 
 ## §8 编排
 
-`chip_peak_postclose` 在交易日 17:40–20:50 处理当日，`chip_peak_0145` 每日 01:45–05:30 处理前一交易日，均为增量运行。使用时间槽而不设 `depends_on`：该依赖只接受上游 SUCCEEDED，日K降级成功会使下游跳过；窗口事件的 `after` 也不等待上游。首次部署须手动执行全市场 rebuild；空状态增量返回 NEEDS_REBUILD 降级。
+`chip_peak_postclose` 与 `chip_peak_0145` 分别依赖对应的 `price_volume` 事件，接受成功或降级成功；窗口仅限定最早开始和最晚截止。首次部署须手动执行全市场 rebuild；空状态增量返回 NEEDS_REBUILD 降级。
 
 ## §9 验证与验收
 

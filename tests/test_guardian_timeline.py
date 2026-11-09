@@ -244,11 +244,11 @@ def test_adjust_factor_events_follow_kline_windows():
     events = {event['event_id']: event for event in SCHEDULE['events']}
     post = events['adjust_factor_postclose']
     night = events['adjust_factor_0115']
-    assert not post.get('after') and not post.get('depends_on')
-    assert not night.get('after') and not night.get('depends_on')
-    assert post['at'] == '17:10:00' and post['late_until'] == '20:30:00'
+    assert not post.get('after') and post['depends_on'] == ['baostock_probe_1730']
+    assert not night.get('after') and night['depends_on'] == ['daily_kline_backfill']
+    assert post['at'] == '17:40:00' and post['late_until'] == '20:30:00'
     assert post['calendar'] == 'trading_day' and post['data_date_offset'] == 0
-    assert night['at'] == '01:15:00' and night['late_until'] == '05:00:00'
+    assert night['at'] == '01:00:00' and night['late_until'] == '05:00:00'
     assert night['calendar'] == 'every_day' and night['args']['target'] == 'prev_trade_day'
     assert all(event['cost'] != 'heavy' and not event.get('gate') for event in (post, night))
 
@@ -257,23 +257,38 @@ def test_price_volume_events_follow_kline_windows():
     events = {event['event_id']: event for event in SCHEDULE['events']}
     post = events['price_volume_postclose']
     night = events['price_volume_0130']
-    assert post['at'] == '17:25:00' and post['late_until'] == '20:45:00'
+    assert post['at'] == '17:40:00' and post['late_until'] == '20:45:00'
     assert post['calendar'] == 'trading_day' and post['data_date_offset'] == 0
-    assert night['at'] == '01:30:00' and night['late_until'] == '05:30:00'
+    assert night['at'] == '01:00:00' and night['late_until'] == '05:30:00'
     assert night['calendar'] == 'every_day' and night['args']['target'] == 'prev_trade_day'
-    assert all(event['cost'] != 'heavy' and not event.get('gate') and not event.get('after') and not event.get('depends_on') for event in (post, night))
+    assert all(event['cost'] != 'heavy' and not event.get('gate') and not event.get('after') and event.get('depends_on') for event in (post, night))
 
 
-def test_chip_and_dde_events_use_independent_time_windows():
+def test_chip_and_dde_events_use_dependency_windows():
     events = {event['event_id']: event for event in SCHEDULE['events']}
     for name, at, late, calendar in (
         ('chip_peak_postclose', '17:40:00', '20:50:00', 'trading_day'),
-        ('chip_peak_0145', '01:45:00', '05:30:00', 'every_day'),
-        ('dde_derived_0445', '04:45:00', '08:00:00', 'every_day'),
+        ('chip_peak_0145', '01:00:00', '05:30:00', 'every_day'),
+        ('dde_derived_0445', '02:00:00', '08:00:00', 'every_day'),
     ):
         event = events[name]
         assert (event['at'], event['late_until'], event['calendar']) == (at, late, calendar)
         assert event['data_date_offset'] == 0
         if calendar == 'every_day':
             assert event['args']['target'] == 'prev_trade_day'
-        assert event['cost'] != 'heavy' and not any(event.get(k) for k in ('gate', 'after', 'depends_on'))
+        assert event['cost'] != 'heavy' and not any(event.get(k) for k in ('gate', 'after')) and event.get('depends_on')
+
+
+def test_c884_indicator_dependencies_accept_degraded():
+    events = {event['event_id']: event for event in SCHEDULE['events']}
+    for child, parent in (
+        ('adjust_factor_0115', 'daily_kline_backfill'),
+        ('price_volume_0130', 'adjust_factor_0115'),
+        ('chip_peak_0145', 'price_volume_0130'),
+        ('dde_derived_0445', 'daily_dde_0200'),
+        ('adjust_factor_postclose', 'baostock_probe_1730'),
+        ('price_volume_postclose', 'adjust_factor_postclose'),
+        ('chip_peak_postclose', 'price_volume_postclose'),
+    ):
+        assert parent in events[child]['depends_on']
+        assert parent in events[child]['accept_degraded_dependencies']

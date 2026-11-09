@@ -155,3 +155,5 @@ Installing or enabling this unit requires separate user approval.
 `python examples/generate_schedule.py`; it validates the timeline (`timeline_check.py`) and rewrites `schedule.json`,
 `native/guardiand/testdata/schedule.json` and the provenance sha. `generate_schedule.py --check` (and
 `tests/test_guardian_timeline_source.py`) fails when any of the three was edited by hand or not regenerated.
+
+Indicator windows use dependency orchestration: `daily_kline_backfill` → `adjust_factor_0115` → `price_volume_0130` → `chip_peak_0145`; `baostock_probe_1730` → `adjust_factor_postclose` → `price_volume_postclose` → `chip_peak_postclose`; and `daily_dde_0200` → `dde_derived_0445`. The window sets the earliest start and latest cutoff. `accept_degraded_dependencies` selects which declared `depends_on` entries also accept `SUCCEEDED_DEGRADED`; absent entries retain the strict `SUCCEEDED` policy. Terminal failures propagate `SKIPPED_DEP` without a separate downstream alert.

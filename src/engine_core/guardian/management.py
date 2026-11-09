@@ -45,7 +45,7 @@ GO_V3_EVENT_FIELDS = frozenset({
     "silent_until_last", "catchup_mode", "on_deadline", "order", "after", "cost",
     "phases", "on_phase_mismatch", "on_start", "data_date_offset", "available_after",
     "late_until_date_offset_days", "late_until_date_offset_error_codes",
-    "late_until_clock_by_error_code", "depends_on", "args",
+    "late_until_clock_by_error_code", "depends_on", "accept_degraded_dependencies", "args",
 })
 GO_V3_PHASE_FIELDS = frozenset({"name", "start", "end"})
 _V3_DEFAULT_PHASES = (
@@ -637,6 +637,9 @@ def _v3_validate_schedule(payload: dict[str, Any], previous: dict[str, Any] | No
                     if variable not in _V3_TEMPLATE_VARS:
                         raise ValueError("schedule_v3_template_variable_invalid:" + event_id + ":" + variable)
         depends_on = _v3_string_list(event.get("depends_on"), path + ".depends_on")
+        accepted = _v3_string_list(event.get("accept_degraded_dependencies"), path + ".accept_degraded_dependencies")
+        if not set(accepted) <= set(depends_on):
+            raise ValueError("schedule_v3_accepted_dependency_not_declared:" + event_id)
         after = _v3_string_list(event.get("after"), path + ".after")
         _v3_int(event.get("order"), path + ".order")
         _v3_int(event.get("data_date_offset"), path + ".data_date_offset")

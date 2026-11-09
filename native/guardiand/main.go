@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -662,6 +663,7 @@ type scheduleV3Event struct {
 	LateUntilDateOffsetDays       int               `json:"late_until_date_offset_days"`
 	AvailableAfter                *string           `json:"available_after"`
 	DependsOn                     []string          `json:"depends_on"`
+	AcceptDegradedDependencies    []string          `json:"accept_degraded_dependencies"`
 	Args                          map[string]any    `json:"args"`
 }
 
@@ -1081,9 +1083,14 @@ func compileScheduleV3(b []byte) (config.Config, error) {
 		if atList {
 			trigger.AtTimes = at
 		}
+		for _, id := range event.AcceptDegradedDependencies {
+			if !slices.Contains(event.DependsOn, id) {
+				return config.Config{}, fmt.Errorf("event %s accepts undeclared dependency %s", eventID, id)
+			}
+		}
 		deps := make([]config.Dependency, 0, len(event.DependsOn))
 		for _, id := range event.DependsOn {
-			deps = append(deps, config.Dependency{ID: id})
+			deps = append(deps, config.Dependency{ID: id, AcceptDegraded: slices.Contains(event.AcceptDegradedDependencies, id)})
 		}
 		retryBackoff := event.RetryBackoff
 		if retryBackoff == "" {
