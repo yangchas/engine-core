@@ -18,6 +18,19 @@ MARKET_SYMBOL = "__MARKET__"
 SCHEMA = "auction_baseline_v3"
 
 
+def baseline_readiness(product: Mapping[str, Any]) -> tuple[bool, list[str]]:
+    """Interpret producer readiness, retaining explicit legacy status semantics."""
+    observed, minimum = product.get("observed_days"), product.get("min_days")
+    status = product.get("business_status", product.get("status"))
+    if observed is None or minimum is None:
+        return status == "READY", ["legacy_baseline_version"]
+    try:
+        below = int(observed) < int(minimum)
+    except (TypeError, ValueError):
+        return False, ["legacy_baseline_version"]
+    return not below and status in (None, "READY"), (["baseline_below_min_days"] if below else [])
+
+
 def _date(value: Any) -> str:
     raw = str(value or "")[:10].replace("-", "")
     if len(raw) != 8 or not raw.isdigit():
@@ -198,7 +211,7 @@ def _read_td_window(target_date: str) -> tuple[list[str], list[dict[str, Any]]]:
         cursor = connection.cursor()
         cursor.execute("SELECT DISTINCT trade_date FROM market_data1.auction_snapshot_v2 "
                        f'WHERE trade_date < "{cutoff}" AND auction_tag="0925" '
-                       "ORDER BY trade_date DESC LIMIT 64")
+                       f"ORDER BY trade_date DESC LIMIT {WINDOW_DAYS}")
         dates = sorted({_date(row[0]) for row in cursor.fetchall()})
         if not dates:
             return [], []

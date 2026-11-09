@@ -258,14 +258,16 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
     verified_sum = sum(_num(row["seal"]["seal_amount_yuan"]) for row in seals_verified)
     candidates = int(stock_facts.get("summary", {}).get("limit_candidate_n",
                    sum(bool(row.get("limit_up_candidate")) for row in by_symbol.values())) or 0)
+    from .auction_baseline import WINDOW_DAYS, baseline_readiness
     if isinstance(market_amount_history, Mapping):
+        baseline_ready, baseline_reasons = baseline_readiness(market_amount_history)
         history = market_amount_history.get("values", market_amount_history.get("amounts", []))
-        baseline_status = market_amount_history.get("status", "UNKNOWN")
     else:
-        history, baseline_status = market_amount_history or [], "READY"
+        history = market_amount_history or []
+        baseline_ready, baseline_reasons = len(history) >= WINDOW_DAYS, ["legacy_baseline_version"]
     history_values = [_num(value.get("amount_yuan") if isinstance(value, Mapping) else value) for value in history]
     history_values = [value for value in history_values if value is not None and value > 0]
-    history_values = history_values[-64:]
+    history_values = history_values[-WINDOW_DAYS:]
     multiple = market_amount / statistics.median(history_values) if market_amount is not None and history_values else None
     percentile = (sum(value <= market_amount for value in history_values) / len(history_values)
                   if market_amount is not None and history_values else None)
@@ -821,9 +823,9 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
                 "seal_rank": seal_ranks.get(max_seal_row["symbol"]),
                 "amount_rank": amount_ranks.get(max_seal_row["symbol"])} if max_seal_row else None)},
         "amount_multiple_64d": {"value": multiple, "percentile": percentile,
-            "sample_n": len(history_values), "window_n": 64,
+            "sample_n": len(history_values), "window_n": (market_amount_history.get("window_days_max") if isinstance(market_amount_history, Mapping) else WINDOW_DAYS),
             "basis": amount_baseline_basis,
-            "status": "READY" if len(history_values) == 64 and baseline_status == "READY" else "PARTIAL"},
+            "status": "READY" if baseline_ready else "PARTIAL", "reasons": baseline_reasons},
         "valid_amount_n": len(valid_amounts), "universe_n": len(by_symbol),
         "valid_price_n": len(changes), "up_ratio": {"numerator": up_n, "denominator": len(changes), "ratio": market_up_ratio},
         "market_median_pct": market_median, "yesterday_limit_high_open": pool_open,

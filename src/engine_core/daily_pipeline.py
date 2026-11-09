@@ -90,6 +90,18 @@ def _auction_baseline_history(rows: Any, *, trade_date: str, asof: str,
     return [totals[day] for day in sorted(totals)]
 
 
+def _auction_baseline_product(rows: list[dict[str, Any]], meta: Mapping[str, Any],
+                              history: list[float]) -> dict[str, Any]:
+    summary = next((row for row in rows if row.get("row_kind") == "market_baseline"), {})
+    product = {"values": history}
+    for key in ("observed_days", "min_days", "window_days_max", "business_status"):
+        if key in meta:
+            product[key] = meta[key]
+        elif key in summary:
+            product[key] = summary[key]
+    return product
+
+
 def _d06_persisted_assignments(slice_result: Any, *, trade_date: str, used_date: str,
                                asof: str, input_version: str,
                                visibility_sha256: str) -> dict[str, dict[str, Any]]:
@@ -2223,6 +2235,15 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                                 "reason": str(label),
                             })
                 baseline_rows = slice_results["auction_baseline"].rows
+                baseline_meta = dict(slice_results["auction_baseline"].meta)
+                entries = catalog_datasets.get("auction_baseline", {}).get("dates", {})
+                matched = next((entry for versions in entries.values() for entry in versions
+                                if entry.get("version") == baseline_meta.get("version")), None)
+                if matched and matched.get("manifest"):
+                    try:
+                        baseline_meta.update(json.loads(Path(matched["manifest"]).read_text()))
+                    except (OSError, ValueError):
+                        pass
                 baseline_replay = trade_date < date.today().isoformat()
                 baseline_history = _auction_baseline_history(
                     baseline_rows, trade_date=trade_date, asof=slice_asof,
@@ -2234,9 +2255,12 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     baseline_catalog = ArtifactCatalog(os.getenv("CORE_DATA_ROOT", "/home/exedev/core-data"))
                     baseline_path = baseline_catalog.locate("auction_baseline", trade_date)
                     if baseline_path is not None and baseline_path.is_file():
+                        baseline_rows = baseline_catalog.read_rows(baseline_path)
+                        baseline_meta = json.loads(baseline_path.read_text())
                         baseline_history = _auction_baseline_history(
-                            baseline_catalog.read_rows(baseline_path), trade_date=trade_date,
+                            baseline_rows, trade_date=trade_date,
                             asof=slice_asof, replay_event_time=True)
+                baseline_product = _auction_baseline_product(baseline_rows, baseline_meta, baseline_history)
                 panorama_members = [
                     {"plate_id": str(code), "plate_name": str(plate_names.get(code) or code),
                      "symbol": symbol}
@@ -2261,7 +2285,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     yesterday_pool=yesterday_pool_rows, yesterday_reasons=yesterday_reasons,
                     theme_assignments=theme_snapshot["assignments"], name_map=stock_names,
                     streak_feedback=payload.get("streak_feedback"),
-                    market_amount_history=baseline_history,
+                    market_amount_history=baseline_product,
                     amount_baseline_basis="REPLAY_EVENT_TIME" if baseline_replay else "PIT",
                     hot_plate_ranks=hot_ranks.get("ranks", {}),
                     plate_classes=class_by_code,
@@ -2272,7 +2296,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     stock_facts, plate_members=panorama_members,
                     yesterday_pool=yesterday_pool_rows, plate_classes=class_by_code,
                     name_map=stock_names,
-                    market_amount_history=baseline_history,
+                    market_amount_history=baseline_product,
                     replay=baseline_replay or hot_ranks.get("basis") == "POSTHOC_DEV",
                     normalized_rows=normalized_stock_rows)
                 relay_buckets = panorama.get("overview", {}).get("yesterday_reason_buckets", [])

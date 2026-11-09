@@ -52,7 +52,7 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
                              yesterday_pool: Sequence[Mapping[str, Any]],
                              plate_classes: Mapping[str, str] | None = None,
                              name_map: Mapping[str, Any] | None = None,
-                             market_amount_history: Sequence[float] = (),
+                             market_amount_history: Sequence[float] | Mapping[str, Any] = (),
                              replay: bool = False,
                              verified_0932: bool = False,
                              normalized_rows: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
@@ -179,7 +179,14 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
     elif small:
         backup = small[0]
 
-    baseline = [_num(value) for value in market_amount_history]
+    from .auction_baseline import WINDOW_DAYS, baseline_readiness
+    if isinstance(market_amount_history, Mapping):
+        baseline_ready, baseline_reasons = baseline_readiness(market_amount_history)
+        baseline_values = market_amount_history.get("values", [])
+    else:
+        baseline_values = market_amount_history
+        baseline_ready, baseline_reasons = len(baseline_values) >= WINDOW_DAYS, ["legacy_baseline_version"]
+    baseline = [_num(value) for value in baseline_values]
     baseline = [value for value in baseline if value is not None and value > 0]
     baseline_median = statistics.median(baseline) if baseline else None
     amount_multiple = market_amount / baseline_median if market_amount is not None and baseline_median else None
@@ -223,8 +230,8 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
                       f"昨日涨停接力明显落后（昨板高开{pool_up}/{len(pool_rows)}"
                       f"({pool_ratio:.1%})，落后市场{abs(lag):.2f}pp）"
                       if relay else ("昨日涨停接力不弱于阈值" if lag is not None else "昨板接力样本不足"))
-        baseline_text = (f"基线{len(baseline)}/64不足" if len(baseline) < 64 else
-                         f"基线64/64中位{baseline_median / 1e8:.2f}亿/{amount_multiple:.2f}倍"
+        baseline_text = (f"基线{len(baseline)}日不足" if not baseline_ready else
+                         f"基线{len(baseline)}日中位{baseline_median / 1e8:.2f}亿/{amount_multiple:.2f}倍"
                          if amount_multiple is not None else "基线待核实")
         history_text = (f"竞价额{market_amount / 1e8:.2f}亿、{baseline_text}"
                         if market_amount is not None else "竞价额待核实")
@@ -307,8 +314,8 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
                          if relay else "昨日涨停接力未触发明显落后")
         if len(pool_rows) < QUICKBRIEF_THRESHOLDS_V1["relay_min_n"]:
             relay_summary = "昨板接力样本不足,不下结论"
-        baseline_summary = (f"历史基线{len(baseline)}/64日不足" if len(baseline) < 64 else
-                            f"历史基线64/64日,中位{baseline_median / 1e8:.2f}亿" if baseline_median is not None else
+        baseline_summary = (f"历史基线{len(baseline)}日不足" if not baseline_ready else
+                            f"历史基线{len(baseline)}日,中位{baseline_median / 1e8:.2f}亿" if baseline_median is not None else
                             "历史基线样本不足,不下结论")
         email_lines.append(f"{ratio*100:.1f}%上涨、中位{median:+.2f}%;{relay_summary}。竞价额{market_amount/1e8:.2f}亿,{baseline_summary}。"
                            if market_amount is not None else f"{ratio*100:.1f}%上涨、中位{median:+.2f}%;{relay_summary}。竞价额样本不足,不下结论。")
@@ -374,7 +381,8 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
                                 "up_n": up_n, "up_ratio": ratio, "median_pct": median,
                                 "auction_amount_yuan": market_amount,
                                 "amount_coverage": len(amount_rows) / len(rows) if rows else None,
-                                "baseline_n": len(baseline), "baseline_median_yuan": baseline_median,
+                                "baseline_n": len(baseline), "baseline_status": "READY" if baseline_ready else "PARTIAL",
+                                "baseline_reasons": baseline_reasons, "baseline_median_yuan": baseline_median,
                                 "baseline_multiple": amount_multiple},
                    "yesterday_pool": {"valid_n": len(pool_rows), "up_n": pool_up,
                                       "up_ratio": pool_ratio, "lag_pp": lag},

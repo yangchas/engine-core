@@ -708,15 +708,16 @@ def _attach_auction_baseline(data: dict[str, Any], path: Path | list[dict[str, A
     market["auction_baseline_comparison"] = comparison
     baseline_summary = next((row for row in rows or []
                              if row.get("row_kind") == "market_baseline"), {})
-    window_days = int(baseline_summary.get("window_days") or 64)
+    from .auction_baseline import baseline_readiness
+    baseline_product = dict(baseline_summary)
+    if baseline_status is not None:
+        baseline_product["business_status"] = baseline_status
+    ready, reasons = baseline_readiness(baseline_product)
     if comparison:
-        comparison["window_days"] = window_days
-    observed_days = int(baseline_summary.get("observed_days", baseline_summary.get(
-        "sample_days", comparison["sample_days"] if comparison else 0)))
-    min_days = int(baseline_summary.get("min_days") or 5)
-    incomplete = baseline_status == "PARTIAL" or observed_days < min_days
+        comparison["window_days"] = baseline_summary.get("window_days_max", baseline_summary.get("window_days"))
     market["auction_baseline_status"] = (
-        "MISSING" if not comparison else "PARTIAL" if incomplete else "READY")
+        "MISSING" if not comparison else "READY" if ready else "PARTIAL")
+    market["auction_baseline_reasons"] = reasons
     market["auction_baseline_source"] = ("CORE_SLICE:auction_baseline" if isinstance(path, list) else str(path))
     if not comparison:
         gaps = data.setdefault("data_gaps", [])
