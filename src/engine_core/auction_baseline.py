@@ -13,6 +13,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from .data_pipeline.storage import ArtifactCatalog, canonical_json
 
 WINDOW_DAYS = 64
+MIN_DAYS = 5
 MARKET_SYMBOL = "__MARKET__"
 SCHEMA = "auction_baseline_v3"
 
@@ -51,15 +52,19 @@ def _percentile(values: Sequence[int], fraction: float) -> float | None:
 def _summary(values: Sequence[tuple[str, int]], *, window_dates: Sequence[str],
              missing_dates: Sequence[str]) -> dict[str, Any]:
     amounts = [amount for _, amount in values]
+    warm = len(amounts) >= MIN_DAYS
+    stats = amounts if warm else []
     return {
+        "n_obs": len(amounts), "warm": warm, "quality": "READY" if warm else "PARTIAL",
+        "observed_days": len(amounts), "window_days_max": WINDOW_DAYS, "min_days": MIN_DAYS,
         "sample_days": len(amounts),
-        "median_yuan": statistics.median(amounts) if amounts else None,
-        "p10_yuan": _percentile(amounts, 0.10),
-        "p25_yuan": _percentile(amounts, 0.25),
-        "p75_yuan": _percentile(amounts, 0.75),
-        "p90_yuan": _percentile(amounts, 0.90),
-        "minimum_yuan": min(amounts) if amounts else None,
-        "maximum_yuan": max(amounts) if amounts else None,
+        "median_yuan": statistics.median(stats) if stats else None,
+        "p10_yuan": _percentile(stats, 0.10),
+        "p25_yuan": _percentile(stats, 0.25),
+        "p75_yuan": _percentile(stats, 0.75),
+        "p90_yuan": _percentile(stats, 0.90),
+        "minimum_yuan": min(stats) if stats else None,
+        "maximum_yuan": max(stats) if stats else None,
         "earliest_date": min((day for day, _ in values), default=None),
         "latest_date": max((day for day, _ in values), default=None),
         "window_start": window_dates[0] if window_dates else None,
@@ -160,7 +165,9 @@ def build_auction_baseline(source_rows: Iterable[Mapping[str, Any]], *, target_d
     rows.append({"row_kind": "market_baseline", "date": cutoff, "symbol": MARKET_SYMBOL,
                  **market_summary, "available_at": available_at})
     symbol_summaries: list[dict[str, Any]] = []
+    valid_dates = {day for day, _ in market_values}
     for symbol, values in sorted(by_symbol.items()):
+        values = [(day, amount) for day, amount in values if day in valid_dates]
         seen = {day for day, _ in values}
         missing = [day for day in selected_dates if day not in seen]
         summary = {"row_kind": "symbol_baseline", "date": cutoff, "symbol": symbol,
@@ -169,10 +176,9 @@ def build_auction_baseline(source_rows: Iterable[Mapping[str, Any]], *, target_d
         rows.append(summary)
         symbol_summaries.append(summary)
 
-    status = "READY" if len(market_values) == len(selected_dates) and len(selected_dates) >= WINDOW_DAYS else "PARTIAL"
-    if not market_values:
-        status = "PARTIAL"
-    return {"status": status, "target_date": cutoff,
+    status = "READY" if len(market_values) >= MIN_DAYS else "PARTIAL"
+    return {"status": status, "warm": status == "READY", "observed_days": len(market_values),
+            "window_days_max": WINDOW_DAYS, "min_days": MIN_DAYS, "target_date": cutoff,
             "point_in_time_date": selected_dates[-1] if selected_dates else None,
             "window_dates": selected_dates, "market_summary": market_summary,
             "symbol_summaries": symbol_summaries, "rows": rows}
@@ -220,9 +226,6 @@ def _expected_sessions(catalog: ArtifactCatalog, target_date: str, td_dates: Seq
             return []
         covered = [day for day in store.all_trading_dates()
                    if snapshot["lit_from"] <= day <= previous]
-        if len(covered) < WINDOW_DAYS:
-            raise CalendarCoverageError(
-                f"calendar_history_insufficient:required={WINDOW_DAYS}:available={len(covered)}")
         return covered[-WINDOW_DAYS:]
     except CalendarCoverageError as exc:
         if str(exc).startswith("calendar_history_insufficient:"):
@@ -260,7 +263,7 @@ def _existing(catalog: ArtifactCatalog, target_date: str, *, asof: str | None = 
         return None
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
-        if manifest.get("schema") != SCHEMA or manifest.get("window_days") != WINDOW_DAYS:
+        if manifest.get("schema") != SCHEMA or manifest.get("window_days") != WINDOW_DAYS or manifest.get("min_days") != MIN_DAYS:
             return None
         available = manifest.get("available_at")
         version = manifest.get("version")
@@ -329,13 +332,14 @@ def build_and_store_auction_baseline(target_date: str, *, artifact_root: str | P
         "available_at": available_at, "source": "market_data1.auction_snapshot_v2",
         "source_filter": "auction_tag=0925; match_amt_yuan final matched amount",
         "business_status": result["status"], "quality": {"status": result["status"],
-            "missing": "INCOMPLETE_64_SESSION_WINDOW" if result["status"] == "PARTIAL" else None,
+            "missing": "WINDOW_BELOW_MIN_DAYS" if result["status"] == "PARTIAL" else None,
             "missing_market_dates": result["market_summary"]["missing_dates"],
             "observed_source_dates": result["market_summary"]["sample_days"]},
         "window": {"sessions": WINDOW_DAYS, "from": result["market_summary"]["window_start"],
                    "through": result["market_summary"]["window_end"],
                    "excludes_target_date": True, "percentiles": "linear interpolation"},
-        "window_days": WINDOW_DAYS, "market_summary": result["market_summary"],
+        "window_days": WINDOW_DAYS, "window_days_max": WINDOW_DAYS, "min_days": MIN_DAYS,
+        "observed_days": result["observed_days"], "warm": result["warm"], "market_summary": result["market_summary"],
         "symbol_count": len(result["symbol_summaries"]),
         "source_dates": result["window_dates"],
     }

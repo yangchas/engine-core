@@ -26,7 +26,7 @@ PARTITION BY symbol INTERVAL(15m, 1s);
 
 每时点独立去重后有效非空、合法金额的不同 symbol ≥4000 才可发布该时点完整日标记；保留缺股及有证据的停牌、退市、未上市、源空白名单与原因，未知缺口不补零。仅达到 4000 不是板块每成分都有值的保证。09:45 不足阈值或查询不完整时不写完整标记，记录缺失日；即使竞价已完整也不得把 09:45 标完整。F2 缺该日正式依赖返回 30，诊断性统计若单独生成必须标 PARTIAL，不冒充正式产物。C731 的 5796 行是跨片段、不完整的样本，不能按 5796≥4000 推断完整。
 
-F1 对超过三个交易日保护期、经对应源表原始行数查证为零的日与时点记录 SOURCE_ABSENT；该标记只表示无需反复采集，不表示事实完整。窗口读者仍将其视为缺失，不能补零，诊断统计须按已有样本标 PARTIAL。源表有行但事实不足仍为 INCOMPLETE。
+F1 对超过三个交易日保护期、经对应源表原始行数查证为零的日与时点记录 SOURCE_ABSENT；该标记只表示无需反复采集，不表示事实完整。窗口读者仍将其视为缺失，不能补零，诊断统计按有效样本数判定质量。源表有行但事实不足时，最近五个交易日的缺口返回 INCOMPLETE；更早缺口记入 best_effort_incomplete，不降级。
 
 拟议冷存逻辑 DDL（C784 DESCRIBE 两个源金额均 BIGINT；DECISION-6 原值原类型，非浮点；ts 为上海交易日零点）:
 ```sql
@@ -49,7 +49,7 @@ CREATE TABLE core_data.slot0945_amount_days_v1
 
 目标日 D 的窗口由交易日历取严格早于 D 最近 64 个交易日，不以源中出现的日期反推窗口。F2a 读取该窗口 `auction_amount`；F2b 再读 `slot0945_amount` 与每个历史日 as-of 可见的该日 `plate_members` 快照及版本。每个时点的日完整标记、行、版本及可见时间均检查；不得用今日成员回填过去。日内每板块、时点把当日去重成员金额求和，成员为空或任一成员缺金额则该板块该时点该日缺席；不以 0 代替。F2a 市场按该日正式事实的金额求和，个股按各日有效金额统计；个股缺日记入该股 `missing_dates`，禁止把全市场达标当作该股全窗口齐备。
 
-对排序样本 x[0..n-1]，p 分位令 h=(n-1)p、i=floor(h)、j=ceil(h)，结果为 x[i]+(x[j]-x[i])*(h-i)；n=0 为 NULL，中位数即 p=0.5。F2a 输出 p10/p25/median/p75/p90、最小最大、样本数、窗口和缺日，保留 `rows/market_summary/symbol_summaries` 与 `observed_source_dates` 的已修语义：观察到的市场样本日数而非候选日数。F2b 每板块每时点保留 `median_yuan/p25_yuan/p75_yuan/sample_days/amounts_yuan/dates_used/missing_dates/membership_versions`；日序和金额数组位置对应。统计为 DOUBLE，事实仍为 BIGINT。任一所需日缺失或样本不足 64 时 `warm=false`、PARTIAL；空样本不产生数值。已有 F2a 总体 READY 只看市场，F2b 对候选窗口短于 64 也可能 READY，均须补足逐实体 warm 语义。
+对排序样本 x[0..n-1]，p 分位令 h=(n-1)p、i=floor(h)、j=ceil(h)，结果为 x[i]+(x[j]-x[i])*(h-i)；n=0 为 NULL，中位数即 p=0.5。F2a 输出 p10/p25/median/p75/p90、最小最大、样本数、窗口和缺日，保留 `rows/market_summary/symbol_summaries` 与 `observed_source_dates` 的已修语义：观察到的市场样本日数而非候选日数。F2b 每板块每时点保留 `median_yuan/p25_yuan/p75_yuan/sample_days/amounts_yuan/dates_used/missing_dates/membership_versions`；日序和金额数组位置对应。统计为 DOUBLE，事实仍为 BIGINT。窗口最多 64 日；市场有效日不少于 5 日时总体 READY、warm=true，否则 PARTIAL、warm=false。各股或板块各时点独立按有效样本数判定，少于 5 日时统计量为 NULL 且 PARTIAL；不少于 5 日时按原线性分位数计算。输出 observed_days、window_days_max=64、min_days=5 与缺失日期清单。
 
 存储决定：现行两个 L1 保留 catalog 不可变版本及 Redis 热视图作为迁移期间权威和消费兼容；按 `/home/exedev/fw/design/32` §3 B/C 最终迁至 TD `td_snapshot` 版本化快照 + Redis view，不能把 catalog 作为长期终态。框架 §7 的 L1 TD 方向与此一致；不新造另一张 TD 指标超级表。迁移前冻结快照 schema、版本和元数据（UNKNOWN-W2），双写对账并切换 reader；当前字段沿用现有产物，新增 `version/algo_version/input_refs/available_at/quality/warm` 及参数哈希，标记为提案，不伪称已有 DDL。
 
@@ -63,8 +63,8 @@ CREATE TABLE core_data.slot0945_amount_days_v1
 拟新增 registry 声明；F2a 只依赖自身实际所需的 0925，F2b 依赖三者：
 ```json
 {"id":"auction_amount_facts","requires":[],"produces":["auction_amount","slot0945_amount"]}
-{"id":"auction_baseline","requires":[{"dataset":"auction_amount","window_days":64,"min_quality":"FORMAL"}],"produces":["auction_baseline"]}
-{"id":"plate_amount_baseline","requires":[{"dataset":"auction_amount","window_days":64,"min_quality":"FORMAL"},{"dataset":"slot0945_amount","window_days":64,"min_quality":"FORMAL"},{"dataset":"plate_members","window_days":64,"min_quality":"FORMAL"}],"produces":["plate_amount_baseline"]}
+{"id":"auction_baseline","requires":[{"dataset":"auction_amount","window_days":64,"min_days":5,"min_quality":"FORMAL"}],"produces":["auction_baseline"]}
+{"id":"plate_amount_baseline","requires":[{"dataset":"auction_amount","window_days":64,"min_days":5,"min_quality":"FORMAL"},{"dataset":"slot0945_amount","window_days":64,"min_days":5,"min_quality":"FORMAL"},{"dataset":"plate_members","window_days":64,"min_days":5,"min_quality":"FORMAL"}],"produces":["plate_amount_baseline"]}
 ```
 F1 无上游数据集依赖，只需交易日历及 market_data1 对应已收盘日可用。F2 默认只检查并读取 core_data，不现场补事实；显式 `--pull-upstream` 才在租约下调用 F1 补缺并重新检查，成员缺失由其独立获取方处理。仍缺则返回：
 ```json
@@ -73,8 +73,8 @@ F1 无上游数据集依赖，只需交易日历及 market_data1 对应已收盘
 
 | exit | 提议合同 | 与现状区别 |
 |---|---|---|
-| 0 | ok，正式成功 | C773 现行 READY、PARTIAL 和复用均可能 0 |
-| 10 | degraded / STALE_VERSION，旧合格版本，PARTIAL | 新增 |
+| 0 | ok，正式成功 | F1 最近五日无未取到的源数据；F2 有效日不少于 5 |
+| 10 | degraded，PARTIAL | F1 最近五日源有数据却未取到；F2 有效日不足 5 |
 | 20 | not_applicable / ALREADY_SATISFIED，同输入、算法、参数且已完整提交 | 通用码已登记；现行 plate 复用为 0 |
 | 30 | failed / NOT_YET_AVAILABLE，可重试，detail 列全部缺项 | C773 对终态 0x073a 使用 30；新错误码须登记 |
 | 40 | failed / CONTRACT_ERROR，确定性错误 | 现行确定性异常可 40 |
@@ -85,7 +85,7 @@ F1 无上游数据集依赖，只需交易日历及 market_data1 对应已收盘
 
 已收盘事实版本不可变；上游修订如何发现、频率和检测窗口 UNKNOWN-W3（runner 查）。经证实修订由 F1 发布新版本并使所有包含该日的 F2 窗口失效；某日 `plate_members` 版本变化只重算包含该日的 F2b 窗口。算法、参数变化重算受影响版本；仅输入引用、算法、参数一致且完整提交可跳过，保留旧版本供 as-of 查询。
 
-每日已有最新历史日时，首次补其余 63 日最多 126 次单日上游查询（每时点各一次；若已有完整标记则减少），另加已有日原本的两次；按每次最多 5 日、至少 13 批，失败额外计。不能把 C740 的单次 0.313 秒乘次数当完成时间：它只测 09:45 单次，竞价查询、写入、租约及失败耗时未知，完整回填耗时 UNKNOWN-W4（runner 查）。C784 的 market_data1 KEEP 60 日、core_data KEEP 3650 日均为自然日保留配置，不能等同 60 个交易日；窗口第 61–64 个交易日的源数据必然超出 60 自然日，实际不可得日可能更多。无法回填的日期明确列缺失，warm=false/PARTIAL；不能凭临近日期造数，持续日更积累 64 个完整历史交易日后才 warm。已有可信历史事实版本可复用，但不得把历史 oracle 当运行时输入。
+每日已有最新历史日时，首次补其余 63 日最多 126 次单日上游查询（每时点各一次；若已有完整标记则减少），另加已有日原本的两次；按每次最多 5 日、至少 13 批，失败额外计。不能把 C740 的单次 0.313 秒乘次数当完成时间：它只测 09:45 单次，竞价查询、写入、租约及失败耗时未知，完整回填耗时 UNKNOWN-W4（runner 查）。C784 的 market_data1 KEEP 60 日、core_data KEEP 3650 日均为自然日保留配置，不能等同 60 个交易日；窗口第 61–64 个交易日的源数据必然超出 60 自然日，实际不可得日可能更多。无法回填的日期明确列缺失；至少 5 个有效日即 warm，不能凭临近日期造数。已有可信历史事实版本可复用，但不得把历史 oracle 当运行时输入。
 
 隔离根或新环境先检查持久 core_data 的日标记并复用；没有事实则走限额 F1 补缺，F2 返回缺依赖，不触发整窗口 market_data1 回读。若使用现有 L1 降级须满足 §6 的 as-of 和质量限制。
 

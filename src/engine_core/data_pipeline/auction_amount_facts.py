@@ -348,7 +348,7 @@ def run(request, root, *, reader=None, store=None, dry_run=False, lease_factory=
             if now.time() < datetime.strptime('09:46', '%H:%M').time():
                 calendar = [day for day in calendar if day < today_text]
             days = calendar[-window:]
-            if len(days) != window:
+            if not days:
                 raise ValueError('calendar window unavailable')
             effective_end = days[-1]
         for day in days:
@@ -401,10 +401,24 @@ def run(request, root, *, reader=None, store=None, dry_run=False, lease_factory=
                 if not any(item['day'] == day for item in detail['source_absent']):
                     detail['completed'].append(day)
                 detail['remaining'].remove(day)
-        if detail['incomplete']:
+        failed = set(detail['incomplete']) | {item['day'] for item in detail['skipped_locked']}
+        recent_days = set()
+        if failed:
+            try:
+                end = effective_end or now.date().isoformat()
+                calendar = trading_days(Path(root).expanduser(), end)
+                if now.time() < datetime.strptime('09:46', '%H:%M').time():
+                    calendar = [day for day in calendar if day < now.date().isoformat()]
+                recent_days = set(calendar[-5:])
+                if len(calendar) < 5:
+                    recent_days |= failed
+            except Exception:
+                recent_days = failed  # Unknown calendar coverage cannot prove a gap is old.
+        detail['best_effort_incomplete'] = sorted(failed - recent_days)
+        if failed:
             detail['reason'] = 'Source data was insufficient to produce complete facts.'
-        return _reply(10 if detail['incomplete'] or detail['skipped_locked'] else 0,
-                      'INCOMPLETE' if detail['incomplete'] or detail['skipped_locked'] else '', detail)
+        degraded = bool(failed & recent_days)
+        return _reply(10 if degraded else 0, 'INCOMPLETE' if degraded else '', detail)
     except Exception as exc:
         if isinstance(exc, LeaseUnavailable):
             detail['lease_error'] = str(exc)

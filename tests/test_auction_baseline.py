@@ -61,12 +61,12 @@ def test_baseline_uses_only_final_0925_amounts_and_keeps_market_and_symbol_histo
     }
     market_summary = result["market_summary"]
     assert market_summary["sample_days"] == 2
-    assert market_summary["median_yuan"] == 300
-    assert market_summary["p10_yuan"] == 140
-    assert market_summary["p90_yuan"] == 460
+    assert all(market_summary[k] is None for k in ("median_yuan", "p10_yuan", "p90_yuan"))
+    assert market_summary["n_obs"] == 2 and market_summary["warm"] is False and market_summary["quality"] == "PARTIAL"
     assert market_summary["missing_dates"] == ["2026-10-15"]
     symbol_summary = {row["symbol"]: row for row in result["symbol_summaries"]}
-    assert symbol_summary["600001"]["median_yuan"] == 200
+    assert symbol_summary["600001"]["median_yuan"] is None
+    assert symbol_summary["600001"]["n_obs"] == 2 and not symbol_summary["600001"]["warm"] and symbol_summary["600001"]["quality"] == "PARTIAL"
     assert symbol_summary["000002"]["sample_days"] == 1
 
 
@@ -92,3 +92,27 @@ def test_auction_points_fills_market_total_without_filling_absent_symbols():
     observations = {(row["date"], row["symbol"]) for row in result["rows"]
                     if row["row_kind"] == "symbol_observation"}
     assert observations == {("2026-10-14", "600001"), ("2026-10-15", "000002")}
+
+
+def test_real_window_with_more_than_minimum_days_is_ready():
+    expected, rows = _real_input()
+    result = build_auction_baseline(rows, target_date="2026-11-06", source_dates=expected["td_dates"])
+    assert result["status"] == "READY"
+
+
+def test_real_window_minimum_and_symbol_coverage():
+    expected, rows = _real_input()
+    dates = sorted(expected["td_dates"])
+    for count in (4, 5):
+        selected = dates[-count:]
+        result = build_auction_baseline(rows, target_date="2026-11-06", source_dates=selected)
+        assert result["status"] == ("READY" if count == 5 else "PARTIAL")
+        assert result["warm"] == (count == 5)
+        assert (result["observed_days"], result["min_days"], result["window_days_max"]) == (count, 5, 64)
+    selected = dates[-5:]
+    symbol = next(str(r["symbol"]) for r in rows if str(r.get("trade_date", "")).replace("-", "") == selected[-1].replace("-", ""))
+    limited = [r for r in rows if str(r.get("symbol")) != symbol or str(r.get("trade_date", "")).replace("-", "") in {d.replace("-", "") for d in selected[-3:]}]
+    result = build_auction_baseline(limited, target_date="2026-11-06", source_dates=selected)
+    row = next(r for r in result["symbol_summaries"] if r["symbol"] == symbol.zfill(6))
+    assert row["n_obs"] == 3 and not row["warm"] and row["quality"] == "PARTIAL" and row["median_yuan"] is None
+    assert result["status"] == "READY" and any(r["warm"] for r in result["symbol_summaries"])
