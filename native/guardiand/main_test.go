@@ -334,3 +334,33 @@ func TestMigrationV2PreservesConfiguredStartupAndWindowPolicies(t *testing.T) {
 		})
 	}
 }
+
+func TestC884MigrationPreservesDependencyPolicy(t *testing.T) {
+	dst := filepath.Join(t.TempDir(), "config.json")
+	if err := migrateCmd([]string{"--from", filepath.Join("testdata", "schedule.json"), "--to", dst, "--expand"}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got config.Config
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		id, dep string
+		accept  bool
+	}{
+		{"adjust_factor_0115", "daily_kline_backfill", true},
+		{"adjust_factor_postclose", "baostock_probe_1730", true},
+		{"dde_derived_0445", "daily_dde_0200", true},
+		{"limit_reasons_d1", "limit_pool_d1", false},
+		{"limit_up_detail_d1", "limit_pool_d1", false},
+	} {
+		ev := findEvent(got, tc.id)
+		if ev == nil || len(ev.DependsOn) != 1 || ev.DependsOn[0].ID != tc.dep || ev.DependsOn[0].AcceptDegraded != tc.accept {
+			t.Fatalf("%s: %+v", tc.id, ev)
+		}
+	}
+}

@@ -1970,7 +1970,9 @@
       "catchup_mode": "run_in_window",
       "cost": "medium",
       "data_date_offset": 0,
-      "depends_on": [],
+      "depends_on": [
+        "baostock_probe_1730"
+      ],
       "enabled": true,
       "handler": "postmarket_data",
       "late_until": "20:30:00",
@@ -1980,7 +1982,10 @@
         "any"
       ],
       "trigger_type": "window",
-      "policy": "kline_backfill"
+      "policy": "kline_backfill",
+      "accept_degraded_dependencies": [
+        "baostock_probe_1730"
+      ]
     },
     "adjust_factor_0115": {
       "after": [],
@@ -1992,7 +1997,9 @@
       "catchup_mode": "run_in_window",
       "cost": "medium",
       "data_date_offset": 0,
-      "depends_on": [],
+      "depends_on": [
+        "daily_kline_backfill"
+      ],
       "enabled": true,
       "handler": "postmarket_data",
       "late_until": "05:00:00",
@@ -2002,7 +2009,10 @@
         "any"
       ],
       "trigger_type": "window",
-      "policy": "kline_backfill"
+      "policy": "kline_backfill",
+      "accept_degraded_dependencies": [
+        "daily_kline_backfill"
+      ]
     },
     "price_volume_postclose": {
       "after": [],
@@ -2013,7 +2023,9 @@
       "catchup_mode": "run_in_window",
       "cost": "medium",
       "data_date_offset": 0,
-      "depends_on": [],
+      "depends_on": [
+        "adjust_factor_postclose"
+      ],
       "enabled": true,
       "handler": "postmarket_data",
       "late_until": "20:45:00",
@@ -2023,7 +2035,10 @@
         "any"
       ],
       "trigger_type": "window",
-      "policy": "kline_backfill"
+      "policy": "kline_backfill",
+      "accept_degraded_dependencies": [
+        "adjust_factor_postclose"
+      ]
     },
     "price_volume_0130": {
       "after": [],
@@ -2035,7 +2050,9 @@
       "catchup_mode": "run_in_window",
       "cost": "medium",
       "data_date_offset": 0,
-      "depends_on": [],
+      "depends_on": [
+        "adjust_factor_0115"
+      ],
       "enabled": true,
       "handler": "postmarket_data",
       "late_until": "05:30:00",
@@ -2045,7 +2062,10 @@
         "any"
       ],
       "trigger_type": "window",
-      "policy": "kline_backfill"
+      "policy": "kline_backfill",
+      "accept_degraded_dependencies": [
+        "adjust_factor_0115"
+      ]
     },
     "chip_peak_postclose": {
       "after": [],
@@ -2056,7 +2076,9 @@
       "catchup_mode": "run_in_window",
       "cost": "medium",
       "data_date_offset": 0,
-      "depends_on": [],
+      "depends_on": [
+        "price_volume_postclose"
+      ],
       "enabled": true,
       "handler": "postmarket_data",
       "late_until": "20:50:00",
@@ -2066,7 +2088,10 @@
         "any"
       ],
       "trigger_type": "window",
-      "policy": "kline_backfill"
+      "policy": "kline_backfill",
+      "accept_degraded_dependencies": [
+        "price_volume_postclose"
+      ]
     },
     "chip_peak_0145": {
       "after": [],
@@ -2078,7 +2103,9 @@
       "catchup_mode": "run_in_window",
       "cost": "medium",
       "data_date_offset": 0,
-      "depends_on": [],
+      "depends_on": [
+        "price_volume_0130"
+      ],
       "enabled": true,
       "handler": "postmarket_data",
       "late_until": "05:30:00",
@@ -2088,7 +2115,10 @@
         "any"
       ],
       "trigger_type": "window",
-      "policy": "kline_backfill"
+      "policy": "kline_backfill",
+      "accept_degraded_dependencies": [
+        "price_volume_0130"
+      ]
     },
     "dde_derived_0445": {
       "after": [],
@@ -2100,7 +2130,9 @@
       "catchup_mode": "run_in_window",
       "cost": "medium",
       "data_date_offset": 0,
-      "depends_on": [],
+      "depends_on": [
+        "daily_dde_0200"
+      ],
       "enabled": true,
       "handler": "postmarket_data",
       "late_until": "08:00:00",
@@ -2110,7 +2142,10 @@
         "any"
       ],
       "trigger_type": "window",
-      "policy": "kline_backfill"
+      "policy": "kline_backfill",
+      "accept_degraded_dependencies": [
+        "daily_dde_0200"
+      ]
     }
   },
   "timeline": [
@@ -2193,16 +2228,21 @@
           "fn": "night_recap",
           "id": "night_recap",
           "deadline": "08:29:59"
-        }
-      ]
-    },
-    {
-      "at": "01:15:00",
-      "run": [
+        },
         {
           "fn": "adjust_factor_0115",
           "id": "adjust_factor_0115",
           "deadline": "05:00:00"
+        },
+        {
+          "fn": "price_volume_0130",
+          "id": "price_volume_0130",
+          "deadline": "05:30:00"
+        },
+        {
+          "fn": "chip_peak_0145",
+          "id": "chip_peak_0145",
+          "deadline": "05:30:00"
         }
       ]
     },
@@ -2225,21 +2265,6 @@
               "lease_ttl_seconds": 300
             }
           }
-        },
-        {
-          "fn": "price_volume_0130",
-          "id": "price_volume_0130",
-          "deadline": "05:30:00"
-        }
-      ]
-    },
-    {
-      "at": "01:45:00",
-      "run": [
-        {
-          "fn": "chip_peak_0145",
-          "id": "chip_peak_0145",
-          "deadline": "05:30:00"
         }
       ]
     },
@@ -2250,12 +2275,7 @@
           "fn": "daily_dde_0200",
           "id": "daily_dde_0200",
           "deadline": "06:30:00"
-        }
-      ]
-    },
-    {
-      "at": "04:45:00",
-      "run": [
+        },
         {
           "fn": "dde_derived_0445",
           "id": "dde_derived_0445",
@@ -3116,26 +3136,6 @@
       ]
     },
     {
-      "at": "17:10:00",
-      "run": [
-        {
-          "fn": "adjust_factor_postclose",
-          "id": "adjust_factor_postclose",
-          "deadline": "20:30:00"
-        }
-      ]
-    },
-    {
-      "at": "17:25:00",
-      "run": [
-        {
-          "fn": "price_volume_postclose",
-          "id": "price_volume_postclose",
-          "deadline": "20:45:00"
-        }
-      ]
-    },
-    {
       "at": "17:35:00",
       "run": [
         {
@@ -3166,6 +3166,16 @@
           "fn": "chip_peak_postclose",
           "id": "chip_peak_postclose",
           "deadline": "20:50:00"
+        },
+        {
+          "fn": "adjust_factor_postclose",
+          "id": "adjust_factor_postclose",
+          "deadline": "20:30:00"
+        },
+        {
+          "fn": "price_volume_postclose",
+          "id": "price_volume_postclose",
+          "deadline": "20:45:00"
         }
       ]
     },

@@ -83,6 +83,9 @@ def validate_timeline(doc: Mapping[str, Any]) -> list[str]:
         allowed = event.get("phases")
         if start and allowed and "any" not in allowed and _phase_at(phases, start) not in allowed:
             problems.append(f"{where}:start_in_a_phase_the_event_does_not_allow:{_phase_at(phases, start)}")
+        accepted = event.get("accept_degraded_dependencies", [])
+        if not isinstance(accepted, list) or any(not isinstance(dep, str) for dep in accepted) or not set(accepted) <= set(event.get("depends_on") or []):
+            problems.append(f"{where}:invalid_accept_degraded_dependencies")
         for key in ("depends_on", "after"):
             for dep in event.get(key) or []:
                 if dep not in events:

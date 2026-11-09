@@ -941,7 +941,7 @@ func TestHeavySlotReleasedDuringRetryBackoff(t *testing.T) {
 	l.now = fc.Now
 	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
 	executed := make(chan struct{})
-	defer func() { <-executed }()          // execute must have returned before the ledger closes and TempDir is removed
+	defer func() { <-executed }() // execute must have returned before the ledger closes and TempDir is removed
 	go func() {
 		defer close(executed)
 		r.execute(Instance{ID: "retry", EventID: "retry", TriggerType: "startup"}, date)
@@ -4027,4 +4027,48 @@ func c548FormatMatrixLedger(counts map[string]int) string {
 		parts = append(parts, fmt.Sprintf("%s:%d", key, counts[key]))
 	}
 	return strings.Join(parts, ",")
+}
+
+func TestC884DegradedDependencyAndRecovery(t *testing.T) {
+	date := "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:05:00", loc)
+	root := t.TempDir()
+	handler := writeC545Script(t, filepath.Join(root, "handler.sh"), "cat >/dev/null\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n")
+	events := []config.Event{
+		{ID: "a", Handler: "h", Catchup: "run_in_window", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:10:00"}, Phases: []string{"any"}},
+		{ID: "b", Handler: "h", Catchup: "run_in_window", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:10:00"}, DependsOn: []config.Dependency{{ID: "a", AcceptDegraded: true}}, Phases: []string{"any"}},
+	}
+	c := config.Config{Events: events, Handlers: map[string]config.Handler{"h": {Argv: []string{handler}}}}
+	fc := newFakeClock(now)
+	r, closeRunner := newC545Runner(t, root, date, fc, c)
+	if err := r.applyStartup(now, nil, []Instance{{ID: "b", EventID: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	if state := runtimeTestState(r, date+"/b"); state.Status != "" {
+		t.Fatalf("startup bypassed dependency: %+v", state)
+	}
+	pending, blocked := r.windowDependencyDecision(date, &events[1], c)
+	if len(pending) != 1 || blocked != "" {
+		t.Fatalf("pending=%v blocked=%s", pending, blocked)
+	}
+	r.setState(Instance{ID: "a", EventID: "a"}, date, instanceState{Status: "SUCCEEDED_DEGRADED"})
+	strict := events[1]
+	strict.DependsOn = []config.Dependency{{ID: "a"}}
+	if _, blocked = r.windowDependencyDecision(date, &strict, c); blocked != "a" {
+		t.Fatalf("strict dependency blocked=%s", blocked)
+	}
+	closeRunner()
+	recovered, closeRecovered := newC545Runner(t, root, date, fc, c)
+	defer closeRecovered()
+	recovered.start = now
+	if err := recovered.recover(); err != nil {
+		t.Fatal(err)
+	}
+	recovered.schedule(now)
+	waitFor(t, func() bool {
+		recovered.mu.Lock()
+		defer recovered.mu.Unlock()
+		return recovered.states[date+"/b"].Status == "SUCCEEDED"
+	})
 }

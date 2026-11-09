@@ -4289,12 +4289,17 @@
       "enabled": true,
       "calendar": "trading_day",
       "trigger_type": "window",
-      "at": "17:10:00",
+      "at": "17:40:00",
       "deadline": "20:30:00",
       "data_date_offset": 0,
       "on_deadline": "missed",
       "late_until": "20:30:00",
-      "depends_on": [],
+      "depends_on": [
+        "baostock_probe_1730"
+      ],
+      "accept_degraded_dependencies": [
+        "baostock_probe_1730"
+      ],
       "after": [],
       "cost": "medium",
       "phases": [
@@ -4313,12 +4318,17 @@
       "enabled": true,
       "calendar": "every_day",
       "trigger_type": "window",
-      "at": "01:15:00",
+      "at": "01:00:00",
       "deadline": "05:00:00",
       "data_date_offset": 0,
       "on_deadline": "missed",
       "late_until": "05:00:00",
-      "depends_on": [],
+      "depends_on": [
+        "daily_kline_backfill"
+      ],
+      "accept_degraded_dependencies": [
+        "daily_kline_backfill"
+      ],
       "after": [],
       "cost": "medium",
       "phases": [
@@ -4338,12 +4348,17 @@
       "enabled": true,
       "calendar": "trading_day",
       "trigger_type": "window",
-      "at": "17:25:00",
+      "at": "17:40:00",
       "deadline": "20:45:00",
       "data_date_offset": 0,
       "on_deadline": "missed",
       "late_until": "20:45:00",
-      "depends_on": [],
+      "depends_on": [
+        "adjust_factor_postclose"
+      ],
+      "accept_degraded_dependencies": [
+        "adjust_factor_postclose"
+      ],
       "after": [],
       "cost": "medium",
       "phases": [
@@ -4362,12 +4377,17 @@
       "enabled": true,
       "calendar": "every_day",
       "trigger_type": "window",
-      "at": "01:30:00",
+      "at": "01:00:00",
       "deadline": "05:30:00",
       "data_date_offset": 0,
       "on_deadline": "missed",
       "late_until": "05:30:00",
-      "depends_on": [],
+      "depends_on": [
+        "adjust_factor_0115"
+      ],
+      "accept_degraded_dependencies": [
+        "adjust_factor_0115"
+      ],
       "after": [],
       "cost": "medium",
       "phases": [
@@ -4392,7 +4412,12 @@
       "data_date_offset": 0,
       "on_deadline": "missed",
       "late_until": "20:50:00",
-      "depends_on": [],
+      "depends_on": [
+        "price_volume_postclose"
+      ],
+      "accept_degraded_dependencies": [
+        "price_volume_postclose"
+      ],
       "after": [],
       "cost": "medium",
       "phases": [
@@ -4411,12 +4436,17 @@
       "enabled": true,
       "calendar": "every_day",
       "trigger_type": "window",
-      "at": "01:45:00",
+      "at": "01:00:00",
       "deadline": "05:30:00",
       "data_date_offset": 0,
       "on_deadline": "missed",
       "late_until": "05:30:00",
-      "depends_on": [],
+      "depends_on": [
+        "price_volume_0130"
+      ],
+      "accept_degraded_dependencies": [
+        "price_volume_0130"
+      ],
       "after": [],
       "cost": "medium",
       "phases": [
@@ -4436,12 +4466,17 @@
       "enabled": true,
       "calendar": "every_day",
       "trigger_type": "window",
-      "at": "04:45:00",
+      "at": "02:00:00",
       "deadline": "08:00:00",
       "data_date_offset": 0,
       "on_deadline": "missed",
       "late_until": "08:00:00",
-      "depends_on": [],
+      "depends_on": [
+        "daily_dde_0200"
+      ],
+      "accept_degraded_dependencies": [
+        "daily_dde_0200"
+      ],
       "after": [],
       "cost": "medium",
       "phases": [
