@@ -1,3 +1,4 @@
+# 逻辑测试:验证顺序与分支,不代表真实 Redis 行为。
 import json
 from pathlib import Path
 
@@ -7,7 +8,7 @@ from engine_core.data_pipeline.redis_day_view import meta_key, view_key, write_d
 from engine_core.data_pipeline.redis_day_view_read import read_day_view
 
 DATE = '2026-11-09'
-FAMILY = 'stock_static'
+FAMILY = 'stock_extra'
 KEY = view_key(FAMILY, DATE)
 META = meta_key(FAMILY, DATE)
 
@@ -18,8 +19,9 @@ def calendar(monkeypatch):
 
 
 def rows():
-    data = json.loads((Path(__file__).parent / 'fixtures/real/baostock_query_all_stock_2026-10-28_2301.json').read_text())
-    return {row[0]: dict(zip(data['fields'], row)) for row in data['rows'][:2]}
+    path = Path(__file__).parent / 'fixtures/real/redis_view_stock_extra_2026-11-09.json'
+    data = json.loads(path.read_text())
+    return {key: json.loads(value) for key, value in list(data.items())[:2]}
 
 
 class Pipeline:
@@ -93,7 +95,7 @@ class Redis:
 
 def write(redis, data):
     write_day_view(redis, FAMILY, DATE, data, source='baostock', version='v1',
-                   available_at='2026-10-28T23:01:00+08:00', fields=['code'])
+                   available_at='2026-10-28T23:01:00+08:00', fields=['symbol'])
 
 
 def read(redis, symbols):
