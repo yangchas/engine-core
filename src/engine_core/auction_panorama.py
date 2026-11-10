@@ -787,7 +787,29 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
                 "unverified_n": unverified, "extremes": extremes_for_reason})
         yesterday_reason_buckets.append(bucket_result)
     yesterday_reason_buckets.sort(key=lambda item: (-item["count"], item["reason"]))
-    overview = {"auction_amount_yuan": market_amount, "auction_amount_yi": market_amount / 1e8 if market_amount is not None else None,
+    universe_n = len(by_symbol)
+    valid_price_n = sum(_has_valid_auction_price(row) for row in by_symbol.values())
+    missing_price_n = universe_n - valid_price_n
+    missing_pct_n = sum(_num(row.get("pct_change")) is None for row in by_symbol.values())
+    missing_amount_n = sum(_num(row.get("auction_amount_yuan")) is None for row in by_symbol.values())
+    missing_price_with_amount_n = sum(
+        not _has_valid_auction_price(row) and (_num(row.get("auction_amount_yuan")) or 0) > 0
+        for row in by_symbol.values())
+    reason_codes = []
+    if missing_price_with_amount_n:
+        reason_codes.append("ANCHOR_0925_MISSING_UPSTREAM")
+    if missing_amount_n:
+        reason_codes.append("ZERO_OR_NO_AUCTION_AMOUNT")
+    input_quality = {"universe_n": universe_n, "valid_price_n": valid_price_n,
+        "missing_price_n": missing_price_n,
+        "missing_price_ratio": missing_price_n / universe_n if universe_n else None,
+        "missing_pct_n": missing_pct_n,
+        "missing_pct_ratio": missing_pct_n / universe_n if universe_n else None,
+        "missing_amount_n": missing_amount_n, "missing_price_with_amount_n": missing_price_with_amount_n,
+        "reason_codes": reason_codes,
+        "status": "PARTIAL" if missing_price_n or missing_pct_n or missing_amount_n else "OK"}
+    overview = {"input_quality": input_quality,
+        "auction_amount_yuan": market_amount, "auction_amount_yi": market_amount / 1e8 if market_amount is not None else None,
         "yesterday_pool_auction_amount_yuan": yesterday_total,
         "yesterday_pool_market_share": (yesterday_pool_positive_total / market_amount
                                         if yesterday_pool_positive_total is not None and market_amount else None),
