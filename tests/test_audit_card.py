@@ -38,3 +38,31 @@ def test_fail_first(tmp_path):
 
 def test_verdict():
     assert verdict(['bad']) == {'verdict': 'FAIL', 'problems': ['bad']}
+
+
+def test_go_fail_first(tmp_path, monkeypatch):
+    from examples import audit_card
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    def git(*args):
+        return subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
+    git('init', '-q')
+    git('config', 'user.email', 'test@example.invalid')
+    git('config', 'user.name', 'Test')
+    (repo / 'seed').write_text('base')
+    git('add', '.')
+    git('commit', '-qm', 'base')
+    base = git('rev-parse', 'HEAD')
+    path = repo / 'native/guardiand/x_test.go'
+    path.parent.mkdir(parents=True)
+    path.write_text('package guardiand\nfunc TestMemory(t *testing.T) {}\n')
+    git('add', '.')
+    git('commit', '-qm', 'test')
+    go_tests = audit_card.collect_go_tests(repo, base, 'HEAD', ['native/guardiand/x_test.go'])
+    assert go_tests == {'native/guardiand': ['TestMemory']}
+    monkeypatch.setattr(audit_card, '_go_test', lambda *args: subprocess.CompletedProcess([], 0, 'ok', ''))
+    failed, output = fail_first(repo, base, 'HEAD', [], sys.executable, go_tests)
+    assert not failed and 'did not fail on base' in output
+    monkeypatch.setattr(audit_card, '_go_test', lambda *args: subprocess.CompletedProcess([], 1, 'FAIL package', ''))
+    failed, output = fail_first(repo, base, 'HEAD', [], sys.executable, go_tests)
+    assert failed and 'FAIL' in output
