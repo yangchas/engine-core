@@ -324,7 +324,15 @@ def test_open_states_splits_resource_exhausted_query():
 
     td = TD()
     assert states_at(td, datetime(2026, 10, 15, 9, 32)) == {}
-    assert len(td.queries) == 5
+    assert len(td.queries) == 6
+    assert [query.split(" and ts<=", 1)[1].split(" group by", 1)[0] for query in td.queries[:5]] == [
+        "'2026-10-15 09:32:00'",
+        "'2026-10-15 09:32:00' AND symbol < '2'",
+        "'2026-10-15 09:32:00' AND symbol >= '2' AND symbol < '5'",
+        "'2026-10-15 09:32:00' AND symbol >= '5' AND symbol < '7'",
+        "'2026-10-15 09:32:00' AND symbol >= '7'",
+    ]
+    assert "ts>='2026-10-15 09:27:00'" in td.queries[5]
 
 
 def test_open_states_errors_retain_type_and_query_context():
@@ -410,3 +418,40 @@ def test_checkpoint_ranges_cover_recorded_td_symbols():
     merged = _open_range_scan(cursor, 'select ts,symbol from ticks where ts > 0', 'CHECKPOINT_QUERY[gate]', initial_shards=True)
     assert sorted(merged) == sorted(rows)
     assert len(merged) == len(rows)
+
+
+def test_sql_states_uses_bounded_primary_and_fallback_windows():
+    from engine_core.live_session import _sql_states
+
+    primary = (datetime(2026, 10, 15, 9, 44, 50), 10000, 10000, None, None, None, None,
+               None, None, None, None, 700, 0, "600001")
+    older = (datetime(2026, 10, 15, 9, 42), 10000, 10000, None, None, None, None,
+             None, None, None, None, 500, 0, "600002")
+    class TD:
+        def __init__(self): self.queries = []
+        def execute(self, query): self.queries.append(query)
+        def fetchall(self): return [primary] if len(self.queries) == 1 else [primary, older]
+
+    td = TD()
+    result = _sql_states(td, datetime(2026, 10, 15, 9, 45))
+    assert "ts>='2026-10-15 09:44:00'" in td.queries[0]
+    assert "ts<='2026-10-15 09:45:00'" in td.queries[0]
+    assert "ts>='2026-10-15 09:40:00'" in td.queries[1]
+    assert "ts<'2026-10-15 09:44:00'" in td.queries[1]
+    assert result["600001"]["match_amount_yuan"] == 700
+    assert not result["600001"].get("stale_tick", False)
+    assert result["600002"]["match_amount_yuan"] == 500
+    assert result["600002"]["stale_tick"] is True
+
+
+def test_latest_tick_uses_bounded_window():
+    from engine_core.live_session import _latest_tick
+
+    class TD:
+        def execute(self, query): self.query = query
+        def fetchall(self): return [(datetime(2026, 10, 15, 9, 45),)]
+
+    td = TD()
+    assert _latest_tick(td, datetime(2026, 10, 15, 9, 45)) == datetime(2026, 10, 15, 9, 45)
+    assert "ts>='2026-10-15 09:44:00'" in td.query
+    assert "ts<='2026-10-15 09:45:00'" in td.query
