@@ -29,8 +29,8 @@ class RecordingPipeline:
         self.pending.append(("hset", args, kwargs))
         return self
 
-    def set(self, *args):
-        self.calls.append(("set", args, {}))
+    def set(self, *args, **kwargs):
+        self.calls.append(("set", args, kwargs))
         return self
 
     def expireat(self, *args):
@@ -80,8 +80,9 @@ def test_write_metadata_and_expiration():
     assert meta["status"] == "COMPLETE" and meta["row_count"] == 2
     assert [(args[0], args[1]) for name, args, _ in calls if name == "expireat"] == [
         (view_key("stock_static", "2026-11-09"), expire_at("2026-11-09")),
-        (meta_key("stock_static", "2026-11-09"), expire_at("2026-11-09")),
     ]
+    assert next(args[0] for name, args, _ in calls if name == "set") == meta_key("stock_static", "2026-11-09")
+    assert next(kwargs["exat"] for name, _, kwargs in calls if name == "set") == expire_at("2026-11-09")
     assert len(redis.pipelines) == 1 and calls[-1][0] == "execute"
 
 

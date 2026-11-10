@@ -1,6 +1,7 @@
 """Write trading-day views and their completion metadata to Redis."""
 from datetime import datetime, time
 import json
+from uuid import uuid4
 from collections.abc import Mapping
 from zoneinfo import ZoneInfo
 
@@ -32,7 +33,7 @@ def write_day_view(redis, family, trade_date, rows: Mapping[str, Mapping], *, so
     metadata = {"family": family, "trade_date": parse_trade_date(trade_date).isoformat(),
                 "row_count": len(payload), "source": source, "version": version,
                 "available_at": available_at, "written_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
-                "status": "COMPLETE" if payload else "EMPTY"}
+                "status": "COMPLETE" if payload else "EMPTY", "write_id": uuid4().hex}
     encoded = json.dumps(metadata, sort_keys=True, separators=(",", ":"))
     # Invalidate old metadata first, then clear the hash so removed rows cannot survive a rewrite.
     redis.delete(meta)
@@ -46,8 +47,7 @@ def write_day_view(redis, family, trade_date, rows: Mapping[str, Mapping], *, so
     pipe.expireat(key, deadline)
     pipe.execute()
     try:
-        pipe.set(meta, encoded)
-        pipe.expireat(meta, deadline)
+        pipe.set(meta, encoded, exat=deadline)
         pipe.execute()
     except Exception:
         try:
