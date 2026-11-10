@@ -46,21 +46,61 @@ def _pytest(directory, test_files, python):
     return subprocess.run([python, '-m', 'pytest', '-q', '-p', 'no:cacheprovider', *test_files], cwd=directory, env=_test_env(), capture_output=True, text=True)
 
 
-def fail_first(repo, base, branch, test_files, python) -> tuple[bool, str]:
-    if not test_files or any(not p.startswith('tests/') or '..' in Path(p).parts for p in test_files):
+def collect_go_tests(repo, base, branch, files):
+    packages = {}
+    for path in files:
+        if not path.startswith('native/') or not path.endswith('_test.go') or '..' in Path(path).parts:
+            continue
+        diff = _git(repo, 'diff', '--unified=0', f'{base}...{branch}', '--', path).stdout
+        names = re.findall(r'^\+\s*func\s+(Test[A-Za-z0-9_]*)\s*\(', diff, re.MULTILINE)
+        if names:
+            packages.setdefault(str(Path(path).parent), set()).update(names)
+    return {pkg: sorted(names) for pkg, names in packages.items()}
+
+
+def _go_test(directory, package, names):
+    pattern = '^(' + '|'.join(re.escape(name) for name in names) + ')$'
+    root = Path(directory)
+    pkg = root / package
+    module = next((p for p in (pkg, *pkg.parents) if p == root or (p / 'go.mod').is_file()), root)
+    relative = pkg.relative_to(module).as_posix()
+    target = './' if relative == '.' else './' + relative
+    return subprocess.run(['go', 'test', '-count=1', '-run', pattern, target], cwd=module, env=_test_env(), capture_output=True, text=True, timeout=300)
+
+
+def fail_first(repo, base, branch, test_files, python, go_tests=None) -> tuple[bool, str]:
+    go_tests = go_tests or {}
+    if (not test_files and not go_tests) or any(not p.startswith('tests/') or '..' in Path(p).parts for p in test_files):
         raise ValueError('test files must be nonempty paths under tests/')
     tmp = tempfile.mkdtemp(prefix='audit-card-')
     added = False
     try:
         _git(repo, 'worktree', 'add', '--detach', tmp, base)
         added = True
-        for path in test_files:
+        go_files = _git(repo, 'diff', '--name-only', f'{base}...{branch}').stdout.splitlines() if go_tests else []
+        go_files = [p for p in go_files if p.startswith('native/') and p.endswith('_test.go') and str(Path(p).parent) in go_tests and _git(repo, 'cat-file', '-e', f'{branch}:{p}', check=False).returncode == 0]
+        for path in [*test_files, *go_files]:
             content = _git(repo, 'show', f'{branch}:{path}').stdout
             target = Path(tmp) / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding='utf-8')
-        result = _pytest(tmp, test_files, python)
-        return result.returncode != 0, '\n'.join((result.stdout + result.stderr).splitlines()[-20:])
+        outputs = []
+        failed = True
+        if test_files:
+            result = _pytest(tmp, test_files, python)
+            failed = result.returncode != 0
+            outputs.append('\n'.join((result.stdout + result.stderr).splitlines()[-20:]))
+        for package, names in go_tests.items():
+            result = _go_test(tmp, package, names)
+            output = result.stdout + result.stderr
+            outputs.append('\n'.join(output.splitlines()[-20:]))
+            if result.returncode == 0:
+                failed = False
+                outputs.append(f'{package}: tests did not fail on base')
+            elif 'FAIL' not in output:
+                failed = False
+                outputs.append(f'{package}: go test failed without FAIL output')
+        return failed, '\n'.join(outputs)
     finally:
         if added:
             _git(repo, 'worktree', 'remove', '--force', tmp, check=False)
@@ -102,6 +142,7 @@ def main():
         files = [p for p in files if p]
         problems.extend(f'outside scope: {p}' for p in check_scope(files, scope, roots[0]))
         test_files = [p for p in files if p.startswith('tests/') and p.endswith('.py') and _git(args.repo, 'cat-file', '-e', f'{args.branch}:{p}', check=False).returncode == 0]
+        go_tests = collect_go_tests(args.repo, args.base, args.branch, files)
         def contents(ref):
             result = {}
             for p in test_files:
@@ -109,10 +150,10 @@ def main():
                 if item.returncode == 0:
                     result[p] = item.stdout
             return result
-        count = count_new_tests(contents(args.base), contents(args.branch))
+        count = count_new_tests(contents(args.base), contents(args.branch)) + sum(map(len, go_tests.values()))
         if count > maximum:
             problems.append(f'new tests {count} exceed maximum {maximum}')
-        failed, output = fail_first(args.repo, args.base, args.branch, test_files, args.python)
+        failed, output = fail_first(args.repo, args.base, args.branch, test_files, args.python, go_tests)
         if not failed:
             problems.append('tests did not fail on base')
         tmp = tempfile.mkdtemp(prefix='audit-card-branch-')
@@ -120,9 +161,14 @@ def main():
         try:
             _git(args.repo, 'worktree', 'add', '--detach', tmp, args.branch)
             added = True
-            result = _pytest(tmp, test_files, args.python)
-            if result.returncode != 0:
-                problems.append('tests failed on branch: ' + '\n'.join((result.stdout + result.stderr).splitlines()[-20:]))
+            if test_files:
+                result = _pytest(tmp, test_files, args.python)
+                if result.returncode != 0:
+                    problems.append('tests failed on branch: ' + '\n'.join((result.stdout + result.stderr).splitlines()[-20:]))
+            for package, names in go_tests.items():
+                result = _go_test(tmp, package, names)
+                if result.returncode != 0:
+                    problems.append('tests failed on branch: ' + '\n'.join((result.stdout + result.stderr).splitlines()[-20:]))
         finally:
             if added:
                 _git(args.repo, 'worktree', 'remove', '--force', tmp, check=False)
