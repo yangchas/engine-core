@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import statistics
 import csv
@@ -12,12 +13,16 @@ import re
 import sys
 import time
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Mapping
 
 from .auction_tracking import Tick, derive_state, _at_limit
+
+STATE_PRIMARY_WINDOW_SECONDS = 60
+STATE_FALLBACK_WINDOW_SECONDS = 300
+logger = logging.getLogger(__name__)
 
 MARKET_VOLUME_THRESHOLDS = {"high_amount_multiple": 1.25, "low_amount_multiple": 0.85,
                             "down_up_share_pct": 25.0, "up_up_share_pct": 50.0}
@@ -474,22 +479,34 @@ def _open_range_scan(cursor: Any, query: str, label: str, suffix: str = "", *, i
 
 
 def _sql_states(td: Any, cutoff: datetime) -> dict[str, dict[str, Any]]:
-    # TD's last() aggregation is bounded to the current session; it avoids exporting tick history.
     cursor = td.cursor() if callable(getattr(td, "cursor", None)) else td
-    start = cutoff.replace(hour=9, minute=14, second=0, microsecond=0)
-    query = ("select last(ts),last(px_milli),last(pc_milli),last(bp1_milli),last(ap1_milli),"
+    start = cutoff - timedelta(seconds=STATE_PRIMARY_WINDOW_SECONDS)
+    fallback_start = cutoff - timedelta(seconds=STATE_FALLBACK_WINDOW_SECONDS)
+    select = ("select last(ts),last(px_milli),last(pc_milli),last(bp1_milli),last(ap1_milli),"
              "last(bv1),last(av1),last(bp2_milli),last(ap2_milli),last(bv2),last(av2),"
-             "last(amt_yuan),last(vol_units),last(h_milli),last(l_milli),symbol from stock_tick_v2 "
-             f"where ts>='{start:%Y-%m-%d %H:%M:%S}' and ts<='{cutoff:%Y-%m-%d %H:%M:%S}'")
-    rows = _open_range_scan(cursor, query, "states_at", " group by symbol")
+             "last(amt_yuan),last(vol_units),last(h_milli),last(l_milli),symbol from stock_tick_v2 ")
+    query = select + f"where ts>='{start:%Y-%m-%d %H:%M:%S}' and ts<='{cutoff:%Y-%m-%d %H:%M:%S}'"
+    primary_rows = _open_range_scan(cursor, query, "states_at", " group by symbol")
+    primary_symbols = {str(row.get("symbol") if isinstance(row, Mapping) else row[-1])
+                       for row in primary_rows if (row.get("symbol") if isinstance(row, Mapping) else row[-1]) is not None}
+    fallback_query = select + (f"where ts>='{fallback_start:%Y-%m-%d %H:%M:%S}' "
+                               f"and ts<'{start:%Y-%m-%d %H:%M:%S}'")
+    if primary_symbols:
+        quoted = ",".join("'" + symbol.replace("'", "''") + "'" for symbol in sorted(primary_symbols))
+        fallback_query += f" and symbol not in ({quoted})"
+    fallback_rows = _open_range_scan(cursor, fallback_query, "states_at", " group by symbol")
+    logger.info("states_at first_pass_n=%d second_pass_n=%d", len(primary_rows), len(fallback_rows))
+    rows = [(row, False) for row in primary_rows] + [(row, True) for row in fallback_rows]
     result = {}
     columns = ("ts", "px_milli", "pc_milli", "bp1_milli", "ap1_milli", "bv1", "av1",
                "bp2_milli", "ap2_milli", "bv2", "av2", "amt_yuan", "vol_units",
                "h_milli", "l_milli", "symbol")
     legacy_columns = columns[:13] + ("symbol",)
-    for raw in rows:
+    for raw, stale in rows:
         row = raw if isinstance(raw, Mapping) else dict(zip(columns if len(raw) >= len(columns) else legacy_columns, raw))
         symbol, pc, ts = row.get("symbol"), row.get("pc_milli"), row.get("ts")
+        if stale and symbol is not None and str(symbol) in primary_symbols:
+            continue
         if symbol is None or not pc or not ts:
             continue
         tick_time = ts.strftime("%H:%M:%S") if hasattr(ts, "strftime") else str(ts)[-8:]
@@ -528,6 +545,8 @@ def _sql_states(td: Any, cutoff: datetime) -> dict[str, dict[str, Any]]:
         state["missing_field_count"] = len(missing)
         state["high_milli"] = row.get("h_milli")
         state["low_milli"] = row.get("l_milli")
+        if stale:
+            state["stale_tick"] = True
         result[tick.symbol] = state
         result[tick.symbol]["source_ts"] = ts.isoformat(sep=" ") if isinstance(ts, datetime) else str(ts)
     return result
@@ -619,7 +638,7 @@ def _latest_tick(td: Any, cutoff: datetime) -> datetime | None:
         if value is None: return None
         return value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
     cursor = td.cursor() if callable(getattr(td, "cursor", None)) else td
-    start = cutoff.replace(hour=9, minute=14, second=0, microsecond=0)
+    start = cutoff - timedelta(seconds=STATE_PRIMARY_WINDOW_SECONDS)
     query = ("select last(ts) from stock_tick_v2 "
              f"where ts>='{start:%Y-%m-%d %H:%M:%S}' and ts<='{cutoff:%Y-%m-%d %H:%M:%S}'")
     rows = _open_range_scan(cursor, query, "ready_last_ts")
