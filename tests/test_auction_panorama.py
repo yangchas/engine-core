@@ -335,8 +335,11 @@ def test_official_limit_price_and_verified_seal_drive_promotion_consistently():
                          if item["reason"] == bucket["reason"])
     assert (reason_bucket["provisional_n"], reason_bucket["not_promoted_n"],
             reason_bucket["unverified_n"]) == (1, 2, 2)
-    assert reason_bucket["valid_n"] == (reason_bucket["provisional_n"] +
+    assert reason_bucket["count"] == (reason_bucket["provisional_n"] +
             reason_bucket["not_promoted_n"] + reason_bucket["unverified_n"])
+    assert reason_bucket["valid_n"] == 3
+    assert reason_bucket["valid_price_n"] == 3
+    assert reason_bucket["missing_price_n"] == 2
     assert bucket["verified_seal_amount_yuan"] == 703
     assert result["overview"]["verified_seal_scope"] == "3/4"
     assert result["overview"]["verified_seal_sum_yuan"] == 703
@@ -485,3 +488,50 @@ def test_stock_name_map_fills_names_missing_from_auction_facts():
     )
     assert result["plates"][0]["stocks"][0]["name"] == "映射名称"
     assert result["yesterday_ladder"][0]["buckets"][0]["stocks"][0]["name"] == "映射名称"
+
+
+def test_c918_reason_bucket_quality_from_recorded_auction():
+    import gzip
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).parent / 'fixtures' / 'real'
+    with gzip.open(root / 'c662' / 'td_auction_snapshot_v2_20261103.json.gz', 'rt') as stream:
+        capture = json.load(stream)
+    with (root / 'wencai_limit_up_pool_2026-10-23_0539.json').open() as stream:
+        pool_capture = json.load(stream)
+    symbols = ('000559', '002026', '000156')
+    raw = {row[7]: row for row in capture['rows'] if row[7] in symbols}
+    rows = [{'symbol': symbol, 'price': raw[symbol][1] / 1000,
+             'pct_change': raw[symbol][2] / 100, 'valid_price': True,
+             'auction_amount_yuan': raw[symbol][3]} for symbol in symbols]
+    pool = [{'symbol': row['code'], 'primary_reason': row['涨停原因类别[20261023]'].split('+')[0]}
+            for row in pool_capture['rows'] if row['code'] in symbols]
+
+    def buckets():
+        result = build_auction_panorama({'trade_date': '2026-11-03', 'asof': '2026-11-03T09:26:00+08:00', 'rows': rows},
+                                        plate_members=[], yesterday_pool=pool)
+        return {bucket['reason']: bucket for bucket in result['overview']['yesterday_reason_buckets']}, result
+
+    rows[0]['pct_change'] = None
+    missing, _ = buckets()
+    assert missing['机器人']['valid_n'] == missing['机器人']['count'] - 1
+    rows[0]['pct_change'] = raw[symbols[0]][2] / 100
+
+    all_valid, _ = buckets()
+    assert all_valid['机器人']['quality'] == 'OK'
+    assert all_valid['机器人']['missing_price_n'] == all_valid['机器人']['missing_amount_n'] == 0
+    single = all_valid['其他单只题材(1只)']
+    assert (single['valid_price_n'], single['valid_amount_n'], single['quality']) == (1, 1, 'OK')
+
+    rows[0]['pct_change'] = None
+    rows[0]['auction_amount_yuan'] = None
+    missing, result = buckets()
+    bucket = missing['机器人']
+    assert bucket['valid_n'] == bucket['valid_price_n'] == bucket['count'] - 1
+    assert sum(bucket['open_counts'].values()) == bucket['valid_n']
+    assert bucket['missing_price_n'] == bucket['missing_amount_n'] == 1
+    assert bucket['valid_amount_n'] == bucket['count'] - 1
+    assert bucket['quality'] == 'PARTIAL'
+    assert bucket['auction_amount_yuan'] == rows[1]['auction_amount_yuan']
+    assert bucket['market_amount_share'] == rows[1]['auction_amount_yuan'] / result['overview']['auction_amount_yuan']

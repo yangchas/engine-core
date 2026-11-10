@@ -772,11 +772,16 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
         bucket_amount = sum(positive_amounts) if positive_amounts else None
         top_streak = max((_num(item["pool"].get("lb_days", item["pool"].get("streak", 1))) or 1
                           for item in entries), default=None)
+        missing_price_n = len(entries) - len(valid_entries)
+        missing_amount_n = len(entries) - len(positive_amounts)
         bucket_result = {"reason": reason, "count": len(entries),
+            "valid_price_n": len(valid_entries), "valid_amount_n": len(positive_amounts),
+            "missing_price_n": missing_price_n, "missing_amount_n": missing_amount_n,
+            "quality": "OK" if missing_price_n == 0 and missing_amount_n == 0 else "PARTIAL",
             "willingness": willingness, "auction_amount_yuan": bucket_amount,
             "market_amount_share": bucket_amount / market_amount if bucket_amount is not None and market_amount else None}
         if not is_other_single:
-            bucket_result.update({"highest_streak": top_streak, "valid_n": len(entries), "open_counts": open_counts,
+            bucket_result.update({"highest_streak": top_streak, "valid_n": len(valid_entries), "open_counts": open_counts,
                 "median_pct": median, "provisional_n": provisional,
                 "not_promoted_n": promotion_counts["NOT_PROMOTED"],
                 "unverified_n": unverified, "extremes": extremes_for_reason})
