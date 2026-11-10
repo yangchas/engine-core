@@ -40,3 +40,33 @@ def test_dry_run_skips_admission(monkeypatch):
     assert guardian_handler._run({'dry_run': True}) == (0, {'status': 'ok'})
     monkeypatch.setenv('GUARDIAN_DRY_RUN', '1')
     assert guardian_handler._run({}) == (0, {'status': 'ok'})
+
+
+def test_event_override_without_request_cost():
+    allowed, info = admit({'event': 'open_report_0932'}, reader=lambda: 2000)
+    assert allowed
+    assert info['required_mb'] == 1800
+    assert info['cost_source'] == 'override'
+
+
+def test_schedule_heavy_event():
+    allowed, info = admit({'event': 'night_recap'}, reader=lambda: 2000)
+    assert allowed
+    assert info['required_mb'] == 1800
+    assert info['cost_source'] == 'schedule'
+
+
+def test_missing_schedule_defaults_to_light(monkeypatch, tmp_path):
+    from engine_core.guardian import memory_gate
+    monkeypatch.setattr(memory_gate, '_SCHEDULE_PATH', tmp_path / 'missing.json')
+    allowed, info = admit({'event': 'night_recap'}, reader=lambda: 0)
+    assert allowed
+    assert info['required_mb'] == 0
+    assert info['cost_source'] == 'default'
+
+
+def test_args_override_event_budget():
+    allowed, info = admit({'event': 'open_report_0932', 'args': {'min_available_mb': 123}}, reader=lambda: 123)
+    assert allowed
+    assert info['required_mb'] == 123
+    assert info['cost_source'] == 'args'
