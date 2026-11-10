@@ -14,7 +14,7 @@ def test_admit_low_memory(tmp_path):
     assert available_mb(meminfo) == 1000
     allowed, info = admit({'cost': 'heavy'}, reader=lambda: 1000)
     assert not allowed
-    assert info == {'available_mb': 1000, 'required_mb': 1800, 'cost': 'heavy'}
+    assert info == {'available_mb': 1000, 'required_mb': 1800, 'cost': 'heavy', 'cost_source': 'request'}
 
 
 def test_run_low_memory_does_not_dispatch(monkeypatch):
