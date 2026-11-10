@@ -397,6 +397,15 @@ class TradeCalendarStore:
             raise CalendarCoverageError("next trade date UNKNOWN")
         return date.fromisoformat(following[0])
 
+    def nth_trade_date(self, value: date | str, n: int) -> date:
+        if isinstance(n, bool) or not isinstance(n, int) or n <= 0:
+            raise ValueError("n must be a positive integer")
+        data, parsed = self._covered(value)
+        following = [item["d"] for item in data["days"] if item["t"] and item["d"] > parsed]
+        if len(following) < n:
+            raise CalendarCoverageError("nth trade date UNKNOWN")
+        return date.fromisoformat(following[n - 1])
+
     def trading_dates(self, start: date | str, end: date | str) -> list[str]:
         left, right = parse_trade_date(start).isoformat(), parse_trade_date(end).isoformat()
         data, _ = self._covered(left)
@@ -418,6 +427,10 @@ def previous_trade_date(value: date | str, *, root: str | Path | None = None) ->
 
 def next_trade_date(value: date | str, *, root: str | Path | None = None) -> date:
     return TradeCalendarStore(root).next_trade_date(value)
+
+
+def nth_trade_date(value: date | str, n: int, *, root: str | Path | None = None) -> date:
+    return TradeCalendarStore(root).nth_trade_date(value, n)
 
 
 def trading_dates(start: date | str, end: date | str, *, root: str | Path | None = None) -> list[str]:

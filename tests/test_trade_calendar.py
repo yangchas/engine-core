@@ -9,6 +9,31 @@ import pytest
 from engine_core.calendar import CalendarCoverageError
 from engine_core.data_pipeline.trade_calendar import CalendarSourceError, TradeCalendarStore
 
+
+def test_nth_trade_date_real_calendar():
+    from engine_core.data_pipeline.trade_calendar import nth_trade_date
+
+    root = Path('/home/exedev/core-data')
+    assert nth_trade_date('2026-11-09', 5, root=root) == date(2026, 11, 16)
+    assert nth_trade_date('2026-11-06', 5, root=root) == date(2026, 11, 13)
+    assert nth_trade_date('2026-11-13', 5, root=root) == date(2026, 11, 20)
+
+
+def test_nth_trade_date_requires_positive_integer():
+    store = TradeCalendarStore('/home/exedev/core-data')
+    for n in (0, -1, 1.5, True):
+        with pytest.raises(ValueError):
+            store.nth_trade_date('2026-11-09', n)
+
+
+def test_nth_trade_date_requires_coverage():
+    store = TradeCalendarStore('/home/exedev/core-data')
+    end = store.load()['lit_to']
+    with pytest.raises(CalendarCoverageError, match='nth trade date UNKNOWN'):
+        store.nth_trade_date(end, 1)
+    with pytest.raises(CalendarCoverageError):
+        store.nth_trade_date('9999-12-31', 1)
+
 FIXTURE = Path(__file__).parent / "fixtures" / "trade_calendar"
 
 
