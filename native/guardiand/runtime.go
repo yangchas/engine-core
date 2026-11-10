@@ -715,6 +715,57 @@ func configuredHeavyLoadDeferMaxPolls(c config.Config) int {
 	return *c.HeavyLoadDeferMaxPolls
 }
 
+// deferMemory handles resource admission failures after the handler has released its slot.
+func (r *liveRunner) deferMemory(x Instance, date string, event *config.Event, state instanceState, priorWait bool, out []byte, err error) bool {
+	if exitCode(err) != 75 {
+		return false
+	}
+	var reply struct {
+		Contract int `json:"contract"`
+		Detail   struct {
+			Reason    string      `json:"reason"`
+			Available json.Number `json:"available_mb"`
+			Required  json.Number `json:"required_mb"`
+		} `json:"detail"`
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if json.Unmarshal([]byte(lines[len(lines)-1]), &reply) != nil || reply.Contract != 1 || reply.Detail.Reason != "LOW_MEMORY" {
+		return false
+	}
+	state.Attempts--
+	if len(event.Ladder) > 0 {
+		state.RungAttempts--
+	}
+	if !priorWait {
+		_, _ = r.appendLedger(date, "RESOURCE_WAIT", map[string]any{"instance": x.ID, "available_mb": reply.Detail.Available, "required_mb": reply.Detail.Required})
+	}
+	r.configMu.RLock()
+	poll := 30
+	if r.c.ResourceWaitPollSeconds != nil && *r.c.ResourceWaitPollSeconds > 0 {
+		poll = *r.c.ResourceWaitPollSeconds
+	}
+	r.configMu.RUnlock()
+	state.Status = "DEFER_MEMORY"
+	state.LastError = fmt.Sprintf("LOW_MEMORY available_mb=%s required_mb=%s", reply.Detail.Available, reply.Detail.Required)
+	state.CompletedAt = ""
+	state.NextAttemptAt = r.clock.Now().Add(time.Duration(poll) * time.Second).Format(time.RFC3339)
+	r.setState(x, date, state)
+	return true
+}
+
+func (r *liveRunner) finishMemoryWait(x Instance, date string, event *config.Event, state instanceState) {
+	if _, ok := r.ladderRetryCutoff(date, event, state); ok {
+		r.finishLadderRetryWindowExpired(x, date, event, state)
+		return
+	}
+	state.Status = "MISSED"
+	state.LastError = "DEFER_MEMORY_EXPIRED"
+	state.CompletedAt = r.clock.Now().Format(time.RFC3339)
+	state.NextAttemptAt = ""
+	r.setState(x, date, state)
+	_ = r.alert("MISSED", map[string]any{"event": x.EventID, "date": date, "error": state.LastError})
+}
+
 func readLoad5() (float64, error) {
 	b, err := os.ReadFile("/proc/loadavg")
 	if err != nil {
@@ -1764,7 +1815,20 @@ func (r *liveRunner) execute(x Instance, date string) {
 		delete(r.running, x.ID)
 		r.mu.Unlock()
 	}()
-	if prior.NextAttemptAt != "" && (!degradeRequested || prior.Late) {
+	if prior.Status == "DEFER_MEMORY" {
+		end, _ := instanceWindowCutoff(date, x, r.loc)
+		if event.OnDeadline == "missed" {
+			end = deadlineAt
+		}
+		if cutoff, ok := r.ladderRetryCutoff(date, event, prior); ok {
+			end = cutoff
+		}
+		if !end.IsZero() && !r.clock.Now().Before(end) {
+			r.finishMemoryWait(x, date, event, prior)
+			return
+		}
+	}
+	if prior.NextAttemptAt != "" && (prior.Status == "DEFER_MEMORY" || !degradeRequested || prior.Late) {
 		next, err := time.Parse(time.RFC3339, prior.NextAttemptAt)
 		if err == nil && r.clock.Now().Before(next) {
 			return
@@ -1828,7 +1892,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 	if isLate {
 		st.Status = "LATE_RUN"
 	}
-	if prior.Status == "RUNNING" || prior.Status == "LATE_RUN" || prior.Status == "RETRY_WAIT" || prior.Status == "DEFERRED" || prior.Status == "DEFER_LOAD" || prior.Status == "QUEUED_HEAVY" {
+	if prior.Status == "RUNNING" || prior.Status == "LATE_RUN" || prior.Status == "RETRY_WAIT" || prior.Status == "DEFERRED" || prior.Status == "DEFER_LOAD" || prior.Status == "DEFER_MEMORY" || prior.Status == "QUEUED_HEAVY" {
 		st.Attempts = prior.Attempts
 		st.LastError = prior.LastError
 		st.DataDate = prior.DataDate
@@ -2061,7 +2125,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 		return
 	}
 	if isLadder {
-		r.executeLadder(x, date, event, st, h, degradeRequested)
+		r.executeLadder(x, date, event, st, h, degradeRequested, prior.Status == "DEFER_MEMORY")
 		return
 	}
 	max := event.Retry.MaxAttempts
@@ -2096,6 +2160,9 @@ func (r *liveRunner) execute(x Instance, date string) {
 		out, err := r.invokeWithDegrade(h.Argv, event, x, date, n, false, attemptDegrade)
 		if cost == "heavy" {
 			r.releaseHeavyAttempt()
+		}
+		if r.deferMemory(x, date, event, st, prior.Status == "DEFER_MEMORY", out, err) {
+			return
 		}
 		status, code, retryable, detail := decodeResult(out, err)
 		if status == "not_applicable" {
@@ -2265,7 +2332,7 @@ func (r *liveRunner) enqueueResponseFetchItems(date string, event *config.Event,
 	}
 }
 
-func (r *liveRunner) executeLadder(x Instance, date string, event *config.Event, state instanceState, handler config.Handler, deadlineDegrade bool) {
+func (r *liveRunner) executeLadder(x Instance, date string, event *config.Event, state instanceState, handler config.Handler, deadlineDegrade bool, priorMemoryWait bool) {
 	if len(event.Ladder) == 0 {
 		return
 	}
@@ -2397,6 +2464,9 @@ func (r *liveRunner) executeLadder(x Instance, date string, event *config.Event,
 			out, _, invokeErr := r.invokeDetailedTier(handler.Argv, &effectiveEvent, x, date, state.Attempts, false, degrade, rungNumber, tier.Name, isDegraded, skipped)
 			if eventCost(event) == "heavy" {
 				r.releaseHeavyAttempt()
+			}
+			if r.deferMemory(x, date, event, state, priorMemoryWait, out, invokeErr) {
+				return
 			}
 			status, code, retryable, detail := decodeResult(out, invokeErr)
 			if status == "already_satisfied" || code == "ALREADY_SATISFIED" {
@@ -3432,7 +3502,7 @@ func (r *liveRunner) schedule(now time.Time) {
 		if exists && isTerminal(st.Status) {
 			continue
 		}
-		if x.Catchup != "run_in_window" && pastScheduleSecond(now, start) && !running && st.Attempts == 0 && st.Status != "RUNNING" && st.Status != "LATE_RUN" {
+		if x.Catchup != "run_in_window" && pastScheduleSecond(now, start) && !running && st.Attempts == 0 && st.Status != "DEFER_MEMORY" && st.Status != "RUNNING" && st.Status != "LATE_RUN" {
 			r.setState(x, date, instanceState{Status: "MISSED", CompletedAt: now.Format(time.RFC3339), LastError: "CATCHUP_SKIPPED"})
 			missedNow = append(missedNow, x.ID)
 			continue
@@ -3445,6 +3515,10 @@ func (r *liveRunner) schedule(now time.Time) {
 			continue
 		}
 		if len(pendingDeps) > 0 {
+			continue
+		}
+		if exists && !running && st.Status == "DEFER_MEMORY" && !now.Before(end) {
+			r.finishMemoryWait(x, date, event, st)
 			continue
 		}
 		phase, _ := r.currentPhase(now)
@@ -3507,7 +3581,7 @@ func (r *liveRunner) schedule(now time.Time) {
 			continue
 		}
 		retryDue := true
-		if exists && st.Status == "RETRY_WAIT" && (!degradeDue || st.Late) {
+		if exists && (st.Status == "DEFER_MEMORY" || st.Status == "RETRY_WAIT" && (!degradeDue || st.Late)) {
 			next, err := time.Parse(time.RFC3339, st.NextAttemptAt)
 			retryDue = err != nil || !now.Before(next)
 		}
@@ -3566,7 +3640,7 @@ func (r *liveRunner) schedule(now time.Time) {
 			st instanceState
 		}, 0)
 		for key, state := range r.states {
-			if strings.HasPrefix(key, prefix) && (state.Status == "DEFERRED" || state.Status == "DEFER_LOAD" || state.Status == "RETRY_WAIT" || state.Status == "QUEUED_HEAVY") {
+			if strings.HasPrefix(key, prefix) && (state.Status == "DEFERRED" || state.Status == "DEFER_LOAD" || state.Status == "DEFER_MEMORY" || state.Status == "RETRY_WAIT" || state.Status == "QUEUED_HEAVY") {
 				pending = append(pending, struct {
 					id string
 					st instanceState
