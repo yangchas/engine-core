@@ -535,3 +535,52 @@ def test_c918_reason_bucket_quality_from_recorded_auction():
     assert bucket['quality'] == 'PARTIAL'
     assert bucket['auction_amount_yuan'] == rows[1]['auction_amount_yuan']
     assert bucket['market_amount_share'] == rows[1]['auction_amount_yuan'] / result['overview']['auction_amount_yuan']
+
+
+def _recorded_quality_facts():
+    import gzip
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).parent / 'fixtures' / 'real' / 'c662' / 'td_auction_snapshot_v2_20261103.json.gz'
+    with gzip.open(path, 'rt') as stream:
+        capture = json.load(stream)
+    symbols = ('000559', '002026', '000156')
+    raw = {row[7]: row for row in capture['rows'] if row[7] in symbols}
+    rows = [{'symbol': symbol, 'price': raw[symbol][1] / 1000,
+             'pct_change': raw[symbol][2] / 100, 'valid_price': True,
+             'auction_amount_yuan': raw[symbol][3]} for symbol in symbols]
+    return {'trade_date': '2026-11-03', 'asof': '2026-11-03T09:26:00+08:00', 'rows': rows}
+
+
+def test_input_quality_missing_recorded_rows():
+    facts = _recorded_quality_facts()
+    assert facts['rows'][0]['auction_amount_yuan'] > 0
+    for row in facts['rows'][:2]:
+        row.update(price=None, pct_change=None, valid_price=False)
+    facts['rows'][1]['auction_amount_yuan'] = None
+    quality = build_auction_panorama(facts, plate_members=[], yesterday_pool=[])['overview']['input_quality']
+    assert quality == {'universe_n': 3, 'valid_price_n': 1, 'missing_price_n': 2,
+        'missing_price_ratio': 2 / 3, 'missing_pct_n': 2, 'missing_pct_ratio': 2 / 3,
+        'missing_amount_n': 1, 'missing_price_with_amount_n': 1,
+        'reason_codes': ['ANCHOR_0925_MISSING_UPSTREAM', 'ZERO_OR_NO_AUCTION_AMOUNT'],
+        'status': 'PARTIAL'}
+
+
+def test_input_quality_complete_recorded_rows():
+    facts = _recorded_quality_facts()
+    quality = build_auction_panorama(facts, plate_members=[], yesterday_pool=[])['overview']['input_quality']
+    assert quality == {'universe_n': 3, 'valid_price_n': 3, 'missing_price_n': 0,
+        'missing_price_ratio': 0, 'missing_pct_n': 0, 'missing_pct_ratio': 0,
+        'missing_amount_n': 0, 'missing_price_with_amount_n': 0,
+        'reason_codes': [], 'status': 'OK'}
+
+
+def test_input_quality_empty_universe():
+    facts = _recorded_quality_facts()
+    facts['rows'] = []
+    quality = build_auction_panorama(facts, plate_members=[], yesterday_pool=[])['overview']['input_quality']
+    assert quality == {'universe_n': 0, 'valid_price_n': 0, 'missing_price_n': 0,
+        'missing_price_ratio': None, 'missing_pct_n': 0, 'missing_pct_ratio': None,
+        'missing_amount_n': 0, 'missing_price_with_amount_n': 0,
+        'reason_codes': [], 'status': 'OK'}
