@@ -324,7 +324,15 @@ def test_open_states_splits_resource_exhausted_query():
 
     td = TD()
     assert states_at(td, datetime(2026, 10, 15, 9, 32)) == {}
-    assert len(td.queries) == 5
+    assert len(td.queries) == 6
+    assert [query.split(" and ts<=", 1)[1].split(" group by", 1)[0] for query in td.queries[:5]] == [
+        "'2026-10-15 09:32:00'",
+        "'2026-10-15 09:32:00' AND symbol < '2'",
+        "'2026-10-15 09:32:00' AND symbol >= '2' AND symbol < '5'",
+        "'2026-10-15 09:32:00' AND symbol >= '5' AND symbol < '7'",
+        "'2026-10-15 09:32:00' AND symbol >= '7'",
+    ]
+    assert "ts>='2026-10-15 09:27:00'" in td.queries[5]
 
 
 def test_open_states_errors_retain_type_and_query_context():
