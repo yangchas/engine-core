@@ -1,0 +1,11 @@
+{
+  "min_available_mb": {"light": 0, "medium": 1200, "heavy": 1800},
+  "event_cost_overrides": {
+    "open_report_0932": "heavy", "open_report_0935": "heavy",
+    "open_report_0940": "heavy", "open_report_0945": "heavy",
+    "startup_0830": "heavy", "startup_0900": "heavy",
+    "fetch_item:plate_members": "heavy"
+  },
+  "wait_seconds": {"light": 0, "medium": 0, "heavy": 0},
+  "_basis": "TD 查询内存池随 MemAvailable 缩放;2026-11-10 实验:可用 1635MB 成功、1188MB 失败,故 heavy 取 1800"
+}
