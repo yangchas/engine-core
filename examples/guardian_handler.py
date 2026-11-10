@@ -17,6 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
+from engine_core.guardian.memory_gate import admit
+
 
 def _json(value):
     print(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
@@ -280,6 +282,12 @@ def _formal_baostock_daily_kline(root, day: str) -> dict | None:
         return None
 
 def _run(request):
+    if not request.get("dry_run") and os.environ.get("GUARDIAN_DRY_RUN") != "1":
+        allowed, info = admit(request)
+        if not allowed:
+            return 75, {"contract": 1, "status": "failed", "retryable": True,
+                        "error_code": "TD_RESOURCE_EXHAUSTED", "artifacts": [],
+                        "detail": {"reason": "LOW_MEMORY", **info}}
     base, _event_id = _event_from_request(request)
     if str(request.get("handler") or (base.handler if base else "")) != "premarket_data":
         return _run_event(request)

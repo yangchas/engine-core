@@ -1,0 +1,5 @@
+{
+  "min_available_mb": {"light": 0, "medium": 1200, "heavy": 1800},
+  "wait_seconds": {"light": 0, "medium": 0, "heavy": 0},
+  "_basis": "TD 查询内存池随 MemAvailable 缩放;2026-11-10 实验:可用 1635MB 成功、1188MB 失败,故 heavy 取 1800"
+}
