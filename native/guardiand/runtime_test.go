@@ -3050,6 +3050,93 @@ func newC545Runner(t *testing.T, root, date string, fc *fakeClock, c config.Conf
 	return r, func() { _ = l.close() }
 }
 
+func TestResourceWaitDoesNotConsumeLadderAttempt(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:00:00", loc)
+	fc := newFakeClock(now)
+	script := writeC545Script(t, filepath.Join(root, "handler.sh"), `printf '%s\n' '{"contract":1,"status":"failed","error_code":"TD_RESOURCE_EXHAUSTED","retryable":true,"detail":{"reason":"LOW_MEMORY","available_mb":100,"required_mb":200}}'
+exit 75
+`)
+	event := config.Event{ID: "memory", Handler: "h", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "10:00:00"}, OnDeadline: "missed", Ladder: []config.LadderTier{{Name: "primary", Attempts: 1, Timeout: "2s"}}}
+	r, closeRunner := newC545Runner(t, root, date, fc, config.Config{Events: []config.Event{event}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}}}})
+	defer closeRunner()
+	r.execute(Instance{ID: event.ID, EventID: event.ID, Start: "09:00:00", Deadline: "10:00:00", TriggerType: "window"}, date)
+	state := runtimeTestState(r, date+"/"+event.ID)
+	if state.Status != "DEFER_MEMORY" || state.Attempts != 0 || state.RungAttempts != 0 {
+		t.Fatalf("low-memory state=%+v, want DEFER_MEMORY with no attempts consumed", state)
+	}
+	if counts := ledgerTypeCounts(t, root, date); counts["TIER_FAILED"] != 0 || counts["RESOURCE_WAIT"] != 1 {
+		t.Fatalf("low-memory ledger counts=%v", counts)
+	}
+}
+
+func TestResourceWaitRecoveryAndPoll(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:00:00", loc)
+	fc := newFakeClock(now)
+	marker := filepath.Join(root, "marker")
+	script := writeC545Script(t, filepath.Join(root, "handler.sh"), fmt.Sprintf(`if [ ! -f %q ]; then touch %q; printf '%%s\n' '{"contract":1,"status":"failed","detail":{"reason":"LOW_MEMORY","available_mb":100,"required_mb":200}}'; exit 75; fi
+ printf '%%s\n' '{"contract":1,"status":"ok"}'
+`, marker, marker))
+	poll := 5
+	event := config.Event{ID: "memory", Handler: "h", Cost: "heavy", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "10:00:00"}, OnDeadline: "missed", Ladder: []config.LadderTier{{Name: "primary", Attempts: 1, Timeout: "2s"}}}
+	r, closeRunner := newC545Runner(t, root, date, fc, config.Config{ResourceWaitPollSeconds: &poll, Events: []config.Event{event}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}}}})
+	defer closeRunner()
+	x := Instance{ID: event.ID, EventID: event.ID, Start: "09:00:00", Deadline: "10:00:00", TriggerType: "window"}
+	r.execute(x, date)
+	st := runtimeTestState(r, date+"/memory")
+	if st.Status != "DEFER_MEMORY" || st.NextAttemptAt != now.Add(5*time.Second).Format(time.RFC3339) {
+		t.Fatalf("wait state=%+v", st)
+	}
+	fc.Advance(5 * time.Second)
+	r.execute(x, date)
+	st = runtimeTestState(r, date+"/memory")
+	if st.Status != "SUCCEEDED" || st.Attempts != 1 || ledgerTypeCounts(t, root, date)["TIER_FAILED"] != 0 {
+		t.Fatalf("recovered state=%+v", st)
+	}
+}
+
+func TestResourceWaitExpiresOnce(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:00:00", loc)
+	fc := newFakeClock(now)
+	script := writeC545Script(t, filepath.Join(root, "handler.sh"), `printf '%s\n' '{"contract":1,"status":"failed","detail":{"reason":"LOW_MEMORY","available_mb":100,"required_mb":200}}'; exit 75`)
+	event := config.Event{ID: "memory", Handler: "h", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:01:00"}, OnDeadline: "missed", Ladder: []config.LadderTier{{Name: "primary", Attempts: 1, Timeout: "2s"}}}
+	r, closeRunner := newC545Runner(t, root, date, fc, config.Config{Events: []config.Event{event}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}}, "alert": {Argv: []string{"/bin/true"}}}})
+	defer closeRunner()
+	x := Instance{ID: event.ID, EventID: event.ID, Start: "09:00:00", Deadline: "09:01:00", TriggerType: "window"}
+	r.execute(x, date)
+	fc.Advance(30 * time.Second)
+	r.execute(x, date)
+	fc.Advance(30 * time.Second)
+	r.execute(x, date)
+	st := runtimeTestState(r, date+"/memory")
+	counts := ledgerTypeCounts(t, root, date)
+	if st.Status != "MISSED" || st.LastError != "DEFER_MEMORY_EXPIRED" || st.Attempts != 0 || counts["RESOURCE_WAIT"] != 1 || counts["ALERT_OUT"] != 1 {
+		t.Fatalf("expired state=%+v counts=%v", st, counts)
+	}
+}
+
+func TestResourceWaitOtherReasonFailsNormally(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:00:00", loc)
+	fc := newFakeClock(now)
+	script := writeC545Script(t, filepath.Join(root, "handler.sh"), `printf '%s\n' '{"contract":1,"status":"failed","error_code":"TD_RESOURCE_EXHAUSTED","retryable":true,"detail":{"reason":"OTHER"}}'; exit 75`)
+	event := config.Event{ID: "memory", Handler: "h", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "10:00:00"}, OnDeadline: "missed", Ladder: []config.LadderTier{{Name: "primary", Attempts: 1, Timeout: "2s"}}}
+	r, closeRunner := newC545Runner(t, root, date, fc, config.Config{Events: []config.Event{event}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}}}})
+	defer closeRunner()
+	r.execute(Instance{ID: event.ID, EventID: event.ID, Start: "09:00:00", Deadline: "10:00:00", TriggerType: "window"}, date)
+	st := runtimeTestState(r, date+"/memory")
+	counts := ledgerTypeCounts(t, root, date)
+	if st.Status != "FAILED_FINAL" || st.Attempts != 1 || counts["TIER_FAILED"] != 1 || counts["RESOURCE_WAIT"] != 0 {
+		t.Fatalf("state=%+v counts=%v", st, counts)
+	}
+}
+
 func writeC545Script(t *testing.T, path, body string) string {
 	t.Helper()
 	if err := os.WriteFile(path, []byte("#!/bin/sh\nset -eu\n"+body), 0700); err != nil {

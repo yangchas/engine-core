@@ -549,11 +549,12 @@ func migrateCmd(a []string) error {
 }
 
 type scheduleGlobal struct {
-	HeavyMaxLoad1          json.RawMessage   `json:"heavy_max_load1"`
-	HeavyMaxLoad5          json.RawMessage   `json:"heavy_max_load5"`
-	HeavyLoadDeferMaxPolls *int              `json:"heavy_load_defer_max_polls"`
-	HeavyCutoffs           map[string]string `json:"heavy_cutoffs"`
-	Phases                 []config.Phase    `json:"phases"`
+	HeavyMaxLoad1           json.RawMessage   `json:"heavy_max_load1"`
+	HeavyMaxLoad5           json.RawMessage   `json:"heavy_max_load5"`
+	HeavyLoadDeferMaxPolls  *int              `json:"heavy_load_defer_max_polls"`
+	ResourceWaitPollSeconds *int              `json:"resource_wait_poll_seconds"`
+	HeavyCutoffs            map[string]string `json:"heavy_cutoffs"`
+	Phases                  []config.Phase    `json:"phases"`
 }
 
 type scheduleV2 struct {
@@ -702,7 +703,7 @@ func scheduleConfig(timezone string, global scheduleGlobal) config.Config {
 			File string `json:"file"`
 		}{"trading": {File: "/home/exedev/core-data/trade_dates.json"}},
 		Handlers: map[string]config.Handler{}, HeavyMaxLoad1: global.HeavyMaxLoad1,
-		HeavyMaxLoad5: global.HeavyMaxLoad5, HeavyLoadDeferMaxPolls: global.HeavyLoadDeferMaxPolls,
+		HeavyMaxLoad5: global.HeavyMaxLoad5, HeavyLoadDeferMaxPolls: global.HeavyLoadDeferMaxPolls, ResourceWaitPollSeconds: global.ResourceWaitPollSeconds,
 		HeavyCutoffs: global.HeavyCutoffs, Phases: global.Phases}
 }
 

@@ -22,16 +22,17 @@ type Config struct {
 	Calendars     map[string]struct {
 		File string `json:"file"`
 	} `json:"calendars,omitempty"`
-	Concurrency            map[string]json.RawMessage `json:"concurrency,omitempty"`
-	HeavyMaxLoad1          json.RawMessage            `json:"heavy_max_load1,omitempty"`
-	HeavyMaxLoad5          json.RawMessage            `json:"heavy_max_load5,omitempty"`
-	HeavyLoadDeferMaxPolls *int                       `json:"heavy_load_defer_max_polls,omitempty"`
-	HeavyCutoffs           map[string]string          `json:"heavy_cutoffs,omitempty"`
-	Handlers               map[string]Handler         `json:"handlers,omitempty"`
-	Alerts                 map[string]json.RawMessage `json:"alerts,omitempty"`
-	Events                 []Event                    `json:"events"`
-	Phases                 []Phase                    `json:"phases,omitempty"`
-	Datasets               json.RawMessage            `json:"datasets,omitempty"`
+	Concurrency             map[string]json.RawMessage `json:"concurrency,omitempty"`
+	HeavyMaxLoad1           json.RawMessage            `json:"heavy_max_load1,omitempty"`
+	HeavyMaxLoad5           json.RawMessage            `json:"heavy_max_load5,omitempty"`
+	HeavyLoadDeferMaxPolls  *int                       `json:"heavy_load_defer_max_polls,omitempty"`
+	ResourceWaitPollSeconds *int                       `json:"resource_wait_poll_seconds,omitempty"`
+	HeavyCutoffs            map[string]string          `json:"heavy_cutoffs,omitempty"`
+	Handlers                map[string]Handler         `json:"handlers,omitempty"`
+	Alerts                  map[string]json.RawMessage `json:"alerts,omitempty"`
+	Events                  []Event                    `json:"events"`
+	Phases                  []Phase                    `json:"phases,omitempty"`
+	Datasets                json.RawMessage            `json:"datasets,omitempty"`
 }
 type Phase struct {
 	Name  string `json:"name"`
@@ -449,6 +450,9 @@ func Validate(c Config) []Issue {
 	validateLoadThreshold("heavy_max_load5", c.HeavyMaxLoad5)
 	if c.HeavyLoadDeferMaxPolls != nil && *c.HeavyLoadDeferMaxPolls < 1 {
 		add("heavy_load_defer_max_polls", "LOAD_DEFER_POLLS", "must be positive")
+	}
+	if c.ResourceWaitPollSeconds != nil && *c.ResourceWaitPollSeconds < 1 {
+		add("resource_wait_poll_seconds", "RESOURCE_WAIT_POLL", "must be positive")
 	}
 	graph := map[string][]string{}
 	for i, e := range c.Events {
