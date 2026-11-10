@@ -19,7 +19,7 @@ def calendar(monkeypatch):
 
 
 def rows():
-    path = Path(__file__).parent / 'fixtures/real/redis_view_stock_extra_2026-11-09.json'
+    path = Path(__file__).parent / 'fixtures/redis_views/redis_view_stock_extra_2026-11-09.json'
     data = json.loads(path.read_text())
     return {key: json.loads(value) for key, value in list(data.items())[:2]}
 

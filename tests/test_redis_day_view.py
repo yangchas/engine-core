@@ -64,7 +64,7 @@ class RecordingRedis:
 
 
 def real_rows():
-    path = Path(__file__).parent / "fixtures/real/redis_view_stock_extra_2026-11-09.json"
+    path = Path(__file__).parent / "fixtures/redis_views/redis_view_stock_extra_2026-11-09.json"
     payload = json.loads(path.read_text())
     return {key: json.loads(value) for key, value in list(payload.items())[:2]}
 
@@ -118,7 +118,7 @@ def test_real_redis_view_sample_roundtrip(family):
         pytest.skip("REDIS_URL is not set")
     import redis as redis_module
 
-    path = Path(__file__).parent / f"fixtures/real/redis_view_{family}_2026-11-09.json"
+    path = Path(__file__).parent / f"fixtures/redis_views/redis_view_{family}_2026-11-09.json"
     sample = json.loads(path.read_text())
     client = redis_module.Redis.from_url(url, decode_responses=True)
     key = f"core:test:C946:{family}:{uuid4().hex}"

@@ -6,7 +6,7 @@ from engine_core.data_pipeline.redis_day_view_read import read_day_view
 
 
 def real_rows():
-    path = Path(__file__).parent / 'fixtures/real/redis_view_stock_extra_2026-11-09.json'
+    path = Path(__file__).parent / 'fixtures/redis_views/redis_view_stock_extra_2026-11-09.json'
     return {key: json.loads(value) for key, value in json.loads(path.read_text()).items()}
 
 
@@ -74,5 +74,5 @@ def test_hmget_batches_and_merges():
 
 
 def test_real_stock_extra_sample_has_501_rows():
-    path = Path(__file__).parent / 'fixtures/real/redis_view_stock_extra_2026-11-09.json'
+    path = Path(__file__).parent / 'fixtures/redis_views/redis_view_stock_extra_2026-11-09.json'
     assert len(json.loads(path.read_text())) == 501
