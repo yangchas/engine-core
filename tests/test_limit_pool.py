@@ -281,9 +281,16 @@ def request(source, day=DAY, now="2026-10-27T01:00:00+08:00", **extra):
 
 def test_kaipan_rung_commits_formal_partition_that_passes_the_contract_checker(tmp_path):
     store = MemoryPoolStore()
-    code, body = d1.run_pool_tier(request("kaipan"), tmp_path, deps=make_deps(store=store))
+    deps = make_deps(store=store)
+    code, body = d1.run_pool_tier(request("kaipan"), tmp_path, deps=deps)
     assert code == 0 and body["status"] == "ok", body
-    assert body["detail"]["td_write"]["status"] == "ok" and store.days[DAY]
+    value = json.loads(deps.redis_client.get(f"core:view:limit_up_pool:{DAY}"))
+    assert body["detail"]["hot_write"]["status"] == "published" and not store.days
+    assert value["rows"] == lp.build_kaipan(DAY, kaipan_pages()).rows
+    assert value["provider"] == value["source"] == lp.KAIPAN
+    assert value["business_status"] == "FORMAL" and value["degraded"] is False
+    assert value["version"] == body["detail"]["version"] and value["available_at"]
+    _committed(tmp_path)
     report = check_partition(tmp_path, "limit_up_pool", DAY)
     assert report.passed, report.summary()
     manifest = json.loads(ArtifactCatalog(tmp_path).locate("limit_up_pool", DAY).read_text(encoding="utf-8"))
@@ -295,8 +302,13 @@ def test_kaipan_rung_commits_formal_partition_that_passes_the_contract_checker(t
 def test_wencai_and_td_rungs_pass_the_checker_and_are_degraded(tmp_path):
     for source, status, provider in (("wencai", "PROVISIONAL", lp.WENCAI), ("td", "DEGRADED", lp.TD_DERIVED)):
         root = tmp_path / source
-        code, body = d1.run_pool_tier(request(source), root, deps=make_deps())
+        deps = make_deps()
+        code, body = d1.run_pool_tier(request(source), root, deps=deps)
         assert code == 10 and body["status"] == "degraded", body
+        value = json.loads(deps.redis_client.get(f"core:view:limit_up_pool:{DAY}"))
+        assert value["business_status"] == status and value["provider"] == provider and value["degraded"] is True
+        assert value["version"] == body["detail"]["version"] and value["available_at"]
+        _committed(root, source)
         report = check_partition(root, "limit_up_pool", DAY)
         assert report.passed, report.summary()
         manifest = json.loads(ArtifactCatalog(root).locate("limit_up_pool", DAY).read_text(encoding="utf-8"))
@@ -306,30 +318,32 @@ def test_wencai_and_td_rungs_pass_the_checker_and_are_degraded(tmp_path):
 def test_equal_or_better_version_makes_lower_rungs_a_no_op(tmp_path):
     deps = make_deps()
     assert d1.run_pool_tier(request("kaipan"), tmp_path, deps=deps)[0] == 0
+    before = dict(deps.redis_client.writes)
+    deps.kaipan = deps.wencai = deps.td_bars = lambda *a, **kw: pytest.fail("hot hit refetched")
     for source in ("kaipan", "wencai", "td"):
         code, body = d1.run_pool_tier(request(source), tmp_path, deps=deps)
         assert code == 20 and body["error_code"] == "ALREADY_SATISFIED"
-    versions = ArtifactCatalog(tmp_path).read()["datasets"]["limit_up_pool"]["dates"][DAY]
-    assert len(versions) == 1
+    assert deps.redis_client.writes == before
+    assert json.loads(next(iter(before.values())))["provider"] == lp.KAIPAN
 
 
 def test_late_better_version_wins_locate_and_checker(tmp_path):
     deps = make_deps()
     assert d1.run_pool_tier(request("td"), tmp_path, deps=deps)[0] == 10
+    first = json.loads(next(iter(deps.redis_client.writes.values())))
     assert d1.run_pool_tier(request("wencai"), tmp_path, deps=deps)[0] == 10       # wencai (rank 1) beats td (rank 2)
+    middle = json.loads(next(iter(deps.redis_client.writes.values())))
     assert d1.run_pool_tier(request("kaipan"), tmp_path, deps=deps)[0] == 0
-    catalog = ArtifactCatalog(tmp_path)
-    best = json.loads(catalog.locate("limit_up_pool", DAY).read_text(encoding="utf-8"))
-    assert best["provider"] == lp.KAIPAN
-    assert check_partition(tmp_path, "limit_up_pool", DAY).passed
-    # the reverse order never lowers: td after kaipan is a no-op (covered above); and locate prefers quality over recency
-    assert len(catalog.read()["datasets"]["limit_up_pool"]["dates"][DAY]) == 3
+    best = json.loads(next(iter(deps.redis_client.writes.values())))
+    assert [v["provider"] for v in (first, middle, best)] == [lp.TD_DERIVED, lp.WENCAI, lp.KAIPAN]
+    assert [v["business_status"] for v in (first, middle, best)] == ["DEGRADED", "PROVISIONAL", "FORMAL"]
+    assert len({v["version"] for v in (first, middle, best)}) == 3
+    assert best["rows"] == lp.build_kaipan(DAY, kaipan_pages()).rows
 
 
 def test_locate_and_latest_never_prefer_a_later_lower_quality_commit(tmp_path):
     """The runner refuses lower rungs, but the catalog itself must still protect the better version."""
-    deps = make_deps()
-    assert d1.run_pool_tier(request("kaipan"), tmp_path, deps=deps)[0] == 0
+    _committed(tmp_path)
     bars, names, sessions = td_inputs()
     td = lp.build_td_derived(DAY, bars, names=names, sessions=sessions)
     manifest = {**td.manifest, "provider_chain": [lp.TD_DERIVED], "provider_attempts": [], "fetched_at": "2026-10-27T00:00:00Z",
@@ -378,8 +392,10 @@ def test_dry_run_fetches_nothing(tmp_path):
 def test_td_outage_fails_the_fetch_task_as_retryable(tmp_path):
     store = MemoryPoolStore()
     store.fail = "unavailable"
-    code, body = d1.run_pool_tier(request("kaipan"), tmp_path, deps=make_deps(store=store))
-    assert code == 30 and body["retryable"] and body["error_code"] == "TD_UNAVAILABLE"
+    deps = make_deps(store=store)
+    code, body = d1.run_pool_tier(request("kaipan"), tmp_path, deps=deps)
+    assert code == 0 and body["status"] == "ok" and not store.days
+    assert json.loads(next(iter(deps.redis_client.writes.values())))["provider"] == lp.KAIPAN
 
 
 def test_ladder_pass_reads_rungs_from_schedule_and_stops_at_first_success(tmp_path):
@@ -395,18 +411,20 @@ def test_ladder_pass_all_fail_reports_missing_and_writes_nothing(tmp_path):
     code, body = d1.run_ladder_once(DAY, tmp_path, deps=deps)
     assert code == 40 and body["error_code"] == "TIER_NO_DATA"
     assert [t["tier"] for t in body["detail"]["ladder_pass"]] == ["kaipan", "wencai", "td_derived"]
+    assert not deps.redis_client.writes
     assert ArtifactCatalog(tmp_path).locate("limit_up_pool", DAY) is None
 
 
 # ---- TD sink (fake store) ------------------------------------------------------------------------------------------
 def test_td_sink_roundtrip_unchanged_and_lower_quality_is_skipped(tmp_path):
     store = MemoryPoolStore()
-    deps = make_deps(store=store)
-    d1.run_pool_tier(request("td"), tmp_path, deps=deps)
+    _committed(tmp_path, "td")
     sink = LimitPoolTdSink(store, tmp_path)
+    assert sink.sync_dates([DAY])[0].status == "synced"
     meta = store.versions[DAY][0]
     assert meta["business_status"] == "DEGRADED" and meta["row_count"] == len(store.days[DAY])
-    d1.run_pool_tier(request("kaipan"), tmp_path, deps=deps)              # upgrades TD to the Kaipan version
+    _committed(tmp_path)                                                   # upgrades TD to the Kaipan version
+    assert sink.sync_dates([DAY])[0].status == "synced"
     assert {v["business_status"] for v in store.versions[DAY]} == {"DEGRADED", "FORMAL"}
     assert all(row["version"] == store.versions[DAY][-1]["version"] for row in store.days[DAY].values())
     assert sink.sync_dates([DAY])[0].status == "unchanged"
@@ -420,7 +438,8 @@ def test_td_sink_roundtrip_unchanged_and_lower_quality_is_skipped(tmp_path):
 
 def test_td_mapping_matches_the_kaipan_row_values(tmp_path):
     store = MemoryPoolStore()
-    d1.run_pool_tier(request("kaipan"), tmp_path, deps=make_deps(store=store))
+    _committed(tmp_path)
+    assert LimitPoolTdSink(store, tmp_path).sync_dates([DAY])[0].status == "synced"
     rows = ArtifactCatalog(tmp_path).read_rows(ArtifactCatalog(tmp_path).locate("limit_up_pool", DAY))
     mapped, dropped = map_rows(rows)
     assert dropped == 0 and set(mapped) == {r["symbol"] for r in rows}
@@ -435,8 +454,7 @@ def test_td_mapping_matches_the_kaipan_row_values(tmp_path):
 def test_td_readback_mismatch_is_caught(tmp_path, column):
     store = MemoryPoolStore()
     store.corrupt = column
-    ArtifactCatalog(tmp_path)   # root only
-    d1.run_pool_tier(request("kaipan"), tmp_path, deps=make_deps(store=MemoryPoolStore()))
+    _committed(tmp_path)
     store = MemoryPoolStore()
     store.corrupt = column
     with pytest.raises(TdVerifyError):
@@ -478,7 +496,22 @@ def test_registry_points_at_the_new_event_and_documents_td():
 
 # ---- contract checker: mutations must fail -------------------------------------------------------------------------
 def _committed(tmp_path, source="kaipan"):
-    d1.run_pool_tier(request(source), tmp_path, deps=make_deps())
+    from datetime import datetime, timezone
+    if source == "kaipan":
+        partition = lp.build_kaipan(DAY, kaipan_pages())
+    elif source == "wencai":
+        doc = wencai_doc()
+        partition = lp.build_wencai(DAY, doc["data"], reported_total=doc["row_count"])
+    else:
+        bars, names, sessions = td_inputs()
+        partition = lp.build_td_derived(DAY, bars, names=names, sessions=sessions, st_source="fixture")
+    manifest = {**partition.manifest, "provider_chain": [lp.KAIPAN, lp.WENCAI, lp.TD_DERIVED],
+                "provider_attempts": [{"provider": partition.manifest["provider"], "result": "ok",
+                                       "elapsed_ms": 0, "reason": "", "row_count": len(partition.rows)}],
+                "fetched_at": "2026-10-27T01:00:00Z", "as_of": f"{DAY}T15:00:00+08:00"}
+    ArtifactCatalog(tmp_path).commit("limit_up_pool", DAY, partition.rows, manifest,
+                                     source=partition.manifest["provider"],
+                                     clock=lambda: datetime(2026, 10, 27, 1, tzinfo=timezone.utc))
     manifest_path = ArtifactCatalog(tmp_path).locate("limit_up_pool", DAY)
     return manifest_path
 
@@ -592,6 +625,8 @@ def test_mutation_no_date_evidence_would_accept_a_wrong_day():
 def test_td_failure_does_not_advance_to_next_limit_pool_rung(tmp_path):
     down = MemoryPoolStore()
     down.fail = "unavailable"
-    code, body = d1.run_ladder_once(DAY, tmp_path, deps=make_deps(store=down, kaipan=False))
-    assert code == 30 and body["error_code"] == "TD_UNAVAILABLE"
+    deps = make_deps(store=down, kaipan=False)
+    code, body = d1.run_ladder_once(DAY, tmp_path, deps=deps)
+    assert code == 10 and body["status"] == "degraded" and not down.days
+    assert json.loads(next(iter(deps.redis_client.writes.values())))["provider"] == lp.WENCAI
     assert [r["tier"] for r in body["detail"]["ladder_pass"]] == ["kaipan", "wencai"]

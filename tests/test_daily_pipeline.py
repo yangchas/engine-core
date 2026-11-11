@@ -483,6 +483,9 @@ def test_three_stages_write_reports_and_explicit_missing_references(tmp_path, mo
 
 
 def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
+    from ladder_support import fixture
+    from engine_core.data_pipeline.limit_pool import kaipan_row
+    from engine_core.data_pipeline import limit_pool_hot_view as hot
     from engine_core.data_pipeline.storage import ArtifactCatalog
     from engine_core.slices import SliceProviders, SliceReader
 
@@ -493,34 +496,37 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
     available = f"{trade_date}T09:00:00+08:00"
     common = {"available_at": available, "point_in_time_date": prior_date}
     catalog.commit("stock_static", prior_date, [
-        {"symbol": "600001", "name": "封停股", "real_market_cap": 100, **common},
-        {"symbol": "600002", "name": "接近封停股", "real_market_cap": 100, **common}],
+        {"symbol": "002815", "name": "封停股", "real_market_cap": 100, **common},
+        {"symbol": "000626", "name": "接近封停股", "real_market_cap": 100, **common}],
         common, source="test")
     catalog.commit("plate_registry", prior_date, [
         {"code": "801001", "name": "通信", "class": "industry", **common}],
         common, source="test")
     catalog.commit("plate_members", prior_date, [
-        {"symbol": "600001", "plate_code": "801001", **common},
-        {"symbol": "600002", "plate_code": "801001", **common}],
+        {"symbol": "002815", "plate_code": "801001", **common},
+        {"symbol": "000626", "plate_code": "801001", **common}],
         common, source="test")
     catalog.commit("daily_history_compact", prior_date, [
         {"date": "2026-10-13", "symbol": symbol, "close": 9.09, "pct_chg": 1,
          "amount": 100000, **common}
-        for symbol in ("600001", "600002")] + [
+        for symbol in ("002815", "000626")] + [
         {"date": "2026-10-14", "symbol": symbol, "close": 10, "pct_chg": 10,
          "amount": 100000, **common}
-        for symbol in ("600001", "600002")] + [
+        for symbol in ("002815", "000626")] + [
         {"date": prior_date, "symbol": symbol, "close": 11, "pct_chg": 10,
          "amount": 100000, **common}
-        for symbol in ("600001", "600002")], common, source="test")
+        for symbol in ("002815", "000626")], common, source="test")
     catalog.commit("auction_baseline", trade_date, [
-        {"date": trade_date, "symbol": "600001", "match_amount_yuan": 100000,
+        {"date": trade_date, "symbol": "002815", "match_amount_yuan": 100000,
          "change_pct": 1, **common}], common, source="test")
-    catalog.commit("limit_up_pool", prior_date, [
-        {"symbol": "600001", "name": "封停股", "lb_days": 2, **common},
-        {"symbol": "600002", "name": "接近封停股", "lb_days": 2, **common}], common, source="test")
+    captured_pool = fixture()["pools"][prior_date]
+    pool_rows = [kaipan_row(row["raw"], row["lb_days"], prior_date) for row in captured_pool["rows"]]
+    pool_meta = {**captured_pool, "row_count": len(pool_rows), "provider": "kaipan_getHisBans",
+                 "source": "kaipan_getHisBans", "business_status": "FORMAL", "degraded": False,
+                 "quality": {"status": "READY", "partial": False}}
+    pool_value = json.dumps(hot.envelope(prior_date, pool_rows, pool_meta))
     catalog.commit("limit_reasons", prior_date, [
-        {"symbol": "600001", "Date": prior_date, "ZSCode": ["801001"],
+        {"symbol": "002815", "Date": prior_date, "ZSCode": ["801001"],
          "Reason": "通信", **common}], common, source="test")
     for day in (trade_date, prior_date):
         catalog.commit("hot_plates", day, [
@@ -530,11 +536,11 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
             {"available_at": f"{day}T09:20:00+08:00",
              "captured_at": f"{day}T09:20:00+08:00"}, source="test")      # hot_plates need a capture instant (PIT)
     catalog.commit("hot_rank", trade_date, [
-        {"symbol": "600001", "rank": 1, **common}], common, source="test")
+        {"symbol": "002815", "rank": 1, **common}], common, source="test")
     catalog.commit("trade_calendar", trade_date, [
         {"date": prior_date}, {"date": trade_date}], common, source="test")
     catalog.commit("path_stats", prior_date, [
-        {"symbol": "600001", "outcome_status": "CLOSED_UP_PRICE_PROXY", **common}],
+        {"symbol": "002815", "outcome_status": "CLOSED_UP_PRICE_PROXY", **common}],
         common, source="test")
 
     class BytePipeline:
@@ -546,7 +552,7 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
 
     class ByteRedis:
         def scan_iter(self, **kwargs):
-            return iter([b"q2:600001", b"q2:600002"])
+            return iter([b"q2:002815", b"q2:000626"])
 
         def pipeline(self):
             class Pipe:
@@ -555,12 +561,12 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
                 execute = BytePipeline.execute
             return Pipe()
 
-        def get(self, _key):
-            return None
+        def get(self, key):
+            return pool_value.encode() if key == f"core:view:limit_up_pool:{prior_date}" else None
 
         def hgetall(self, _key):
-            return {b"600001": b'{"name":"legacy bytes"}',
-                    b"600002": b'{"name":"legacy bytes"}'}
+            return {b"002815": b'{"name":"legacy bytes"}',
+                    b"000626": b'{"name":"legacy bytes"}'}
 
     class DataTD(FakeTD):
         def states_at(self, cutoff):
@@ -569,12 +575,12 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
                              "price_milli": 10500 if opening else price_milli,
                              "pre_close": 10,
                              "prev_close_milli": 10000, "rest_bid_shares": 0,
-                             "rest_ask_shares": 0, "pct_change": 5.0 if opening and symbol == "600001" else pct,
+                             "rest_ask_shares": 0, "pct_change": 5.0 if opening and symbol == "002815" else pct,
                              "match_amount_yuan": amount, "auction_amount_yuan": amount,
                              "status": "FINAL"}
                     for symbol, price_milli, pct, amount in (
-                        ("600001", 11000, 10.0, 5000000),
-                        ("600002", 10990, 9.99, 4000000))}
+                        ("002815", 11000, 10.0, 5000000),
+                        ("000626", 10990, 9.99, 4000000))}
 
     redis = ByteRedis()
     reader = SliceReader(SliceProviders(catalog=catalog, redis=redis, file_fallback=False).providers())
@@ -590,7 +596,10 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
             name: row for name, row in manifest["slices"].items()
             if name != "stock_theme_assignment" and row["status"] == "MISSING"}
         assert all(row["source"].startswith("core_data") for name, row in manifest["slices"].items()
-                   if name != "stock_theme_assignment")
+                   if name not in {"stock_theme_assignment", "yest_limit_pool"})
+        pool_slice = manifest["slices"]["yest_limit_pool"]
+        assert pool_slice["source"] == "redis" and pool_slice["version"] == captured_pool["version"]
+        assert pool_slice["available_at"] == captured_pool["available_at"]
         assert "front_page" in report and "plate_strength" in report["front_page"]
         assert "ladder" in report["front_page"]
         paths = [path for cluster in report["front_page"]["ladder"]["clusters"]
@@ -602,8 +611,8 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
         else:
             assert report["ladder_section"]["promotion_checkpoint"] == "0932"
             assert report["ladder_section"]["promotion_status"] in {"READY", "UNKNOWN"}
-            assert labels["600001"] != "封停价代理"
-        assert labels["600002"] != "封停价代理"
+            assert labels["002815"] != "封停价代理"
+        assert labels["000626"] != "封停价代理"
 def test_repeat_run_uses_numbered_directory_without_overwriting(tmp_path):
     kwargs = dict(stage="auction", trade_date="2026-10-15", out_root=tmp_path / "out",
                   reference_root=tmp_path / "refs", sources=DailySources(td=FakeTD()))
