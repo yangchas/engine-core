@@ -35,6 +35,12 @@ def _load(catalog, dataset, day):
     return None if found is None else (catalog.read_rows(found[0]), found[1])
 
 
+def _load_pool_hot(day, asof):
+    from engine_core.data_pipeline.limit_pool_hot_view import read
+    rows, metadata = read(day, asof)
+    return None if metadata.get("status") == "MISSING" else (rows, metadata)
+
+
 def _previous(root, day):
     from engine_core.prep_trade_day import previous_trade_date
     return previous_trade_date(root, day)
@@ -56,6 +62,8 @@ def fetch_item(item: str, day: str, artifact_root: str | Path, *, execute: bool 
     required = {"limit_up_pool": previous, "hot_plates": previous,
                 "plate_members": previous}
     loaded = {name: _load(catalog, name, part) for name, part in required.items()}
+    if loaded["limit_up_pool"] is None:
+        loaded["limit_up_pool"] = _load_pool_hot(previous, day + "T09:08:22+08:00")
     missing = [name for name, data in loaded.items() if data is None]
     registry = _manifest(catalog, "plate_registry", day)
     if registry is None:
