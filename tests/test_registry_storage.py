@@ -31,7 +31,12 @@ def test_every_declaration_has_a_valid_kind_role_and_name_and_a_single_authority
         for location in locations:
             assert location["kind"] in KINDS and location["role"] in ROLES and location["name"], item["id"]
             if location["kind"] == "redis_view":
-                assert isinstance(location.get("ttl_seconds"), int) and location["ttl_seconds"] > 0, item["id"]
+                if "retention" in location:
+                    assert "ttl_seconds" not in location
+                    assert location["retention"] == {"kind": "trading_days", "count": 5, "anchor": "data_date",
+                                                     "expire_time": "00:00:00", "timezone": "Asia/Shanghai"}
+                else:
+                    assert type(location.get("ttl_seconds")) is int and location["ttl_seconds"] > 0, item["id"]
         authorities = [loc for loc in locations if loc["role"] == "authority"]
         assert len(authorities) <= 1, item["id"]
         assert authorities or all(loc["role"] == "legacy" or loc["kind"] == "unknown" for loc in locations), item["id"]
@@ -100,12 +105,42 @@ def _checked_datasets():
     return checked
 
 
-def test_every_dataset_a_postcondition_checks_is_stored_where_the_check_looks():
+def test_every_dataset_a_postcondition_checks_is_stored_where_the_check_looks(tmp_path, monkeypatch):
+    from ladder_support import fixture
+    from engine_core.data_pipeline import limit_pool_hot_view as hot
+    from engine_core import trade_day_context
+
     by_id = {item["id"]: item for item in REGISTRY}
     snapshots = commands.snapshot_datasets()
     for dataset in sorted(_checked_datasets()):
         locations = by_id[dataset]["storage"]
         if dataset in snapshots:
+            continue
+        if dataset == "limit_up_pool":
+            authority = [loc for loc in locations if loc["role"] == "authority"]
+            assert len(authority) == 1 and authority[0]["kind"] == "redis_view"
+            day = "2026-10-26"
+            pool = fixture()["pools"][day]
+            rows = [{**row, "date": day} for row in pool["rows"]]
+            meta = {**pool, "provider": "kaipan_getHisBans", "row_count": len(rows),
+                    "business_status": "FORMAL", "degraded": False,
+                    "quality": {"status": "READY", "partial": False}}
+
+            class Redis:
+                value = json.dumps(hot.envelope(day, rows, meta))
+
+                def get(self, key):
+                    assert key == authority[0]["name"].format(data_date=day)
+                    return self.value
+
+            redis = Redis()
+            monkeypatch.setattr(hot, "_client", lambda: redis)
+            monkeypatch.setattr(hot, "_td_store", lambda: (_ for _ in ()).throw(RuntimeError("no TD")))
+            monkeypatch.setattr(trade_day_context, "previous_trade_date", lambda root, date: day)
+            assert commands.validate_handler_postcondition("kaipan_fetch", "2026-10-27", tmp_path) == (True, "")
+            redis.value = None
+            assert commands.validate_handler_postcondition("kaipan_fetch", "2026-10-27", tmp_path) == (
+                False, "limit_up_pool_missing_or_empty")
             continue
         assert any(loc["kind"] == "catalog" and loc["role"] in ("authority", "marker") for loc in locations), (
             f"{dataset}: the postcondition reads catalog partitions but the declaration has none that are current")

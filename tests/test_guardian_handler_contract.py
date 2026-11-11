@@ -27,6 +27,58 @@ def _core_request(event_id, trade_date="2026-10-19"):
             "gate": {"ref": "", "params": None, "probe": False}}
 
 
+def test_kaipan_default_reuses_recorded_hot_pool_and_keeps_missing_behavior(tmp_path, monkeypatch):
+    from datetime import datetime
+    from examples import core_guardian
+    from engine_core.data_pipeline import limit_pool, limit_pool_hot_view as hot
+
+    day = "2026-10-26"
+    pages = json.loads((ROOT / "tests/fixtures/limit_pool/kaipan_pool_20261026.json").read_text())["pages"]
+    partition = limit_pool.build_kaipan(day, {int(k): v for k, v in pages.items()})
+    manifest = {**partition.manifest, "version": "recorded-pool", "available_at": "2026-10-28T10:11:25+08:00"}
+
+    class Redis:
+        value = None
+
+        def get(self, key):
+            assert key == f"core:view:limit_up_pool:{day}"
+            return self.value
+
+    redis = Redis()
+    monkeypatch.setattr(hot, "_client", lambda: redis)
+    monkeypatch.setattr(hot, "_td_store", lambda: (_ for _ in ()).throw(RuntimeError("no TD")))
+    monkeypatch.delenv("TD_CONFIG", raising=False)
+    monkeypatch.setattr(core_guardian, "previous_trade_date", lambda root, date: day)
+    jobs = []
+    monkeypatch.setattr(core_guardian, "build_handler_command",
+                        lambda name, event, opts, root, target, py, repo: [opts.job, target])
+    monkeypatch.setattr(core_guardian.subprocess, "run",
+                        lambda cmd, **kwargs: jobs.append(tuple(cmd)) or SimpleNamespace(returncode=0))
+    event = SimpleNamespace(event_id="kaipan_refresh_0850", args={}, data_date_offset=-1, timeout_seconds=300)
+    handler = core_guardian._command_handler("kaipan_fetch", SimpleNamespace(write=False), tmp_path)
+    now = datetime.fromisoformat("2026-10-29T08:50:00+08:00")
+    all_jobs = [(job, day) for job in ("limit_up_pool", "limit_reasons", "hot_plates", "plate_members")]
+
+    handler(event, now, {}, False)
+    assert jobs == all_jobs
+    jobs.clear()
+    redis.value = json.dumps(hot.envelope(day, partition.rows, manifest))
+    handler(event, now, {}, False)
+    assert jobs == all_jobs[1:]
+    jobs.clear()
+    redis.value = json.dumps({**hot.envelope(day, partition.rows, manifest), "rows": [], "row_count": 0})
+    handler(event, now, {}, False)
+    assert jobs == all_jobs
+    jobs.clear()
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    pool_manifest = tmp_path / "pool_manifest.json"
+    pool_manifest.write_text(json.dumps(manifest))
+    monkeypatch.setattr(ArtifactCatalog, "locate", lambda self, dataset, target:
+                        pool_manifest if dataset == "limit_up_pool" else None)
+    handler(event, now, {}, False)
+    assert jobs == all_jobs[1:]
+
+
 def test_static_data_refresh_event_routes_to_adapter(monkeypatch, tmp_path):
     from datetime import datetime
     from examples import core_guardian, static_data_refresh

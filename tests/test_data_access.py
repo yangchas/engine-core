@@ -15,6 +15,46 @@ FIXTURES = Path(__file__).parent / "fixtures" / "real"
 FORMAL = FIXTURES / "core_artifacts/c522/daily_kline/2026-10-23/formal"
 
 
+def test_limit_reasons_reads_recorded_hot_pool_when_catalog_missing(tmp_path, monkeypatch):
+    import pytest
+    from examples import run_data_jobs
+    from engine_core.data_pipeline import limit_pool, limit_pool_hot_view as hot
+    from engine_core.errors import CoreError
+
+    day = "2026-10-26"
+    pages = json.loads((Path(__file__).parent / "fixtures/limit_pool/kaipan_pool_20261026.json").read_text())["pages"]
+    partition = limit_pool.build_kaipan(day, {int(k): v for k, v in pages.items()})
+    manifest = {**partition.manifest, "version": "recorded-pool", "available_at": "2026-10-28T10:11:25+08:00"}
+
+    class Redis:
+        value = None
+
+        def get(self, key):
+            assert key == f"core:view:limit_up_pool:{day}"
+            return self.value
+
+    redis = Redis()
+    monkeypatch.setattr(hot, "_client", lambda: redis)
+    monkeypatch.setattr(hot, "_td_store", lambda: (_ for _ in ()).throw(RuntimeError("no TD")))
+    monkeypatch.setattr(run_data_jobs, "_plate_codes", lambda *args: [])
+    fetch = run_data_jobs._default_adapters(str(tmp_path), "", 1, False)["limit_reasons"]
+    with pytest.raises(CoreError) as error:
+        fetch(day)
+    assert error.value.error_code == "UPSTREAM_NOT_READY"
+    assert str(error.value).endswith("limit_up_pool_artifact_required:" + day)
+
+    for status in ("PARTIAL", "DEGRADED"):
+        metadata = {**manifest, "quality": {**manifest["quality"], "status": status, "partial": status == "PARTIAL"},
+                    "business_status": status, "degraded": True}
+        redis.value = json.dumps(hot.envelope(day, partition.rows, metadata))
+        result = fetch(day)
+        assert result["expected_count"] == len(partition.rows)
+        assert result["source_counts"]["KAIPAN_GET_HIS_BANS"] == len(partition.rows)
+        assert result["quality_status"] == status
+        assert result["business_status"] == status
+        assert result["degraded"] is True
+
+
 def _fixture():
     manifest = json.loads((FORMAL / "manifest.json").read_text(encoding="utf-8"))
     with gzip.open(FORMAL / "rows.jsonl.gz", "rt", encoding="utf-8") as handle:

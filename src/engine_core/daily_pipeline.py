@@ -873,6 +873,14 @@ def load_close_catalog_inputs(catalog: Any, trade_date: str,
     selected: dict[str, dict[str, Any]] = {}
     provenance: dict[str, Any] = {}
     for dataset, source_date in specifications.items():
+        if dataset == "limit_up_pool":
+            from .data_pipeline.limit_pool_hot_view import read as read_pool
+            rows, meta = (read_pool(source_date, cutoff.isoformat()) if source_date else
+                          ([], {"status": "MISSING", "reason": "previous_trade_date_unavailable"}))
+            provenance[dataset] = dict(meta)
+            if meta["status"] != "MISSING":
+                selected[dataset] = {"manifest": meta, "path": None, "rows": rows}
+            continue
         manifest_path = catalog.locate(dataset, source_date) if source_date else None
         if source_date and hasattr(catalog, "read"):
             versions = (catalog.read().get("datasets", {}).get(dataset, {}).get("dates", {})

@@ -1,8 +1,7 @@
 """Pure core of the ``limit_up_pool`` dataset: previous-day (D-1) limit-up pool, three sources (C580).
 
 Contract (fw/design/24-DATASET-CONTRACT.md): no I/O, no environment, no clock.  Every function takes plain data and
-returns plain data; the guardian adapter (``engine_core.guardian.limit_pool_d1``) does the fetching, the catalog
-commit and the TD sync.
+returns plain data; the guardian adapter (``engine_core.guardian.limit_pool_d1``) fetches and publishes the Redis view.
 
 Source order is NOT decided here (it is the ladder in ``schedule.json``):
   * ``kaipan_getHisBans``  first choice, FORMAL, 23 positional fields per record kept in full

@@ -261,16 +261,28 @@ STORAGE_ROLES = frozenset({"authority", "marker", "view", "mirror", "legacy"})
 
 
 def _validate_storage(item_id: str, storage: Any) -> None:
-    """Where a dataset lives (design/29 CT-01): a non-empty list of {kind, name, role}; redis views carry a TTL."""
+    """Validate storage locations and explicit Redis expiration policies."""
     if not isinstance(storage, list) or not storage:
         raise ValueError(f"item {item_id} storage must be a non-empty list")
     for location in storage:
         if not isinstance(location, dict) or location.get("kind") not in STORAGE_KINDS \
                 or location.get("role") not in STORAGE_ROLES or not location.get("name"):
             raise ValueError(f"item {item_id} storage location needs kind, role and name: {location!r}")
-        ttl = location.get("ttl_seconds")
-        if location["kind"] == "redis_view" and (isinstance(ttl, bool) or not isinstance(ttl, int) or ttl <= 0):
-            raise ValueError(f"item {item_id} storage redis_view needs ttl_seconds")
+        if location["kind"] == "redis_view":
+            ttl = location.get("ttl_seconds")
+            retention = location.get("retention")
+            if "retention" not in location:
+                if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl <= 0:
+                    raise ValueError(f"item {item_id} storage redis_view needs ttl_seconds")
+            else:
+                if ("ttl_seconds" in location or not isinstance(retention, dict)
+                        or set(retention) != {"kind", "count", "anchor", "expire_time", "timezone"}
+                        or retention.get("kind") != "trading_days"
+                        or type(retention.get("count")) is not int or retention["count"] <= 0
+                        or retention.get("anchor") != "data_date"
+                        or retention.get("expire_time") != "00:00:00"
+                        or retention.get("timezone") != "Asia/Shanghai"):
+                    raise ValueError(f"item {item_id} storage redis_view has invalid retention")
     if sum(1 for location in storage if location["role"] == "authority") > 1:
         raise ValueError(f"item {item_id} storage declares more than one authority")
 

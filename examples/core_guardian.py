@@ -258,6 +258,11 @@ def _command_handler(name: str, opts, root: Path):
             from engine_core.data_pipeline.storage import ArtifactCatalog
             catalog = ArtifactCatalog(root)
             for job in tuple((getattr(event, "args", None) or {}).get("datasets") or ("limit_up_pool", "limit_reasons", "hot_plates", "plate_members")):
+                if job == "limit_up_pool":
+                    from engine_core.data_pipeline.limit_pool_hot_view import read as read_pool
+                    rows, meta = read_pool(day, datetime.now().astimezone().isoformat())
+                    if meta["status"] != "MISSING" and rows:
+                        continue
                 if job == "plate_members":
                     reusable = False
                     if os.environ.get("TD_CONFIG"):

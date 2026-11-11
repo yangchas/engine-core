@@ -299,7 +299,15 @@ def test_prep_theme_uses_existing_active_members_without_refetch(tmp_path, monke
     with gzip.open(fixture / 'core_artifacts/c594/plate_registry/2026-10-13/current/rows.jsonl.gz', 'rt') as f:
         registry = [json.loads(line) for line in f]
     reasons = json.loads((fixture / 'kaipan_ban_reasons_2026-10-29_003021_st200_0538.json').read_text())['List']
-    commit('limit_up_pool', pool)
+    from engine_core.data_pipeline import limit_pool_hot_view as hot
+    from test_limit_pool_hot_view import RedisSpy
+    real_catalog = ArtifactCatalog(Path.home() / 'core-data')
+    real_path = real_catalog.locate('limit_up_pool', day)
+    real_manifest = json.loads(real_path.read_text())
+    redis = RedisSpy()
+    redis.writes[f'core:view:limit_up_pool:{day}'] = json.dumps(
+        hot.envelope(day, real_catalog.read_rows(real_path), real_manifest))
+    monkeypatch.setattr(hot, '_client', lambda: redis)
     commit('plate_registry', registry)
     commit('limit_reasons', reasons)
     jobs = []

@@ -66,23 +66,15 @@ WenCai (`wc_*`, from the `[YYYYMMDD]` columns of the requested day): `wc_limit_t
 
 ## 5. Manifest / contract
 
-Required manifest fields of design/24 section 4 plus `provider_details` (counts of dropped records, st_filter, rule). `provider_chain` is the configured
-ladder order; `provider_attempts` the attempts of this call. Date evidence (`source_dates`): Kaipan = the date string the vendor echoes in `info`
+The producer records source and quality metadata in the Redis envelope. Date evidence checked during construction: Kaipan = the date string the vendor echoes in `info`
 (`info[1]`), WenCai = the `[YYYYMMDD]` suffix of the columns, TD = the bar date; a missing or different date rejects the response (`TIER_DATE_MISMATCH`).
-`as_of = D 15:00+08:00`, `available_at` = commit time (the checker also requires, for Kaipan, `available_at >= D+1 00:30`: check A10b).
+`as_of = D 15:00+08:00`, `available_at` = actual publication time (historical TD recovery retains its original time).
 Coverage: `expected_basis = pool_members`, `expected_count` = members the source reported (Kaipan: records seen over all levels; WenCai: `row_count` of the
 response; TD: derived rows), `missing`, `coverage`, `partial`, `dropped_*`. The universe is not the denominator.
 
-## 6. TD storage (cold data; the catalog partition is the transitional versioned ledger)
+## 6. Redis target and historical TD
 
-Database: that of `daily_kline` (`core_data`, overridable by `CORE_TD_DATABASE`; `core_dev_*` in tests; `market_data1` refused).
-`limit_up_pool_v1` super table `(ts TIMESTAMP, <38 data columns>, version VARCHAR(24)) TAGS (symbol VARCHAR(8))`, child `p_<symbol>`, `ts` = D-1 00:00 +08:00;
-every catalog row key maps to the column of the same name (str -> VARCHAR(n), int -> BIGINT, float -> DOUBLE, bool -> BOOL, missing -> NULL; `date`, `trade_date`
-and `symbol` are `ts` and the tag). `limit_up_pool_versions` (same layout as `daily_kline_versions`, without `needs_upgrade`) holds one row per version
-(status, provider, quality JSON, row count, sha256). Sync = replace the day, read EVERY cell back and compare, then write the version row last; a day with a
-lower-ranked version never replaces a higher one in TD. Immediately after a successful catalog commit the runner syncs (a TD failure only adds
-`td_sync` warning to the result: the catalog write decides success); the scheduled `td_sync_*` events also sweep pool partitions, so TD catches up by itself.
-Hot copy (Redis): none; the pool is read once a day per consumer, from the catalog/TD.
+The producer publishes one atomic Redis view with five-trading-day expiry. A healthy equal or better view avoids refetch and cold access. Existing TD rows and their version metadata remain a degraded fallback or recovery source; normal production does not commit catalog files or write TD. The catalog-to-TD sink remains a historical tool and is not scheduled for this family. Existing catalog readers for other families are unaffected.
 
 ## 7. Known limits
 

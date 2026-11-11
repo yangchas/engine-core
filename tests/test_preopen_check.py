@@ -7,7 +7,7 @@ import pytest
 from engine_core.guardian import preopen_check
 from engine_core.errors import CoreError
 
-CHECK_DAY, DAY = "2026-11-02", "2026-10-30"
+CHECK_DAY, DAY = "2026-10-27", "2026-10-26"
 
 
 class StubCatalog:
@@ -25,7 +25,7 @@ class StubCatalog:
         return {"datasets": self._datasets}
 
 
-def manifest(status="FORMAL", rows=47, available="2026-10-30T16:40:51+08:00"):
+def manifest(status="FORMAL", rows=47, available="2026-10-27T08:32:05.697525+08:00"):
     return {"business_status": status, "row_count": rows, "available_at": available}
 
 
@@ -33,19 +33,47 @@ CHECKS = {"limit_up_pool": {"statuses": ["FORMAL", "READY"], "min_rows": 1},
           "hot_plates": {"statuses": ["READY", "FORMAL", "PROVISIONAL"], "min_rows": 1,
                          "captured_after": "08:15:00"},
           "daily_kline": {"coverage_threshold": 0.995, "total_timeout_seconds": 1200}}
-HISTORY_DONE = "2026-11-02T08:15:30+08:00"
+HISTORY_DONE = "2026-10-27T08:15:30+08:00"
 
 
 @pytest.fixture(autouse=True)
 def previous_day(monkeypatch):
     import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline import limit_pool_hot_view as hot
+
+    class Redis:
+        value = None
+
+        def get(self, key):
+            assert key == f"core:view:limit_up_pool:{DAY}"
+            return self.value
+
     monkeypatch.setattr(prep, "previous_trade_date", lambda _root, _day: DAY)
+    monkeypatch.setattr(hot, "_client", lambda: Redis())
+    monkeypatch.setattr(hot, "_td_store", lambda: (_ for _ in ()).throw(RuntimeError("no TD")))
 
 
 def run(tmp_path, datasets, fill, checks=CHECKS, dry_run=False):
-    request = {"trade_date": CHECK_DAY, "args": {"checks": checks}}
-    return preopen_check.run(request, tmp_path, dry_run=dry_run, fill=fill,
-                             catalog=StubCatalog(tmp_path, datasets))
+    from unittest.mock import patch
+    from ladder_support import fixture
+    from engine_core.data_pipeline import limit_pool_hot_view as hot
+
+    pool = fixture()["pools"][DAY]
+    selected = datasets.get("limit_up_pool", [])
+    client = hot._client()
+    if selected:
+        selected_meta = selected[0]
+        rows = [{**row, "date": DAY} for row in pool["rows"][:selected_meta["row_count"]]]
+        status = selected_meta["business_status"]
+        meta = {**pool, **selected_meta, "version": f"fixture-subset-{len(rows)}-{pool['version']}",
+                "source": "kaipan_getHisBans", "provider": "kaipan_getHisBans",
+                "row_count": len(rows), "degraded": status == "DEGRADED",
+                "quality": {"status": "DEGRADED" if status == "DEGRADED" else "READY", "partial": False}}
+        client.value = json.dumps(hot.envelope(DAY, rows, meta))
+    request = {"trade_date": CHECK_DAY, "now": "2026-10-27T08:35:00+08:00", "args": {"checks": checks}}
+    with patch.object(hot, "_client", return_value=client):
+        return preopen_check.run(request, tmp_path, dry_run=dry_run, fill=fill,
+                                 catalog=StubCatalog(tmp_path, {k: v for k, v in datasets.items() if k != "limit_up_pool"}))
 
 
 def complete_fill(_root, day, *, args=None):
@@ -54,7 +82,7 @@ def complete_fill(_root, day, *, args=None):
 
 def healthy():
     return {"limit_up_pool": [manifest("FORMAL", 47)],
-            "hot_plates": [manifest("PROVISIONAL", 241, "2026-10-30T15:10:07+08:00"),
+            "hot_plates": [manifest("PROVISIONAL", 241, "2026-10-26T15:10:07+08:00"),
                            manifest("PROVISIONAL", 241, HISTORY_DONE)]}
 
 
@@ -62,6 +90,8 @@ def test_everything_present_is_ok_and_names_the_checked_day(tmp_path):
     code, payload = run(tmp_path, healthy(), complete_fill)
     assert (code, payload["status"]) == (0, "ok")
     assert payload["detail"]["checked_day"] == DAY and [r["status"] for r in payload["detail"]["results"]] == ["OK"] * 3
+    assert payload["detail"]["results"][0]["detail"]["storage_source"] == "redis"
+    assert payload["detail"]["results"][0]["detail"]["version"] == "fixture-subset-47-sha256-396734dca9e888b2"
 
 
 def test_a_missing_limit_up_pool_fails_retryably_and_names_it(tmp_path):
@@ -70,11 +100,15 @@ def test_a_missing_limit_up_pool_fails_retryably_and_names_it(tmp_path):
     code, payload = run(tmp_path, datasets, complete_fill)
     assert (code, payload["error_code"], payload["retryable"]) == (75, "PREOPEN_CHECK_FAILED", True)
     assert payload["detail"]["failed"] == ["limit_up_pool"]
+    datasets = healthy()
+    datasets["limit_up_pool"][0]["available_at"] = "2026-10-27T08:36:00+08:00"
+    code, payload = run(tmp_path, datasets, complete_fill)
+    assert code == 75 and payload["detail"]["failed"] == ["limit_up_pool"]
 
 
 def test_hot_plates_without_the_morning_history_fetch_are_not_ready(tmp_path):
     datasets = healthy()
-    datasets["hot_plates"] = [manifest("PROVISIONAL", 241, "2026-10-30T15:10:07+08:00")]   # only the intraday shots
+    datasets["hot_plates"] = [manifest("PROVISIONAL", 241, "2026-10-26T15:10:07+08:00")]   # only the intraday shots
     code, payload = run(tmp_path, datasets, complete_fill)
     assert code == 75 and payload["detail"]["failed"] == ["hot_plates"]
     assert payload["detail"]["results"][1]["detail"]["need"]["captured_after"] == "08:15:00"

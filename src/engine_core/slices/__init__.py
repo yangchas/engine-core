@@ -238,11 +238,27 @@ class SliceProviders:
         names = list(self.DATASETS)
         result = {name: [self._core, self._legacy, self._file] for name in names}
         result.update(self.market.providers())
+        result["yest_limit_pool"] = [self._core]
         return result
 
     def _core(self, reader: SliceReader, request: SliceRequest) -> SliceResult:
         dataset = self.DATASETS[request.slice_id]
         date = request.trade_date
+        if request.slice_id == "yest_limit_pool":
+            from ..data_pipeline.limit_pool_hot_view import read
+            day = str(request.params.get("prior_trade_date") or request.params.get("source_date") or "")
+            if not day:
+                return _result(request, [], source="none", status="MISSING",
+                               reason="PREVIOUS_TRADE_DATE_MISSING", lineage=[{"dataset": dataset}])
+            rows, meta = read(day, request.asof, redis_client=self.redis)
+            lineage = [{"dataset": dataset, "requested_date": request.trade_date, "used_date": day, **meta}]
+            result = _result(request, rows, source=meta.get("storage_source", "none"),
+                             status=meta["status"], reason=meta.get("reason") or meta.get("fallback_reason"),
+                             version=meta.get("version"), available_at=meta.get("available_at"),
+                             quality=meta.get("quality"), lineage=lineage, pit_date=day, pit_filtered=True)
+            result.meta.update({key: meta.get(key) for key in ("storage_source", "fallback_reason",
+                                "provider", "business_status", "degraded", "late_visible")})
+            return result
         if request.slice_id == "auction_stock_facts":
             # Hot Top50/seal projections are lookup aids, never a complete
             # market universe for panorama aggregation.

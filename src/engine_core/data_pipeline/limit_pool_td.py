@@ -221,10 +221,12 @@ def catalog_candidates(catalog: Mapping[str, Any], trade_date: str) -> list[dict
 
 
 class LimitPoolTdSink:
-    def __init__(self, store: Any, root: str | Path, *, clock: Callable[[], datetime] | None = None):
+    def __init__(self, store: Any, root: str | Path, *, clock: Callable[[], datetime] | None = None,
+                 lock_held: bool = False):
         self.store = store
         self.root = Path(root).expanduser()
         self.clock = clock or (lambda: datetime.now(SHANGHAI))
+        self.lock_held = lock_held
 
     def _catalog(self) -> dict[str, Any]:
         from .storage import ArtifactCatalog
@@ -295,6 +297,11 @@ class LimitPoolTdSink:
     def write_partition(self, trade_date: str, rows: Sequence[Mapping[str, Any]],
                         manifest: Mapping[str, Any]) -> SyncOutcome:
         """Write the producer's just-committed partition without rereading it from the catalog."""
+        if not self.lock_held:
+            from .limit_pool_hot_view import pool_lock
+            with pool_lock(self.root):
+                return LimitPoolTdSink(self.store, self.root, clock=self.clock, lock_held=True).write_partition(
+                    trade_date, rows, manifest)
         if str(manifest.get("trade_date") or trade_date) != trade_date:
             raise TdVerifyError("td_trade_date_mismatch:" + trade_date)
         if not manifest.get("version") or int(manifest.get("row_count") or -1) != len(rows):
@@ -311,6 +318,10 @@ class LimitPoolTdSink:
                                    {"partition_version": manifest["version"], "reason": "td_has_higher_quality_version"})
         if current is not None and current.get("version") == manifest.get("version") and \
                 self.store.day_counts([trade_date]).get(trade_date) == int(manifest.get("row_count") or -1):
+            mapped, dropped = map_rows(rows)
+            if dropped or len(mapped) != len(rows):
+                raise TdVerifyError("td_partition_maps_incompletely:" + trade_date)
+            self.verify_day(trade_date, manifest, mapped)
             return SyncOutcome(trade_date, "unchanged", str(manifest["version"]), current.get("business_status"),
                                int(current["row_count"]))
         mapped, dropped = map_rows(rows)
@@ -331,6 +342,11 @@ class LimitPoolTdSink:
                             "version_row_verified": True})
 
     def sync_date(self, trade_date: str, catalog: Mapping[str, Any] | None = None) -> SyncOutcome:
+        if not self.lock_held:
+            from .limit_pool_hot_view import pool_lock
+            with pool_lock(self.root):
+                return LimitPoolTdSink(self.store, self.root, clock=self.clock, lock_held=True).sync_date(
+                    trade_date, catalog)
         catalog = catalog if catalog is not None else self._catalog()
         best = pick_best(catalog_candidates(catalog, trade_date))
         if best is None:
@@ -340,6 +356,10 @@ class LimitPoolTdSink:
         return self.write_partition(trade_date, rows, best)
 
     def sync_dates(self, dates: Sequence[str]) -> list[SyncOutcome]:
+        if not self.lock_held:
+            from .limit_pool_hot_view import pool_lock
+            with pool_lock(self.root):
+                return LimitPoolTdSink(self.store, self.root, clock=self.clock, lock_held=True).sync_dates(dates)
         catalog = self._catalog()
         return [self.sync_date(day, catalog) for day in sorted(set(dates))]
 

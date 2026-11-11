@@ -6,6 +6,7 @@ from typing import Any
 import json
 import math
 from collections.abc import Mapping
+from datetime import datetime
 from numbers import Real
 from pathlib import Path
 
@@ -247,6 +248,12 @@ def validate_handler_postcondition(name: str, day: str, root: str | Path,
                 target = previous_trade_date(root, day)
             except Exception:
                 return False, "previous_trade_date_unavailable"
+        if name == "kaipan_fetch" and dataset == "limit_up_pool":
+            from ..data_pipeline.limit_pool_hot_view import read as read_pool
+            rows, meta = read_pool(target, datetime.now().astimezone().isoformat())
+            if meta["status"] == "MISSING" or not rows:
+                return False, dataset + "_missing_or_empty"
+            continue
         manifest_path = catalog.locate(dataset, target)
         if manifest_path is None or not manifest_path.is_file():
             if name == "kaipan_fetch":

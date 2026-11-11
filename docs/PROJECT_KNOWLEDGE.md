@@ -1,5 +1,30 @@
 # Project Knowledge
 
+- `[VERIFIED 2026-11-12 — C988 isolated Guardian check]` The candidate default
+  Kaipan handler reused a 93-row isolated Redis pool for 2026-11-10. The
+  limit-reasons postcondition's second date rollback also occurs at baseline
+  ba47943; it is not introduced by the pool migration. Evidence:
+  `/home/exedev/fw/evidence/C988/real_check_final.log`. This is not deployment.
+
+- `[VERIFIED 2026-11-11 — C984 isolated pool producer]` For 2026-11-10,
+  the candidate producer published 93 real Kaipan rows and 27 fields to an
+  isolated Redis key despite an injected TD recovery failure. Shared, slice and
+  prep readers matched the source; a repeat made no source, TD, catalog or Redis
+  write calls. Existing TD recovery preserved the original source digest,
+  version and visibility time and marked the result degraded. This is isolated
+  candidate evidence, not deployment. Evidence: `/home/exedev/fw/evidence/C984/`.
+  A later isolated retry preserved the TD-recovered degraded view without a
+  source, TD, catalog or Redis write; dry-run skipped writes with a fault-injected
+  TTL. Recorded Wencai and TD-derived fixtures cover same-rank retries and upgrades.
+
+- `[VERIFIED 2026-11-11 — C982 isolated pool view]` The candidate Redis pool
+  view for 2026-11-10 retained 93 real rows with zero source-field differences,
+  original version and visibility time. The isolated key expires at Shanghai
+  midnight on the fifth subsequent trading day; a missing key falls back to TD
+  with degraded status. Consumer pool reads used no TD or catalog on the hot
+  path. This is an isolated candidate, not evidence of deployment or live
+  visibility. Evidence: `/home/exedev/fw/evidence/C982/`.
+
 - `[VERIFIED 2026-11-11 — C978 candidate consumer]` The isolated C977 C++
   producer's TD-derived Redis strings were read through Core's auction input
   chain: 0920/0924/0925 had 4,885/5,076/5,215 candidates, respectively. A

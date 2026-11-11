@@ -48,15 +48,18 @@ def test_real_td_snapshot_rows_sort_and_repeat_to_one_version(tmp_path):
     assert first_version == second_version
 
 
-def test_real_catalog_pit_inputs_and_temporally_missing_case():
+def test_real_catalog_pit_inputs_and_temporally_missing_case(monkeypatch):
     from engine_core.data_pipeline.storage import ArtifactCatalog
     from examples.fetch_auction_item import _pit_rows
+    from engine_core.data_pipeline import limit_pool_hot_view as hot
+    from engine_core.guardian.limit_pool_d1 import existing_partition
+    from test_limit_pool_hot_view import RedisSpy
 
     root = Path.home() / "core-data"
     catalog = ArtifactCatalog(root)
     datasets = catalog.read()["datasets"]
     target_cutoff = datetime.fromisoformat("2026-10-21T09:25:10+08:00")
-    for dataset in ("plate_members", "limit_up_pool"):
+    for dataset in ("plate_members",):
         dates = datasets[dataset]["dates"]
         rows, meta = _pit_rows(catalog, dataset, (day for day in dates if day < "2026-10-21"), target_cutoff)
         # A late-recovered version carries its refetch time as available_at, so the newest visible day may be older.
@@ -67,6 +70,13 @@ def test_real_catalog_pit_inputs_and_temporally_missing_case():
         catalog, "plate_members", ["2026-10-20"],
         datetime.fromisoformat("2026-10-20T23:59:00+08:00"))
     assert rows is None and meta is None
+    _, pool, manifest = existing_partition(root, "2026-11-10")
+    redis = RedisSpy()
+    redis.writes["core:view:limit_up_pool:2026-11-10"] = json.dumps(hot.envelope("2026-11-10", pool, manifest))
+    monkeypatch.setattr(hot, "_td_store", lambda: (_ for _ in ()).throw(RuntimeError("unexpected TD")))
+    rows, meta = hot.read("2026-11-10", "2026-11-11T09:25:10+08:00", redis_client=redis)
+    assert rows == pool and meta["trade_date"] == "2026-11-10" and meta["storage_source"] == "redis"
+    assert datetime.fromisoformat(meta["available_at"].replace("Z", "+00:00")) <= datetime.fromisoformat("2026-11-11T09:25:10+08:00")
 
 
 def test_real_historical_auction_with_no_pit_references_is_saved_partial(tmp_path):
@@ -93,15 +103,17 @@ def test_dry_run_replay_never_targets_the_production_catalog(tmp_path):
     assert _dry_run_artifact_root(tmp_path, True) == tmp_path / ".dry_run_artifacts"
 
 
-def test_real_late_rebuild_accepts_late_stored_prior_day_pool_but_flags_it():
-    from engine_core.data_pipeline.storage import ArtifactCatalog
-    from examples.fetch_auction_item import _pit_rows
-
-    catalog = ArtifactCatalog(Path.home() / "core-data")
-    cutoff = datetime.fromisoformat("2026-10-21T09:25:10+08:00")
-    # 2026-10-20 limit_up_pool was (re)stored at 12:26 on 10-21 by the guardian's own backfill.
-    live_rows, live_meta = _pit_rows(catalog, "limit_up_pool", ["2026-10-20"], cutoff)
-    assert live_rows is None and live_meta is None
-    rows, meta = _pit_rows(catalog, "limit_up_pool", ["2026-10-20"], cutoff,
-                           late_cutoff=datetime.fromisoformat("2026-10-21T15:00:00+08:00"))
-    assert rows and meta["trade_date"] == "2026-10-20" and meta["late_visible"] is True
+def test_real_late_rebuild_accepts_late_stored_prior_day_pool_but_flags_it(monkeypatch):
+    from engine_core.data_pipeline import limit_pool_hot_view as hot
+    from engine_core.guardian.limit_pool_d1 import existing_partition
+    from test_limit_pool_hot_view import RedisSpy
+    _, pool, manifest = existing_partition(Path.home() / "core-data", "2026-11-10")
+    redis = RedisSpy()
+    redis.writes["core:view:limit_up_pool:2026-11-10"] = json.dumps(hot.envelope("2026-11-10", pool, manifest))
+    monkeypatch.setattr(hot, "_td_store", lambda: (_ for _ in ()).throw(RuntimeError("TD unavailable")))
+    early = "2026-11-11T00:00:00+08:00"
+    assert hot.read("2026-11-10", early, redis_client=redis)[1]["status"] == "MISSING"
+    rows, meta = hot.read("2026-11-10", early, redis_client=redis, late_rebuild=True,
+                          late_asof="2026-11-11T09:25:10+08:00")
+    assert rows == pool and meta["trade_date"] == "2026-11-10" and meta["late_visible"] is True
+    assert meta["status"] == "PARTIAL"

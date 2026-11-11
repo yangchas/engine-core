@@ -420,14 +420,21 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
         catalog = ArtifactCatalog(artifact_root)
         pool = load_dataset("limit_up_pool", day, prefer="file",
                             catalog=catalog)
+        pool_status = "READY"
         if pool is None:
-            raise CoreError("UPSTREAM_NOT_READY", "limit_up_pool_artifact_required:" + day)
-        pool_rows = pool.rows
+            from examples.fetch_registry_item import _load_pool_hot
+            hot_pool = _load_pool_hot(day, datetime.now().astimezone().isoformat())
+            if hot_pool is None:
+                raise CoreError("UPSTREAM_NOT_READY", "limit_up_pool_artifact_required:" + day)
+            pool_rows, pool_manifest = hot_pool
+            pool_status = pool_manifest["status"]
+        else:
+            pool_rows, pool_manifest = pool.rows, pool.manifest
         symbols = sorted({str(row.get("symbol", row.get("code", ""))).zfill(6)
                           for row in pool_rows if row.get("symbol") or row.get("code")})
         if not symbols:
             raise RuntimeError("limit_up_pool_has_no_symbols:" + day)
-        pool_source = str(pool.manifest.get("provider") or pool.manifest.get("source") or "").lower()
+        pool_source = str(pool_manifest.get("provider") or pool_manifest.get("source") or "").lower()
         has_kaipan_pool = "kaipan" in pool_source
         direct_symbols = ({str(row.get("symbol", row.get("code", ""))).zfill(6)
                            for row in pool_rows
@@ -510,8 +517,9 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
                          "elapsed_ms": 0, "reason": "latest_type0_date_before_trade_date",
                          "row_count": built["historical_attribution_count"], "request_count": 0})
         all_sources_failed = built["status"] == "MISSING"
-        partial = built["missing_count"] > 0
-        quality_status = "PARTIAL" if partial else "DEGRADED" if built["status"] == "DEGRADED" else "READY"
+        partial = built["missing_count"] > 0 or pool_status == "PARTIAL"
+        quality_status = ("PARTIAL" if partial else "DEGRADED"
+                          if built["status"] == "DEGRADED" or pool_status == "DEGRADED" else "READY")
         used = built["source_counts"]
         if used.get("KAIPAN_GET_HIS_BANS", 0):
             selected_provider = "kaipan_getHisBans"
@@ -522,7 +530,7 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
         else:
             selected_provider = "historical_attribution"
         business_status = ("PARTIAL" if partial else
-                           "DEGRADED" if built["historical_attribution_count"] else
+                           "DEGRADED" if built["historical_attribution_count"] or pool_status == "DEGRADED" else
                            "PROVISIONAL" if used.get("WENCAI_LIMIT_UP_POOL", 0) else "FORMAL")
         field_completeness = {
             key: sum(row.get(key) not in (None, "") for row in built["rows"])
