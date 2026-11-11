@@ -462,7 +462,7 @@
         "force": "recompute",
         "clear": "clear then rebuild"
       },
-      "notes": "昨日池由 guardian/limit_pool_d1.py 发布 Redis 完整热视图并同步 TD; catalog 是过渡版本账本。热视图缺失或无效时显式降级读取 TD, ALREADY_SATISFIED 会验证并补热。",
+      "notes": "昨日池由 guardian/limit_pool_d1.py 发布 Redis 热视图；历史 TD 仅用于显式降级读取或恢复，历史 catalog 是迁移资料。健康热命中直接 ALREADY_SATISFIED。",
       "guardian_event": "limit_pool_d1",
       "late_policy": {
         "mode": "fetch_now",
@@ -492,30 +492,30 @@
         "database": "core_data",
         "super_table": "limit_up_pool_v1",
         "meta_table": "limit_up_pool_versions",
-        "authority": "cold data -> TD; catalog partition is the transitional versioned ledger (design/24 section 2)",
+        "authority": "historical TD fallback only; normal producer writes Redis",
         "doc": "docs/LIMIT_UP_POOL.md"
       },
       "storage": [
         {
           "kind": "td_stable",
           "name": "limit_up_pool_v1",
-          "role": "authority"
+          "role": "legacy"
         },
         {
           "kind": "td_stable",
           "name": "limit_up_pool_versions",
-          "role": "marker"
+          "role": "legacy"
         },
         {
           "kind": "catalog",
           "name": "limit_up_pool",
-          "role": "marker",
-          "note": "transitional versioned ledger (design/24 section 2); not the normal report input"
+          "role": "legacy",
+          "note": "historical ledger; not a producer or report prerequisite"
         },
         {
           "kind": "redis_view",
           "name": "core:view:limit_up_pool:{data_date}",
-          "role": "view",
+          "role": "authority",
           "retention": {
             "kind": "trading_days",
             "count": 5,

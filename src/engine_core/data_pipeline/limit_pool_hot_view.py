@@ -13,7 +13,7 @@ from pathlib import Path
 import json
 import os
 import re
-from datetime import datetime, time
+from datetime import datetime, time, timezone
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
@@ -46,7 +46,7 @@ def _key(day, prefix):
 
 
 def _validate(value, day):
-    if not isinstance(value, dict) or value.get('dataset') != DATASET or value.get('schema_version') != SCHEMA_VERSION or value.get('trade_date') != day or value.get('state') != 'COMPLETE':
+    if not isinstance(value, dict) or value.get('dataset') != DATASET or value.get('schema_version') != SCHEMA_VERSION or value.get('trade_date') != day or value.get('state', 'COMPLETE') != 'COMPLETE':
         raise ValueError('invalid_envelope')
     rows = value.get('rows')
     quality = value.get('quality')
@@ -94,8 +94,8 @@ def envelope(day, rows, manifest):
     if manifest.get('row_count') != len(rows):
         raise ValueError('source_row_count_mismatch')
     value = {'dataset': DATASET, 'schema_version': SCHEMA_VERSION, 'trade_date': day,
-             'state': 'COMPLETE', 'row_count': len(rows), 'rows': rows,
-             'rows_sha256': _digest(rows), 'source_sha256': manifest.get('sha256'),
+             'row_count': len(rows), 'rows': rows,
+             'rows_sha256': _digest(rows), 'source_sha256': manifest.get('sha256', manifest.get('source_sha256')),
              'field_units': manifest.get('field_units', FIELD_UNITS),
              **{key: manifest.get(key) for key in ('source', 'provider', 'business_status', 'degraded',
                                                      'quality', 'version', 'available_at')}}
@@ -116,37 +116,61 @@ def pool_lock(root):
         os.close(fd)
 
 
+def priority(item):
+    quality = item['quality']
+    formal = (item['business_status'] == 'FORMAL' and not item['degraded'] and
+              quality['status'] == 'READY' and not quality.get('partial'))
+    return (formal, -PROVIDER_RANK[item['provider']], _instant(item['available_at']))
+
+
+def deadline_for(day, calendar_root):
+    deadline_day = nth_trade_date(day, 5, root=calendar_root)
+    return int(datetime.combine(deadline_day, time.min, ZoneInfo('Asia/Shanghai')).timestamp())
+
+
+def expiry_matches(client, key, deadline, now):
+    ttl = client.ttl(key)
+    return ttl >= 0 and abs(ttl - (deadline - int(now.timestamp()))) <= 2
+
+
 def publish(day, rows, manifest, *, redis_client=None, prefix='core:view:limit_up_pool',
-            calendar_root=None, clock=None, lock_root=None, lock_held=False):
+            calendar_root=None, clock=None, lock_root=None, lock_held=False, fresh=False):
     """Publish one SET EXAT while serializing pool writers on the local data root."""
     if not lock_held:
         root = lock_root or calendar_root or os.environ.get('CORE_DATA_ROOT') or '~/core-data'
         with pool_lock(root):
             return publish(day, rows, manifest, redis_client=redis_client, prefix=prefix,
-                           calendar_root=calendar_root, clock=clock, lock_held=True)
+                           calendar_root=calendar_root, clock=clock, lock_held=True, fresh=fresh)
     client = redis_client if redis_client is not None else _client()
     key = _key(day, prefix)
-    value = envelope(day, rows, manifest)
-    deadline_day = nth_trade_date(day, 5, root=calendar_root)
-    deadline = int(datetime.combine(deadline_day, time.min, ZoneInfo('Asia/Shanghai')).timestamp())
-    if deadline <= int((clock() if clock else datetime.now(ZoneInfo('Asia/Shanghai'))).timestamp()):
+    deadline = deadline_for(day, calendar_root)
+    now = clock() if clock else datetime.now(ZoneInfo('Asia/Shanghai'))
+    if deadline <= int(now.timestamp()):
         raise ValueError('pool_expiry_in_past')
     raw = client.get(key)
+    if fresh:
+        published_at = (clock() if clock else datetime.now(timezone.utc)).astimezone(timezone.utc)
+        manifest = {**manifest, 'available_at': published_at.isoformat().replace('+00:00', 'Z')}
+    value = envelope(day, rows, manifest)
     if raw:
         try:
             old = _validate(json.loads(raw), day)
+            if _instant(old['available_at']) > now:
+                old = None
         except (ValueError, TypeError, UnicodeError):
             old = None
         if old:
-            def priority(item):
-                quality = item['quality']
-                formal = (item['business_status'] == 'FORMAL' and not item['degraded'] and
-                          quality['status'] == 'READY' and not quality.get('partial'))
-                return (formal, -PROVIDER_RANK[item['provider']], _instant(item['available_at']))
-            if priority(old) > priority(value):
-                if not client.set(key, raw, exat=deadline):
-                    raise RuntimeError('pool_set_failed')
-                return {'status': 'preserved_better', 'version': old['version'], 'expire_at': deadline}
+            same = ({k: v for k, v in old.items() if k not in {'state', 'available_at'}} ==
+                    {k: v for k, v in value.items() if k != 'available_at'})
+            if same or priority(old) > priority(value):
+                if not expiry_matches(client, key, deadline, now):
+                    if not client.set(key, raw, exat=deadline):
+                        raise RuntimeError('pool_set_failed')
+                    repaired = True
+                else:
+                    repaired = False
+                return {'status': 'unchanged' if same else 'preserved_better', 'version': old['version'],
+                        'expire_at': deadline, 'expiry_repaired': repaired}
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
     if not client.set(key, encoded, exat=deadline):
         raise RuntimeError('pool_set_failed')
@@ -170,6 +194,26 @@ def _result(value, storage, reason, asof, late_rebuild, late_asof):
     return value['rows'], meta
 
 
+def _td_value(day, store):
+    versions = store.read_versions(day)
+    physical = store.read_day_rows(day)
+    if not physical:
+        raise ValueError('td_missing')
+    row_versions = {row.get('version') for row in physical.values()}
+    if len(row_versions) != 1:
+        raise ValueError('td_row_version_mismatch')
+    version = next(iter(row_versions))
+    candidates = [m for m in versions if m.get('version') == version and m.get('trade_date') == day]
+    if len(candidates) != 1:
+        raise ValueError('td_version_metadata_mismatch')
+    manifest = candidates[0]
+    rows = [{**{k: v for k, v in row.items() if k != 'version'}, 'symbol': symbol,
+             'date': day, 'trade_date': day} for symbol, row in physical.items()]
+    if int(manifest.get('row_count') or 0) != len(rows):
+        raise ValueError('td_row_count_mismatch')
+    return envelope(day, rows, manifest)
+
+
 def read(day, asof, *, redis_client=None, td_store=None, prefix='core:view:limit_up_pool', late_rebuild=False, late_asof=None):
     """Read hot first, then explicitly fallback to physical TD rows of one verified version."""
     try:
@@ -184,23 +228,7 @@ def read(day, asof, *, redis_client=None, td_store=None, prefix='core:view:limit
     store = None
     try:
         store = td_store if td_store is not None else _td_store()
-        versions = store.read_versions(day)
-        physical = store.read_day_rows(day)
-        if not physical:
-            raise ValueError('td_missing')
-        row_versions = {row.get('version') for row in physical.values()}
-        if len(row_versions) != 1:
-            raise ValueError('td_row_version_mismatch')
-        version = next(iter(row_versions))
-        candidates = [m for m in versions if m.get('version') == version and m.get('trade_date') == day]
-        if len(candidates) != 1:
-            raise ValueError('td_version_metadata_mismatch')
-        manifest = candidates[0]
-        rows = [{**{k: v for k, v in row.items() if k != 'version'}, 'symbol': symbol,
-                 'date': day, 'trade_date': day} for symbol, row in physical.items()]
-        if int(manifest.get('row_count') or 0) != len(rows):
-            raise ValueError('td_row_count_mismatch')
-        value = envelope(day, rows, manifest)
+        value = _td_value(day, store)
         return _result(value, 'td', reason, asof, late_rebuild, late_asof)
     except Exception as exc:
         problem = str(exc) if isinstance(exc, ValueError) else 'td_' + type(exc).__name__

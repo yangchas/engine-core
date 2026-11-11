@@ -1,5 +1,16 @@
 # Project Knowledge
 
+- `[VERIFIED 2026-11-11 — C984 isolated pool producer]` For 2026-11-10,
+  the candidate producer published 93 real Kaipan rows and 27 fields to an
+  isolated Redis key despite an injected TD recovery failure. Shared, slice and
+  prep readers matched the source; a repeat made no source, TD, catalog or Redis
+  write calls. Existing TD recovery preserved the original source digest,
+  version and visibility time and marked the result degraded. This is isolated
+  candidate evidence, not deployment. Evidence: `/home/exedev/fw/evidence/C984/`.
+  A later isolated retry preserved the TD-recovered degraded view without a
+  source, TD, catalog or Redis write; dry-run skipped writes with a fault-injected
+  TTL. Recorded Wencai and TD-derived fixtures cover same-rank retries and upgrades.
+
 - `[VERIFIED 2026-11-11 — C982 isolated pool view]` The candidate Redis pool
   view for 2026-11-10 retained 93 real rows with zero source-field differences,
   original version and visibility time. The isolated key expires at Shanghai

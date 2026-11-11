@@ -46,7 +46,6 @@ def run_td_sync(request: Mapping[str, Any], root: Path, *, dry_run: bool = False
         outcomes = sync_with_retry(sink, dates, attempts=int(args.get("attempts") or 1),
                                    backoff_seconds=float(args.get("backoff_seconds") or 1.0))
         detail = {"database": settings["database"], "outcomes": [o.as_dict() for o in outcomes]}
-        detail["limit_up_pool"] = _sync_pool(settings, root, lookback, today, pool_store)
         detail["ladder_daily"] = sync_ladder_daily(root, settings, lookback, store=ladder_store)
         _clear_unreadable(root, request)
         return _response(0, "ok", detail)
@@ -60,7 +59,7 @@ def run_td_sync(request: Mapping[str, Any], root: Path, *, dry_run: bool = False
 
 
 def _sync_pool(settings: Mapping[str, Any], root: Path, lookback: int, today: str | None, pool_store: Any) -> dict:
-    """C580 catch-up of the D-1 limit-up pool partitions into TD (idempotent, best effort: never fails this event)."""
+    """Historical catalog-to-TD tool; not part of the scheduled sync path."""
     try:
         from ..data_pipeline.limit_pool_td import LimitPoolTdSink, PoolTaosStore
         own = pool_store is None

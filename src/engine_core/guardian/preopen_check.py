@@ -100,7 +100,22 @@ def run(request: Mapping[str, Any], root: str | Path, *, dry_run: bool = False,
     for dataset, rule in checks.items():
         if dataset == "daily_kline":
             continue
-        results.append(check_catalog_dataset(catalog, dataset, day, rule, check_day))
+        if dataset == "limit_up_pool":
+            from ..data_pipeline.limit_pool_hot_view import read
+            cutoff = str(request.get("now") or datetime.now(SHANGHAI).isoformat())
+            rows, meta = read(day, cutoff)
+            statuses = {str(item).upper() for item in rule.get("statuses", ())}
+            after = rule.get("captured_after")
+            threshold = _instant(f"{check_day}T{after}") if after else None
+            available = _instant(meta.get("available_at"))
+            accepted = (bool(rows) and meta.get("status") == "READY" and
+                        (not statuses or _status(meta) in statuses) and
+                        len(rows) >= int(rule.get("min_rows", 1)) and
+                        (threshold is None or (available is not None and available >= threshold)))
+            results.append({"id": dataset, "day": day, "status": "OK" if accepted else
+                            "MISSING" if not rows else "DEGRADED", "detail": meta})
+        else:
+            results.append(check_catalog_dataset(catalog, dataset, day, rule, check_day))
     if "daily_kline" in checks:
         results.append(_check_daily_kline(root, day, args, checks["daily_kline"], dry_run, fill))
     bad = [item for item in results if item["status"] != "OK"]
