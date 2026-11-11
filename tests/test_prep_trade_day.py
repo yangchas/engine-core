@@ -275,3 +275,105 @@ def test_prep_plate_members_missing_and_pit(tmp_path, monkeypatch):
     assert check('2026-11-04T08:00:00+08:00')['status'] == 'READY'
     state['snapshot'] = {**snapshot, 'quality': {'status': 'FAILED'}}
     assert check('2026-11-04T08:00:00+08:00')['status'] == 'MISSING'
+
+
+def test_prep_theme_uses_existing_active_members_without_refetch(tmp_path, monkeypatch):
+    import gzip
+    import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+    from conftest import use_declared_time_as_test_commit_clock
+
+    _seed_c325(tmp_path)
+    fixture = Path(__file__).parent / 'fixtures/real'
+    snapshot = json.loads((fixture / 'td/outputs/reference_snapshot_plate_members_latest.json').read_text())['value']
+    # The TD recording omits rows; replay separately captured real rows to exercise theme consumption.
+    with gzip.open(fixture / 'core_artifacts/c594/plate_members/2026-10-28/current/rows.jsonl.gz', 'rt') as f:
+        snapshot = {**snapshot, 'rows': [json.loads(next(f)), json.loads(next(f))]}
+    monkeypatch.setattr(ReferenceSnapshotStore, 'read_latest', lambda self, dataset: snapshot)
+    monkeypatch.setattr(ReferenceSnapshotStore, 'close', lambda self: None)
+    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path))
+    day, asof = '2026-11-03', '2026-11-04T08:30:00+08:00'
+    def commit(dataset, rows):
+        catalog.commit(dataset, day, rows, {'trade_date': day, 'available_at': asof}, source='fixture')
+    pool = [json.loads(line) for line in (Path(__file__).parent / 'fixtures/real_limit_up_pool_sample.jsonl').read_text().splitlines()[:2]]
+    with gzip.open(fixture / 'core_artifacts/c594/plate_registry/2026-10-13/current/rows.jsonl.gz', 'rt') as f:
+        registry = [json.loads(line) for line in f]
+    reasons = json.loads((fixture / 'kaipan_ban_reasons_2026-10-29_003021_st200_0538.json').read_text())['List']
+    commit('limit_up_pool', pool)
+    commit('plate_registry', registry)
+    commit('limit_reasons', reasons)
+    jobs = []
+    def run(repo, script, args):
+        if script == 'run_data_jobs.py':
+            jobs.append(args[args.index('--job') + 1])
+        return 0, '{}'
+    monkeypatch.setattr(prep, '_run', run)
+    report = prep.build_prep_report(tmp_path, '2026-11-04', write=True, asof=asof,
+                                    theme_wait_seconds=0.001, theme_poll_seconds=0.001, sleep=lambda _: None)
+    member = next(item for item in report['steps'] if item['step'] == 'plate_members')
+    assert member['status'] == 'READY'
+    assert 'plate_members' not in jobs
+    assert member['version'] == snapshot['version']
+    assert member['available_at'] == snapshot['available_at']
+    assert member['refetched'] is False
+    assert not any('plate_members:' in warning for warning in report['warnings'])
+    node_entry = ArtifactCatalog(tmp_path).read()['datasets']['node__theme_snapshot']['dates']['2026-11-04'][-1]
+    node = json.loads(Path(node_entry['manifest']).read_text())
+    assert node['inputs']['plate_members'] == snapshot['version'] + ':2'
+    from datetime import datetime
+    from types import SimpleNamespace
+    from examples import core_guardian
+    isolated = {**report, 'steps': [member], 'errors': [], 'error_steps': [], 'warnings': [], 'status': 'READY'}
+    monkeypatch.setattr(core_guardian.subprocess, 'run', lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=json.dumps(isolated), stderr=''))
+    handler = core_guardian._command_handler('premarket_data', SimpleNamespace(write=True), tmp_path)
+    reply = handler(SimpleNamespace(data_date_offset=0, timeout_seconds=10, args={}),
+                    datetime.fromisoformat(asof), {}, False)
+    assert json.loads(reply.removeprefix('prep_summary:'))['plate_members'] == {
+        'version': snapshot['version'], 'available_at': snapshot['available_at'], 'refetched': False}
+
+
+def test_prep_successful_members_fill_uses_completion_cutoff(tmp_path, monkeypatch):
+    from datetime import datetime
+    import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+
+    _seed_c325(tmp_path)
+    recorded = json.loads((Path(__file__).parent / 'fixtures/real/td/outputs/reference_snapshot_plate_members_latest.json').read_text())['value']
+    snapshot = {**recorded, 'available_at': '2026-11-04T08:31:39+08:00'}
+    state = {'snapshot': None}
+    class CompletionClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls.fromisoformat('2026-11-04T08:33:35+08:00')
+    monkeypatch.setattr(prep, 'datetime', CompletionClock)
+    monkeypatch.setattr(ReferenceSnapshotStore, 'read_latest', lambda self, dataset: state['snapshot'])
+    monkeypatch.setattr(ReferenceSnapshotStore, 'close', lambda self: None)
+    def run(repo, script, args):
+        if script == 'run_data_jobs.py' and args[args.index('--job') + 1] == 'plate_members':
+            state['snapshot'] = snapshot
+        return 0, '{}'
+    monkeypatch.setattr(prep, '_run', run)
+    monkeypatch.setattr(prep, '_prepare_theme_snapshot_cache', lambda *a, **k: True)
+    report = prep.build_prep_report(tmp_path, '2026-11-04', write=True, asof='2026-11-04T08:30:00+08:00')
+    member = next(item for item in report['steps'] if item['step'] == 'plate_members')
+    assert member['status'] == 'READY'
+    assert member['version'] == snapshot['version']
+    assert member['available_at'] == snapshot['available_at']
+    assert member['refetched'] is True
+    state['snapshot'] = snapshot
+    replay = prep.build_prep_report(tmp_path, '2026-11-04', write=False, asof='2026-11-04T08:30:00+08:00')
+    member = next(item for item in replay['steps'] if item['step'] == 'plate_members')
+    assert member['status'] == 'MISSING'
+    assert member['refetched'] is False
+    state['snapshot'] = None
+    def failed_run(repo, script, args):
+        if script == 'run_data_jobs.py' and args[args.index('--job') + 1] == 'plate_members':
+            state['snapshot'] = snapshot
+            return 1, '{}'
+        return 0, '{}'
+    monkeypatch.setattr(prep, '_run', failed_run)
+    failed = prep.build_prep_report(tmp_path, '2026-11-04', write=True, asof='2026-11-04T08:30:00+08:00')
+    member = next(item for item in failed['steps'] if item['step'] == 'plate_members')
+    assert member['status'] == 'MISSING'
+    assert member['refetched'] is True

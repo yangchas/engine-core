@@ -713,7 +713,7 @@ def _append_gap(root: Path, trade_date: str, gap: dict[str, Any], observed_at: s
 
 
 def _verify_partition(item: dict[str, Any], day: str, root: str | Path | None,
-                      now: datetime | None = None) -> None:
+                      now: datetime | None = None) -> dict[str, Any] | None:
     """Verify the fetched dataset in its authoritative store at the PIT cutoff."""
     dataset = (item.get("artifact") or {}).get("catalog_dataset")
     if not dataset:
@@ -721,9 +721,10 @@ def _verify_partition(item: dict[str, Any], day: str, root: str | Path | None,
     if dataset == "plate_members":
         from ..prep_trade_day import _plate_members_snapshot
         cutoff = now or datetime.now().astimezone()
-        if not _plate_members_snapshot(asof=cutoff.isoformat()):
+        snapshot = _plate_members_snapshot(asof=cutoff.isoformat())
+        if not snapshot:
             raise FetchJobError(f"partition_missing_after_fetch:{dataset}:{day}", "POSTCONDITION_FAILED")
-        return
+        return {"version": snapshot["version"], "available_at": snapshot["available_at"], "refetched": True}
     base = Path(root or os.environ.get("CORE_DATA_ROOT") or "~/core-data").expanduser()
     try:
         catalog = json.loads((base / "catalog.json").read_text(encoding="utf-8"))
@@ -1010,6 +1011,8 @@ def fetch_item(item_id: str, partition: str, root: str | Path, *,
     if dry_run:
         return _result("ok", {"id": item_id, "partition": partition, "dry_run": True})
     upgrade = item_id == "daily_kline"
+    dataset = (item.get("artifact") or {}).get("catalog_dataset")
+    refetched = False
     clock = _now(now, partition) if now is not None else datetime.now().astimezone()
     if upgrade:
         from .reconcile_plan import daily_kline_retry_availability
@@ -1023,13 +1026,20 @@ def fetch_item(item_id: str, partition: str, root: str | Path, *,
             return _result("degraded", detail)
     try:
         _argv, timeout = _fetch_spec(item)
+        refetched = True
         if schedule_args:
             result = _run_fetch_job(item, partition, timeout, root, schedule_args=schedule_args)
         else:
             result = _run_fetch_job(item, partition, timeout, root)
         # The postcondition is judged after the job: a partition committed by this very job has
         # available_at == its commit instant, later than the clock sampled before the job ran.
-        _verify_partition(item, partition, root, clock if now is not None else datetime.now().astimezone())
+        if dataset == "plate_members":
+            from ..prep_trade_day import _post_fill_cutoff
+            cutoff = datetime.fromisoformat(_post_fill_cutoff(clock.isoformat(),
+                                                               succeeded=not isinstance(result, _DegradedFetchResult)))
+        else:
+            cutoff = clock if now is not None else datetime.now().astimezone()
+        snapshot_info = _verify_partition(item, partition, root, cutoff)
         if upgrade:
             state = _record_daily_kline_upgrade(root, partition, succeeded=True, now=clock, phase=phase)
             if state:
@@ -1037,8 +1047,10 @@ def fetch_item(item_id: str, partition: str, root: str | Path, *,
             if state and state.get("status") != "resolved":
                 return _result("degraded", {"id": item_id, "partition": partition, "result": result,
                                               "upgrade": state})
-        return _result("degraded" if isinstance(result, _DegradedFetchResult) else "ok",
-                       {"id": item_id, "partition": partition, "result": result})
+        detail = {"id": item_id, "partition": partition, "result": result}
+        if snapshot_info is not None and dataset == "plate_members":
+            detail["plate_members"] = snapshot_info
+        return _result("degraded" if isinstance(result, _DegradedFetchResult) else "ok", detail)
     except Exception as exc:
         upgrade_state = (_record_daily_kline_upgrade(root, partition, succeeded=False,
                                                      now=clock, phase=phase) if upgrade else None)
@@ -1050,6 +1062,8 @@ def fetch_item(item_id: str, partition: str, root: str | Path, *,
                                    "error_code": code,
                                    "stderr_tail": str(getattr(exc, "stderr", ""))[-300:],
                                    "elapsed_ms": round((time.monotonic() - started) * 1000)}
+        if dataset == "plate_members":
+            detail["plate_members"] = {"version": None, "available_at": None, "refetched": refetched}
         if upgrade_state:
             detail["upgrade"] = upgrade_state
         if upgrade_state and upgrade_state.get("status") in {"GAP_WINDOW_EXHAUSTED", "GAP_ESCALATED"}:

@@ -304,8 +304,13 @@ def _command_handler(name: str, opts, root: Path):
                 raise CoreError("CONTRACT_INVALID", "prep_report_invalid_json") from exc
             if not isinstance(report, dict):
                 raise CoreError("CONTRACT_INVALID", "prep_report_invalid_shape")
+            member = next((item for item in report.get("steps", [])
+                           if isinstance(item, dict) and item.get("step") == "plate_members"), None)
             summary = json.dumps({"timing_summary": report.get("timing_summary"),
-                                  "report_key": report.get("report_key")}, separators=(",", ":"))
+                                  "report_key": report.get("report_key"),
+                                  "plate_members": ({key: member.get(key) for key in
+                                                     ("version", "available_at", "refetched")}
+                                                    if member is not None else None)}, separators=(",", ":"))
             suffix_summary = ";prep_summary:" + summary
             errors = report.get("errors") or []
             configured = event_args.get("prep_degradable_steps")
