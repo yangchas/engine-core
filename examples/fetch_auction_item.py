@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Late rebuild of auction products from retained TD snapshots (never a live capture)."""
+"""Build auction products from validated Redis views with explicit TD fallback."""
 from __future__ import annotations
 
 import argparse
@@ -34,7 +34,7 @@ def _query(cursor, sql):
     return [dict(zip(names, row)) for row in cursor.fetchall()]
 
 
-def _source_rows(day: str):
+def _td_source_rows(day: str):
     from engine_core.data_pipeline.td_sink import connect_td
     connection = connect_td("market_data1")
     try:
@@ -51,6 +51,47 @@ def _source_rows(day: str):
         return snaps, []
     finally:
         connection.close()
+
+
+class SnapshotRows(list):
+    """List-compatible rows carrying acquisition quality through the product chain."""
+    def __init__(self, rows, source_quality):
+        super().__init__(rows)
+        self.source_quality = source_quality
+
+
+def _source_rows(day: str):
+    from engine_core.data_pipeline.auction_redis_view import TAGS, ViewError, read_auction_view, redis_client
+    rows, quality, failed = [], {}, {}
+    try:
+        client = redis_client()
+    except Exception:
+        client = None
+    for tag in TAGS:
+        try:
+            if client is None:
+                raise ViewError('redis_error')
+            selected = read_auction_view(client, day, tag)
+            rows.extend(selected)
+            src_counts = {name: sum(row['src'] == name for row in selected)
+                          for name in ('auction_match', 'indicative_bid_ask_mid', 'missing')}
+            quality[tag] = {'source': 'redis_auction_full', 'reason': None,
+                            'rows': len(selected), 'src_counts': src_counts}
+        except ViewError as exc:
+            failed[tag] = str(exc)
+    if failed:
+        td_rows, _ = _td_source_rows(day)
+        for tag, reason in failed.items():
+            selected = [dict(row, source='td_auction_snapshot_v2') for row in td_rows
+                        if str(row.get('auction_tag') or '') == tag
+                        and str(row.get('ts') or row.get('snapshot_cutoff') or '').replace('T', ' ')[:19] <= f'{day} 09:25:10']
+            if not selected:
+                raise RuntimeError(f'AUCTION_FALLBACK_EMPTY:{tag}:{reason}')
+            if tag == '0925':
+                _require_snapshot_coverage(str(row.get('symbol') or '').zfill(6) for row in selected)
+            rows.extend(selected)
+            quality[tag] = {'source': 'td_auction_snapshot_v2', 'reason': reason, 'rows': len(selected)}
+    return SnapshotRows(rows, quality), []
 
 
 def _pit_rows(catalog, dataset: str, dates, cutoff: datetime, *, late_cutoff: datetime | None = None):
@@ -85,25 +126,33 @@ def _products(day: str, item: str, root: Path, snapshots, ticks, *, source_catal
     today = datetime.fromisoformat(read_at).date().isoformat() == day
     local_now = datetime.fromisoformat(read_at).timetz().replace(tzinfo=None)
     live = today and clock_time(9, 25, 10) <= local_now < clock_time(9, 30)
-    capture_semantics = "live_0925_capture" if live else "late_td_rebuild"
+    source_quality = getattr(snapshots, "source_quality", None)
+    degraded = bool(source_quality and any(v["source"] == "td_auction_snapshot_v2" for v in source_quality.values()))
+    # A Redis snapshot has no evidence of when its constituent ticks arrived.
+    live = live and not source_quality
+    capture_semantics = "live_0925_capture" if live else "historical_snapshot_reread"
     cutoff = f"{day}T09:25:10+08:00"
     cutoff_text = cutoff.replace("T", " ")[:19]
     visible_snapshots = [row for row in snapshots
-                         if str(row.get("ts") or "")[:19] <= cutoff_text]
+                         if str(row.get("ts") or row.get("snapshot_cutoff") or "").replace("T", " ")[:19] <= cutoff_text]
     final_snapshots = [row for row in visible_snapshots
                        if str(row.get("auction_tag") or "") == "0925"]
-    if item == "auction_stock_facts":
+    if not final_snapshots:
+        raise RuntimeError("AUCTION_FINAL_SNAPSHOT_EMPTY")
+    if item == "auction_stock_facts" and not source_quality:
         final_symbols = {str(row.get("symbol") or "").zfill(6) for row in final_snapshots}
         _require_snapshot_coverage(final_symbols)
     facts = build_auction_stock_facts(day, cutoff, final_snapshots, ticks,
                                      anchor_snapshots=visible_snapshots,
                                      now=read_at if live else None,
                                      read_at=read_at if live else None)
+    facts["source_quality"] = source_quality or {}
+    facts["input_status"] = "degraded" if degraded else "ok"
     if item == "auction_stock_facts":
         stored = store_auction_stock_facts(facts, artifact_root=root,
                                            capture_semantics=capture_semantics)
         return {"dataset": item, "version": stored.get("version"), "rows": len(facts["rows"]),
-                "status": "ok", "capture_semantics": capture_semantics}
+                "status": "degraded" if degraded else "ok", "source_quality": source_quality or {}, "capture_semantics": capture_semantics}
     from engine_core.data_pipeline.storage import ArtifactCatalog
     catalog = ArtifactCatalog(root)
     if item == "auction_points":
@@ -116,7 +165,9 @@ def _products(day: str, item: str, root: Path, snapshots, ticks, *, source_catal
                          "symbol": str(row.get("symbol") or "").zfill(6),
                          "auction_amount_yuan": row.get("auction_amount_yuan"),
                          "pct_change": (float(row["change_bp"]) / 100 if row.get("change_bp") is not None else None),
-                         "source": "TD auction_snapshot_v2", "late_rebuild": not live}
+                         "source": row.get("source", "td_auction_snapshot_v2"), "src": row.get("src"),
+                         "bid_amount_yuan": row.get("bid_amount_yuan"),
+                         "source_rank_amount": row.get("source_rank_amount"), "late_rebuild": not live}
                         for rank, row in enumerate(tagged[:100], 1))
         available_at = datetime.now(TZ).isoformat()
         manifest = catalog.commit(item, day, rows,
@@ -124,11 +175,12 @@ def _products(day: str, item: str, root: Path, snapshots, ticks, *, source_catal
              "as_of": cutoff, "available_at": available_at,
              "late_rebuild": not live, "not_a_0925_live_capture": not live,
              "capture_semantics": capture_semantics,
-             "quality": {"capture_semantics": capture_semantics},
-             "source": "TD auction_snapshot_v2"},
-            source="TD auction_snapshot_v2 late rebuild")
+             "quality": {"capture_semantics": capture_semantics, "source_quality": source_quality or {},
+                         "input_status": "degraded" if degraded else "ok"},
+             "source": "auction_snapshot_inputs"},
+            source="auction_snapshot_inputs")
         return {"dataset": item, "version": manifest.get("version"), "rows": len(rows),
-                "status": "ok", "capture_semantics": capture_semantics}
+                "status": "degraded" if degraded else "ok", "source_quality": source_quality or {}, "capture_semantics": capture_semantics}
     if item == "auction_panorama":
         from engine_core.auction_panorama import build_auction_panorama, store_auction_panorama
         cutoff_dt = datetime.fromisoformat(cutoff)
@@ -157,12 +209,15 @@ def _products(day: str, item: str, root: Path, snapshots, ticks, *, source_catal
         product["late_rebuild"] = not live
         product["capture_semantics"] = capture_semantics
         product["input_quality"] = {"missing_inputs": missing,
-                                    "plate_members": plate_meta, "yesterday_pool": pool_meta}
-        if missing:
+                                    "plate_members": plate_meta, "yesterday_pool": pool_meta,
+                                    "auction_sources": source_quality or {},
+                                    "auction_status": "degraded" if degraded else "ok"}
+        if missing or degraded:
             product["status"] = "PARTIAL"
         stored = store_auction_panorama(product, artifact_root=root)
         return {"dataset": item, "version": stored.get("version"), "rows": 1,
-                "status": "degraded" if missing else "ok", "missing_inputs": missing,
+                "status": "degraded" if missing or degraded else "ok", "missing_inputs": missing,
+                "source_quality": source_quality or {},
                 "capture_semantics": capture_semantics}
     raise ValueError("unsupported_auction_item:" + item)
 
@@ -179,7 +234,9 @@ def main(argv=None):
     snapshots, ticks = _source_rows(args.date)
     result = {"item": args.item, "trade_date": args.date, "snapshot_rows": len(snapshots),
               "tick_rows": len(ticks), "read_only": not args.execute,
-              "capture_semantics": "late TD auction_snapshot_v2 rebuild; not 09:25 live product"}
+              "capture_semantics": "historical_snapshot_reread",
+              "source_quality": snapshots.source_quality,
+              "status": "degraded" if any(v["source"] == "td_auction_snapshot_v2" for v in snapshots.source_quality.values()) else "ok"}
     if args.execute:
         result.update(_products(args.date, args.item, Path(args.artifact_root).expanduser(), snapshots, ticks))
     payload = {"status": "ok", **result}

@@ -1,5 +1,14 @@
 # Project Knowledge
 
+- `[VERIFIED 2026-11-11 — C978 candidate consumer]` The isolated C977 C++
+  producer's TD-derived Redis strings were read through Core's auction input
+  chain: 0920/0924/0925 had 4,885/5,076/5,215 candidates, respectively. A
+  0924 missing-key injection used TD and marked the product degraded while
+  retaining the Redis 0925 candidates. This is a derived test view, not raw
+  historical capture or proof of online deployment or live visibility.
+  Evidence: `/home/exedev/fw/evidence/C978/` and
+  `tests/fixtures/redis_views/PROVENANCE_c977_2026-11-11.md`.
+
 - `[VERIFIED 2026-10-29 — C607 local-universe fallback]` Daily K-line gapfill
   resolves each affected date against the latest cataloged `symbol_universe`
   partition on or before that date. If the target uses an earlier partition,

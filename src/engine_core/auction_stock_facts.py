@@ -112,7 +112,7 @@ def build_auction_stock_facts(trade_date: str, asof: str,
     for snap in snapshots:
         symbol = str(snap.get("symbol") or "").zfill(6)
         amount = _number(snap.get("auction_amount_yuan"))
-        if amount is not None and amount <= 0:
+        if amount is not None and amount < 0:
             amount = None
         px = _snapshot_price_milli(snap)
         change = _number(snap.get("change_bp"))
@@ -156,6 +156,10 @@ def build_auction_stock_facts(trade_date: str, asof: str,
                 px = px_tick
         facts.append({"symbol": symbol, "name": snap.get("name"),
                       "auction_amount_yuan": amount, "amount_rank": None,
+                      "src": snap.get("src"), "source": snap.get("source"),
+                      "bid_amount_yuan": snap.get("bid_amount_yuan"),
+                      "source_rank_amount": snap.get("source_rank_amount"),
+                      "snapshot_cutoff": snap.get("snapshot_cutoff"),
                       "p0924_amount_yuan": anchors.get(symbol, {}).get("0924"),
                       "p0925_amount_yuan": anchors.get(symbol, {}).get("0925", amount),
                       "amount_top50": False,
@@ -174,14 +178,14 @@ def build_auction_stock_facts(trade_date: str, asof: str,
                       "coverage": {"amount": amount is not None, "price": px is not None and px > 0,
                                    "final_tick": tick is not None, "seal": status in ("VERIFIED", "VERIFIED_REPLAY")},
                       "limit_up_candidate": _number(snap.get("limit_state")) == 1})
-    positive = sorted((row["auction_amount_yuan"] for row in facts if row["auction_amount_yuan"] is not None), reverse=True)
+    positive = sorted((row["auction_amount_yuan"] for row in facts if row["auction_amount_yuan"] is not None and row["auction_amount_yuan"] > 0), reverse=True)
     amount_n = len(positive)
     greater: dict[float, int] = {}
     for amount in set(positive):
         greater[amount] = sum(value > amount for value in positive)
     for row in facts:
         amount = row["auction_amount_yuan"]
-        if amount is not None:
+        if amount is not None and amount > 0:
             row["amount_rank"] = 1 + greater[amount]
             row["amount_top50"] = row["amount_rank"] <= 50
     seals = sorted((row["seal"]["seal_amount_yuan"] for row in facts
@@ -227,11 +231,15 @@ def store_auction_stock_facts(facts: Mapping[str, Any], *, artifact_root: str | 
                                "quality": {"universe_n": summary["universe_n"],
                                            "valid_amount_n": summary["valid_amount_n"],
                                            "verified_seal_n": summary["verified_seal_n"],
-                                           "capture_semantics": capture_semantics}},
+                                           "capture_semantics": capture_semantics,
+                                           "source_quality": facts.get("source_quality", {}),
+                                           "input_status": facts.get("input_status", "ok")}},
                               source="auction_stock_facts")
     if redis is not None:
         view = {"version": manifest["version"], "trade_date": day, "used_date": day,
                 "asof": facts["asof"], "available_at": available_at, "summary": summary,
+                "source_quality": facts.get("source_quality", {}),
+                "input_status": facts.get("input_status", "ok"),
                 "top50": [row for row in rows if row["amount_top50"]],
                 "verified_seals": [row for row in rows if row["seal"]["status"] == "VERIFIED"]}
         redis.set(f"core:cache:data:auction_stock_facts:{day}",
