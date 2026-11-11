@@ -18,6 +18,7 @@ from typing import Any, Callable, Mapping
 
 from .data_pipeline.derived_daily import UpstreamNotReady, inputs_stale, normalize_status, select_best
 from .data_pipeline.ladder_daily import ALGORITHM, DEFAULT_LADDER, NeedInput, build_ladder_daily
+from .data_pipeline import limit_pool_hot_view
 from .data_pipeline.storage import ArtifactCatalog
 from .runtime_state import ProviderState
 
@@ -107,7 +108,7 @@ def default_wencai_fetch(cfg: Mapping[str, Any], state: Any) -> Callable[[str], 
 
 
 class Loader:
-    """Supplies ``days[date][rung]`` on demand from the catalog (and the configured live rungs)."""
+    """Supplies ``days[date][rung]`` on demand from stored inputs and configured live rungs."""
 
     def __init__(self, catalog: ArtifactCatalog, cfg: Mapping[str, Any], *, kaipan_fetch=None, wencai_fetch=None,
                  when: datetime | None = None):
@@ -127,26 +128,36 @@ class Loader:
                            "business_status": manifest.get("business_status"), "source": manifest.get("source"),
                            "available_at": manifest.get("available_at"), "rows": self.catalog.read_rows(path)})
         elif rung == "kaipan":
-            path, manifest = _best_manifest(self.snapshot, "limit_up_pool", day)
-            if manifest is not None:
-                slot[rung] = {"status": "ok", "version": manifest.get("version"),
-                              "business_status": manifest.get("business_status"), "source": manifest.get("source"),
-                              "available_at": manifest.get("available_at"), "rows": self.catalog.read_rows(path)}
-            else:
-                slot[rung] = self._live(day, "kaipan", self.kaipan_fetch, self.cfg.get("kaipan"))
+            stored = self._stored_kaipan(day)
+            slot[rung] = stored if stored is not None else self._live(day, "kaipan", self.kaipan_fetch, self.cfg.get("kaipan"))
         elif rung == "wencai":
             slot[rung] = self._live(day, "wencai", self.wencai_fetch, self.cfg.get("wencai"))
         else:
             raise ValueError("unknown_rung:" + rung)
 
     def preload_kaipan_cross(self, day: str) -> None:
-        """Catalog-only (no network): load the Kaipan pool next to a daily-bar day for the cross validation."""
+        """Load a stored pool for cross validation without making a live provider request."""
         slot = self.days.setdefault(day, {})
         if "kaipan" in slot:
             return
+        stored = self._stored_kaipan(day)
+        if stored is not None:
+            slot["kaipan"] = stored
+
+    def _stored_kaipan(self, day: str) -> dict[str, Any] | None:
         path, manifest = _best_manifest(self.snapshot, "limit_up_pool", day)
         if manifest is not None:
-            self.load(day, "kaipan")
+            return {"status": "ok", "version": manifest.get("version"),
+                    "business_status": manifest.get("business_status"), "source": manifest.get("source"),
+                    "available_at": manifest.get("available_at"), "rows": self.catalog.read_rows(path)}
+        rows, meta = limit_pool_hot_view.read(day, self.when.isoformat())
+        if meta.get("status") == "MISSING":
+            return None
+        business_status = (meta["status"] if meta.get("status") in {"DEGRADED", "PARTIAL"}
+                           else meta.get("business_status"))
+        return {"status": "ok", "rows": rows, "version": meta.get("version"),
+                "business_status": business_status, "quality": meta.get("quality"),
+                "source": meta.get("source"), "available_at": meta.get("available_at")}
 
     def _live(self, day: str, rung: str, fetch, cfg) -> dict[str, Any]:
         if fetch is None or not (cfg or {}).get("live", False):
@@ -217,7 +228,7 @@ def materialize_ladder_daily(catalog: ArtifactCatalog, *, trade_date: str, confi
                "listings": listings}
     for _ in range(4 * int(cfg["window_days"]) * (len(ladder) + 2)):
         try:
-            for day in list(loader.days):  # cross validation input for every loaded daily-bar day (catalog only)
+            for day in list(loader.days):  # cross validation input for every loaded daily-bar day
                 if "daily_kline" in loader.days[day]:
                     loader.preload_kaipan_cross(day)
             partition = build_ladder_daily(request)

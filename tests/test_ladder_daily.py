@@ -16,6 +16,88 @@ def build(**kw):
     return build_ladder_daily(request(**kw))
 
 
+def test_loader_reads_pool_hot_view_and_preserves_metadata(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from engine_core.data_pipeline import limit_pool_hot_view as hot
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.ladder_daily_adapter import Loader
+
+    day = "2026-10-27"
+    pool = fixture()["pools"][day]
+    # The historical fixture predates the hot-view date alias; it is derived from trade_date.
+    rows = [{**row, "date": row["trade_date"]} for row in pool["rows"]]
+    clock = datetime(2026, 10, 29, tzinfo=timezone.utc)
+
+    class Redis:
+        value = None
+
+        def get(self, key):
+            assert key == f"core:view:limit_up_pool:{day}"
+            return self.value
+
+    redis = Redis()
+    monkeypatch.setattr(hot, "_client", lambda: redis)
+    td_calls = []
+
+    def no_td():
+        td_calls.append(True)
+        raise RuntimeError("TD disabled")
+
+    monkeypatch.setattr(hot, "_td_store", no_td)
+    for business, state, quality_state, effective in (
+        ("FORMAL", "READY", "READY", "FORMAL"), ("DEGRADED", "DEGRADED", "DEGRADED", "DEGRADED"),
+        ("PARTIAL", "PARTIAL", "PARTIAL", "PARTIAL"), ("FORMAL", "DEGRADED", "READY", "DEGRADED"),
+        ("FORMAL", "PARTIAL", "PARTIAL", "PARTIAL"),
+    ):
+        quality = {"status": quality_state, "partial": quality_state == "PARTIAL"}
+        manifest = {**pool, "row_count": len(rows), "provider": "kaipan_getHisBans",
+                    "business_status": business, "quality": quality, "degraded": state == "DEGRADED"}
+        redis.value = json.dumps(hot.envelope(day, rows, manifest))
+        loader = Loader(ArtifactCatalog(tmp_path), {}, when=clock)
+        loader.load(day, "kaipan")
+        got = loader.days[day]["kaipan"]
+        assert got["status"] == "ok"
+        assert got["rows"] == rows
+        assert (got["business_status"], got["quality"], got["source"], got["version"], got["available_at"]) == (
+            effective, quality, pool["source"], pool["version"], pool["available_at"])
+        cross = Loader(ArtifactCatalog(tmp_path), {}, when=clock)
+        cross.preload_kaipan_cross(day)
+        assert cross.days[day]["kaipan"] == got
+    assert td_calls == []
+
+    redis.value = None
+    missing = Loader(ArtifactCatalog(tmp_path), {}, when=clock)
+    missing.preload_kaipan_cross(day)
+    assert "kaipan" not in missing.days[day]
+    missing.load(day, "kaipan")
+    assert missing.days[day]["kaipan"] == {"status": "unavailable", "reason": "kaipan_live_not_configured"}
+    live = Loader(ArtifactCatalog(tmp_path), {"kaipan": {"live": True}}, when=clock, kaipan_fetch=lambda _: rows)
+    live.load(day, "kaipan")
+    assert live.days[day]["kaipan"]["source"] == "kaipan_live"
+
+    catalog_manifest = tmp_path / "pool_manifest.json"
+    catalog_manifest.write_text(json.dumps(pool))
+
+    class Catalog:
+        def read(self):
+            return {"datasets": {"limit_up_pool": {"dates": {day: [{"manifest": str(catalog_manifest)}]}}}}
+
+        def read_rows(self, path):
+            return pool["rows"]
+
+    redis_calls = []
+
+    def no_redis():
+        redis_calls.append(True)
+        raise AssertionError("catalog must take precedence")
+
+    monkeypatch.setattr(hot, "_client", no_redis)
+    old = Loader(Catalog(), {}, when=clock)
+    old.preload_kaipan_cross(day)
+    assert old.days[day]["kaipan"]["rows"] == pool["rows"]
+    assert not redis_calls
+
+
 # ----------------------------------------------------------------------------------------------- the C574 incident
 def test_incident_symbols_are_right_on_1027():
     rows = by_symbol(build())
