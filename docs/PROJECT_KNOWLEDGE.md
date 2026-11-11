@@ -1,5 +1,11 @@
 # Project Knowledge
 
+- `[VERIFIED 2026-11-12 — C988 isolated Guardian check]` The candidate default
+  Kaipan handler reused a 93-row isolated Redis pool for 2026-11-10. The
+  limit-reasons postcondition's second date rollback also occurs at baseline
+  ba47943; it is not introduced by the pool migration. Evidence:
+  `/home/exedev/fw/evidence/C988/real_check_final.log`. This is not deployment.
+
 - `[VERIFIED 2026-11-11 — C984 isolated pool producer]` For 2026-11-10,
   the candidate producer published 93 real Kaipan rows and 27 fields to an
   isolated Redis key despite an injected TD recovery failure. Shared, slice and
