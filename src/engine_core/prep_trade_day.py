@@ -120,6 +120,18 @@ def _declared_code(output: str) -> str | None:
 def _step(name: str, dataset: str, day: str | None, catalog: ArtifactCatalog,
           *, asof: str, reason: str | None = None) -> dict[str, Any]:
     started = time.monotonic()
+    if dataset == "limit_up_pool":
+        from .data_pipeline.limit_pool_hot_view import read
+        rows, meta = read(day, asof) if day else ([], {"status": "MISSING", "reason": reason})
+        status = meta["status"]
+        return {"step": name, "dataset": dataset, "trade_date": day,
+                "status": "SKIPPED_REASON" if not day and reason else status,
+                "reason": meta.get("reason") or meta.get("fallback_reason"),
+                "row_count": len(rows) if rows else None, "version": meta.get("version"),
+                "available_at": meta.get("available_at"), "storage_source": meta.get("storage_source"),
+                "fallback_reason": meta.get("fallback_reason"), "provider": meta.get("provider"),
+                "quality": meta.get("quality"), "business_status": meta.get("business_status"),
+                "elapsed_ms": round((time.monotonic() - started) * 1000, 3)}
     manifest = ((_plate_members_snapshot(asof=asof) if dataset == "plate_members" else
                  _manifest(catalog, dataset, day, asof=asof)) if day else None)
     quality = manifest.get("quality") if manifest and isinstance(manifest.get("quality"), dict) else {}
@@ -261,11 +273,13 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
         except (OSError, ValueError, TypeError, KeyError):
             return None
 
-    pool = load("limit_up_pool", previous)
+    from .data_pipeline.limit_pool_hot_view import read as read_pool
+    pool_rows, pool_meta = read_pool(previous, asof)
+    pool = (pool_rows, pool_meta) if pool_meta["status"] != "MISSING" else None
+    if pool and pool_meta["status"] != "READY":
+        diag.append("quality:limit_up_pool:" + (pool_meta.get("fallback_reason") or pool_meta["status"]))
     hot = load("hot_plates", previous)
     cutoff = asof
-    if pool:
-        pool = (_pit_rows(pool[0], cutoff)[0], pool[1])
     if hot:
         hot = (_pit_rows(hot[0], cutoff)[0], hot[1])
     registry_catalog = catalog.read().get("datasets", {}).get("plate_registry", {}).get("dates", {})
@@ -292,7 +306,7 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
         unique_reasons[key] = row
     reasons = list(unique_reasons.values())
     if not pool:
-        diag.append("limit_up_pool:" + _why_unavailable(catalog, "limit_up_pool", previous, asof))
+        diag.append("limit_up_pool:" + str(pool_meta.get("reason") or pool_meta.get("fallback_reason")))
     if not registry:
         diag.append(f"plate_registry:no_version_on_or_before_{trade_date}_available_at_or_before_asof")
     if not reasons:
@@ -383,14 +397,21 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
                 "limit_reason_history": (json.dumps(sorted(reason_manifests.items()), separators=(",", ":")),
                                           len(reasons))},
         calendar_dates=calendar_dates, plate_names=plate_names)
+    node_inputs["yest_limit_pool_source"] = json.dumps(pool_meta, ensure_ascii=False, sort_keys=True)
     output_asof = members_cutoff
     node_store = NodeStore(catalog)
-    snapshot, _hit = node_store.compute(
-        "theme_snapshot", trade_date, f"{THEME_SNAPSHOT_NODE_SCHEMA}:algorithm-v1", node_inputs,
-        lambda: load_kaipan_theme_snapshot(
+    def build_snapshot():
+        result = load_kaipan_theme_snapshot(
             None, report_date=trade_date, previous_trade_date=previous, observed_at=output_asof,
             plate_names=plate_names, static_themes_by_symbol={}, pool_rows=pool[0],
-            reason_rows=reasons, hot_rows=hot[0] if hot else (), trading_dates=calendar_dates),
+            reason_rows=reasons, hot_rows=hot[0] if hot else (), trading_dates=calendar_dates)
+        result["yest_limit_pool_source"] = pool_meta
+        if pool_meta["status"] != "READY" and result.get("status") == "READY":
+            result["status"] = "PARTIAL"
+        return result
+    snapshot, _hit = node_store.compute(
+        "theme_snapshot", trade_date, f"{THEME_SNAPSHOT_NODE_SCHEMA}:algorithm-v1", node_inputs,
+        build_snapshot,
         asof=output_asof)
     if snapshot.get("status") not in {"READY", "PARTIAL"}:
         diag.append("theme_snapshot:node_status=" + str(snapshot.get("status")))
@@ -415,7 +436,7 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
         manifest_metadata={"input_version": input_version, "used_date": previous,
                            "visibility_sha256": visibility_sha256,
                            "authority": "NON_AUTHORITATIVE_AUDIT_ONLY",
-                           "report_consumed": False},
+                           "report_consumed": False, "yest_limit_pool_source": pool_meta},
         source="prep_trade_day")
     return True
 
@@ -664,8 +685,15 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                              ("limit_reasons", "limit_reasons"),
                              ("hot_plates", "hot_plates"),
                              ("plate_members", "plate_members")):
-            if not (_plate_members_snapshot(asof=asof) if dataset == "plate_members" else
-                    _manifest(catalog, dataset, previous, asof=asof)):
+            if dataset == "limit_up_pool":
+                from .data_pipeline.limit_pool_hot_view import read as read_pool
+                _, pool_meta = read_pool(previous, asof)
+                present = pool_meta.get("storage_source") == "redis" and pool_meta.get("status") != "MISSING"
+            elif dataset == "plate_members":
+                present = _plate_members_snapshot(asof=asof)
+            else:
+                present = _manifest(catalog, dataset, previous, asof=asof)
+            if not present:
                 started = time.monotonic()
                 extra = ["--max-requests", "15"]
                 rc, out = _run(repo, "run_data_jobs.py", ["--job", job, "--date", previous,

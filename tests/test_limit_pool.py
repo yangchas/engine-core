@@ -266,8 +266,12 @@ def make_deps(*, kaipan=True, wencai=True, td=True, store=None):
     def universe_fn(root, day):
         return td_inputs(day)[1], "fixture"
 
+    from test_limit_pool_hot_view import RedisSpy
+    from datetime import datetime, timezone
     return d1.PoolDeps(kaipan=kaipan_fn, wencai=wencai_fn, td_bars=bars_fn, universe=universe_fn,
-                       td_store=(lambda: store) if store is not None else (lambda: MemoryPoolStore()))
+                       td_store=(lambda: store) if store is not None else (lambda: MemoryPoolStore()),
+                       redis_client=RedisSpy(), calendar_root=Path.home() / "core-data",
+                       now_utc=lambda: datetime(2026, 10, 27, 1, tzinfo=timezone.utc))
 
 
 def request(source, day=DAY, now="2026-10-27T01:00:00+08:00", **extra):

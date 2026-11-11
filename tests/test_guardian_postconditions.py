@@ -25,17 +25,23 @@ def _catalog(root: Path, dataset: str, day: str, rows=(), **manifest):
 
 def test_kaipan_fetch_requires_nonempty_previous_day_limit_pool(tmp_path, monkeypatch):
     import shutil
-    from pathlib import Path
-    real_calendar = Path.home() / "core-data" / "trade_calendar"
-    if not real_calendar.is_dir():
-        import pytest
-        pytest.skip("real Core trade calendar not available")
-    shutil.copytree(real_calendar, tmp_path / "trade_calendar")  # real calendar: previous(10-20) == 10-19
-    assert validate_handler_postcondition("kaipan_fetch", "2026-10-20", tmp_path) == (False, "limit_up_pool_missing_or_empty")
-    _catalog(tmp_path, "limit_up_pool", "2026-10-20", REAL_ROWS)
-    assert not validate_handler_postcondition("kaipan_fetch", "2026-10-20", tmp_path)[0]
-    _catalog(tmp_path, "limit_up_pool", "2026-10-19", REAL_ROWS)
-    assert validate_handler_postcondition("kaipan_fetch", "2026-10-20", tmp_path) == (True, "")
+    from engine_core.data_pipeline import limit_pool_hot_view as hot
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from test_limit_pool_hot_view import RedisSpy
+    real_root = Path.home() / "core-data"
+    shutil.copytree(real_root / "trade_calendar", tmp_path / "trade_calendar")
+    redis = RedisSpy()
+    monkeypatch.setattr(hot, "_client", lambda: redis)
+    monkeypatch.setattr(hot, "_td_store", lambda: (_ for _ in ()).throw(RuntimeError("missing")))
+    assert validate_handler_postcondition("kaipan_fetch", "2026-11-11", tmp_path) == (False, "limit_up_pool_missing_or_empty")
+    catalog = ArtifactCatalog(real_root)
+    path = catalog.locate("limit_up_pool", "2026-11-10")
+    manifest = json.loads(path.read_text())
+    value = hot.envelope("2026-11-10", catalog.read_rows(path), manifest)
+    redis.writes["core:view:limit_up_pool:2026-11-09"] = json.dumps(value)
+    assert not validate_handler_postcondition("kaipan_fetch", "2026-11-11", tmp_path)[0]
+    redis.writes["core:view:limit_up_pool:2026-11-10"] = json.dumps(value)
+    assert validate_handler_postcondition("kaipan_fetch", "2026-11-11", tmp_path) == (True, "")
 
 
 def test_daily_kline_postcondition_reads_catalog(tmp_path):

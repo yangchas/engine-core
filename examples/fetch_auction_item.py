@@ -187,7 +187,6 @@ def _products(day: str, item: str, root: Path, snapshots, ticks, *, source_catal
         source_root = Path(source_catalog_root or os.environ.get("CORE_DATA_ROOT", root)).expanduser()
         source_catalog = ArtifactCatalog(source_root)
         plate_dates = source_catalog.read().get("datasets", {}).get("plate_members", {}).get("dates", {})
-        pool_dates = source_catalog.read().get("datasets", {}).get("limit_up_pool", {}).get("dates", {})
         prior_plate_dates = (value for value in plate_dates if value < day)
         # Yesterday's pool must be the immediately preceding trade day: an older day is stale, never a stand-in.
         try:
@@ -195,13 +194,18 @@ def _products(day: str, item: str, root: Path, snapshots, ticks, *, source_catal
             previous_day = context_previous(source_root, day)
         except Exception:
             previous_day = None
-        prior_pool_dates = [previous_day] if previous_day and previous_day in pool_dates else []
         plate_members, plate_meta = _pit_rows(source_catalog, "plate_members", prior_plate_dates, cutoff_dt)
         if plate_meta and previous_day and plate_meta["trade_date"] != previous_day:
             # Membership may legitimately be the newest visible older day, but never silently: say how stale it is.
             plate_meta["stale_vs_previous_trade_day"] = previous_day
-        pool, pool_meta = _pit_rows(source_catalog, "limit_up_pool", prior_pool_dates, cutoff_dt,
-                                    late_cutoff=None if live else datetime.now(cutoff_dt.tzinfo))
+        from engine_core.data_pipeline.limit_pool_hot_view import read as read_pool
+        if previous_day:
+            pool, pool_meta = read_pool(previous_day, cutoff_dt.isoformat(), late_rebuild=not live,
+                                        late_asof=None if live else datetime.now(cutoff_dt.tzinfo).isoformat())
+            if pool_meta["status"] == "MISSING":
+                pool = None
+        else:
+            pool, pool_meta = None, {"status": "MISSING", "reason": "previous_trade_date_unavailable"}
         missing = [name for name, value in (("plate_members", plate_members),
                                              ("yesterday_pool", pool)) if value is None]
         product = build_auction_panorama(facts, plate_members=plate_members,
@@ -212,11 +216,12 @@ def _products(day: str, item: str, root: Path, snapshots, ticks, *, source_catal
                                     "plate_members": plate_meta, "yesterday_pool": pool_meta,
                                     "auction_sources": source_quality or {},
                                     "auction_status": "degraded" if degraded else "ok"}
-        if missing or degraded:
+        pool_degraded = pool_meta.get("status") != "READY"
+        if missing or degraded or pool_degraded:
             product["status"] = "PARTIAL"
         stored = store_auction_panorama(product, artifact_root=root)
         return {"dataset": item, "version": stored.get("version"), "rows": 1,
-                "status": "degraded" if missing or degraded else "ok", "missing_inputs": missing,
+                "status": "degraded" if missing or degraded or pool_degraded else "ok", "missing_inputs": missing,
                 "source_quality": source_quality or {},
                 "capture_semantics": capture_semantics}
     raise ValueError("unsupported_auction_item:" + item)

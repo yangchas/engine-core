@@ -68,6 +68,8 @@ class PoolDeps:
     universe: Callable[[Path, str], tuple[Any, Any]] | None = None
     td_store: Callable[[], Any] | None = None
     now_utc: Callable[[], datetime] = field(default=lambda: datetime.now(timezone.utc))
+    redis_client: Any = None
+    calendar_root: str | Path | None = None
 
 
 def _args(request: Mapping[str, Any]) -> dict[str, Any]:
@@ -154,7 +156,7 @@ def _td_write(root: Path, day: str, rows: list[dict[str, Any]], manifest: Mappin
                 return {"status": "unavailable", "error_code": "TD_UNAVAILABLE",
                         "error": "td_not_configured"}
             store = PoolTaosStore(str(settings["database"]))
-        outcome = LimitPoolTdSink(store, root).write_partition(day, rows, manifest)
+        outcome = LimitPoolTdSink(store, root, lock_held=True).write_partition(day, rows, manifest)
         return {"status": "ok", "outcome": outcome.as_dict()}
     except TdUnavailable as exc:
         return {"status": "unavailable", "error_code": "TD_UNAVAILABLE", "error": str(exc)[:200]}
@@ -168,6 +170,17 @@ def _td_write(root: Path, day: str, rows: list[dict[str, Any]], manifest: Mappin
                 store.close()
             except Exception:  # noqa: BLE001
                 pass
+
+
+def _hot_write(day: str, rows: list[dict[str, Any]], manifest: Mapping[str, Any],
+               td_write: Mapping[str, Any], deps: PoolDeps) -> dict[str, Any]:
+    from ..data_pipeline.limit_pool_hot_view import publish
+    if (td_write.get("outcome") or {}).get("status") == "skipped_lower":
+        return {"status": "error", "reason": "td_has_higher_quality_version"}
+    try:
+        return publish(day, rows, manifest, redis_client=deps.redis_client, calendar_root=deps.calendar_root, clock=deps.now_utc, lock_held=True)
+    except Exception as exc:
+        return {"status": "error", "reason": type(exc).__name__ + ":" + str(exc)[:160]}
 
 
 def _build(source: str, day: str, args: Mapping[str, Any], root: Path, deps: PoolDeps,
@@ -235,7 +248,7 @@ def run_ladder_once(day: str, root: str | Path, *, schedule_path: str | Path | N
             body["detail"] = {**(body["detail"] if isinstance(body["detail"], dict) else {"note": body["detail"]}),
                               "ladder_pass": tried}
             return code, body
-        if body.get("error_code") in {"TD_UNAVAILABLE", "TD_VERIFY_FAILED", "TD_SYNC_ERROR"}:
+        if body.get("error_code") in {"TD_UNAVAILABLE", "TD_VERIFY_FAILED", "TD_SYNC_ERROR", "HOT_PUBLISH_FAILED"}:
             body["detail"] = {**(body["detail"] if isinstance(body["detail"], dict) else {"note": body["detail"]}),
                               "ladder_pass": tried}
             return code, body
@@ -245,6 +258,13 @@ def run_ladder_once(day: str, root: str | Path, *, schedule_path: str | Path | N
 
 def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool = False,
                   deps: PoolDeps | None = None) -> tuple[int, dict]:
+    from ..data_pipeline.limit_pool_hot_view import pool_lock
+    with pool_lock(root):
+        return _run_pool_tier_locked(request, root, dry_run=dry_run, deps=deps)
+
+
+def _run_pool_tier_locked(request: Mapping[str, Any], root: str | Path, *, dry_run: bool = False,
+                          deps: PoolDeps | None = None) -> tuple[int, dict]:
     from ..data_pipeline.storage import ArtifactCatalog
     from ..data_pipeline.td_sink import TdUnavailable
 
@@ -280,9 +300,17 @@ def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool
                 if td_write.get("status") != "ok":
                     code = "TD_VERIFY_FAILED" if td_write.get("status") == "verify_failed" else "TD_WRITE_FAILED"
                     return reply(40, "failed", code, False, {"partition": day, "td_write": td_write})
+                hot_write = _hot_write(day, old_rows, old_manifest, td_write, deps)
+                if hot_write["status"] == "error":
+                    return reply(30, "failed", "HOT_PUBLISH_FAILED", True,
+                                 {"partition": day, "td_write": td_write, "hot_write": hot_write})
+            else:
+                return reply(40, "failed", "EXISTING_PARTITION_MISSING", False, {"partition": day})
+        else:
+            hot_write = {"status": "dry_run"}
         return reply(20, "not_applicable", "ALREADY_SATISFIED", False,
                      {"partition": day, "existing_rank": have, "wanted_rank": wanted, "source": source,
-                      "td_write": td_write})
+                      "td_write": td_write, "hot_write": hot_write})
     if dry_run:
         return reply(0, "not_applicable", "", False, "guardian_dry_run_no_fetch")
     started = time.monotonic()
@@ -319,8 +347,11 @@ def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool
         return reply(40, "failed", code, False,
                      {"partition": day, "source": provider, "version": committed.get("version"),
                       "row_count": committed.get("row_count"), "td_write": td_write, "tier": request.get("tier")})
+    hot_write = _hot_write(day, partition.rows, committed, td_write, deps)
     detail = {"partition": day, "source": provider, "version": committed.get("version"),
               "row_count": committed.get("row_count"), "business_status": committed.get("business_status"),
-              "coverage": committed["quality"].get("coverage"), "td_write": td_write, "tier": request.get("tier")}
+              "coverage": committed["quality"].get("coverage"), "td_write": td_write, "hot_write": hot_write, "tier": request.get("tier")}
+    if hot_write["status"] == "error":
+        return reply(30, "failed", "HOT_PUBLISH_FAILED", True, detail)
     degraded = bool(manifest.get("degraded"))
     return reply(10 if degraded else 0, "degraded" if degraded else "ok", "", False, detail)

@@ -438,6 +438,27 @@ def _health_probes(root: Path) -> dict[str, Any]:
     return probes
 
 
+def _pool_health(items: list[dict[str, Any]], previous: str | None, clock: datetime) -> None:
+    if not previous:
+        return
+    from ..data_pipeline.limit_pool_hot_view import read as read_pool
+    _, meta = read_pool(previous, clock.isoformat())
+    for state in items:
+        if state.get("id") != "limit_up_pool":
+            continue
+        state["pool_source"] = meta
+        if meta.get("status") == "READY":
+            state["status"] = "OK"
+        elif state.get("status") != "PENDING":
+            state["status"] = "STALE" if meta.get("status") != "MISSING" else "MISSING"
+
+
+def _health_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
+    datasets = dict(catalog.get("datasets") or {})
+    datasets["limit_up_pool"] = {"dates": {}}
+    return {**catalog, "datasets": datasets}
+
+
 def boot_data_health(trade_date: str, prev_trade_date: str | None, root: str | Path, *,
                      now: datetime | str | None = None, dry_run: bool = False,
                      probes: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -458,8 +479,9 @@ def boot_data_health(trade_date: str, prev_trade_date: str | None, root: str | P
             catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             catalog = {"datasets": {}}
-        item_results = stale_items(clock, catalog, trade_date=trade_date,
+        item_results = stale_items(clock, _health_catalog(catalog), trade_date=trade_date,
                                    prev_trade_date=prev_trade_date)
+        _pool_health(item_results, prev_trade_date, clock)
     detail = {"trade_date": trade_date, "calendar": {**calendar, "status": calendar_status},
               "probes": probe_results, "items": item_results,
               "summary": {status: sum(x.get("status") == status for x in item_results)
@@ -502,8 +524,9 @@ def boot_reconcile(trade_date: str, phase: str, health: dict[str, Any] | None,
             previous = calendar["prev"]
         except Exception:
             previous = None
-        items = stale_items(_now(now, trade_date), catalog, trade_date=trade_date,
+        items = stale_items(_now(now, trade_date), _health_catalog(catalog), trade_date=trade_date,
                             prev_trade_date=previous)
+        _pool_health(items, previous, _now(now, trade_date))
     by_id = {item["id"]: item for item in load_registry()}
     expected_ids = {item["id"] for name in PHASES[:phase_index + 1]
                     for item in items_for_phase(name, list(by_id.values()))}
@@ -556,6 +579,14 @@ def boot_reconcile(trade_date: str, phase: str, health: dict[str, Any] | None,
         coverage = daily_kline_coverage(root, daily_kline_candidates, catalog, clock)
         from .daily_kline_coverage import note_td_readability
         td_alert = note_td_readability(root, coverage, clock)
+        if previous:
+            from ..data_pipeline.limit_pool_hot_view import read as read_pool
+            _, pool_meta = read_pool(previous, clock.isoformat())
+            dates = catalog.setdefault("datasets", {}).setdefault("limit_up_pool", {}).setdefault("dates", {})
+            if pool_meta.get("storage_source") == "redis" and pool_meta.get("status") != "MISSING":
+                dates[previous] = [pool_meta]
+            else:
+                dates.pop(previous, None)
         plan = reconcile_plan(clock, catalog, trade_date=trade_date, prev_trade_date=previous,
                               phase=phase, load5=load5, load_threshold=load_threshold,
                               upgrade_attempts=upgrade_attempts,
@@ -718,6 +749,12 @@ def _verify_partition(item: dict[str, Any], day: str, root: str | Path | None,
     dataset = (item.get("artifact") or {}).get("catalog_dataset")
     if not dataset:
         return
+    if dataset == "limit_up_pool":
+        from ..data_pipeline.limit_pool_hot_view import read as read_pool
+        rows, meta = read_pool(day, (now or datetime.now().astimezone()).isoformat())
+        if not rows or meta.get("status") == "MISSING":
+            raise FetchJobError(f"partition_missing_after_fetch:{dataset}:{day}", "POSTCONDITION_FAILED")
+        return meta
     if dataset == "plate_members":
         from ..prep_trade_day import _plate_members_snapshot
         cutoff = now or datetime.now().astimezone()
@@ -1048,9 +1085,11 @@ def fetch_item(item_id: str, partition: str, root: str | Path, *,
                 return _result("degraded", {"id": item_id, "partition": partition, "result": result,
                                               "upgrade": state})
         detail = {"id": item_id, "partition": partition, "result": result}
-        if snapshot_info is not None and dataset == "plate_members":
-            detail["plate_members"] = snapshot_info
-        return _result("degraded" if isinstance(result, _DegradedFetchResult) else "ok", detail)
+        if snapshot_info is not None and dataset in {"plate_members", "limit_up_pool"}:
+            detail[dataset] = snapshot_info
+        degraded = isinstance(result, _DegradedFetchResult) or (dataset == "limit_up_pool" and
+                    snapshot_info is not None and snapshot_info.get("status") != "READY")
+        return _result("degraded" if degraded else "ok", detail)
     except Exception as exc:
         upgrade_state = (_record_daily_kline_upgrade(root, partition, succeeded=False,
                                                      now=clock, phase=phase) if upgrade else None)

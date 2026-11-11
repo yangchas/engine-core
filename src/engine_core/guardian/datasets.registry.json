@@ -462,7 +462,7 @@
         "force": "recompute",
         "clear": "clear then rebuild"
       },
-      "notes": "C580: 昨日池唯一写入模块 guardian/limit_pool_d1.py(目录账本 + TD 表 limit_up_pool_v1);docs/LIMIT_UP_POOL.md。kaipan_refresh_0850 仍负责原因/热板/成员,并经 run_data_jobs --job limit_up_pool 单趟复核池(ALREADY_SATISFIED 时不动)。",
+      "notes": "昨日池由 guardian/limit_pool_d1.py 发布 Redis 完整热视图并同步 TD; catalog 是过渡版本账本。热视图缺失或无效时显式降级读取 TD, ALREADY_SATISFIED 会验证并补热。",
       "guardian_event": "limit_pool_d1",
       "late_policy": {
         "mode": "fetch_now",
@@ -495,7 +495,6 @@
         "authority": "cold data -> TD; catalog partition is the transitional versioned ledger (design/24 section 2)",
         "doc": "docs/LIMIT_UP_POOL.md"
       },
-      "redis_ttl_seconds": 345600,
       "storage": [
         {
           "kind": "td_stable",
@@ -511,13 +510,19 @@
           "kind": "catalog",
           "name": "limit_up_pool",
           "role": "marker",
-          "note": "transitional versioned ledger (design/24 section 2); postconditions read it"
+          "note": "transitional versioned ledger (design/24 section 2); not the normal report input"
         },
         {
           "kind": "redis_view",
-          "name": "core:cache:data:limit_up_pool",
+          "name": "core:view:limit_up_pool:{data_date}",
           "role": "view",
-          "ttl_seconds": 345600
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
         }
       ]
     },
