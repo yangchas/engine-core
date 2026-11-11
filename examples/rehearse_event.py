@@ -662,7 +662,7 @@ class _ReadOnlyRedisHandler(socketserver.StreamRequestHandler):
 
 
 class ReadOnlyRedisProxy:
-    """Forward Redis reads; emulate C611 hash writes in memory and reject other mutations."""
+    """Forward Redis reads; emulate selected writes in memory and reject other mutations."""
 
     def __init__(self, redis_url: str):
         parsed = urlsplit(redis_url)
@@ -676,6 +676,8 @@ class ReadOnlyRedisProxy:
         self._local_hashes: dict[str, dict[bytes, bytes]] = {}
         self._local_leases: dict[str, bytes] = {}
         self._local_expiry: dict[str, float] = {}
+        self._local_pool_views: dict[str, tuple[bytes, int]] = {}
+        self._local_pool_view_sets = 0
         self._local_lock = threading.Lock()
         self._server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _ReadOnlyRedisHandler)
         self._server.daemon_threads = True
@@ -721,6 +723,8 @@ class ReadOnlyRedisProxy:
             return None
         if key.startswith("core:lease:"):
             return self._execute_lease(command, name, key)
+        if re.fullmatch(r"core:view:limit_up_pool:[0-9]{4}-[0-9]{2}-[0-9]{2}", key):
+            return self._execute_pool_view(command, name, key)
         if not re.fullmatch(r"core:(?:yest_limit_detail|limit_up_reason):\d{4}-\d{2}-\d{2}", key):
             return None
         if name not in {"HSET", "HDEL", "EXPIRE", "EXISTS", "HLEN", "TTL", "TYPE", "HGETALL", "HKEYS"}:
@@ -781,6 +785,42 @@ class ReadOnlyRedisProxy:
             if name == "HKEYS":
                 return self._array(list(fields))
             return self._array([item for pair in fields.items() for item in pair])
+
+    def _execute_pool_view(self, command: list[bytes], name: str, key: str) -> bytes | None:
+        if name == "SET":
+            if (len(command) != 5 or command[3].upper() != b"EXAT" or
+                    not re.fullmatch(rb"[0-9]{1,16}", command[4])):
+                return None
+            expiry = int(command[4])
+            if not 0 < expiry <= (2**63 - 1) // 1000:
+                return None
+            with self._local_lock:
+                self._local_pool_views[key] = (command[2], expiry)
+                self._local_pool_view_sets += 1
+            return b"+OK\r\n"
+        if name not in {"GET", "TTL", "PTTL", "EXISTS"} or len(command) != 2:
+            return None
+        with self._local_lock:
+            entry = self._local_pool_views.get(key)
+            now = time.time()
+            if entry is None:
+                return None
+            value, expiry = entry
+            if expiry <= now:
+                self._local_pool_views.pop(key, None)
+                return None
+            if name == "GET":
+                return self._bulk(value)
+            if name == "EXISTS":
+                return b":1\r\n"
+            remaining_ms = max(0, int((expiry - now) * 1000))
+            remaining = (remaining_ms + 500) // 1000 if name == "TTL" else remaining_ms
+            return b":" + str(remaining).encode() + b"\r\n"
+
+    @property
+    def local_pool_view_sets(self) -> int:
+        with self._local_lock:
+            return self._local_pool_view_sets
 
     def _execute_lease(self, command: list[bytes], name: str, key: str) -> bytes:
         with self._local_lock:
@@ -1547,6 +1587,7 @@ def run_rehearsal(args: argparse.Namespace) -> int:
         if proxy is not None:
             summary["blocked_redis_commands"] = proxy.blocked_snapshot()
             proxy.close()
+            summary["local_pool_view_sets"] = proxy.local_pool_view_sets
         if archive_root is not None and "event_ids" in locals() and args.event in event_ids:
             local_ledger = state_root / "ledger" / f"{today}.jsonl"
             event_rows, final_state = _ledger_event_rows(_read_ledger(local_ledger), tracked_event_id,

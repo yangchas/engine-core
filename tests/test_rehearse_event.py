@@ -146,6 +146,82 @@ def test_readonly_proxy_simulates_leases_without_upstream(monkeypatch) -> None:
         thread.join()
 
 
+def test_readonly_proxy_simulates_pool_view_set_exat(monkeypatch) -> None:
+    import redis
+    from types import SimpleNamespace
+    from engine_core.data_pipeline import limit_pool as core
+    from engine_core.data_pipeline import limit_pool_hot_view as hot
+
+    day = "2026-10-26"
+    pages = json.loads((ROOT / "tests/fixtures/limit_pool/kaipan_pool_20261026.json").read_text())["pages"]
+    part = core.build_kaipan(day, {int(k): v for k, v in pages.items()})
+    manifest = {**part.manifest, "version": "recorded-source", "available_at": "2026-10-27T01:00:00+00:00"}
+    value = json.dumps(hot.envelope(day, part.rows, manifest)).encode()
+    received = []
+
+    class Upstream(rehearsal.socketserver.StreamRequestHandler):
+        def handle(self):
+            try:
+                while True:
+                    _, _, command = rehearsal._read_resp(self.rfile)
+                    received.append(command)
+                    responses = {b"GET": b"$8\r\nupstream\r\n", b"TTL": b":77\r\n",
+                                 b"PTTL": b":77000\r\n", b"EXISTS": b":1\r\n"}
+                    self.wfile.write(responses.get(command[0].upper(), b"+OK\r\n"))
+                    self.wfile.flush()
+            except (EOFError, OSError):
+                pass
+
+    upstream = rehearsal.socketserver.ThreadingTCPServer(("127.0.0.1", 0), Upstream)
+    upstream.daemon_threads = True
+    thread = rehearsal.threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    proxy = rehearsal.ReadOnlyRedisProxy("redis://127.0.0.1:6380/0")
+    proxy._server.upstream_port = upstream.server_address[1]
+    clock = [1_800_000_000.0]
+    monkeypatch.setattr(rehearsal, "time", SimpleNamespace(time=lambda: clock[0]))
+    client = redis.Redis.from_url(proxy.url, protocol=2)
+    key = f"core:view:limit_up_pool:{day}"
+    try:
+        assert client.get(key) == b"upstream"
+        assert (client.ttl(key), client.pttl(key), client.exists(key)) == (77, 77000, 1)
+        assert client.set(key, value, exat=int(clock[0]) + 10)
+        assert client.get(key) == value
+        assert client.ttl(key) == 10
+        assert client.pttl(key) == 10000
+        assert client.exists(key) == 1
+        assert client.set(key, value + b" ", exat=int(clock[0]) + 20)
+        assert client.get(key) == value + b" "
+        assert client.ttl(key) == 20
+        for args in ((key, value), (key, value, "EX", 30), (key, value, "EXAT", 30, "NX"),
+                     (key, value, "EXAT", "invalid"), (key, value, "EXAT", 0),
+                     (key, value, "EXAT", "999999999999999999999999"),
+                     ("core:other:x", value, "EXAT", 30),
+                     ("core:view:limit_up_pool:2026-10-26:extra", value, "EXAT", 30)):
+            with pytest.raises(redis.ResponseError, match="READ_ONLY_REHEARSAL SET blocked"):
+                client.execute_command("SET", *args)
+        with pytest.raises(redis.ResponseError, match="READ_ONLY_REHEARSAL DEL blocked"):
+            client.delete(key)
+        assert proxy.blocked_snapshot() == {"SET": 8, "DEL": 1}
+        assert proxy.local_pool_view_sets == 2
+        clock[0] += 20
+        assert client.get(key) == b"upstream"
+        assert client.ttl(key) == 77
+        assert client.pttl(key) == 77000
+        assert client.exists(key) == 1
+        assert client.exists(key, "core:other:x") == 1
+        assert client.set(key, value, exat=int(clock[0]) - 1)
+        assert client.get(key) == b"upstream"
+        assert proxy.local_pool_view_sets == 3
+        assert all(command[0].upper() not in {b"SET", b"DEL"} for command in received)
+    finally:
+        client.close()
+        proxy.close()
+        upstream.shutdown()
+        upstream.server_close()
+        thread.join()
+
+
 def test_readonly_proxy_blocks_non_simulated_writes() -> None:
     proxy = rehearsal.ReadOnlyRedisProxy("redis://127.0.0.1:6380/0")
     try:
