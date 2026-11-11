@@ -37,6 +37,17 @@ def _pit_time(value: Any) -> datetime | None:
         return None
 
 
+def _post_fill_cutoff(asof: str, *, succeeded: bool) -> str:
+    """Only a successful fill by this invocation may advance its own PIT cutoff."""
+    if not succeeded:
+        return asof
+    completion = datetime.now().astimezone()
+    original = _pit_time(asof)
+    if original is None:
+        raise ValueError("invalid_preparation_asof")
+    return max(original, completion).isoformat()
+
+
 def _manifest(catalog: ArtifactCatalog, dataset: str, day: str | None = None,
               *, asof: str) -> dict[str, Any] | None:
     path = catalog.locate(dataset, day)
@@ -122,10 +133,13 @@ def _step(name: str, dataset: str, day: str | None, catalog: ArtifactCatalog,
     actual_reason = reason
     if manifest and status == "PARTIAL":
         actual_reason = quality.get("missing") or "SOURCE_WINDOW_INCOMPLETE"
-    return {"step": name, "dataset": dataset, "trade_date": day, "status": status,
+    result = {"step": name, "dataset": dataset, "trade_date": day, "status": status,
             "reason": actual_reason, "row_count": manifest.get("row_count") if manifest else None,
             "version": manifest.get("version") if manifest else None,
             "elapsed_ms": round((time.monotonic() - started) * 1000, 3)}
+    if dataset == "plate_members":
+        result["available_at"] = manifest.get("available_at") if manifest else None
+    return result
 
 
 def _latest_step(name: str, dataset: str, before: str, catalog: ArtifactCatalog,
@@ -330,12 +344,16 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
         assignment_reasons.append(normalized)
     member_codes: dict[str, set[str]] = {}
     member_rows: list[dict[str, Any]] = []
-    members_data = load("plate_members", previous)
-    if not members_data:
+    members_cutoff = getattr(catalog, "_plate_members_asof", asof)
+    members_snapshot = _plate_members_snapshot(asof=members_cutoff)
+    members_data = (members_snapshot.get("rows", []), members_snapshot) if members_snapshot else None
+    if members_data is None:
         # Not fatal (the snapshot degrades to pool/reason labels) but never silent.
-        diag.append("plate_members:" + _why_unavailable(catalog, "plate_members", previous, asof) + "(degraded_input)")
+        diag.append("plate_members:active_snapshot_unavailable_or_not_pit_ready(degraded_input)")
     if members_data:
-        member_rows, _ = _pit_rows(members_data[0], asof)
+        rows = [{**row, "available_at": row.get("available_at") or members_snapshot["available_at"]}
+                for row in members_data[0]]
+        member_rows, _ = _pit_rows(rows, members_cutoff)
         for row in member_rows:
             symbol = str(row.get("symbol", row.get("stock_code", row.get("stockid", row.get("code", "")))) or "")[-6:].zfill(6)
             code = str(row.get("plate_code", row.get("plateid", row.get("code_plate", row.get("plate", "")))) or "").strip()
@@ -365,14 +383,15 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
                 "limit_reason_history": (json.dumps(sorted(reason_manifests.items()), separators=(",", ":")),
                                           len(reasons))},
         calendar_dates=calendar_dates, plate_names=plate_names)
+    output_asof = members_cutoff
     node_store = NodeStore(catalog)
     snapshot, _hit = node_store.compute(
         "theme_snapshot", trade_date, f"{THEME_SNAPSHOT_NODE_SCHEMA}:algorithm-v1", node_inputs,
         lambda: load_kaipan_theme_snapshot(
-            None, report_date=trade_date, previous_trade_date=previous, observed_at=asof,
+            None, report_date=trade_date, previous_trade_date=previous, observed_at=output_asof,
             plate_names=plate_names, static_themes_by_symbol={}, pool_rows=pool[0],
             reason_rows=reasons, hot_rows=hot[0] if hot else (), trading_dates=calendar_dates),
-        asof=asof)
+        asof=output_asof)
     if snapshot.get("status") not in {"READY", "PARTIAL"}:
         diag.append("theme_snapshot:node_status=" + str(snapshot.get("status")))
         return False
@@ -386,11 +405,11 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
                  for symbol, codes in member_codes.items()} |
                 {symbol: [item["id"] for item in candidates]
                  for symbol, candidates in pool_labels.items()},
-        trading_dates=calendar_dates, available_at=asof,
+        trading_dates=calendar_dates, available_at=output_asof,
         source_versions=None,
-        as_of=asof,
+        as_of=output_asof,
         row_prefix={"trade_date": trade_date, "previous_trade_date": previous,
-                    "used_date": previous, "as_of": asof,
+                    "used_date": previous, "as_of": output_asof,
                     "input_version": input_version,
                     "visibility_sha256": visibility_sha256},
         manifest_metadata={"input_version": input_version, "used_date": previous,
@@ -424,6 +443,8 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
     asof = asof or datetime.now().astimezone().isoformat()
     if _pit_time(asof) is None:
         raise ValueError("invalid_preparation_asof")
+    members_fill_cutoff: str | None = None
+    members_refetched = False
     root = Path(root).expanduser()
     catalog = ArtifactCatalog(root)
     previous = previous_trade_date(root, trade_date)
@@ -479,6 +500,7 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
         publish(name, "completed")
         return item
     def tracked_run(repo, script, args):
+        nonlocal members_fill_cutoff, members_refetched
         job = args[args.index("--job") + 1] if "--job" in args else None
         name = {"symbol_universe": "symbol_universe", "daily_kline": "previous_daily_kline",
                 "limit_up_pool": "yesterday_limit_pool", "limit_reasons": "limit_reasons",
@@ -491,6 +513,10 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
         started = time.monotonic()
         try:
             rc, out = original_run(repo, script, args)
+            if job == "plate_members":
+                members_refetched = True
+                if rc == 0:
+                    members_fill_cutoff = _post_fill_cutoff(members_fill_cutoff or asof, succeeded=True)
             record["fill_exit"] = rc
             for line in out.splitlines():
                 try:
@@ -688,8 +714,11 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                     # Jobs fetched above are visible only from their commit time; a live run's cut-off is "now".
                     asof = datetime.now().astimezone().isoformat()
                 diag: list[str] = []
-                built = _prepare_theme_snapshot_cache(fresh_catalog := ArtifactCatalog(root),
-                                                      trade_date, previous, asof, diagnostics=diag)
+                members_cutoff = max((asof, members_fill_cutoff), key=_pit_time) if members_fill_cutoff else asof
+                fresh_catalog = ArtifactCatalog(root)
+                # This cutoff belongs only to this theme build, not to other catalog inputs.
+                fresh_catalog._plate_members_asof = members_cutoff
+                built = _prepare_theme_snapshot_cache(fresh_catalog, trade_date, previous, asof, diagnostics=diag)
                 if built and not diag:
                     break
                 if waited >= budget:
@@ -733,7 +762,9 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
             if item["step"] == "hot_rank":
                 revised = _latest_step("hot_rank", "hot_rank", trade_date, fresh, asof=asof)
             else:
-                revised = _step(item["step"], dataset, day, fresh, asof=asof,
+                cutoff = (max((asof, members_fill_cutoff), key=_pit_time)
+                          if dataset == "plate_members" and members_fill_cutoff else asof)
+                revised = _step(item["step"], dataset, day, fresh, asof=cutoff,
                                 reason=item.get("reason") if not day else None)
             item.update(revised)
             if item["step"] == "symbol_universe":
@@ -749,6 +780,10 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
             records[item["step"]]["status"] = item["status"]
             if item["step"] in timings:
                 item["elapsed_ms"] = timings[item["step"]]
+    member = next(item for item in steps if item["step"] == "plate_members")
+    member["refetched"] = members_refetched
+    records["plate_members"].update(version=member["version"], available_at=member.get("available_at"),
+                                    refetched=members_refetched)
     step_timings = list(records.values())
     summary = {"check_ms_total": round(sum(r["check_ms"] for r in step_timings), 3),
                "fill_ms_total": round(sum(r["fill_ms"] for r in step_timings), 3),
