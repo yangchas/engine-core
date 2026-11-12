@@ -279,6 +279,46 @@ def request(source, day=DAY, now="2026-10-27T01:00:00+08:00", **extra):
     return {"data_date": day, "args": args, "now": now, "tier": source}
 
 
+def test_degraded_kaipan_copy_is_refreshed_and_recovery_remains_readable(tmp_path):
+    from engine_core.data_pipeline import limit_pool_hot_view as hot
+    from engine_core.data_pipeline.storage import canonical_json, sha256
+
+    deps = make_deps()
+    part = lp.build_kaipan(DAY, kaipan_pages())
+    digest = sha256(b"\n".join(canonical_json(dict(row)) for row in part.rows) + b"\n")
+    manifest = {**part.manifest, "version": "sha256-" + digest[:16], "sha256": digest,
+                "available_at": deps.now_utc().isoformat()}
+    degraded = hot.envelope(DAY, part.rows, {**manifest, "degraded": True})
+    key = f"core:view:limit_up_pool:{DAY}"
+    deadline = hot.deadline_for(DAY, deps.calendar_root)
+    deps.redis_client.set(key, json.dumps(degraded), exat=deadline)
+
+    code, body = d1.run_pool_tier(request("kaipan"), tmp_path, deps=deps)
+    assert code == 0, body
+    rows, meta = hot.read(DAY, deps.now_utc().isoformat(), redis_client=deps.redis_client)
+    assert rows == part.rows and meta["status"] == "READY" and not meta["degraded"]
+    assert meta["version"] == degraded["version"]
+    assert deps.redis_client.deadlines[key] == deadline == 1793548800
+
+    store = MemoryPoolStore()
+    assert LimitPoolTdSink(store, tmp_path).write_partition(DAY, part.rows, manifest).status == "synced"
+    deps.td_store = lambda: store
+    deps.redis_client.writes.clear()
+    code, body = d1.run_pool_tier(request("kaipan"), tmp_path, deps=deps)
+    assert code == 0, body
+    assert hot.read(DAY, deps.now_utc().isoformat(), redis_client=deps.redis_client)[1]["status"] == "READY"
+    deps.redis_client.writes.clear()
+    deps.kaipan = lambda *_: (_ for _ in ()).throw(PoolSourceError("KAIPAN_NOT_READY", "unavailable", exit_code=30, retryable=True))
+    code, body = d1.run_pool_tier(request("kaipan"), tmp_path, deps=deps)
+    assert code == 10 and body["status"] == "degraded" and body["error_code"] == "KAIPAN_NOT_READY"
+    assert not body["retryable"] and body["detail"]["upstream_exit_code"] == 30 and body["detail"]["upstream_retryable"]
+    from engine_core.guardian.contract import check_reply
+    assert not check_reply(code, body)
+    rows, meta = hot.read(DAY, deps.now_utc().isoformat(), redis_client=deps.redis_client)
+    assert rows == part.rows and meta["status"] == "DEGRADED" and meta["version"] == manifest["version"]
+    assert deps.redis_client.deadlines[key] == deadline
+
+
 def test_kaipan_rung_commits_formal_partition_that_passes_the_contract_checker(tmp_path):
     store = MemoryPoolStore()
     deps = make_deps(store=store)
