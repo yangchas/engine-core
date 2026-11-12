@@ -245,7 +245,7 @@ def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool
         current = hot._validate(json.loads(raw), day) if raw else None
         now = deps.now_utc()
         deadline = hot.deadline_for(day, deps.calendar_root)
-        if (current and core.PROVIDER_RANK[current['provider']] <= wanted
+        if (current and not current['degraded'] and core.PROVIDER_RANK[current['provider']] <= wanted
                 and hot._instant(current['available_at']) <= now and deadline > int(now.timestamp())):
             outcome = ({"status": "dry_run"} if dry_run else
                        {"status": "unchanged", "version": current['version'], "expire_at": deadline}
@@ -260,6 +260,25 @@ def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool
         current = None
     if dry_run:
         return reply(0, "not_applicable", "", False, "guardian_dry_run_no_fetch")
+
+    def degraded_copy():
+        try:
+            raw = client.get(key)
+            value = hot._validate(json.loads(raw), day) if raw else None
+            now = deps.now_utc()
+            if (value and hot._instant(value['available_at']) <= now
+                    and hot.deadline_for(day, deps.calendar_root) > int(now.timestamp())):
+                _, meta = hot._result(value, 'redis', None, now.isoformat(), False, None)
+                return meta['status'] == 'DEGRADED'
+        except Exception:
+            pass
+        return False
+
+    def source_failure(code, error, retryable, detail):
+        if degraded_copy():
+            return reply(10, "degraded", error, False,
+                         {**detail, "upstream_exit_code": code, "upstream_retryable": retryable})
+        return reply(code, "failed", error, retryable, detail)
 
     # A missing hot view may be restored from the existing physical partition. A
     # failed cold read never prevents a fresh source from publishing.
@@ -282,11 +301,8 @@ def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool
                 if sha256(payload) != recovered.get('source_sha256'):
                     raise ValueError('td_source_digest_mismatch')
                 recovered['degraded'] = True
-                outcome = hot.publish(day, rows, recovered, redis_client=client,
-                                      calendar_root=deps.calendar_root, clock=deps.now_utc, lock_root=root)
-                return reply(20, "not_applicable", "ALREADY_SATISFIED", False,
-                             {"partition": day, "source": source, "version": outcome['version'],
-                              "recovery_source": "td", "hot_write": outcome})
+                hot.publish(day, rows, recovered, redis_client=client,
+                            calendar_root=deps.calendar_root, clock=deps.now_utc, lock_root=root)
         except Exception:
             pass  # Recovery is optional; the requested upstream is still tried.
         finally:
@@ -300,13 +316,13 @@ def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool
     try:
         partition, extra = _build(source, day, args, root, deps, _local_clock(request))
     except PoolSourceError as exc:
-        return reply(exc.exit_code, "failed", exc.code, exc.retryable,
-                     {"source": source, "partition": day, "reason": exc.detail})
+        return source_failure(exc.exit_code, exc.code, exc.retryable,
+                              {"source": source, "partition": day, "reason": exc.detail})
     except TdUnavailable as exc:
-        return reply(30, "failed", "TD_UNAVAILABLE", True, {"source": source, "reason": str(exc)[:200]})
+        return source_failure(30, "TD_UNAVAILABLE", True, {"source": source, "reason": str(exc)[:200]})
     except Exception as exc:
-        return reply(40, "failed", "DETERMINISTIC_FAILURE", False,
-                     {"source": source, "reason": type(exc).__name__ + ":" + str(exc)[:200]})
+        return source_failure(40, "DETERMINISTIC_FAILURE", False,
+                              {"source": source, "reason": type(exc).__name__ + ":" + str(exc)[:200]})
     elapsed_ms = int((time.monotonic() - started) * 1000)
     completed = deps.now_utc().astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     payload = b"\n".join(canonical_json(dict(row)) for row in partition.rows) + (b"\n" if partition.rows else b"")
@@ -325,6 +341,9 @@ def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool
                      {"partition": day, "source": provider, "hot_write": {"status": "error",
                       "reason": type(exc).__name__ + ":" + str(exc)[:160]}})
     if outcome['status'] == 'preserved_better':
+        if degraded_copy():
+            return reply(10, "degraded", "", False,
+                         {"partition": day, "version": outcome['version'], "hot_write": outcome})
         return reply(20, "not_applicable", "ALREADY_SATISFIED", False,
                      {"partition": day, "version": outcome['version'], "hot_write": outcome})
     detail = {"partition": day, "source": provider, "version": outcome['version'],
