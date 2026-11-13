@@ -38,3 +38,29 @@ def test_c1056_empty_scope_does_not_swallow_real_data():
     assert not any('required_fields' in line for line in lint_card(card, ROOT))
     missing = re.sub(r'^REAL_DATA:.*$', 'REAL_DATA:', card, flags=re.M)
     assert any('required_fields' in line and 'REAL_DATA' in line for line in lint_card(missing, ROOT))
+
+
+def test_builder_recipe_defaults_on_historical_card_headers():
+    import json
+    import re
+
+    for card_name in ('C1072', 'C1074'):
+        original = (FIXTURES / f'card_{card_name}.md').read_text()
+        assert not any('fixture_tool_not_in_scope' in line for line in lint_card(original, ROOT))
+        previous = re.sub(r'^STUBS_ALLOWED:.*$', 'STUBS_ALLOWED: 仅回放真实响应', original, flags=re.M)
+        assert any('fixture_tool_not_in_scope' in line for line in lint_card(previous, ROOT))
+        for recipe in ('builder-fix', 'builder-framework'):
+            defaults = json.loads((ROOT / 'examples/card_recipes' / f'{recipe}.json').read_text())['fixed']
+            generated = re.sub(r'^STUBS_ALLOWED:.*$', lambda _: 'STUBS_ALLOWED: ' + defaults['STUBS_ALLOWED'], original, flags=re.M)
+            assert not any('fixture_tool_not_in_scope' in line for line in lint_card(generated, ROOT)), (card_name, recipe)
+
+
+def test_historical_capture_required_still_warns():
+    import json
+
+    card = (FIXTURES / 'C1031.md').read_text()
+    assert any('fixture_tool_not_in_scope' in line for line in lint_card(card, ROOT))
+    for recipe in ('builder-fix', 'builder-framework'):
+        default = json.loads((ROOT / 'examples/card_recipes' / f'{recipe}.json').read_text())['fixed']['STUBS_ALLOWED']
+        generated = card + f'\nSTUBS_ALLOWED: {default}\n'
+        assert any('fixture_tool_not_in_scope' in line for line in lint_card(generated, ROOT)), recipe
