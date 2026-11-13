@@ -1,0 +1,29 @@
+CALLBACK C1054 NOREPORT gate=RED exit=7 :: 
+PREFLIGHT OK: /home/exedev/fw/cards/C1054.md
+report: /home/exedev/fw/reports/C1054.md (11 lines) model=gpt-6.1-terra effort=medium tokens=46354
+verdict: 
+police: changed files: 0 POLICE OK 
+HEAD: 4f9cd8d Merge C1053 (C1053)
+RED: HEAD 提交标题不以 C1054: 开头
+ examples/card_recipes/builder-fix.json       |  28 ++++++
+ examples/card_recipes/builder-framework.json |  28 ++++++
+ examples/card_recipes/runner-observe.json    |  27 ++++++
+ examples/card_recipes/runner-verify.json     |  27 ++++++
+ examples/pm.py                               | 134 +++++++++++++++++++++++++++
+ tests/test_pm.py                             |  47 ++++++++++
+ 6 files changed, 291 insertions(+)
+AUTO-RESULT: RED → /home/exedev/fw/evidence/C1054/AUTO.md
+CALLBACK C1054 PARTIAL gate=GREEN exit=5 :: 
+PREFLIGHT OK: /home/exedev/fw/cards/C1054.md
+report: /home/exedev/fw/reports/C1054.md (11 lines) model=gpt-6.1-terra effort=medium tokens=25631
+verdict: VERDICT: PARTIAL
+police: changed files: 0 POLICE OK 
+HEAD: 21e1fc1 C1054: audit test changes and integrate PM status
+ examples/card_recipes/builder-fix.json       |   2 +-
+ examples/card_recipes/builder-framework.json |   2 +-
+ examples/card_recipes/runner-verify.json     |   2 +-
+ examples/pm.py                               |  20 ++++
+ examples/test_audit.py                       | 147 +++++++++++++++++++++++++++
+ tests/test_test_audit.py                     |  36 +++++++
+ 6 files changed, 206 insertions(+), 3 deletions(-)
+AUTO-RESULT: GREEN → /home/exedev/fw/evidence/C1054/AUTO.md

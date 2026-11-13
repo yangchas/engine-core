@@ -1,0 +1,10 @@
+VERDICT: BLOCKED（卡片执行结果：ABORTED）
+
+**部署已在切换前中止。** 卡片要求保留 09:45 后停止写 TD 的补丁，同时要求盘中 TD tick 持续推进，否则立即回滚。两次真实查询均显示今日最新 tick 为 **09:45:59**；候选与当前版本的 TD writer 逐字节一致。这两项要求在当前时段无法同时满足。
+
+线上服务仍为 `20261111_C979_46348ab`，active/running，PID 3850309，NRestarts=0；未切换或重启。候选 ELF 已构建，同一 ELF 从源码根目录运行自测通过；构建脚本内自测因工作目录导致夹具路径不可读而失败。隔离回放和切换后检查未执行。
+
+报告：[C1047.md](/home/exedev/fw/reports/C1047.md)  
+证据：[命令与耗时](/home/exedev/fw/evidence/C1047/c1047-commands.md)、[TD 查询一](/home/exedev/fw/evidence/C1047/c1047-td-observation-1.txt)、[TD 查询二](/home/exedev/fw/evidence/C1047/c1047-td-observation-2.txt)
+
+OPEN：需要修订 TD 推进判据或明确可验证的等价健康条件，才能按自动回滚规则重新验收部署。

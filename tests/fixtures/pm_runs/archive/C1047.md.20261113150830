@@ -1,0 +1,15 @@
+VERDICT: BLOCKED
+
+候选版本**尚未部署**。卡片规定指定 release 目录已存在时停止；该目录已于 14:56:57 创建，因此本次没有切换或重启服务。
+
+FACTS:
+
+- 15:08 检查时，现网仍为 `20261111_C979_46348ab`，服务 `active/running`，PID `3850309`，`NRestarts=0`。
+- 运行中的 ELF 与现网文件 SHA256 均为 `e3588ce433896cbbcef4499616e91bedc79f554e3b1a4da2e28662274e54de7b`。
+- 候选源码 HEAD 为 `52d11d92ae5fdc9e5fff78bfe1002eee8597f192`；候选 ELF SHA256 为 `7feb47129d488388797ad5489c7f780310628d4dc5ea856c1bd783844cc5b3b5`。
+
+CHANGES: 新增[本次检查证据](/home/exedev/fw/evidence/C1047/c1047-sixth-existing-release-check.log)，未覆盖已有报告或 release。
+
+EVIDENCE: 检查命令退出码 `0`；证据文件 SHA256 `4ca21c9fe2ca7d21be2d5873adf57ac97afabe08fd5a17b31f8d5cb6904bb05c`。
+
+OPEN: 需要卡片负责人明确允许复用现有候选 release，或指定新的 release 名称及有效切换窗口。现有报告中的“必须等待活跃行情”理由已被本次卡片修订；本次停止的原因是 release 目录已存在。

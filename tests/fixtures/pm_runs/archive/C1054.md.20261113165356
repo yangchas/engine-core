@@ -1,0 +1,12 @@
+**C1054 已实现，状态为 PARTIAL。** 新增了测试与数据审计，接入 builder 的 `pm status` / `wait-card`，并更新了三个配方。
+
+指定验收清单重跑结果：
+
+```text
+65 passed, 1 skipped in 30.45s
+exit=0
+```
+
+首次运行因测试中的 Git 检出参数冲突失败；修正后重跑通过。修复前失败证据和两次验收输出均保存在 [C1054 evidence](/home/exedev/fw/evidence/C1054)。
+
+尚未提交：角色规则要求卡片明确写 `COMMIT=yes` 才能提交，而本卡没有该字段。此次也尚未取得真实 GATE PASS，因此不能标记 DONE。规格冲突和审计启发式的误报、漏报风险已记录在 [C1054 报告](/home/exedev/fw/reports/C1054.md)。

@@ -201,6 +201,8 @@ def test_dispatch_workflow(tmp_path, monkeypatch, capsys):
     assert main(['dispatch', 'C1045']) == 0
     assert 'dispatched C1045' in capsys.readouterr().out
     assert (tmp_path / 'runs/C1045.dispatch.out').exists()
+    assert pm.field(card.read_text(), 'STATUS').startswith('dispatched(')
+    assert (tmp_path / 'runs/C1045.dispatch.timestamp').exists()
     preflight.write_text('#!/bin/sh\necho preflight-failed\nexit 1\n')
     assert main(['dispatch', 'C1045']) == 2
     assert 'preflight-failed' in capsys.readouterr().out
@@ -277,3 +279,85 @@ def test_dispatch_lint_real_card(tmp_path, monkeypatch, capsys):
     assert 'FAIL required_fields' in capsys.readouterr().out
     main(['dispatch', 'C1099', '--no-lint'])
     assert 'FAIL required_fields' not in capsys.readouterr().out
+
+
+def test_c1055_newcard_and_new_files(tmp_path, monkeypatch, capsys):
+    import shutil
+    cards = tmp_path / 'cards'
+    shutil.copytree(Path(__file__).parent / 'fixtures/pm_runs/cards', cards)
+    monkeypatch.setenv('PM_CARDS_DIR', str(cards))
+    monkeypatch.setenv('PM_REPORTS_DIR', str(tmp_path / 'reports'))
+    monkeypatch.setenv('PM_EVIDENCE_DIR', str(tmp_path / 'evidence'))
+    args = ['--title', '修复', '--serves', '目标', '--plan', 'P0 4/6', '--approval', '已授权',
+            '--scope', 'examples/new_module.py,tests/test_new_module.py,tests/test_other_new.py',
+            '--goal', '修复', '--real-data', '真实卡', '--oracle', '结果一致',
+            '--accept-by', 'fail-first-real-fixture', '--dry-run']
+    assert main(['newcard', '--recipe', 'builder-fix', *args]) == 0
+    output = capsys.readouterr().out
+    assert 'COMMIT: yes' in output
+    assert str(tmp_path / 'reports/C1055.md') in output
+    assert str(tmp_path / 'evidence/C1055') in output
+    assert main(['newcard', '--recipe', 'runner-verify', *args]) == 0
+    assert 'COMMIT: no' in capsys.readouterr().out
+    card = cards / 'C1054.md'
+    text = card.read_text()
+    import re
+    text = re.sub(r'^SCOPE_WRITE:.*', 'SCOPE_WRITE: /home/exedev/repos/engine_core-wt-C1055/examples/new_module.py, /home/exedev/repos/engine_core-wt-C1055/tests/test_other_new.py', text, flags=re.M)
+    card.write_text(text)
+    assert main(['testlist', '--card', 'C1054']) == 0
+    output = capsys.readouterr().out
+    assert 'tests/test_new_module.py' in output and 'tests/test_other_new.py' in output
+
+
+def test_c1055_wait_lifecycle_real_report(tmp_path, monkeypatch, capsys):
+    import os
+    import shutil
+    import examples.pm as pm
+    source = Path(__file__).parent / 'fixtures/pm_runs'
+    shutil.copytree(source / 'cards', tmp_path / 'cards')
+    shutil.copytree(source / 'reports', tmp_path / 'reports')
+    (tmp_path / 'runs').mkdir()
+    shutil.copy2(source / 'C1054.dispatch.out', tmp_path / 'runs/C1054.dispatch.out')
+    for key, name in [('PM_CARDS_DIR', 'cards'), ('PM_REPORTS_DIR', 'reports'), ('PM_RUNS_DIR', 'runs')]:
+        monkeypatch.setenv(key, str(tmp_path / name))
+    card = tmp_path / 'cards/C1054.md'
+    card.write_text(pm.set_status(card.read_text(), 'STATUS: dispatched(2026-11-13)'))
+    report = tmp_path / 'reports/C1054.md'
+    dispatch = tmp_path / 'runs/C1054.dispatch.out'
+    os.utime(report, (dispatch.stat().st_mtime - 60,) * 2)
+    monkeypatch.setattr(pm, 'card_processes', lambda _: [1])
+    clock = iter([0, 0, 31, 32])
+    monkeypatch.setattr(pm.time, 'monotonic', lambda: next(clock))
+    monkeypatch.setattr(pm.time, 'sleep', lambda _: None)
+    assert main(['wait-card', 'C1054', '--timeout', '31', '--interval', '1']) == 2
+    assert 'TIMEOUT' in capsys.readouterr().out
+    monkeypatch.setattr(pm, 'card_processes', lambda _: [])
+    monkeypatch.setattr(pm.time, 'monotonic', lambda: 0)
+    assert main(['wait-card', 'C1054', '--timeout', '1']) == 0
+    assert pm.field(card.read_text(), 'STATUS').startswith('dispatched')
+    os.utime(report, (dispatch.stat().st_mtime + 60,) * 2)
+    assert main(['wait-card', 'C1054', '--timeout', '1']) == 0
+    assert pm.field(card.read_text(), 'STATUS').startswith('PARTIAL(自动;')
+    card.write_text(pm.set_status(card.read_text(), 'STATUS: dispatched(2026-11-13)'))
+    monkeypatch.setattr(pm, 'card_processes', lambda _: [1])
+    assert main(['wait-card', 'C1054', '--timeout', '0']) == 2
+    assert pm.field(card.read_text(), 'STATUS').startswith('dispatched')
+    monkeypatch.setattr(pm, 'card_processes', lambda _: [])
+    card.write_text(pm.set_status(card.read_text(), 'STATUS: ready 手动'))
+    assert main(['wait-card', 'C1054', '--timeout', '1']) == 0
+    assert pm.field(card.read_text(), 'STATUS') == 'ready 手动'
+
+
+def test_c1055_metrics_real_archives(tmp_path, monkeypatch, capsys):
+    import shutil
+    source = Path(__file__).parent / 'fixtures/pm_runs'
+    shutil.copytree(source / 'cards', tmp_path / 'cards')
+    shutil.copytree(source / 'reports', tmp_path / 'reports')
+    shutil.copytree(source / 'archive', tmp_path / 'runs/archive')
+    for key, name in [('PM_CARDS_DIR', 'cards'), ('PM_REPORTS_DIR', 'reports'), ('PM_RUNS_DIR', 'runs')]:
+        monkeypatch.setenv(key, str(tmp_path / name))
+    assert main(['metrics']) == 0
+    output = capsys.readouterr().out
+    assert 'C1047:7' in output and 'C1054:2' in output and 'C1049:1' in output
+    assert '目标:一次通过率≥70%;平均派发≤1.5;陈旧 ready=0;DENY<5/天' in output
+    assert len(output.splitlines()) <= 12
