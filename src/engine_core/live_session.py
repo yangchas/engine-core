@@ -18,7 +18,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Mapping
 
-from .auction_tracking import Tick, derive_state, _at_limit
+from .auction_tracking import Tick, derive_state, seal_order, _at_limit
 
 STATE_PRIMARY_WINDOW_SECONDS = 60
 STATE_FALLBACK_WINDOW_SECONDS = 300
@@ -541,7 +541,11 @@ def _sql_states(td: Any, cutoff: datetime) -> dict[str, dict[str, Any]]:
         missing_outputs = {output for source in missing for output in required.get(source, ())}
         for key in missing_outputs:
             state[key] = None
-        state["field_quality"] = {key: "MISSING" for key in missing}
+        seal_tick = Tick(trade_date=cutoff.date().isoformat(), ts=tick_time, symbol=str(symbol).zfill(6),
+                         **{key: int(row[key]) if row.get(key) is not None else None for key in numeric_fields})
+        seal = seal_order(seal_tick, state.get("price_milli"))
+        state.update(seal)
+        state["field_quality"] = {**{key: "MISSING" for key in missing}, **seal["field_quality"]}
         state["missing_field_count"] = len(missing)
         state["high_milli"] = row.get("h_milli")
         state["low_milli"] = row.get("l_milli")

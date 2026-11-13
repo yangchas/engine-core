@@ -455,3 +455,20 @@ def test_latest_tick_uses_bounded_window():
     assert _latest_tick(td, datetime(2026, 10, 15, 9, 45)) == datetime(2026, 10, 15, 9, 45)
     assert "ts>='2026-10-15 09:44:00'" in td.query
     assert "ts<='2026-10-15 09:45:00'" in td.query
+
+
+def test_real_terminal_tick_seal_and_missing_volume_propagation(monkeypatch):
+    import json
+    from pathlib import Path
+    from engine_core import live_session
+    path, = (Path(__file__).parent / 'fixtures' / 'real').glob(
+        'td_stock_tick_2026-11-12_600103_092500_092600_*.json')
+    fixture = json.loads(path.read_text())
+    row = dict(zip(fixture['columns'], fixture['rows'][0]))
+    monkeypatch.setattr(live_session, '_open_range_scan', lambda *args: [row])
+    state = live_session._sql_states(object(), datetime(2026, 11, 12, 9, 25, 2))['600103']
+    assert state['seal_bid_yuan'] == 810813942
+    row['bv1'] = None
+    state = live_session._sql_states(object(), datetime(2026, 11, 12, 9, 25, 2))['600103']
+    assert state['seal_bid_yuan'] is None
+    assert state['field_quality']['seal_bid_yuan'] == 'MISSING'

@@ -506,14 +506,14 @@ def _observed_seal_paths(td: Any, trade_date: str, asof: str,
     symbols.discard("000000")
     if not symbols or td is None:
         return {}
-    from .limit_price import is_limit_up
+    from .auction_tracking import Tick, seal_order
     cursor = td.cursor() if callable(getattr(td, "cursor", None)) else td
     from .live_session import _open_memory_exhausted, _open_query
     end = str(asof)[-8:]
 
     def fetch(batch):
         clauses = ",".join("'" + symbol + "'" for symbol in batch)
-        query = ("select ts,px_milli,pc_milli,bp1_milli,bv2,symbol from stock_tick_v2 "
+        query = ("select ts,px_milli,pc_milli,bp1_milli,ap1_milli,bv1,av1,symbol from stock_tick_v2 "
                  f"where ts>='{trade_date} 09:30:00' and ts<='{trade_date} {end}' "
                  f"and symbol in ({clauses}) order by ts,symbol")
         try:
@@ -526,20 +526,18 @@ def _observed_seal_paths(td: Any, trade_date: str, asof: str,
 
     rows = fetch(sorted(symbols))
     def order_key(row):
-        return (row.get("ts"), row.get("symbol")) if isinstance(row, Mapping) else (row[0], row[5])
+        return (row.get("ts"), row.get("symbol")) if isinstance(row, Mapping) else (row[0], row[7])
     rows.sort(key=order_key)
-    columns = ("ts", "px_milli", "pc_milli", "bp1_milli", "bv2", "symbol")
+    columns = ("ts", "px_milli", "pc_milli", "bp1_milli", "ap1_milli", "bv1", "av1", "symbol")
     sealed: dict[str, list[str]] = {}
     for raw in rows:
         row = raw if isinstance(raw, Mapping) else dict(zip(columns, raw))
         symbol = str(row.get("symbol") or "")[-6:].zfill(6)
-        try:
-            price = float(row["px_milli"]) / 1000
-            previous = float(row["pc_milli"]) / 1000
-            bid = float(row["bv2"]) * float(row["bp1_milli"]) / 10
-        except (KeyError, TypeError, ValueError, OverflowError):
-            continue
-        if symbol in symbols and bid > 0 and is_limit_up(price, previous, symbol):
+        stamp = row.get("ts")
+        tick_time = stamp.strftime("%H:%M:%S") if hasattr(stamp, "strftime") else str(stamp)[-8:]
+        tick = Tick(trade_date=trade_date, ts=tick_time, symbol=symbol,
+                    **{key: row.get(key) for key in ("px_milli", "pc_milli", "bp1_milli", "ap1_milli", "bv1", "av1")})
+        if symbol in symbols and seal_order(tick, tick.px_milli)["seal_bid_at_limit"] is True:
             stamp = row.get("ts")
             text = stamp.isoformat(sep=" ") if hasattr(stamp, "isoformat") else str(stamp)
             sealed.setdefault(symbol, []).append(text)

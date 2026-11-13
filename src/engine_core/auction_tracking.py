@@ -8,7 +8,7 @@ import csv
 import hashlib
 import json
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -73,7 +73,43 @@ def matching_amount_yuan(tick: Tick) -> int:
     return min(max(0, tick.bv1), max(0, tick.av1)) * tick.bp1_milli * 100 // 1000
 
 
+def seal_order(tick: Tick, price: int | None) -> dict[str, Any]:
+    """Calculate the two directional seal orders from the observed book."""
+    from .limit_price import limit_prices
+    result: dict[str, Any] = {}
+    quality: dict[str, str] = {}
+    unlimited = tick.symbol.startswith(("N", "C"))
+    bands = limit_prices(tick.pc_milli / 1000, tick.symbol, unlimited=unlimited) if tick.pc_milli is not None else None
+    sec = _seconds(tick.ts)
+    indicative = sec < _seconds("09:25:00")
+    phase_missing = _seconds("09:25:00") <= sec < _seconds("09:30:00") and tick.amt_yuan is None
+    for side, band, volume, book_price, opposite in (
+        ("bid", 0, tick.bv2 if indicative else tick.bv1, tick.bp1_milli, tick.av1),
+        ("ask", 1, tick.av2 if indicative else tick.av1, tick.ap1_milli, tick.bv1),
+    ):
+        shares_key, yuan_key, sealed_key = f"seal_{side}_shares", f"seal_{side}_yuan", f"seal_{side}_at_limit"
+        if unlimited or (bands is not None and price is not None and price != round(bands[band] * 1000)):
+            shares, yuan, sealed = 0, 0, False
+        elif bands is None or price is None or phase_missing or volume is None or book_price is None:
+            shares = yuan = sealed = None
+        elif book_price != price:
+            shares, yuan, sealed = 0, 0, False
+        else:
+            shares = max(0, volume)
+            yuan = shares * max(0, book_price) // 10
+            sealed = shares > 0 and (indicative or opposite is None or opposite == 0)
+        result.update({shares_key: shares, yuan_key: yuan, sealed_key: sealed})
+        for key in (shares_key, yuan_key, sealed_key):
+            if result[key] is None:
+                quality[key] = "MISSING"
+    result["field_quality"] = quality
+    return result
+
+
 def derive_state(tick: Tick) -> dict[str, Any]:
+    original_tick = tick
+    tick = replace(tick, **{key: 0 for key in Tick.__dataclass_fields__
+                            if key not in {"trade_date", "ts", "symbol", "name"} and getattr(tick, key) is None})
     sec = _seconds(tick.ts)
     final_print = _seconds("09:25:00") <= sec < _seconds("09:30:00")
     auction = sec <= _seconds("09:25:00")
@@ -88,7 +124,7 @@ def derive_state(tick: Tick) -> dict[str, Any]:
         )
         amount = matching_amount_yuan(tick) if auction else max(0, tick.amt_yuan)
     pct = ((price / tick.pc_milli - 1.0) * 100.0) if price > 0 and tick.pc_milli > 0 else None
-    return {
+    state = {
         "symbol": tick.symbol, "price_milli": price, "prev_close_milli": tick.pc_milli,
         "name": tick.name,
         "pct_change": pct, "match_amount_yuan": amount,
@@ -98,6 +134,11 @@ def derive_state(tick: Tick) -> dict[str, Any]:
         "status": "INDICATIVE" if auction and sec < _seconds("09:25:00") else "FINAL",
         "ts": tick.ts, "amt_yuan": max(0, tick.amt_yuan),
     }
+    price_missing = (original_tick.px_milli is None if not auction or (final_print and tick.amt_yuan > 0)
+                     else original_tick.bp1_milli is None or original_tick.ap1_milli is None)
+    seal_price = None if price_missing else price
+    state.update(seal_order(original_tick, seal_price))
+    return state
 
 
 def load_ticks(path: Path, trade_date: str) -> list[Tick]:
@@ -127,54 +168,13 @@ def _limit_pct(symbol: str) -> float:
 
 
 def _at_limit(state: Mapping[str, Any], direction: str) -> bool | None:
-    symbol = str(state.get("symbol") or "")
-    if symbol.startswith(("N", "C")):
+    if str(state.get("symbol") or "").startswith(("N", "C")):
         return False
-    required = ("price_milli", "prev_close_milli",
-                "rest_bid_shares" if direction == "up" else "rest_ask_shares")
-    if any(key not in state or state[key] is None for key in required):
-        return None
-    price, pc = int(state["price_milli"]), int(state["prev_close_milli"])
-    if not price or not pc or symbol.startswith(("N", "C")):
-        return False
-    ratio = _limit_pct(symbol) / 100
-    target = int((pc * (1 + ratio if direction == "up" else 1 - ratio) + 5) // 10 * 10)
-    rest = state["rest_bid_shares"] if direction == "up" else state["rest_ask_shares"]
-    return abs(price - target) <= 10 and int(rest) > 0
+    return state.get("seal_bid_at_limit" if direction == "up" else "seal_ask_at_limit")
 
 
 def _at_limit_pair(state: Mapping[str, Any]) -> tuple[bool | None, bool | None]:
-    """Evaluate both limit directions while sharing symbol and price parsing."""
-    symbol = str(state.get("symbol") or "")
-    if symbol.startswith(("N", "C")):
-        return False, False
-    price_raw, close_raw = state.get("price_milli"), state.get("prev_close_milli")
-    up_rest, down_rest = state.get("rest_bid_shares"), state.get("rest_ask_shares")
-    try:
-        price, close = int(price_raw), int(close_raw)
-    except (TypeError, ValueError, OverflowError):
-        price = close = None
-    ratio = _limit_pct(symbol) / 100
-    up = down = None
-    if price is not None and close is not None and up_rest is not None:
-        if not price or not close:
-            up = False
-        else:
-            target = int((close * (1 + ratio) + 5) // 10 * 10)
-            try:
-                up = abs(price - target) <= 10 and int(up_rest) > 0
-            except (TypeError, ValueError, OverflowError):
-                up = None
-    if price is not None and close is not None and down_rest is not None:
-        if not price or not close:
-            down = False
-        else:
-            target = int((close * (1 - ratio) + 5) // 10 * 10)
-            try:
-                down = abs(price - target) <= 10 and int(down_rest) > 0
-            except (TypeError, ValueError, OverflowError):
-                down = None
-    return up, down
+    return _at_limit(state, "up"), _at_limit(state, "down")
 
 
 def _pct_values(states: Mapping[str, Mapping[str, Any]]) -> list[float]:

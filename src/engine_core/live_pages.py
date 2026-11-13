@@ -563,7 +563,7 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
                          else "封跌停" if latest_side == -1 else "观察")
         item = {"symbol": symbol, "name": stock_names.get(symbol, row.get("name") or symbol),
                 "pct_change": row.get("pct_change"), "match_amount_yuan": row.get("match_amount_yuan"),
-                "seal_yuan": row.get("rest_bid_yuan") if _state_limit(row, 1) else row.get("rest_ask_yuan"),
+                "seal_yuan": row.get("seal_bid_yuan") if _state_limit(row, 1) else row.get("seal_ask_yuan"),
                 "streak": stock_context.get(symbol, {}).get("streak"),
                 "current_pct": later.get("pct_change"), "status": result_status}
         if _state_limit(row, 1): sealed_up.append(item)

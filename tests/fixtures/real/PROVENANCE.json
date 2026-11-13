@@ -2129,5 +2129,60 @@
    "command": "python - <<'PY'\nimport gzip,json,hashlib,pathlib\nroot=pathlib.Path('tests/fixtures/real'); out=root/'auction_amount_facts_c731'; src=pathlib.Path('/home/exedev/validation/realdata/plate_amount_baseline_20261106'); prov=json.loads((root/'PROVENANCE.json').read_text()); entries={}\nfor filename in ('td_inputs_auction.jsonl.gz','td_inputs_0945.jsonl.gz'):\n with gzip.open(src/filename,'rt') as f: lines=[line for line in f if (json.loads(line)[2] in ('20261103','20261104','20261105') if 'auction' in filename else json.loads(line)[0].endswith('09:30:01'))]\n dest=out/filename\n with dest.open('wb') as raw:\n  with gzip.GzipFile(filename='',mode='wb',fileobj=raw,mtime=0) as z: z.write(''.join(lines).encode())\n entries[str(dest.relative_to(root))]={'source_path':str(src/filename),'source_sha256':hashlib.sha256((src/filename).read_bytes()).hexdigest(),'sha256':hashlib.sha256(dest.read_bytes()).hexdigest(),'rows':len(lines),'selection':'trade_date 20261103, 20261104, 20261105' if 'auction' in filename else '_wstart 2026-09-18 09:30:01','command':\"python gzip JSONL filter: \"+(\"row[2] in {20261103,20261104,20261105}\" if 'auction' in filename else \"row[0] == 2026-09-18 09:30:01\"),'source':'C731 TD read-only capture'}\nprov['_c778_excerpts']=entries\n(root/'PROVENANCE.json').write_text(json.dumps(prov,ensure_ascii=False,indent=1)+'\\n')\nprint([(x,y['rows']) for x,y in entries.items()])\nPY",
    "source": "C731 TD read-only capture"
   }
+ },
+ "td_stock_tick_2026-11-12_600103_092500_092600_0923.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-12",
+  "fetched_at": "2026-11-13T09:23:25+08:00",
+  "bytes": 359,
+  "sha256": "9b3df64c6e962940a67de803363016ab1065c076744aa2dcc2ce3947c7d7b034",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-12 --symbol 600103 --start 09:25:00 --end 09:26:00",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='600103' AND ts>='2026-11-12 09:25:00' AND ts<='2026-11-12 09:26:00' ORDER BY ts",
+  "row_count": 1
+ },
+ "td_stock_tick_2026-11-12_600103_093950_094000_0923.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-12",
+  "fetched_at": "2026-11-13T09:23:32+08:00",
+  "bytes": 819,
+  "sha256": "cbd56a130febc23ce7b5f21ab002bc42bbc8bb9fa78db002776c16bc83b384b1",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-12 --symbol 600103 --start 09:39:50 --end 09:40:00",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='600103' AND ts>='2026-11-12 09:39:50' AND ts<='2026-11-12 09:40:00' ORDER BY ts",
+  "row_count": 4
+ },
+ "td_stock_tick_2026-11-12_600519_092500_092600_0923.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-12",
+  "fetched_at": "2026-11-13T09:23:52+08:00",
+  "bytes": 372,
+  "sha256": "a804cc3bc889a71e7bc38b9105de8df2f27c962fe2b05b9e0a35e60b2d57b668",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-12 --symbol 600519 --start 09:25:00 --end 09:26:00",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='600519' AND ts>='2026-11-12 09:25:00' AND ts<='2026-11-12 09:26:00' ORDER BY ts",
+  "row_count": 1
+ },
+ "td_stock_tick_2026-11-12_002160_092500_092600_0923.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-12",
+  "fetched_at": "2026-11-13T09:23:58+08:00",
+  "bytes": 364,
+  "sha256": "9bf9460b80424626189e161e0612962d477e9cbafc591882354f17770c4bae1f",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-12 --symbol 002160 --start 09:25:00 --end 09:26:00",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='002160' AND ts>='2026-11-12 09:25:00' AND ts<='2026-11-12 09:26:00' ORDER BY ts",
+  "row_count": 1
+ },
+ "td_stock_tick_2026-11-12_600103_092450_092459_0925.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-12",
+  "fetched_at": "2026-11-13T09:25:16+08:00",
+  "bytes": 795,
+  "sha256": "724322eb9d7826762e9460b1a3bfb0d7ba9d193bd468282c2f94920c17331d65",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-12 --symbol 600103 --start 09:24:50 --end 09:24:59",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='600103' AND ts>='2026-11-12 09:24:50' AND ts<='2026-11-12 09:24:59' ORDER BY ts",
+  "row_count": 4
  }
 }
