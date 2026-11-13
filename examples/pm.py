@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """PM workflow commands."""
 import argparse
+import ast
+from collections import Counter
 import difflib
 from datetime import datetime, timedelta
 import json
@@ -305,6 +307,162 @@ def testlist(args):
     return 0
 
 
+def card_block(text, name):
+    match = re.search(r'^' + re.escape(name) + r':[ \t]*(.*(?:\n(?![A-Z][A-Z0-9_]*:).*)*)', text, re.M)
+    return match.group(1).strip() if match else ''
+
+
+def title_keywords(title):
+    words = set(re.findall(r'[a-zA-Z][a-zA-Z0-9_]+', title.lower()))
+    for part in re.findall(r'[\u4e00-\u9fff]+', title):
+        words.update(part[i:i + 2] for i in range(len(part) - 1))
+    return words
+
+
+def pack(args):
+    path = card_path(args.card)
+    if path is None:
+        return 2
+    text = path.read_text(encoding='utf-8')
+    local_repo = Path(__file__).resolve().parents[1]
+    worktree = Path(worktree_from_card(text) or local_repo)
+    files = scoped_files(text, worktree)
+    scope = field(text, 'SCOPE_WRITE')
+    sections = []
+    sections.append(('目标与不做什么', [f'TITLE: {field(text, "TITLE")}', f'SERVES: {field(text, "SERVES")}',
+                     *('GOAL: ' + line for line in card_block(text, 'GOAL').splitlines()[:5]),
+                     f'NOT_DO: {card_block(text, "NOT_DO")}']))
+    constraints = json.loads(Path(__file__).with_name('card_constraints.json').read_text(encoding='utf-8'))
+    matched = []
+    for c in constraints:
+        hits = [bool(re.search(p, text, re.I)) for p in c['patterns']]
+        if c.get('always') or any(re.search(p, scope, re.I) for p in c.get('scope_patterns', [])) or (all(hits) if c['all'] else any(hits)):
+            matched.append(f"- {c['id']}: {c['message']}")
+    sections.append(('既定设计约束', matched))
+    code, terms, owners = [], set(), {}
+    for rel in dict.fromkeys(files):
+        source = worktree / rel
+        if not source.is_file():
+            source = local_repo / rel
+        if not source.is_file():
+            continue
+        try:
+            content = source.read_text(encoding='utf-8')
+            tree = ast.parse(content)
+        except (OSError, UnicodeError, SyntaxError):
+            continue
+        nodes = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+        file_terms = {n.name for n in nodes}
+        file_terms.update(re.findall(r'core:[a-z_:]+', content))
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Constant) and isinstance(n.value, str) and re.fullmatch(r'[a-z][a-z0-9_]*_v[0-9]+', n.value):
+                file_terms.add(n.value)
+        for term in file_terms:
+            owners.setdefault(term, set()).add(rel)
+        terms.update(file_terms)
+        code.append(f'{rel}:')
+        for n in nodes[:15]:
+            if isinstance(n, ast.ClassDef):
+                signature = f'class {n.name}' + ('(' + ', '.join(ast.unparse(x) for x in n.bases) + ')' if n.bases else '')
+            else:
+                signature = ('async def ' if isinstance(n, ast.AsyncFunctionDef) else 'def ') + n.name + '(' + ast.unparse(n.args) + ')' + (' -> ' + ast.unparse(n.returns) if n.returns else '')
+            code.append(f'  {signature} :{n.lineno}')
+        if len(nodes) > 15:
+            code.append('  …已截断')
+    counts = Counter()
+    if terms:
+        repo = worktree if (worktree / '.git').exists() else local_repo
+        command = ['git', '-C', str(repo), 'grep', '-n', '-F']
+        for term in sorted(terms):
+            command.extend(['-e', term])
+        result = subprocess.run(command + ['--', 'src/', 'examples/', 'tests/'], capture_output=True, text=True, timeout=10)
+        if result.returncode not in (0, 1):
+            raise RuntimeError('git grep failed')
+        for line in result.stdout.splitlines():
+            name, _, snippet = line.split(':', 2)
+            if any(term in snippet and (owners[term] - {name}) for term in terms):
+                counts[name] += 1
+    if len(code) > 37:
+        code = code[:36] + ['…代码签名已截断']
+    code.append('消费方清单:')
+    code.extend(f'  {name}: {count}' for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:15])
+    sections.append(('代码地图', code))
+    keywords = title_keywords(field(text, 'TITLE'))
+    precedents = []
+    cards = location('PM_CARDS_DIR', str(CARDS))
+    for candidate in cards.glob('C*.md'):
+        if candidate == path:
+            continue
+        other = candidate.read_text(encoding='utf-8')
+        if not field(other, 'STATUS').startswith('DONE') or field(other, 'ROLE') != field(text, 'ROLE'):
+            continue
+        other_words = title_keywords(field(other, 'TITLE'))
+        score = len(keywords & other_words) / len(keywords | other_words) if keywords | other_words else 0
+        report = location('PM_REPORTS_DIR', '/home/exedev/fw/reports') / candidate.name
+        first = report.read_text(encoding='utf-8').splitlines()[:1] if report.is_file() else []
+        precedents.append((score, candidate.stem, field(other, 'TITLE')[:40], first[0][:100] if first else '报告缺失'))
+    prior = [f'{ident}|{title}|{first}' for _, ident, title, first in sorted(precedents, key=lambda x: (-x[0], x[1]))[:3]]
+    retros = location('PM_RETROS_DIR', '/home/exedev/fw/retros')
+    for item in sorted(retros.glob('*.md')):
+        content = item.read_text(encoding='utf-8')
+        if sum(word in content.lower() for word in keywords) >= 2:
+            heading = next((line.lstrip('# ').strip() for line in content.splitlines() if line.startswith('#')), '')
+            prior.append(f'{item.name}|{heading}')
+            if len(prior) >= min(3, len(precedents)) + 3:
+                break
+    sections.append(('先例', prior))
+    facts = Path(__file__).with_name('card_context_facts.md').read_text(encoding='utf-8').splitlines()
+    capture = ast.parse((local_repo / 'examples/capture_real_fixture.py').read_text(encoding='utf-8'))
+    for node in ast.walk(capture):
+        if isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == 'kind':
+            choices = next((ast.literal_eval(k.value) for k in node.keywords if k.arg == 'choices'), [])
+            facts.append('fixture kinds: ' + ', '.join(choices))
+            break
+    facts.append('验收清单: ' + ' '.join(lint_module().exact_test_list(files, worktree if worktree.is_dir() else local_repo)))
+    today = datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
+    try:
+        try:
+            from engine_core.trade_day_context import next_trade_date
+        except ModuleNotFoundError:
+            sys.path.insert(0, str(local_repo / 'src'))
+            from engine_core.trade_day_context import next_trade_date
+        following = next_trade_date(None, today)
+    except (OSError, ValueError, ImportError) as exc:
+        following = 'UNKNOWN (' + type(exc).__name__ + ')'
+    facts.append(f'当前日期: {today}; 下一个交易日: {following}')
+    facts.append(f'MODEL: {field(text, "MODEL")}; EFFORT: {field(text, "EFFORT")}')
+    sections.append(('环境事实', facts))
+    sections.append(('验收口径', [f'{key}: {card_block(text, key)}' for key in ('REAL_DATA', 'ORACLE', 'ACCEPT_BY', 'TEST_BUDGET', 'STUBS_ALLOWED')] + ['遇到规格内部矛盾时选与真实历史失败原因一致者并写入报告 OPEN,不要停下来等 PM。']))
+    quotas = (12, 20, 55, 9, 15, 25)
+    lines = []
+    for (heading, content), quota in zip(sections, quotas):
+        lines.append('## ' + heading)
+        flattened = [part for item in content for part in item.splitlines()]
+        if len(flattened) > quota:
+            flattened = flattened[:quota - 1] + ['…本节已截断']
+        lines.extend(flattened)
+    out = Path(args.out_dir) if args.out_dir else location('PM_CONTEXT_DIR', '/home/exedev/fw/context')
+    out.mkdir(parents=True, exist_ok=True)
+    target = out / (args.card + '.md')
+    target.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    if not re.search(r'^CONTEXT:', text, re.M):
+        updated, count = re.subn(r'^(TITLE:[^\n]*\n)', r'\1CONTEXT: fw/context/' + args.card + r'.md(先读)\n', text, count=1, flags=re.M)
+        if not count:
+            raise ValueError('card has no TITLE')
+        path.write_text(updated, encoding='utf-8')
+    print(f'{target} {len(lines)} lines')
+    return 0
+
+
+def try_pack(card):
+    try:
+        result = pack(argparse.Namespace(card=card, out_dir=None))
+        if result:
+            print(f'warning: pack failed for {card}')
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        print(f'warning: pack failed: {exc}')
+
+
 def newcard(args):
     recipe_path = Path(__file__).with_name('card_recipes') / (args.recipe + '.json')
     if not re.fullmatch(r'[a-z0-9-]+', args.recipe) or not recipe_path.is_file():
@@ -364,7 +522,7 @@ def newcard(args):
     if fixed['ROLE'] == 'runner':
         entries += [('QUESTION', values['question']), ('NEED_DATA', fixed['NEED_DATA'])]
     entries += [(k, fixed[k]) for k in ('TEST_BUDGET', 'STUBS_ALLOWED', 'AUTHORIZATION') if k in fixed]
-    entries += [('GOAL', values['goal'])] + [(k, fixed[k]) for k in ('NOT_DO', 'REPORT', 'ACCEPT')]
+    entries += [('GOAL', '先读 CONTEXT 文件。\n' + values['goal'])] + [(k, fixed[k]) for k in ('NOT_DO', 'REPORT', 'ACCEPT')]
     card = '\n'.join(f'{k}: {v}' for k, v in entries) + '\n'
     if args.dry_run:
         print(card, end='')
@@ -377,6 +535,9 @@ def newcard(args):
         if result.returncode:
             print(f'{ident} {path}\nworktree failed: {result.stderr.strip()}')
             return 2
+    if not args.no_pack:
+        try_pack(ident)
+        card = path.read_text(encoding='utf-8')
     findings = lint_module().lint_card(card, worktree if worktree.is_dir() else repo)
     print(f'{ident} {path}')
     for finding in findings:
@@ -423,6 +584,8 @@ def card_command(args):
         print('after: STATUS: ' + args.text)
         return 0
     if args.command == 'dispatch':
+        if not args.no_pack:
+            try_pack(args.card)
         try:
             if not args.no_lint:
                 lint = os.environ.get('PM_CARD_LINT', str(Path(__file__).with_name('card_lint.py')))
@@ -582,6 +745,10 @@ def main(argv=None):
     new.add_argument('--param', action='append', default=[])
     new.add_argument('--dry-run', action='store_true')
     new.add_argument('--no-worktree', action='store_true')
+    new.add_argument('--no-pack', action='store_true')
+    pack_parser = sub.add_parser('pack')
+    pack_parser.add_argument('card')
+    pack_parser.add_argument('--out-dir')
     metric_parser = sub.add_parser('metrics')
     metric_parser.add_argument('--since', type=lambda value: datetime.strptime(value, '%Y-%m-%d').date().isoformat())
     cards = sub.add_parser('cards')
@@ -592,12 +759,15 @@ def main(argv=None):
         command.add_argument('card')
         if name == 'dispatch':
             command.add_argument('--no-lint', action='store_true')
+            command.add_argument('--no-pack', action='store_true')
         if name == 'setstatus':
             command.add_argument('text')
         if name == 'wait-card':
             command.add_argument('--timeout', type=float, default=1700)
             command.add_argument('--interval', type=float, default=20)
     args = parser.parse_args(argv)
+    if args.command == 'pack':
+        return pack(args)
     if args.command == 'metrics':
         return metrics(args)
     if args.command == 'newcard':

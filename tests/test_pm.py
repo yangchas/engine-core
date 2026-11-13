@@ -389,3 +389,49 @@ def test_c1057_runner_tiers_and_builder(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert field(output, 'MODEL') == 'gpt-6.1-terra' and field(output, 'EFFORT') == 'high'
     assert field(output, 'COMMIT') == 'yes'
+
+
+def test_pack_real_c1047_constraints_and_idempotency(tmp_path, monkeypatch):
+    import shutil
+    cards = tmp_path / 'cards'
+    cards.mkdir()
+    shutil.copy(Path(__file__).parent / 'fixtures/card_lint/C1047.md', cards / 'C1047.md')
+    monkeypatch.setenv('PM_CARDS_DIR', str(cards))
+    for _ in range(2):
+        assert main(['pack', 'C1047', '--out-dir', str(tmp_path)]) == 0
+    result = (tmp_path / 'C1047.md').read_text()
+    assert 'td_stops_0945' in result and 't1v2_restart_zeroes_anchors' in result
+    assert len(result.splitlines()) <= 150
+    assert (cards / 'C1047.md').read_text().count('\nCONTEXT:') == 1
+
+
+def test_pack_real_c1046_code_map(tmp_path, monkeypatch):
+    import ast
+    import re
+    repo = Path(__file__).resolve().parents[1]
+    cards = tmp_path / 'cards'
+    cards.mkdir()
+    text = (Path(__file__).parent / 'fixtures/pm_cards/C1046.md').read_text()
+    # Real card header, with scope redirected to the worktree under test.
+    text = re.sub(r'^SCOPE_WRITE:.*', f'SCOPE_WRITE: {repo}/examples/pm_guard.py, {repo}/tests/test_pm_guard.py', text, flags=re.M)
+    (cards / 'C1046.md').write_text(text)
+    monkeypatch.setenv('PM_CARDS_DIR', str(cards))
+    assert main(['pack', 'C1046', '--out-dir', str(tmp_path)]) == 0
+    result = (tmp_path / 'C1046.md').read_text()
+    nodes = ast.parse((repo / 'examples/pm_guard.py').read_text()).body
+    for name in ('decide', '_bash'):
+        node = next(n for n in nodes if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
+        assert re.search(rf'{name}\(.*\).*:{node.lineno}\b', result)
+    assert 'tests/test_pm_guard.py' in result
+
+
+def test_pack_real_precedents_and_dangerous_control(tmp_path, monkeypatch):
+    import shutil
+    cards = tmp_path / 'cards'
+    shutil.copytree(Path(__file__).parent / 'fixtures/pm_cards/precedents', cards)
+    monkeypatch.setenv('PM_CARDS_DIR', str(cards))
+    assert main(['pack', 'C1053', '--out-dir', str(tmp_path)]) == 0
+    text = (tmp_path / 'C1053.md').read_text()
+    section = text.split('先例', 1)[1].split('环境事实', 1)[0]
+    assert any(card in section for card in ('C1049', 'C1050', 'C1052', 'C1054', 'C1055'))
+    assert 'C1051|' not in section  # BLOCKED is a dangerous false precedent.

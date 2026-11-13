@@ -1,1 +1,9 @@
 Source: /home/exedev/fw/cards/C1045.md, C1046.md, C1047.md; first 40 lines copied 2026-11-13.
+
+/home/exedev/fw/cards/C1049.md: header before GOAL; sha256=64c84fd56314d290eb1cf8338b62abb2b865b3fa39c270ee800984253505542b
+/home/exedev/fw/cards/C1050.md: header before GOAL; sha256=d435b7e91eb517d4c93966f2e3ae98ddead53953d51745310a78c6720a5f404a
+/home/exedev/fw/cards/C1051.md: header before GOAL; sha256=450d33aadbcd23ecca173f49cb6d8ef9048a4dfe7351192f1e5e21033097a715
+/home/exedev/fw/cards/C1052.md: header before GOAL; sha256=5dc40bf21a433863f899a3803bf0dea94bc7789a3e57ef5b38f5b7879a33beb0
+/home/exedev/fw/cards/C1053.md: header before GOAL; sha256=1621350912c25dfdb02a8e03eee9c261355398ded55ba4b68317b46c5fece8dc
+/home/exedev/fw/cards/C1054.md: header before GOAL; sha256=3c26217915f4baeb7047ff7814bae1c9b5c4a7622f634527219a4fe820e484c1
+/home/exedev/fw/cards/C1055.md: header before GOAL; sha256=efb16a50a9218631f75c540eda1a68ff8e6ab5eca520023678a2dfba1053a407
