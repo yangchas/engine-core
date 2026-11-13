@@ -142,3 +142,44 @@ def test_c1046_allowed_tool_boundaries():
     commands = ['ps -p 1,2 -o pid,rss,comm', 'ps -o pid,etime -p 1', 'ps -eo pid,rss --sort=-rss | head -3', 'pgrep -x codex', 'pgrep -c -x codex', 'pgrep codex', 'free -m', 'which python3', 'sha256sum file', 'md5sum file', 'df -h', 'du -h .', 'nproc', 'uname -a', 'uptime', 'hostname', 'whoami', 'id', 'basename /tmp/x', 'dirname /tmp/x', 'realpath /tmp/x', 'readlink /tmp/x', 'paste x y', "printf '%s' x", "jq '.foo' x.json", "awk '{print $1}' x"]
     for command in commands:
         assert decide('Bash', {'command': command}, False)[0], command
+
+
+def test_c1049_dangerous_commands(monkeypatch):
+    commands = {
+        "jq -n 'env'": 'jq: unsafe program',
+        "jq -n '$ENV'": 'jq: unsafe program',
+        "jq -n 'input_filename'": 'jq: unsafe program',
+        'cat ~/core-data/sec*/w*': 'read_sensitive_path',
+        'cat ~/core-data/sec?ets/*': 'read_sensitive_path',
+        'head -c 10 ~/core-data/secrets/*': 'read_sensitive_path',
+        'echo $REDIS_URL': 'read_secret_env',
+        'echo "${TD_CONFIG}"': 'read_secret_env',
+        "printf '%s' $ANTHROPIC_API_KEY": 'read_secret_env',
+        'cat $HOME/.ssh/id_rsa': 'read_sensitive_path',
+    }
+    failures = []
+    for command, expected in commands.items():
+        allowed, reason = decide('Bash', {'command': command}, False)
+        if allowed or expected not in reason:
+            failures.append((command, allowed, reason))
+    assert not failures, failures
+    for program in ('$__prog_args', '$__loc__', 'halt_error', 'debug', 'stderr',
+                    'input', 'inputs', 'getpath(["ENV"])', '@sh', 'include "x"', 'import "x" as x'):
+        assert decide('Bash', {'command': "jq -n '" + program + "'"}, False) == (False, 'jq: unsafe program')
+    for name in ('MY_TOKEN', 'MY_SECRET', 'PASSWORD', 'PASSWD', 'APIKEY', 'API_KEY',
+                 'COOKIE', 'OPENAI_X', 'AWS_X', 'GITHUB_X', 'GH_X'):
+        assert decide('Bash', {'command': 'echo $' + name}, False) == (False, 'read_secret_env')
+    monkeypatch.setattr('examples.pm_guard.glob.iglob', lambda path: iter('/safe/' + str(i) for i in range(501)))
+    assert not decide('Bash', {'command': 'cat /safe/*'}, False)[0]
+
+
+def test_c1049_safe_commands():
+    commands = ['ls ~/fw/cards/C10*', 'cat ~/fw/evidence/C1049/*.out',
+                "jq -r '.a' x.json", 'jq -c . x.json', 'echo $HOME',
+                'echo $CLAUDE_JOB_DIR', 'for f in a b; do echo $f; done',
+                'env -u TD_CONFIG -u REDIS_URL python3 -m pytest -q x',
+                "jq --arg a b '.x'", "jq -r '.[] | .x'"]
+    failures = [(command, decide('Bash', {'command': command}, False))
+                for command in commands
+                if not decide('Bash', {'command': command}, False)[0]]
+    assert not failures, failures

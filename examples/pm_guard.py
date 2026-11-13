@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """PreToolUse policy for the PM session."""
 import datetime
+import glob
+import itertools
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -20,13 +22,24 @@ ASSIGN = re.compile(r'^[a-zA-Z_][a-zA-Z_0-9]*=')
 
 FILE_READERS = READ | set('cut sort uniq tr sed awk jq paste sha256sum md5sum'.split())
 PS_FIELDS = set('pid ppid etime etimes lstart rss vsz pcpu pmem stat nlwp comm user'.split())
+SECRET_ENV = re.compile(r'\$(?:\{([A-Za-z_][A-Za-z_0-9]*)\}|([A-Za-z_][A-Za-z_0-9]*))')
+SECRET_NAME = re.compile(r'(?:REDIS_URL|TD_CONFIG|.*TOKEN.*|.*SECRET.*|.*PASSWORD.*|.*PASSWD.*|.*API_?KEY.*|.*COOKIE.*|ANTHROPIC.*|OPENAI.*|AWS_.*|GITHUB_.*|GH_.*)', re.I)
 SENSITIVE = re.compile(r'/secrets(?:/|$)|/proc/[^/]*(?:[?*\[])[^/]*/(?:environ|cmdline|mem)(?:/|$)|cookie|\.env|\.ssh|\.netrc|credentials|/etc/shadow|/proc/(?:[0-9]+|self)/(?:environ|cmdline|mem)(?:/|$)|id_rsa', re.I)
 
 
 def _sensitive_path(word):
     if not (word.startswith(('/', './', '~')) or '/' in word):
         return False
-    return bool(SENSITIVE.search(word) or SENSITIVE.search('/' + os.path.normpath(word).lstrip('/')))
+    def sensitive(path):
+        return bool(SENSITIVE.search(path) or SENSITIVE.search('/' + os.path.normpath(path).lstrip('/')))
+
+    path = os.path.expanduser(word)
+    if sensitive(word) or sensitive(path):
+        return True
+    if glob.has_magic(path):
+        matches = list(itertools.islice(glob.iglob(path), 501))
+        return len(matches) > 500 or any(sensitive(match) for match in matches)
+    return False
 
 
 def _safe_ps(rest):
@@ -119,6 +132,8 @@ def _substitutions(command, env):
 def _bash(command, env, *, substitution=False, loop_depth=0):
     if not isinstance(command, str):
         return False, 'parse: command must be a string'
+    if any(SECRET_NAME.fullmatch(match.group(1) or match.group(2)) for match in SECRET_ENV.finditer(command)):
+        return False, 'read_secret_env'
     if '<(' in command or '>(' in command:
         return False, 'shell_expansion: process substitution is forbidden'
     if substitution and ('$(' in command or '\x60' in command):
@@ -307,9 +322,10 @@ def _bash(command, env, *, substitution=False, loop_depth=0):
                     i += 1
                 else:
                     return False, 'jq: unsafe option'
-            if (i >= len(rest) or re.search(r'\b(?:include|import)\b', rest[i])
-                    or any(x.startswith('-') for x in rest[i+1:])):
+            if i >= len(rest) or any(x.startswith('-') for x in rest[i+1:]):
                 return False, 'jq: unsafe arguments'
+            if re.search(r'\b(?:env|input_filename|halt_error|debug|stderr|input|inputs|include|import)\b|\$(?:ENV|__prog_args|__loc__)\b|getpath\s*\(\s*\[?\s*"ENV|@sh\b', rest[i]):
+                return False, 'jq: unsafe program'
         elif cmd == 'hostname':
             if rest:
                 return False, 'hostname: arguments not allowed'
