@@ -433,7 +433,51 @@ def pack(args):
     facts.append(f'MODEL: {field(text, "MODEL")}; EFFORT: {field(text, "EFFORT")}')
     sections.append(('环境事实', facts))
     sections.append(('验收口径', [f'{key}: {card_block(text, key)}' for key in ('REAL_DATA', 'ORACLE', 'ACCEPT_BY', 'TEST_BUDGET', 'STUBS_ALLOWED')] + ['遇到规格内部矛盾时选与真实历史失败原因一致者并写入报告 OPEN,不要停下来等 PM。']))
-    quotas = (12, 20, 55, 9, 15, 25)
+    staff = location('PM_STAFF_DIR', '/home/exedev/fw/design/staff')
+    culture_path = staff / 'CULTURE.md'
+    culture = culture_path.read_text(encoding='utf-8').splitlines() if culture_path.is_file() else []
+    if len(culture) > 12:
+        culture = [line.split('。', 1)[0] for line in culture if line.startswith('#') or re.match(r'^\d+\.', line)][:11] + ['…守则已截断']
+    role = field(text, 'ROLE')
+    experience = staff / role / 'EXPERIENCE.md' if role in ('builder', 'runner', 'auditor', 'pm') else staff / '__missing__'
+    lessons = [line for line in experience.read_text(encoding='utf-8').splitlines() if re.match(r'^\d{4}-\d{2}-\d{2}\|', line)] if experience.is_file() else []
+    words = title_keywords(field(text, 'TITLE') + ' ' + card_block(text, 'GOAL'))
+    ranked = sorted(((sum(word in line.lower().split('|', 2)[-1] for word in words), i, line) for i, line in enumerate(lessons)), key=lambda x: (-x[0], -x[1]))
+    selected = [line for score, _, line in ranked if score > 0][:8]
+    for line in lessons[-3:]:
+        if line not in selected:
+            selected.append(line)
+    sections.append(('岗位记忆', culture + selected))
+    epic = field(text, 'EPIC')
+    epic_path = location('PM_EPIC_DIR', '/home/exedev/fw/design/epics') / (epic + '.md')
+    if re.fullmatch(r'[a-zA-Z0-9_-]+', epic) and epic_path.is_file():
+        brief = epic_path.read_text(encoding='utf-8').splitlines()
+        if len(brief) > 60:
+            brief = brief[:60] + ['…专题简报已截断']
+    else:
+        brief = ['无专题简报']
+    sections.append(('专题简报', brief))
+    handoffs = []
+    dependencies = [x.strip() for x in field(text, 'DEPENDS').split(',') if x.strip()]
+    for dependency in dependencies[:3]:
+        if not re.fullmatch(r'C[0-9]+', dependency):
+            handoffs.append(dependency + ': 无效卡号')
+            continue
+        report = location('PM_REPORTS_DIR', '/home/exedev/fw/reports') / (dependency + '.md')
+        if not report.is_file():
+            handoffs.append(dependency + ': 报告缺失')
+            continue
+        report_lines = report.read_text(encoding='utf-8').splitlines()
+        start = next((i for i, line in enumerate(report_lines) if re.match(r'^#{1,6}\s*.*HANDOFF', line, re.I)), None)
+        if start is None:
+            handoffs.extend([dependency + ' (无 HANDOFF,取末 8 行)', *report_lines[-8:]])
+        else:
+            end = next((i for i in range(start + 1, len(report_lines)) if re.match(r'^#{1,6}\s', report_lines[i])), len(report_lines))
+            handoffs.extend([dependency, *report_lines[start:min(end, start + 8)]])
+    if len(dependencies) > 3:
+        handoffs.append('…前驱已截断')
+    sections.append(('交接单链', handoffs or ['无前驱']))
+    quotas = (8, 12, 32, 7, 10, 15, 22, 18, 12)
     lines = []
     for (heading, content), quota in zip(sections, quotas):
         lines.append('## ' + heading)
@@ -519,10 +563,12 @@ def newcard(args):
                ('APPROVAL', values['approval']), ('SCOPE_WRITE', ', '.join(expanded)),
                ('REAL_DATA', values['real_data']), ('ORACLE', values['oracle']),
                ('ACCEPT_BY', values['accept_by'])]
+    entries += [(key, values[key.lower()]) for key in ('EPIC', 'DEPENDS') if values.get(key.lower())]
     if fixed['ROLE'] == 'runner':
         entries += [('QUESTION', values['question']), ('NEED_DATA', fixed['NEED_DATA'])]
     entries += [(k, fixed[k]) for k in ('TEST_BUDGET', 'STUBS_ALLOWED', 'AUTHORIZATION') if k in fixed]
-    entries += [('GOAL', '先读 CONTEXT 文件。\n' + values['goal'])] + [(k, fixed[k]) for k in ('NOT_DO', 'REPORT', 'ACCEPT')]
+    understanding = "第 0 步:先写 ≤8 行'我的理解'(目标、不做什么、关键约束、怎么验收、不确定点)到 evidence 目录下 understanding.md,再开工。\n" if tier == 'hard' else ''
+    entries += [('GOAL', understanding + '先读 CONTEXT 文件。\n' + values['goal'])] + [(k, fixed[k]) for k in ('NOT_DO', 'REPORT', 'ACCEPT')]
     card = '\n'.join(f'{k}: {v}' for k, v in entries) + '\n'
     if args.dry_run:
         print(card, end='')
@@ -713,6 +759,74 @@ def metrics(args):
     print('目标:一次通过率≥70%;平均派发≤1.5;陈旧 ready=0;DENY<5/天')
     return 0
 
+def lesson_add(args):
+    if (not re.fullmatch(r'C[0-9]+', args.card) or any(not value.strip() or len(value) > 200 or any(c in value for c in '\r\n|') for value in (args.mistake, args.rule))):
+        print('无效字段')
+        return 2
+    path = location('PM_STAFF_DIR', '/home/exedev/fw/design/staff') / args.role / 'EXPERIENCE.md'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    old = path.read_text(encoding='utf-8') if path.exists() else ''
+    line = f"{datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()}|{args.card}|{args.mistake}|{args.rule}"
+    if line in old.splitlines():
+        print('已存在,跳过')
+    else:
+        with path.open('a', encoding='utf-8') as output:
+            output.write(('\n' if old and not old.endswith('\n') else '') + line + '\n')
+        print('已追加: ' + line)
+    return 0
+
+
+def scorecard(args):
+    cards = location('PM_CARDS_DIR', str(CARDS))
+    runs = location('PM_RUNS_DIR', '/home/exedev/fw/runs')
+    groups = {}
+    card_groups = {}
+    usage = runs / 'usage.tsv'
+    usage_rows = [line.split('\t') for line in usage.read_text(encoding='utf-8').splitlines()] if usage.is_file() else []
+    inferred = {row[0]: tuple(row[1:4]) for row in usage_rows if len(row) == 5}
+    for path in cards.glob('C*.md'):
+        if not re.fullmatch(r'C[0-9]+', path.stem):
+            continue
+        if args.since and datetime.fromtimestamp(path.stat().st_mtime, ZoneInfo('Asia/Shanghai')).date().isoformat() < args.since:
+            continue
+        content = path.read_text(encoding='utf-8')
+        values = tuple(field(content, name) for name in ('ROLE', 'MODEL', 'EFFORT'))
+        fallback = inferred.get(path.stem, ('?', '?', '?'))
+        key = tuple(value or fallback[i] for i, value in enumerate(values))
+        group = groups.setdefault(key, {'cards': 0, 'dispatch': 0, 'done': 0, 'tokens': [], 'missing': 0, 'latest': 0})
+        group['cards'] += 1
+        group['latest'] = max(group['latest'], int(path.stem[1:]))
+        group['dispatch'] += 1 + len(list((runs / 'archive').glob(path.stem + '.md.*')))
+        group['done'] += field(content, 'STATUS').startswith('DONE')
+        card_groups[path.stem] = key
+    if usage.is_file():
+        for row in usage_rows:
+            if len(row) != 5 or card_groups.get(row[0]) != tuple(row[1:4]):
+                continue
+            group = groups[tuple(row[1:4])]
+            if row[4].isdigit():
+                group['tokens'].append(int(row[4]))
+            else:
+                group['missing'] += 1
+    rows = []
+    for key, group in sorted(groups.items(), key=lambda item: (-item[1]['latest'], item[0])):
+        count = group['cards']
+        average = f"{sum(group['tokens']) / len(group['tokens']):.0f}" if group['tokens'] else '?'
+        rows.append(f"{'×'.join(key)} 卡数={count} 平均派发={group['dispatch']/count:.2f} DONE={group['done']/count:.1%} 平均 tokens={average} 缺数据={group['missing']}")
+    for row in rows[:12]:
+        print(row)
+    if len(rows) > 12:
+        print(f'…另有 {len(rows)-12} 组已截断')
+    staff = location('PM_STAFF_DIR', '/home/exedev/fw/design/staff')
+    totals = []
+    for role in ('builder', 'runner', 'auditor', 'pm'):
+        path = staff / role / 'EXPERIENCE.md'
+        count = sum(bool(re.match(r'^\d{4}-\d{2}-\d{2}\|', line)) for line in path.read_text(encoding='utf-8').splitlines()) if path.is_file() else 0
+        totals.append(f'{role} {count}')
+    print('经验册条数:' + ' / '.join(totals))
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest='command', required=True)
@@ -737,7 +851,7 @@ def main(argv=None):
     new.add_argument('--recipe', required=True)
     new.add_argument('--tier', choices=('easy', 'normal', 'hard', 'review'))
     new.add_argument('--question')
-    for option in ('title', 'serves', 'plan', 'approval', 'scope', 'real-data', 'oracle', 'accept-by'):
+    for option in ('title', 'serves', 'plan', 'approval', 'scope', 'real-data', 'oracle', 'accept-by', 'epic', 'depends'):
         new.add_argument('--' + option)
     goals = new.add_mutually_exclusive_group()
     goals.add_argument('--goal')
@@ -749,6 +863,12 @@ def main(argv=None):
     pack_parser = sub.add_parser('pack')
     pack_parser.add_argument('card')
     pack_parser.add_argument('--out-dir')
+    lesson_parser = sub.add_parser('lesson').add_subparsers(dest='lesson_command', required=True).add_parser('add')
+    lesson_parser.add_argument('--role', required=True, choices=('builder', 'runner', 'auditor', 'pm'))
+    for option in ('card', 'mistake', 'rule'):
+        lesson_parser.add_argument('--' + option, required=True)
+    score_parser = sub.add_parser('scorecard')
+    score_parser.add_argument('--since', type=lambda value: datetime.strptime(value, '%Y-%m-%d').date().isoformat())
     metric_parser = sub.add_parser('metrics')
     metric_parser.add_argument('--since', type=lambda value: datetime.strptime(value, '%Y-%m-%d').date().isoformat())
     cards = sub.add_parser('cards')
@@ -766,6 +886,10 @@ def main(argv=None):
             command.add_argument('--timeout', type=float, default=1700)
             command.add_argument('--interval', type=float, default=20)
     args = parser.parse_args(argv)
+    if args.command == 'lesson':
+        return lesson_add(args)
+    if args.command == 'scorecard':
+        return scorecard(args)
     if args.command == 'pack':
         return pack(args)
     if args.command == 'metrics':

@@ -1,3 +1,5 @@
+import pytest
+from examples import pm
 from pathlib import Path
 
 from examples.pm import TERMINAL, latest_state, main
@@ -435,3 +437,64 @@ def test_pack_real_precedents_and_dangerous_control(tmp_path, monkeypatch):
     section = text.split('先例', 1)[1].split('环境事实', 1)[0]
     assert any(card in section for card in ('C1049', 'C1050', 'C1052', 'C1054', 'C1055'))
     assert 'C1051|' not in section  # BLOCKED is a dangerous false precedent.
+
+
+def test_staff_pack_real_context(tmp_path, monkeypatch):
+    import shutil
+    fixtures = Path(__file__).parent / 'fixtures'
+    cards = tmp_path / 'cards'
+    shutil.copytree(fixtures / 'pm_cards/c1059', cards)
+    card = cards / 'C1039.md'
+    card.write_text(card.read_text() + '\nEPIC: seal-order\nDEPENDS: C1055\n')
+    monkeypatch.setenv('PM_CARDS_DIR', str(cards))
+    monkeypatch.setenv('PM_STAFF_DIR', str(fixtures / 'pm_staff'))
+    monkeypatch.setenv('PM_EPIC_DIR', str(fixtures / 'pm_staff'))
+    reports = tmp_path / 'reports'
+    reports.mkdir()
+    shutil.copy(cards / 'C1055-report.md', reports / 'C1055.md')
+    monkeypatch.setenv('PM_REPORTS_DIR', str(reports))
+    assert main(['pack', 'C1039', '--out-dir', str(tmp_path)]) == 0
+    text = (tmp_path / 'C1039.md').read_text()
+    assert '如实汇报' in text and '夹具规则要求只能用 capture_real_fixture.py 采集' in text
+    assert '买一量×价=封单' in text and '无 HANDOFF,取末 8 行' in text
+    assert len(text.splitlines()) <= 150
+    assert len(text.split('## 岗位记忆')[1].splitlines()) <= 55
+
+
+def test_lesson_real_experience(tmp_path, monkeypatch, capsys):
+    import shutil
+    staff = tmp_path / 'staff'
+    shutil.copytree(Path(__file__).parent / 'fixtures/pm_staff', staff)
+    monkeypatch.setenv('PM_STAFF_DIR', str(staff))
+    path = staff / 'builder/EXPERIENCE.md'
+    before = path.read_text().splitlines()
+    args = ['lesson', 'add', '--role', 'builder', '--card', 'C1039', '--mistake', '夹具来源', '--rule', '核对来源']
+    assert main(args) == 0
+    assert len(path.read_text().splitlines()) == len(before) + 1
+    assert path.read_text().splitlines()[-1].endswith('|C1039|夹具来源|核对来源')
+    assert main(args) == 0 and len(path.read_text().splitlines()) == len(before) + 1
+    assert '跳过' in capsys.readouterr().out
+    with pytest.raises(SystemExit) as error:
+        main(['lesson', 'add', '--role', '../builder', '--card', 'C1039', '--mistake', 'x', '--rule', 'y'])
+    assert error.value.code == 2
+
+
+def test_scorecard_real_usage(monkeypatch, capsys):
+    fixtures = Path(__file__).parent / 'fixtures'
+    runs = fixtures / 'pm_runs'
+    monkeypatch.setenv('PM_CARDS_DIR', str(runs))
+    monkeypatch.setenv('PM_RUNS_DIR', str(runs))
+    monkeypatch.setenv('PM_STAFF_DIR', str(fixtures / 'pm_staff'))
+    cards = {}
+    for p in runs.glob('C*.md'):
+        content = p.read_text()
+        cards[p.stem] = {key: pm.field(content, key) for key in ('ROLE', 'MODEL', 'EFFORT')}
+    usage_rows = [line.split('\t') for line in (runs / 'usage.tsv').read_text().splitlines()]
+    inferred = {row[0]: row[1:4] for row in usage_rows if len(row) == 5}
+    matching = [c for c, v in cards.items() if tuple(v[k] or inferred.get(c, ['?', '?', '?'])[i] for i, k in enumerate(('ROLE', 'MODEL', 'EFFORT'))) == ('builder', 'gpt-6.1-terra', 'medium')]
+    numbers = [int(row[4]) for line in (runs / 'usage.tsv').read_text().splitlines() if len(row := line.split('\t')) == 5 and row[0] in matching and tuple(row[1:4]) == ('builder', 'gpt-6.1-terra', 'medium') and row[4].isdigit()]
+    assert main(['scorecard']) == 0
+    output = capsys.readouterr().out
+    row = next(line for line in output.splitlines() if 'builder' in line and 'gpt-6.1-terra' in line and 'medium' in line)
+    assert f'卡数={len(matching)}' in row and f'平均 tokens={sum(numbers) / len(numbers):.0f}' in row
+    assert '缺数据' in output and len(output.splitlines()) <= 14
