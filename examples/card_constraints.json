@@ -1,7 +1,94 @@
 [
-  {"id":"td_stops_0945","patterns":["TD|stock_tick_v2","推进|持续写|最后\\s*ts|最后一笔"],"all":true,"message":"TD tick 在 09:45:59 后停写是设计，不可作为健康判据；见 project-td-tick-stops-0945 与 C377。"},
-  {"id":"t1v2_restart_zeroes_anchors","patterns":["t1-v2|t1_v2","重启|restart|切换\\s*current|systemctl"],"all":true,"message":"重启可能将 q2 竞价锚点 a20/a24/a25 写为零且回滚无法恢复；应在收盘链路结束后部署，见 retros/2026-11-13-C1047-midday-deploy-abort.md。"},
-  {"id":"postclose_no_live_ticks","patterns":["盘后|收盘后|15:0[0-9]","q2.*更新|消费计数.*增长|tick.*推进"],"all":true,"message":"收盘后无活跃行情，不能在盘后用行情更新或消费增长验证。"},
-  {"id":"release_dir_exists_rule","patterns":["已存在则停止|已存在即停"],"all":false,"message":"复用已准备好的 release 须明确授权，否则存在误停风险。"},
-  {"id":"non_trading_day","patterns":["明[日天]|明早","首验|验证|观察"],"all":true,"message":"发卡前先查交易日历；周末与节假日无竞价，见 C1048。"}
+  {
+    "id": "td_stops_0945",
+    "patterns": [
+      "TD|stock_tick_v2",
+      "推进|持续写|最后\\s*ts|最后一笔"
+    ],
+    "all": true,
+    "message": "TD tick 在 09:45:59 后停写是设计，不可作为健康判据；见 project-td-tick-stops-0945 与 C377。"
+  },
+  {
+    "id": "t1v2_restart_zeroes_anchors",
+    "patterns": [
+      "t1-v2|t1_v2",
+      "重启|restart|切换\\s*current|systemctl"
+    ],
+    "all": true,
+    "message": "重启可能将 q2 竞价锚点 a20/a24/a25 写为零且回滚无法恢复；应在收盘链路结束后部署，见 retros/2026-11-13-C1047-midday-deploy-abort.md。",
+    "scope_patterns": [
+      "t1_v2/"
+    ]
+  },
+  {
+    "id": "postclose_no_live_ticks",
+    "patterns": [
+      "盘后|收盘后|15:0[0-9]",
+      "q2.*更新|消费计数.*增长|tick.*推进"
+    ],
+    "all": true,
+    "message": "收盘后无活跃行情，不能在盘后用行情更新或消费增长验证。"
+  },
+  {
+    "id": "release_dir_exists_rule",
+    "patterns": [
+      "已存在则停止|已存在即停"
+    ],
+    "all": false,
+    "message": "复用已准备好的 release 须明确授权，否则存在误停风险。"
+  },
+  {
+    "id": "non_trading_day",
+    "patterns": [
+      "明[日天]|明早",
+      "首验|验证|观察"
+    ],
+    "all": true,
+    "message": "发卡前先查交易日历；周末与节假日无竞价，见 C1048。"
+  },
+  {
+    "id": "quiet_window",
+    "patterns": [
+      "(?!)"
+    ],
+    "all": false,
+    "always": true,
+    "message": "08:20–09:50 静默窗口不启动 Codex 卡。"
+  },
+  {
+    "id": "gate_scope",
+    "patterns": [
+      "(?!)"
+    ],
+    "all": false,
+    "always": true,
+    "message": "O2 real_gate 适用于 Core Python 数据通路与报告；t1_v2 发布采用隔离验收。"
+  },
+  {
+    "id": "td_cutoff",
+    "patterns": [
+      "(?!)"
+    ],
+    "all": false,
+    "always": true,
+    "message": "TD tick 在 09:45:59 后停写，不能以此判故障。"
+  },
+  {
+    "id": "redis_test_prefix",
+    "patterns": [
+      "(?!)"
+    ],
+    "all": false,
+    "always": true,
+    "message": "写生产环境 Redis 验收键使用 core:test: 前缀。"
+  },
+  {
+    "id": "real_fixture",
+    "patterns": [
+      "(?!)"
+    ],
+    "all": false,
+    "always": true,
+    "message": "不手写假数据；解析与计算测试使用真实上游响应。"
+  }
 ]
