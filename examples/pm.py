@@ -1022,6 +1022,7 @@ def rollout_usage(session_id):
     if len(paths) != 1:
         return None
     total = dict(input=0, cached=0, output=0, calls=0, compactions=0)
+    seen_totals = set()
     try:
         with paths[0].open(encoding='utf-8') as handle:
             for line in handle:
@@ -1035,6 +1036,13 @@ def rollout_usage(session_id):
                 usage = info.get('last_token_usage')
                 if not usage:
                     continue
+                cumulative = info['total_token_usage']
+                cumulative_values = tuple(cumulative[k] for k in ('input_tokens', 'cached_input_tokens', 'output_tokens'))
+                if any(not isinstance(v, int) or isinstance(v, bool) or v < 0 for v in cumulative_values) or cumulative_values[1] > cumulative_values[0]:
+                    return None
+                if cumulative_values in seen_totals:
+                    continue
+                seen_totals.add(cumulative_values)
                 values = [usage[k] for k in ('input_tokens', 'cached_input_tokens', 'output_tokens')]
                 if any(not isinstance(v, int) or isinstance(v, bool) or v < 0 for v in values) or values[1] > values[0]:
                     return None
@@ -1116,12 +1124,13 @@ def staff_writeback(card, text, runs):
     totals = rollout_usage(session_id)
     if totals:
         earlier = [c for c in person['cards'] if (c.get('id') if isinstance(c, dict) else c) != card]
-        previous = [c for c in earlier if isinstance(c, dict) and c.get('session_id') == session_id
-                    and isinstance(c.get('rollout_totals'), dict)]
+        previous = [c for c in earlier[-1:] if isinstance(c, dict) and c.get('session_id') == session_id
+                    and isinstance(c.get('rollout_totals'), dict)
+                    and all(isinstance(c['rollout_totals'].get(key), int) for key in totals)]
         entry.update(session_id=session_id, rollout_totals=totals)
         baseline = previous[-1]['rollout_totals'] if previous else dict.fromkeys(totals, 0)
         delta = {key: totals[key] - baseline.get(key, 0) for key in totals}
-        if earlier and not previous and mode == 'resume':
+        if not previous and mode == 'resume':
             print('rollout 指标未知: 续用会话缺少上一卡基线')
         elif all(value >= 0 for value in delta.values()) and delta['cached'] <= delta['input']:
             entry.update(cached_ratio=delta['cached'] / delta['input'] if delta['input'] else None,
@@ -1174,8 +1183,6 @@ def pilot():
                 costs[mode].append(entry['uncached_in'] + entry['out'])
                 if entry.get('cached_ratio') is not None:
                     caches[mode].append(entry['cached_ratio'])
-            elif latest.get(path.stem, '').isdigit():
-                costs[mode].append(int(latest[path.stem]))
     averages = {mode: sum(values) / len(values) if values else None for mode, values in costs.items()}
     for mode, label in (('resume', '续用卡'), ('fresh', '新会话卡')):
         average = f"{averages[mode]:.0f}" if averages[mode] is not None else '?'

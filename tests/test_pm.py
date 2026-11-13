@@ -773,6 +773,7 @@ def test_wait_card_rollout_metrics_real(tmp_path, monkeypatch, capsys):
     original = (Path(__file__).parent / 'fixtures/pm_staff/C1055.md').read_text()
     (cards / 'C1055.md').write_text(pm.set_status('STAFF: builder-1\n' + original, 'STATUS: dispatched'))
     (runs / 'C1055.session').write_text('session id: 01a1d5cf-12b2-7bf1-bfbf-a4fa5f785d7e\n')
+    (runs / 'C1055.staff').write_text('{"mode": "fresh"}')
     (runs / 'C1055.dispatch.timestamp').write_text(str(time.time_ns() - 10_000_000_000))
     (reports / 'C1055.md').write_text('VERDICT: PARTIAL\n')
     assert main(['wait-card', 'C1055', '--timeout', '0']) == 0
@@ -787,8 +788,52 @@ def test_wait_card_rollout_metrics_real(tmp_path, monkeypatch, capsys):
     roster_path = tmp_path / 'staff/roster.json'
     roster = json.loads(roster_path.read_text())
     roster[0]['cards'] = ['C1054']
+    (runs / 'C1055.staff').write_text('{"mode": "resume"}')
     roster_path.write_text(json.dumps(roster))
     assert main(['wait-card', 'C1055', '--timeout', '0']) == 0
     unknown = json.loads(roster_path.read_text())[0]['cards'][-1]
     assert 'uncached_in' not in unknown and 'cached_ratio' not in unknown
     assert '缺少上一卡基线' in capsys.readouterr().out
+
+
+def test_rollout_duplicate_real_event(tmp_path, monkeypatch):
+    source = next((Path(__file__).parent / 'fixtures/pm_tokens').glob('rollout-*.jsonl'))
+    sessions = tmp_path / '.codex/sessions'
+    sessions.mkdir(parents=True)
+    lines = source.read_text().splitlines()
+    (sessions / source.name).write_text('\n'.join(lines + [lines[0]]) + '\n')
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    assert pm.rollout_usage('01a1d5cf-12b2-7bf1-bfbf-a4fa5f785d7e') == {
+        'input': 1399645, 'cached': 1356544, 'output': 9889, 'calls': 30, 'compactions': 0}
+
+
+@pytest.mark.parametrize('case', ['baseline', 'stale_baseline', 'pilot'])
+def test_rollout_missing_baseline_and_pilot_real(tmp_path, monkeypatch, capsys, case):
+    import json
+    import shutil
+    source = next ( (Path(__file__).parent / 'fixtures/pm_tokens').glob('rollout-*.jsonl'))
+    sessions = tmp_path / '.codex/sessions'
+    sessions.mkdir(parents=True)
+    shutil.copy(source, sessions / source.name)
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    cards, runs, staff = (tmp_path / p for p in ('cards', 'runs', 'staff'))
+    for path in (cards, runs, staff):
+        path.mkdir()
+    for key, value in [('PM_CARDS_DIR', cards), ('PM_RUNS_DIR', runs), ('PM_STAFF_PEOPLE_DIR', staff)]:
+        monkeypatch.setenv(key, str(value))
+    original = (Path(__file__).parent / 'fixtures/pm_staff/C1055.md').read_text()
+    (cards / 'C1055.md').write_text(pm.set_status('STAFF: builder-1\n' + original, 'STATUS: dispatched'))
+    (runs / 'C1055.session').write_text('session id: 01a1d5cf-12b2-7bf1-bfbf-a4fa5f785d7e\n')
+    (runs / 'usage.tsv').write_text('C1055\tbuilder\tmodel\teffort\t38990\n')
+    prior = [{'id': 'C1053', 'session_id': '01a1d5cf-12b2-7bf1-bfbf-a4fa5f785d7e',
+              'rollout_totals': dict.fromkeys(('input', 'cached', 'output', 'calls', 'compactions'), 0)},
+             'C1054'] if case == 'stale_baseline' else []
+    (staff / 'roster.json').write_text(json.dumps([{'name': 'builder-1', 'session_id': '', 'cards': prior}]))
+    pm.staff_writeback('C1055', (cards / 'C1055.md').read_text(), runs)
+    entry = json.loads((staff / 'roster.json').read_text())[0]['cards'][-1]
+    capsys.readouterr()
+    if case in ('baseline', 'stale_baseline'):
+        assert 'uncached_in' not in entry and 'cached_ratio' not in entry
+    else:
+        pm.pilot()
+        assert '续用卡: 0 张 平均未缓存输入+输出 ?' in capsys.readouterr().out
