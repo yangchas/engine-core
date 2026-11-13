@@ -230,3 +230,50 @@ def test_setstatus_and_wait_card(tmp_path, monkeypatch, capsys):
     assert main(['wait-card', 'C1045', '--timeout', '1', '--interval', '0.001']) == 0
     output = capsys.readouterr().out
     assert 'running' in output and 'exited' in output
+
+
+def test_newcard_real_cards(tmp_path, monkeypatch, capsys):
+    import shutil
+    from examples.card_lint import lint_card
+    cards = tmp_path / 'cards'
+    shutil.copytree(Path(__file__).parent / 'fixtures/pm_cards', cards)
+    for p in (Path(__file__).parent / 'fixtures/card_lint').glob('C*.md'):
+        shutil.copy(p, cards / p.name)
+    monkeypatch.setenv('PM_CARDS_DIR', str(cards))
+    monkeypatch.setenv('PM_NO_WORKTREE', '1')
+    args = ['newcard', '--recipe', 'builder-fix', '--title', '修复', '--serves', '目标',
+            '--plan', 'P0 2/6', '--approval', '已授权', '--scope', 'examples/pm.py',
+            '--goal', '修复问题', '--real-data', '真实卡', '--oracle', '结果一致',
+            '--accept-by', 'fail-first-real-fixture', '--dry-run']
+    assert main(args) == 0
+    output = capsys.readouterr().out
+    assert 'ID: C1048' in output
+    assert not any(x.startswith('FAIL') for x in lint_card(output, Path(__file__).parents[1]))
+    from examples.pm import field
+    assert all(field(output, name) for name in ('REAL_DATA', 'ORACLE', 'ACCEPT_BY', 'TEST_BUDGET', 'STUBS_ALLOWED'))
+    before = set(cards.iterdir())
+    assert main(['newcard', '--recipe', 'builder-fix']) == 2
+    assert set(cards.iterdir()) == before
+
+
+def test_testlist_oracle(capsys):
+    assert main(['testlist', '--files', 'examples/pm.py,examples/card_lint.py,tests/test_pm.py']) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[:-1] == ['tests/test_pm.py', 'tests/test_card_lint.py', 'tests/test_real_fixtures.py',
+                          'tests/test_trade_day_context.py', 'tests/test_registry_storage.py',
+                          'tests/test_guardian_contract_static.py', 'tests/test_dataset_registry.py',
+                          'tests/test_baseline_window_declaration.py']
+
+
+def test_dispatch_lint_real_card(tmp_path, monkeypatch, capsys):
+    import examples.pm as pm
+    cards = tmp_path / 'cards'
+    cards.mkdir()
+    text = (Path(__file__).parent / 'fixtures/card_lint/C1046.md').read_text()
+    text = text.replace('C1046', 'C1099')
+    (cards / 'C1099.md').write_text(pm.set_status(text, 'STATUS: ready'))
+    monkeypatch.setenv('PM_CARDS_DIR', str(cards))
+    assert main(['dispatch', 'C1099']) == 2
+    assert 'FAIL required_fields' in capsys.readouterr().out
+    main(['dispatch', 'C1099', '--no-lint'])
+    assert 'FAIL required_fields' not in capsys.readouterr().out
