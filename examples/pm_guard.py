@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """PreToolUse policy for the PM session."""
 import datetime
+import glob
+import itertools
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -16,6 +18,50 @@ GIT = set('log diff status show rev-parse branch merge-base'.split())
 FW_BIN = set('runcard preflight_card card_callback ops_state clean_rh pm real_gate'.split())
 SCRIPTS = set('release.py audit_card.py deploy_watch.py pm.py affected_tests.py'.split())
 ASSIGN = re.compile(r'^[a-zA-Z_][a-zA-Z_0-9]*=')
+
+
+FILE_READERS = READ | set('cut sort uniq tr sed awk jq paste sha256sum md5sum'.split())
+PS_FIELDS = set('pid ppid etime etimes lstart rss vsz pcpu pmem stat nlwp comm user'.split())
+SECRET_ENV = re.compile(r'\$(?:\{([A-Za-z_][A-Za-z_0-9]*)\}|([A-Za-z_][A-Za-z_0-9]*))')
+SECRET_NAME = re.compile(r'(?:REDIS_URL|TD_CONFIG|.*TOKEN.*|.*SECRET.*|.*PASSWORD.*|.*PASSWD.*|.*API_?KEY.*|.*COOKIE.*|ANTHROPIC.*|OPENAI.*|AWS_.*|GITHUB_.*|GH_.*)', re.I)
+SENSITIVE = re.compile(r'/secrets(?:/|$)|/proc/[^/]*(?:[?*\[])[^/]*/(?:environ|cmdline|mem)(?:/|$)|cookie|\.env|\.ssh|\.netrc|credentials|/etc/shadow|/proc/(?:[0-9]+|self)/(?:environ|cmdline|mem)(?:/|$)|id_rsa', re.I)
+
+
+def _sensitive_path(word):
+    if not (word.startswith(('/', './', '~')) or '/' in word):
+        return False
+    def sensitive(path):
+        return bool(SENSITIVE.search(path) or SENSITIVE.search('/' + os.path.normpath(path).lstrip('/')))
+
+    path = os.path.expanduser(word)
+    if sensitive(word) or sensitive(path):
+        return True
+    if glob.has_magic(path):
+        matches = list(itertools.islice(glob.iglob(path), 501))
+        return len(matches) > 500 or any(sensitive(match) for match in matches)
+    return False
+
+
+def _safe_ps(rest):
+    fields = None
+    if len(rest) in (2, 3) and rest[0] == '-eo':
+        fields = rest[1]
+        if len(rest) == 3 and not re.fullmatch(r'--sort=-?[a-z]+', rest[2]):
+            return False
+        if len(rest) == 3 and rest[2].split('=')[1].lstrip('-') not in PS_FIELDS:
+            return False
+    elif len(rest) == 4:
+        if rest[0] == '-p' and rest[2] == '-o':
+            pids, fields = rest[1], rest[3]
+        elif rest[0] == '-o' and rest[2] == '-p':
+            fields, pids = rest[1], rest[3]
+        else:
+            return False
+        if not re.fullmatch(r'[0-9]+(?:,[0-9]+)*', pids):
+            return False
+    if fields is None:
+        return False
+    return bool(fields) and all(field in PS_FIELDS for field in fields.split(','))
 
 
 def _path(path, cwd):
@@ -86,6 +132,8 @@ def _substitutions(command, env):
 def _bash(command, env, *, substitution=False, loop_depth=0):
     if not isinstance(command, str):
         return False, 'parse: command must be a string'
+    if any(SECRET_NAME.fullmatch(match.group(1) or match.group(2)) for match in SECRET_ENV.finditer(command)):
+        return False, 'read_secret_env'
     if '<(' in command or '>(' in command:
         return False, 'shell_expansion: process substitution is forbidden'
     if substitution and ('$(' in command or '\x60' in command):
@@ -210,6 +258,8 @@ def _bash(command, env, *, substitution=False, loop_depth=0):
         name = os.path.basename(cmd)
         if '__PM_SUBSTITUTION__' in cmd or (cmd != 'echo' and any('__PM_SUBSTITUTION__' in x for x in rest)):
             return False, 'shell_expansion: dynamic command or argument'
+        if cmd in FILE_READERS and any(_sensitive_path(x) for x in rest):
+            return False, 'read_sensitive_path: 敏感路径不可读,需要内容请写 runner 卡'
         if substitution and cmd not in READ:
             return False, 'shell_expansion: substitution command not allowed'
         if name in FORBIDDEN:
@@ -238,6 +288,50 @@ def _bash(command, env, *, substitution=False, loop_depth=0):
                     or not all(re.fullmatch(r'(?:[0-9]+(?:,(?:[0-9]+|\$))?\s*p|/[^/\n]*/\s*p)', item.strip()) for item in rest[1].split(';'))
                     or any(x.startswith('-') for x in rest[2:])):
                 return False, 'sed: unsafe script'
+        elif cmd == 'ps':
+            if not _safe_ps(rest):
+                return False, 'ps: unsafe arguments'
+        elif cmd == 'pgrep':
+            if not (len(rest) == 1 and not rest[0].startswith('-') or
+                    len(rest) == 2 and rest[0] == '-x' and not rest[1].startswith('-') or
+                    len(rest) == 3 and rest[:2] == ['-c', '-x'] and not rest[2].startswith('-')):
+                return False, 'pgrep: unsafe arguments'
+        elif cmd == 'free':
+            if len(rest) > 1 or any(x not in ('-m', '-h', '-g', '-b', '--si') for x in rest):
+                return False, 'free: unsafe arguments'
+        elif cmd == 'which':
+            if not rest or any(not re.fullmatch(r'[A-Za-z0-9_.+-]+', x) or x.startswith('-') for x in rest):
+                return False, 'which: unsafe arguments'
+        elif cmd in ('sha256sum', 'md5sum'):
+            if any(x.startswith('-') for x in rest):
+                return False, 'checksum: unsafe arguments'
+        elif cmd == 'printf':
+            if not rest or rest[0].startswith('-') or re.search(r'%(?:[0-9]+\$)?[-+ #0]*(?:[0-9]+|\*)?(?:\.(?:[0-9]+|\*))?[hlLjztq]*n', rest[0]):
+                return False, 'printf: unsafe format'
+        elif cmd == 'awk':
+            if not rest or rest[0].startswith('-') or re.search(r'system|getline|[|>]|close\s*\(|-f|-i|ENVIRON|/dev/', rest[0], re.I) or any(x.startswith('-') for x in rest[1:]):
+                return False, 'awk: unsafe program'
+        elif cmd == 'jq':
+            # Restrict options to switches that cannot load additional files.
+            safe = {'-r', '--raw-output', '-c', '--compact-output', '-e', '--exit-status', '-s', '--slurp', '-n', '--null-input', '-M', '--monochrome-output'}
+            i = 0
+            while i < len(rest) and rest[i].startswith('-'):
+                if rest[i] in ('--arg', '--argjson'):
+                    i += 3
+                elif rest[i] in safe:
+                    i += 1
+                else:
+                    return False, 'jq: unsafe option'
+            if i >= len(rest) or any(x.startswith('-') for x in rest[i+1:]):
+                return False, 'jq: unsafe arguments'
+            if re.search(r'\b(?:env|input_filename|halt_error|debug|stderr|input|inputs|include|import)\b|\$(?:ENV|__prog_args|__loc__)\b|getpath\s*\(\s*\[?\s*"ENV|@sh\b', rest[i]):
+                return False, 'jq: unsafe program'
+        elif cmd == 'hostname':
+            if rest:
+                return False, 'hostname: arguments not allowed'
+        elif cmd in ('df', 'du', 'nproc', 'uname', 'uptime', 'whoami', 'id', 'basename', 'dirname', 'realpath', 'readlink', 'paste'):
+            if any(x.startswith('--files0-from') for x in rest):
+                return False, 'read_tool: unsafe arguments'
         elif cmd == 'git':
             gitargs = rest[:]
             if len(gitargs) >= 2 and gitargs[0] == '-C':
