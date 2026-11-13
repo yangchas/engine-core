@@ -295,6 +295,10 @@ def testlist(args):
     else:
         files = [f.strip() for f in (args.files or '').split(',') if f.strip()]
     selected = lint_module().exact_test_list(files, repo)
+    candidates = [f'tests/test_{Path(f).stem}.py' for f in files
+                  if f.startswith(('src/', 'examples/')) and f.endswith('.py')]
+    candidates += [f for f in files if f.startswith('tests/') and Path(f).name.startswith('test_') and f.endswith('.py')]
+    selected = list(dict.fromkeys([*candidates, *selected]))
     for item in selected:
         print(item)
     print(f"cd {shlex.quote(str(repo))} && TMPDIR=/tmp PYTHONPATH=src:. env -u TD_CONFIG -u REDIS_URL {shlex.quote(PYTHON)} -m pytest -q --no-header -p no:cacheprovider {' '.join(map(shlex.quote, selected))}; echo exit=$?")
@@ -341,8 +345,12 @@ def newcard(args):
     context = {**values, 'id': ident, 'test_files': ' '.join(selected)}
     fixed = {k: v.format_map(context) for k, v in recipe['fixed'].items()}
     expanded = [str(worktree / x) if not Path(x).is_absolute() else x for x in scope]
+    for extra in (location('PM_REPORTS_DIR', '/home/exedev/fw/reports') / (ident + '.md'),
+                  location('PM_EVIDENCE_DIR', '/home/exedev/fw/evidence') / ident):
+        if str(extra) not in expanded:
+            expanded.append(str(extra))
     entries = [('ID', ident), ('STATUS', 'ready'), ('LANE', fixed['LANE']),
-               ('ROLE', fixed['ROLE']), ('EXECUTOR', fixed['EXECUTOR']),
+               ('ROLE', fixed['ROLE']), ('EXECUTOR', fixed['EXECUTOR']), ('COMMIT', fixed['COMMIT']),
                ('TITLE', values['title']), ('SERVES', values['serves']), ('PLAN', values['plan']),
                ('APPROVAL', values['approval']), ('SCOPE_WRITE', ', '.join(expanded)),
                ('REAL_DATA', values['real_data']), ('ORACLE', values['oracle']),
@@ -428,9 +436,13 @@ def card_command(args):
                 return 2
             runs = location('PM_RUNS_DIR', '/home/exedev/fw/runs')
             runs.mkdir(parents=True, exist_ok=True)
+            (runs / (args.card + '.dispatch.timestamp')).write_text(str(time.time_ns()), encoding='utf-8')
             with (runs / (args.card + '.dispatch.out')).open('ab') as out:
                 process = subprocess.Popen([os.environ.get('PM_RUNCARD', '/home/exedev/fw/bin/runcard'), args.card],
                                            stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+            current = path.read_text(encoding='utf-8')
+            stamp = datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds')
+            path.write_text(set_status(current, f'STATUS: dispatched({stamp})'), encoding='utf-8')
             print(f'dispatched {args.card} pid={process.pid};盯进度: bin/pm status {args.card};等待: bin/pm wait-card {args.card}')
             return 0
         except OSError as exc:
@@ -441,32 +453,94 @@ def card_command(args):
         return 2
     deadline = time.monotonic() + args.timeout
     report = location('PM_REPORTS_DIR', '/home/exedev/fw/reports') / (args.card + '.md')
-    last_size = None
-    stable_since = None
+    runs = location('PM_RUNS_DIR', '/home/exedev/fw/runs')
+    marker = runs / (args.card + '.dispatch.timestamp')
+    try:
+        dispatch_ns = int(marker.read_text(encoding='utf-8').strip())
+    except (OSError, ValueError):
+        try:
+            dispatch_ns = (runs / (args.card + '.dispatch.out')).stat().st_mtime_ns
+        except OSError:
+            dispatch_ns = None
     announced = False
     while True:
         running = bool(card_processes(args.card))
         now = time.monotonic()
         if not running:
+            current = path.read_text(encoding='utf-8')
+            try:
+                fresh = dispatch_ns is not None and report.stat().st_mtime_ns > dispatch_ns
+            except OSError:
+                fresh = False
+            if fresh and field(current, 'STATUS').startswith('dispatched'):
+                with report.open(encoding='utf-8', errors='replace') as handle:
+                    first = handle.readline().strip()
+                verdict = re.search(r'\bVERDICT\s*:\s*(DONE|PARTIAL|BLOCKED)\b', first, re.I)
+                if verdict:
+                    date = datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
+                    status = f'{verdict.group(1).upper()}(自动;待 PM 复核;{date})'
+                else:
+                    status = 'PARTIAL(自动;报告首行未含 VERDICT)'
+                path.write_text(set_status(current, 'STATUS: ' + status), encoding='utf-8')
             print('exited')
             return show_status(args.card, path)
         if not announced:
             print('running', flush=True)
             announced = True
-        try:
-            size = report.stat().st_size
-        except FileNotFoundError:
-            size = None
-        if size != last_size:
-            last_size, stable_since = size, now if size is not None else None
-        if stable_since is not None and now - stable_since >= 30:
-            print('report ready')
-            return show_status(args.card, path)
         remaining = deadline - now
         if remaining <= 0:
             print('TIMEOUT')
             return 2
         time.sleep(min(args.interval, remaining))
+
+
+def metrics(args):
+    cards = location('PM_CARDS_DIR', str(CARDS))
+    reports = location('PM_REPORTS_DIR', '/home/exedev/fw/reports')
+    runs = location('PM_RUNS_DIR', '/home/exedev/fw/runs')
+    categories = ('ready', 'dispatched', 'DONE', 'PARTIAL', 'BLOCKED', 'SUPERSEDED')
+    counts = {key: 0 for key in (*categories, '其他')}
+    rows = []
+    stale = 0
+    total = 0
+    for path in cards.glob('C*.md'):
+        if not re.fullmatch(r'C[0-9]+', path.stem):
+            continue
+        report = reports / path.name
+        archives = list((runs / 'archive').glob(path.stem + '.md.*'))
+        marker = runs / (path.stem + '.dispatch.timestamp')
+        log = runs / (path.stem + '.dispatch.out')
+        status = field(path.read_text(encoding='utf-8'), 'STATUS')
+        dispatched = bool(archives or report.is_file() or marker.is_file() or log.is_file() or
+                          status.startswith(('dispatched', 'DONE', 'PARTIAL', 'BLOCKED')))
+        if args.since:
+            times = [p.stat().st_mtime for p in [*archives, report, marker, log] if p.is_file()]
+            if not times or datetime.fromtimestamp(max(times), ZoneInfo('Asia/Shanghai')).date().isoformat() < args.since:
+                continue
+        total += 1
+        category = next((key for key in categories if status.startswith(key)), '其他')
+        counts[category] += 1
+        stale += category == 'ready' and report.is_file()
+        if dispatched:
+            rows.append((path.stem, len(archives) + 1, status))
+    rows.sort(key=lambda row: (-row[1], int(row[0][1:])))
+    average = sum(row[1] for row in rows) / len(rows) if rows else 0
+    rate = sum(count == 1 and status.startswith('DONE') for _, count, status in rows) / len(rows) if rows else 0
+    print(f'卡总数: {total} | 已派发: {len(rows)}')
+    print('状态: ' + ' '.join(f'{key}={counts[key]}' for key in counts))
+    print(f'陈旧 ready: {stale}')
+    print('派发最多: ' + (' '.join(f'{card}:{count}' for card, count, _ in rows[:3]) or '无'))
+    print(f'平均派发: {average:.2f} | 一次通过率: {rate:.1%}')
+    log = location('PM_GUARD_LOG', '/home/exedev/fw/retros/guard.log')
+    today = datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
+    try:
+        with log.open(encoding='utf-8', errors='replace') as handle:
+            deny = sum(line.startswith(today) and len(parts := line.split('\t')) > 1 and parts[1] == 'DENY' for line in handle)
+        print(f'今日 DENY: {deny}')
+    except OSError:
+        print('今日 DENY: UNKNOWN')
+    print('目标:一次通过率≥70%;平均派发≤1.5;陈旧 ready=0;DENY<5/天')
+    return 0
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
@@ -498,6 +572,8 @@ def main(argv=None):
     new.add_argument('--param', action='append', default=[])
     new.add_argument('--dry-run', action='store_true')
     new.add_argument('--no-worktree', action='store_true')
+    metric_parser = sub.add_parser('metrics')
+    metric_parser.add_argument('--since', type=lambda value: datetime.strptime(value, '%Y-%m-%d').date().isoformat())
     cards = sub.add_parser('cards')
     cards.add_argument('--open', action='store_true')
     cards.add_argument('--limit', type=int, default=20)
@@ -512,6 +588,8 @@ def main(argv=None):
             command.add_argument('--timeout', type=float, default=1700)
             command.add_argument('--interval', type=float, default=20)
     args = parser.parse_args(argv)
+    if args.command == 'metrics':
+        return metrics(args)
     if args.command == 'newcard':
         return newcard(args)
     if args.command == 'testlist':

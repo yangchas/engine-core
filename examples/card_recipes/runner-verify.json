@@ -8,7 +8,8 @@
     "NOT_DO": "不修改代码、配置、数据;不写 Redis、TD;不触发事件;不重启;不删键;不手工回填。",
     "STUBS_ALLOWED": "无",
     "TEST_BUDGET": "按指定范围验收: {test_files}",
-    "ACCEPT": "各项结果与 ORACLE 对照并附证据位置。"
+    "ACCEPT": "各项结果与 ORACLE 对照并附证据位置。",
+    "COMMIT": "no"
   },
   "required": [
     "title",

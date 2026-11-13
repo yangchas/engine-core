@@ -8,7 +8,8 @@
     "NOT_DO": "不手写假样本;不 push、不合并、不部署;不顺手重构。",
     "STUBS_ALLOWED": "仅回放真实响应",
     "TEST_BUDGET": "新增测试 ≤2 个;真实夹具 fail-first;验收清单: {test_files}",
-    "ACCEPT": "指定验收命令 exit=0;fail-first 证据完整;git status 干净且提交以 {id}: 开头。"
+    "ACCEPT": "指定验收命令 exit=0;fail-first 证据完整;git status 干净且提交以 {id}: 开头。",
+    "COMMIT": "yes"
   },
   "required": [
     "title",
