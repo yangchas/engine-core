@@ -213,7 +213,14 @@ def card_processes(card):
 
 
 def redact(text):
-    text = re.sub(r'(?i)(--token(?:\s+|=))\S+', r'\1***', text)
+    value = r"(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s&]+)"
+    text = re.sub(r'(?i)\bset-cookie\s*:[^\r\n]*', '***', text)
+    # Preserve the existing two-mask rendering for JWT authorization headers.
+    text = re.sub(r'(?i)\bauthorization\s*[=:]\s*(?:bearer|basic)\s+eyJ[A-Za-z0-9_-]{17,}', '*** ***', text)
+    text = re.sub(r'(?i)\bauthorization\s*[=:]\s*(?:bearer|basic)\s+' + value, '***', text)
+    text = re.sub(r'(?i)\b(?:bearer|basic)\s+' + value, '***', text)
+    text = re.sub(r'(?i)(--(?:token|password)(?:\s+|=))' + value, r'\1***', text)
+    text = re.sub(r'(?i)(?<![\w-])(?:access_token|token)\s*=' + value, '***', text)
     text = re.sub(r'(?i)\b(password|passwd|secret|api[_-]?key|authorization|cookie)\s*[=:]\s*\S+', '***', text)
     text = re.sub(r'(?i)(rediss?://)[^\s@]*@', r'\1***@', text)
     return re.sub(r'\beyJ[A-Za-z0-9_-]{17,}', '***', text)

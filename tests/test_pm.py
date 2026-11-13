@@ -680,3 +680,23 @@ def test_status_real_card_and_report_no_false_redaction(tmp_path, monkeypatch, c
         output = capsys.readouterr().out
         assert token not in output and 'password=example' not in output
         assert '--token ***' in output and '*** ***' in output
+
+
+def test_redact_auditor_probes():
+    # 评审真实探针，形态构造，非真实凭据。
+    assert pm.redact('authorization: Bearer opaque_token_123') == '***'
+    assert pm.redact('cmd --token "alpha beta" tail') == 'cmd --token *** tail'
+
+
+def test_redact_related_shapes_and_normal_text():
+    # 形态构造，非真实凭据。
+    assert pm.redact('x Bearer abc123 y') == 'x *** y'
+    assert pm.redact('x Basic abc123 y') == 'x *** y'
+    assert pm.redact("--password 'p q' z") == '--password *** z'
+    assert pm.redact('cmd --token="alpha beta" tail') == 'cmd --token=*** tail'
+    assert pm.redact('cmd --token=\'alpha beta\' tail') == 'cmd --token=*** tail'
+    assert pm.redact('token=abc&x=1') == '***&x=1'
+    assert pm.redact('access_token=abc&x=1') == '***&x=1'
+    assert pm.redact('Set-Cookie: sid=abc; Path=/') == '***'
+    assert pm.redact('authorization header is missing') == 'authorization header is missing'
+    assert pm.redact('token count: 5') == 'token count: 5'
