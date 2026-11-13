@@ -242,6 +242,26 @@ def show_status(card, path):
             print(label + ': ' + (' | '.join(line[:160] for line in lines) or '(empty or unavailable)'))
     evidence = Path('/home/exedev/fw/evidence') / card
     print(f'evidence files: {sum(1 for p in evidence.rglob("*") if p.is_file()) if evidence.is_dir() else 0}')
+    if field(text, 'ROLE').lower() == 'builder' and worktree:
+        try:
+            base = os.environ.get('PM_BASE')
+            if not base:
+                integration = subprocess.run(['git', '-C', str(ROOT), 'symbolic-ref', '--short', 'HEAD'],
+                                             check=True, capture_output=True, text=True).stdout.strip()
+                base = subprocess.run(['git', '-C', worktree, 'merge-base', 'HEAD', integration],
+                                      check=True, capture_output=True, text=True).stdout.strip()
+            try:
+                from examples.test_audit import audit
+            except ModuleNotFoundError:
+                from test_audit import audit
+            findings = audit(worktree, base, text)
+            actionable = [line for line in findings if not line.startswith('NOTE ')]
+            for line in actionable[:4]:
+                print(line)
+            if not actionable:
+                print('audit: ok')
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            print(f'audit: unavailable ({str(exc)[:120]})')
     return 0
 
 
