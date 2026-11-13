@@ -2,7 +2,7 @@
   "fixed": {
     "LANE": "A",
     "EXECUTOR": "codex",
-    "REPORT": "fw/reports/{id}.md。首行 VERDICT: DONE/BLOCKED/PARTIAL;之后 FACTS/CHANGES/EVIDENCE/OPEN。",
+    "REPORT": "fw/reports/{id}.md。首行 VERDICT: DONE/BLOCKED/PARTIAL;之后 FACTS/CHANGES/EVIDENCE/OPEN。并在报告末尾写 HANDOFF 小节(3–5 行:做了什么、做的决定、踩的坑、下一步建议)",
     "ROLE": "runner",
     "AUTHORIZATION": "只读验收。可读仓库全部源码与测试、真实 Redis(守卫代理,只读)、真实 TD(TD_CONFIG,SELECT/SHOW/DESCRIBE)。python 用 /home/exedev/services/engine-next/shared/venv/bin/python。只写自己的 reports 与 evidence。环境或执行错误允许修复并重跑。不改代码、不提交、不 push、不合并、不部署,不写 Redis/TD,不联网,不读 cookie,不发信。 可运行 fw/bin/real_gate(先 export CORE_STATE_CACHE=off,参数 --date <最近有数据的交易日> --prev-date <前一日> --skip-pytest,GATE_REPO 取被验收仓库)。",
     "NOT_DO": "不修改代码、配置、数据;不写 Redis、TD;不触发事件;不重启;不删键;不手工回填。",

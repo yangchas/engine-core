@@ -1,0 +1,5 @@
+84499e04339574bec3b6f129862c1c66031c8a84eb1ee1c34278612abc921134  /home/exedev/fw/design/staff/CULTURE.md
+49d0f07d6f54c5ca2eb52d64df539cc1e0eed41e0a055d466d19d30aa83802cb  /home/exedev/fw/design/staff/builder/EXPERIENCE.md
+5ca6e6633ab54f6e816bd3cccdc7c1ec5ef14c5bfc9bba8cc2c42f82c2d468b4  /home/exedev/fw/design/staff/runner/EXPERIENCE.md
+19d49371ef31590a1fffc8f8714f94a0f40dc64aac2791298dc58d56e653ded0  /home/exedev/fw/design/staff/auditor/EXPERIENCE.md
+ad77c60cc66525fb0a29679ec9844e56a1b1d1e3b8e9e95d1d003e8525cb9e3e  /home/exedev/fw/design/epics/seal-order.md
