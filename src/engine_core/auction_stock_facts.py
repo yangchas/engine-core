@@ -147,6 +147,38 @@ def build_auction_stock_facts(trade_date: str, asof: str,
             else:
                 status, reason = ("VERIFIED", None) if live else ("VERIFIED_REPLAY", None)
                 seal_amount = round(limit_yuan * bv1 * 100)
+        basis = ("LIVE_READ" if live else "EVENT_TIME_ONLY") if seal_amount is not None else None
+        seal_side = None
+        if snap.get("source") == "redis_auction_full":
+            status, reason, seal_amount, basis = "UNKNOWN", None, None, None
+            tick_value = snap.get("tick_ts_ms")
+            tick_ts = datetime.fromtimestamp(tick_value / 1000, TZ) if type(tick_value) is int and tick_value > 0 else None
+            received = read_time if tick_ts and live else None
+            prices = limit_prices(preclose, symbol, is_st=is_st, unlimited=unlimited) if preclose else None
+            down = prices[1] if prices else None
+            if px is None or px <= 0:
+                reason = "NO_MATCH_PRICE"
+            elif tick_ts is None:
+                reason = "ROW_SCHEMA_OLD"
+            elif limit_yuan is None or down is None:
+                reason = "OFFICIAL_LIMIT_UNAVAILABLE"
+            elif px == round(limit_yuan * 1000):
+                seal_side = "up"
+            elif px == round(down * 1000):
+                seal_side = "down"
+            else:
+                status, reason = "NOT_LIMIT", None
+            if seal_side:
+                field = "bid_amount_yuan" if seal_side == "up" else "ask_amount_yuan"
+                value = snap.get(field)
+                if type(value) is not int or value < 0:
+                    reason = "ROW_SCHEMA_OLD"
+                elif value == 0:
+                    status, reason, seal_amount = "LIMIT_NO_SEAL", None, 0
+                else:
+                    status, reason, seal_amount = ("VERIFIED" if live else "VERIFIED_REPLAY"), None, value
+                if seal_amount is not None:
+                    basis = "FINAL_TICK" if snap.get("src") == "auction_match" else "LAST_AUCTION_TICK"
         if (px is None or px <= 0) and tick:
             # The final tick used to verify the seal is also an authoritative
             # final auction price when it contains an actual matched trade.
@@ -170,10 +202,10 @@ def build_auction_stock_facts(trade_date: str, asof: str,
                       "valid_price": px is not None and px > 0,
                       "seal": {"status": status, "reason": reason,
                                "seal_amount_yuan": seal_amount, "seal_rank": None,
-                               "basis": ("LIVE_READ" if live else "EVENT_TIME_ONLY") if seal_amount is not None else None,
+                               "basis": basis, "seal_side": seal_side,
                                "limit_price_source": limit_source,
                                "tick_source_ts": tick_ts.isoformat() if tick_ts else None,
-                               "read_at": read_time.isoformat() if tick and live else None,
+                               "read_at": read_time.isoformat() if live and (tick or tick_ts) else None,
                                "received_at": received.isoformat() if received else None},
                       "coverage": {"amount": amount is not None, "price": px is not None and px > 0,
                                    "final_tick": tick is not None, "seal": status in ("VERIFIED", "VERIFIED_REPLAY")},
@@ -198,16 +230,18 @@ def build_auction_stock_facts(trade_date: str, asof: str,
     live_n = sum(row["seal"]["status"] == "VERIFIED" for row in facts)
     replay_n = sum(row["seal"]["status"] == "VERIFIED_REPLAY" for row in facts)
     limit_candidates = sum(row["limit_up_candidate"] for row in facts)
+    label = "已核实" if live_n else ("回放·按事件时间" if replay_n else "未取得")
+    scope = "已核实子集" if live_n or replay_n else "未取得"
     facts.sort(key=lambda row: str(row.get("symbol") or ""))
     return {"trade_date": trade_date, "asof": cutoff.isoformat(), "rank_method": "competition",
-            "seal_label": "已核实" if live else "回放·按事件时间",
-            "seal_scope_label": f"已核实子集 {live_n if live else replay_n}/{limit_candidates}",
+            "seal_label": label,
+            "seal_scope_label": f"{scope} {live_n if live else replay_n}/{limit_candidates}",
             "rows": facts, "summary": {"valid_amount_n": amount_n, "universe_n": len(facts),
                                        "verified_seal_n": len(seals), "verified_live_n": live_n,
                                        "verified_replay_n": replay_n, "limit_candidate_n": limit_candidates,
                                        "verified_seal_sum": sum(seals) if seals else None,
                                        "seal_scope": "VERIFIED_SUBSET",
-                                       "seal_label": "已核实" if live else "回放·按事件时间"}}
+                                       "seal_label": label}}
 
 
 def store_auction_stock_facts(facts: Mapping[str, Any], *, artifact_root: str | Path | None = None,

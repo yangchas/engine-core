@@ -1,0 +1,38 @@
+{
+ "key": "test:c1034:core:auction:full:2026-11-12:0925",
+ "rows": {
+  "000001": {
+   "amount_yuan": 8153800,
+   "ask_amount_yuan": 42084,
+   "bid_amount_yuan": 1574464,
+   "change_bp": -17,
+   "pre_close_milli": 11710,
+   "price_milli": 11690,
+   "rank_amount": 363,
+   "src": "auction_match",
+   "tick_ts_ms": 1794446700000
+  },
+  "002520": {
+   "amount_yuan": 27144427,
+   "ask_amount_yuan": 0,
+   "bid_amount_yuan": 222320951,
+   "change_bp": 1005,
+   "pre_close_milli": 7260,
+   "price_milli": 7990,
+   "rank_amount": 106,
+   "src": "indicative_bid_ask_mid",
+   "tick_ts_ms": 1794446697000
+  },
+  "600103": {
+   "amount_yuan": 39077900,
+   "ask_amount_yuan": 0,
+   "bid_amount_yuan": 810813942,
+   "change_bp": 1006,
+   "pre_close_milli": 3280,
+   "price_milli": 3610,
+   "rank_amount": 60,
+   "src": "auction_match",
+   "tick_ts_ms": 1794446702000
+  }
+ }
+}

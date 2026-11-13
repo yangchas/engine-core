@@ -159,3 +159,23 @@ def test_auction_redis_consumer(monkeypatch, tmp_path, scenario):
         assert panorama['source_quality'] == quality
         assert captured['panorama']['input_quality']['auction_sources'] == quality
         assert captured['panorama']['input_quality']['auction_status'] == ('degraded' if degraded else 'ok')
+
+
+def test_c1041_real_old_and_replay_schema():
+    from engine_core.data_pipeline.auction_redis_view import read_auction_view, ViewError
+    real = Path(__file__).parent / 'fixtures' / 'real'
+    old = json.loads(next(real.glob('redis_auction_full_row_2026-11-12_*.json')).read_text())['rows']
+    new = json.loads(next(real.glob('t1v2_replay_row_2026-11-12_*.json')).read_text())['rows']
+    class Client:
+        def __init__(self, rows): self.rows = rows
+        def mget(self, keys):
+            payload = json.dumps(self.rows).encode()
+            return payload, json.dumps({'status': 'COMPLETE', 'rows': len(self.rows), 'sha256': hashlib.sha256(payload).hexdigest()}).encode()
+    assert len(read_auction_view(Client(old), '2026-11-12', '0925')) == 3
+    assert len(read_auction_view(Client(new), '2026-11-12', '0925')) == 3
+    # Corrupt one real row per case to exercise strict validation.
+    for field, value in [('tick_ts_ms', None), ('extra', 1), ('ask_amount_yuan', -1)]:
+        rows = json.loads(json.dumps(new))
+        if value is None: del rows['600103'][field]
+        else: rows['600103'][field] = value
+        with pytest.raises(ViewError): read_auction_view(Client(rows), '2026-11-12', '0925')
