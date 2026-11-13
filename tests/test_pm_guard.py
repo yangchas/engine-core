@@ -112,3 +112,33 @@ def test_loop_and_substitution_boundaries():
         assert decide('Bash', {'command': command}, False)[0], command
     for command in denied:
         assert not decide('Bash', {'command': command}, False)[0], command
+
+
+def test_c1046_real_samples():
+    samples = SAMPLES['real_denied_2026_11']['real_should_allow']
+    commands = [s['command'] for s in samples if s['feature'] == 'tool']
+    assert len(commands) == 4
+    for command in commands:
+        assert decide('Bash', {'command': command}, False)[0], command
+
+
+def test_c1046_dangerous_controls():
+    controls = {
+        'ps': ['ps aux', 'ps -ef', 'ps eww', 'ps -eo pid,args', 'ps -eo pid,cmd', 'ps -p 1 -o command', 'ps'],
+        'pgrep': ['pgrep -a x', 'pgrep -l x', 'pgrep -f x'],
+        'read_sensitive_path': ['cat secrets/x', 'cat /proc/*/environ', 'cat /proc/1/environ', 'cat /proc/self/cmdline', 'cat /home/exedev/core-data/secrets/wencai.cookie', 'head ~/.ssh/id_rsa', 'grep x /etc/shadow', 'jq . ~/core-data/secrets/x', 'sha256sum /home/exedev/core-data/secrets/wencai.cookie'],
+        'jq': ['jq -f x.jq y.json', "jq 'include \"x\";' x.json"],
+        'awk': ["awk '{print \"-f\"}' x", "awk 'BEGIN{system(\"rm x\")}' f", "awk '{print > \"/tmp/x\"}' f"],
+        'printf': ['printf -v x y'], 'which': ['which -a'],
+        'checksum': ['sha256sum -c SHA256SUMS'], 'hostname': ['hostname -F x'],
+    }
+    for category, commands in controls.items():
+        for command in commands:
+            allowed, reason = decide('Bash', {'command': command}, False)
+            assert not allowed and reason.startswith(category + ':'), (command, reason)
+
+
+def test_c1046_allowed_tool_boundaries():
+    commands = ['ps -p 1,2 -o pid,rss,comm', 'ps -o pid,etime -p 1', 'ps -eo pid,rss --sort=-rss | head -3', 'pgrep -x codex', 'pgrep -c -x codex', 'pgrep codex', 'free -m', 'which python3', 'sha256sum file', 'md5sum file', 'df -h', 'du -h .', 'nproc', 'uname -a', 'uptime', 'hostname', 'whoami', 'id', 'basename /tmp/x', 'dirname /tmp/x', 'realpath /tmp/x', 'readlink /tmp/x', 'paste x y', "printf '%s' x", "jq '.foo' x.json", "awk '{print $1}' x"]
+    for command in commands:
+        assert decide('Bash', {'command': command}, False)[0], command
