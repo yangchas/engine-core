@@ -82,15 +82,18 @@ def seal_order(tick: Tick, price: int | None) -> dict[str, Any]:
     bands = limit_prices(tick.pc_milli / 1000, tick.symbol, unlimited=unlimited) if tick.pc_milli is not None else None
     sec = _seconds(tick.ts)
     indicative = sec < _seconds("09:25:00")
-    phase_missing = _seconds("09:25:00") <= sec < _seconds("09:30:00") and tick.amt_yuan is None
+    phase_missing = (_seconds("09:25:00") <= sec < _seconds("09:30:00")
+                     and (tick.amt_yuan is None or tick.amt_yuan <= 0))
     for side, band, volume, book_price, opposite in (
         ("bid", 0, tick.bv2 if indicative else tick.bv1, tick.bp1_milli, tick.av1),
         ("ask", 1, tick.av2 if indicative else tick.av1, tick.ap1_milli, tick.bv1),
     ):
         shares_key, yuan_key, sealed_key = f"seal_{side}_shares", f"seal_{side}_yuan", f"seal_{side}_at_limit"
-        if unlimited or (bands is not None and price is not None and price != round(bands[band] * 1000)):
+        if phase_missing:
+            shares = yuan = sealed = None
+        elif unlimited or (bands is not None and price is not None and price != round(bands[band] * 1000)):
             shares, yuan, sealed = 0, 0, False
-        elif bands is None or price is None or phase_missing or volume is None or book_price is None:
+        elif bands is None or price is None or volume is None or book_price is None:
             shares = yuan = sealed = None
         elif book_price != price:
             shares, yuan, sealed = 0, 0, False

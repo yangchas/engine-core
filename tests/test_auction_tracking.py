@@ -178,3 +178,29 @@ def test_real_indicative_seal_and_missing_price():
     missing = derive_state(replace(tick, bp1_milli=None))
     assert missing['seal_bid_yuan'] is None
     assert missing['field_quality']['seal_bid_yuan'] == 'MISSING'
+
+
+def test_real_zero_amount_terminal_seals_are_missing():
+    import json
+    from pathlib import Path
+    from engine_core.auction_tracking import seal_order
+
+    root = Path(__file__).parent / 'fixtures' / 'real'
+    for symbol in ('000909', '600818'):
+        path, = root.glob(f'td_stock_tick_2026-11-12_{symbol}_092500_092503_*.json')
+        raw = json.loads(path.read_text())
+        row = next(dict(zip(raw['columns'], values)) for values in raw['rows']
+                   if values[raw['columns'].index('amt_yuan')] == 0)
+        tick = Tick(trade_date='2026-11-12', **{**row, 'ts': row['ts'][-8:]})
+        result = seal_order(tick, tick.px_milli)
+        for side in ('bid', 'ask'):
+            for field in ('shares', 'yuan', 'at_limit'):
+                key = f'seal_{side}_{field}'
+                assert result[key] is None
+                assert result['field_quality'][key] == 'MISSING'
+    path, = root.glob('td_stock_tick_2026-11-12_600103_092500_092600_*.json')
+    raw = json.loads(path.read_text())
+    row = next(dict(zip(raw['columns'], values)) for values in raw['rows'] if str(values[0]).endswith('09:25:02'))
+    tick = Tick(trade_date='2026-11-12', **{**row, 'ts': row['ts'][-8:]})
+    assert tick.amt_yuan > 0
+    assert seal_order(tick, tick.px_milli)['seal_bid_yuan'] == 810_813_942

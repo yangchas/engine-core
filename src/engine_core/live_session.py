@@ -561,7 +561,9 @@ def states_at(td: Any, cutoff: datetime | str) -> dict[str, dict[str, Any]]:
     cutoff = _as_datetime(cutoff)
     cacheable = cutoff < datetime.now() and _state_cache_enabled()
     def cache_has_range_fields(value: Mapping[str, Mapping[str, Any]] | None) -> bool:
-        return bool(value) and all("high_milli" in row and "low_milli" in row for row in value.values())
+        return bool(value) and all(all(key in row for key in ("high_milli", "low_milli",
+                                                              "seal_bid_at_limit", "seal_ask_at_limit"))
+                                   for row in value.values())
     if cacheable:
         from . import live_state_cache
         cached = live_state_cache.read(cutoff)

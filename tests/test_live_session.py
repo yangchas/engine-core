@@ -149,16 +149,22 @@ def test_states_at_uses_injected_td(tmp_path, monkeypatch):
 
 
 def test_states_at_reuses_past_ready_checkpoint_cache(tmp_path, monkeypatch):
+    import gzip
+    import json
+    from pathlib import Path
+
     monkeypatch.setenv("CORE_SLICE_ROOT", str(tmp_path))
     monkeypatch.setenv("CORE_STATE_CACHE", "on")
     cutoff = datetime(2020, 1, 2, 9, 25, 6)
+    fixture = Path(__file__).parent / 'fixtures/real/live_states_2026-11-12_094000_first4000.json.gz'
+    rows = json.loads(gzip.decompress(fixture.read_bytes()))['states']
+    for row in rows.values():
+        row.update(seal_bid_at_limit=None, seal_ask_at_limit=None)
     class TD:
         calls = 0
         def states_at(self, requested):
             self.calls += 1
-            return {f"{n:06d}": {"symbol": f"{n:06d}", "pct_change": 1.0,
-                                 "high_milli": 1000, "low_milli": 900}
-                    for n in range(1, 4001)}
+            return rows
         def latest_tick_ts(self): return cutoff
     td = TD()
     first = states_at(td, cutoff)
@@ -472,3 +478,52 @@ def test_real_terminal_tick_seal_and_missing_volume_propagation(monkeypatch):
     state = live_session._sql_states(object(), datetime(2026, 11, 12, 9, 25, 2))['600103']
     assert state['seal_bid_yuan'] is None
     assert state['field_quality']['seal_bid_yuan'] == 'MISSING'
+
+
+def test_real_old_cache_version_is_rejected_and_new_version_accepted():
+    import gzip
+    import hashlib
+    import json
+    from pathlib import Path
+    from engine_core import live_state_cache
+
+    path = Path(__file__).parent / 'fixtures/real/live_states_2026-11-12_094000_first4000.json.gz'
+    blob = path.read_bytes()
+    envelope = json.loads(gzip.decompress(blob))
+    cutoff = datetime(2026, 11, 12, 9, 40)
+    assert envelope['algorithm_version'] == 'states-at-v2'
+    assert len(envelope['states']) == 4000
+    assert all('seal_bid_at_limit' not in row and 'seal_ask_at_limit' not in row
+               for row in envelope['states'].values())
+    assert live_state_cache._decode(blob, cutoff) is None
+    # Exercise the new envelope using the real states with explicit missing seal flags.
+    envelope['algorithm_version'] = 'states-at-v3'
+    for row in envelope['states'].values():
+        row.update(seal_bid_at_limit=None, seal_ask_at_limit=None)
+    canonical = json.dumps(envelope['states'], ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
+    envelope['states_sha256'] = hashlib.sha256(canonical).hexdigest()
+    updated = gzip.compress(json.dumps(envelope).encode())
+    assert live_state_cache._decode(updated, cutoff) == envelope['states']
+
+
+def test_real_legacy_checkpoint_without_seal_fields_is_not_reused(tmp_path, monkeypatch):
+    import gzip
+    import json
+    from pathlib import Path
+    from engine_core import live_state_cache
+
+    fixture = Path(__file__).parent / 'fixtures/real/live_states_2026-11-12_094000_first4000.json.gz'
+    rows = json.loads(gzip.decompress(fixture.read_bytes()))['states']
+    cutoff = datetime(2026, 11, 12, 9, 40)
+    monkeypatch.setenv('CORE_SLICE_ROOT', str(tmp_path))
+    monkeypatch.setenv('CORE_STATE_CACHE', 'on')
+    monkeypatch.setattr(live_state_cache, 'read', lambda _: None)
+    _write_checkpoint_cache(cutoff, rows)
+    class TD:
+        calls = 0
+        def states_at(self, _):
+            self.calls += 1
+            return {}
+    td = TD()
+    assert states_at(td, cutoff) == {}
+    assert td.calls == 1

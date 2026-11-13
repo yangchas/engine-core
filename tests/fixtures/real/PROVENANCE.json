@@ -2184,5 +2184,36 @@
   "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-12 --symbol 600103 --start 09:24:50 --end 09:24:59",
   "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='600103' AND ts>='2026-11-12 09:24:50' AND ts<='2026-11-12 09:24:59' ORDER BY ts",
   "row_count": 4
+ },
+ "td_stock_tick_2026-11-12_000909_092500_092503_1046.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-12",
+  "fetched_at": "2026-11-13T10:46:12+08:00",
+  "bytes": 349,
+  "sha256": "755e9665ae18601017b32ec9270a408f92cf511fb320a102e50d7a8862be1078",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-12 --symbol 000909 --start 09:25:00 --end 09:25:03",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='000909' AND ts>='2026-11-12 09:25:00' AND ts<='2026-11-12 09:25:03' ORDER BY ts",
+  "row_count": 1
+ },
+ "td_stock_tick_2026-11-12_600818_092500_092503_1046.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-12",
+  "fetched_at": "2026-11-13T10:46:13+08:00",
+  "bytes": 346,
+  "sha256": "6a41ee72484732f52776e5b571beaab81d0b61d226f85de344437f8846ee3e89",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-12 --symbol 600818 --start 09:25:00 --end 09:25:03",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='600818' AND ts>='2026-11-12 09:25:00' AND ts<='2026-11-12 09:25:03' ORDER BY ts",
+  "row_count": 1
+ },
+ "live_states_2026-11-12_094000_first4000.json.gz": {
+  "source": "core-data live_states cache",
+  "source_path": "/home/exedev/core-data/live_states/2026-11-12/094000/8652ecc65aac0fb8090718ba91b18a380a9371871547dd2beefc305ab6b20054.json.gz",
+  "source_sha256": "db13073ae24abe7093bbed371c083226c670dba9477e616307f239fd7b5c84e7",
+  "sha256": "9c5b171b4be4f0ac014bc050680b9679dcf40004101234bc25dbaf6887157fbc",
+  "bytes": 223627,
+  "kind": "derived_real_cache_fixture",
+  "selection": "first 4000 states in source JSON insertion order; envelope symbol_count and states_sha256 recomputed; algorithm_version unchanged"
  }
 }

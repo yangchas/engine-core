@@ -1,0 +1,36 @@
+{
+ "columns": [
+  "ts",
+  "px_milli",
+  "pc_milli",
+  "bp1_milli",
+  "bp2_milli",
+  "ap1_milli",
+  "ap2_milli",
+  "bv1",
+  "bv2",
+  "av1",
+  "av2",
+  "amt_yuan",
+  "vol_units",
+  "symbol"
+ ],
+ "rows": [
+  [
+   "2026-11-12 09:25:01",
+   7930,
+   7930,
+   7930,
+   7870,
+   8050,
+   8060,
+   8,
+   50,
+   11,
+   1,
+   0,
+   0,
+   "600818"
+  ]
+ ]
+}
