@@ -1015,11 +1015,46 @@ def rollover_staff(name, reason):
     return 0
 
 
+def rollout_usage(session_id):
+    if not re.fullmatch(r'[0-9a-fA-F-]{36}', session_id or ''):
+        return None
+    paths = list((Path.home() / '.codex/sessions').rglob(f'rollout-*-{session_id}.jsonl'))
+    if len(paths) != 1:
+        return None
+    total = dict(input=0, cached=0, output=0, calls=0, compactions=0)
+    try:
+        with paths[0].open(encoding='utf-8') as handle:
+            for line in handle:
+                event = json.loads(line)
+                payload = event.get('payload', {})
+                if event.get('type') == 'compacted' or payload.get('type') == 'compacted':
+                    total['compactions'] += 1
+                if event.get('type') != 'event_msg' or payload.get('type') != 'token_count':
+                    continue
+                info = payload.get('info') or {}
+                usage = info.get('last_token_usage')
+                if not usage:
+                    continue
+                values = [usage[k] for k in ('input_tokens', 'cached_input_tokens', 'output_tokens')]
+                if any(not isinstance(v, int) or isinstance(v, bool) or v < 0 for v in values) or values[1] > values[0]:
+                    return None
+                for key, value in zip(('input', 'cached', 'output'), values):
+                    total[key] += value
+                total['calls'] += 1
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return total if total['calls'] else None
+
+
 def roster_list():
     ctx_limit = int(os.environ.get('PM_STAFF_CTX_LIMIT', '60000'))
     max_cards = int(os.environ.get('PM_STAFF_MAX_CARDS', '3'))
     for person in load_roster()[:12]:
-        print(f"{person['name']} {person['role']} {person['model']}/{person['effort']} {person['trust']} 卡数={len(person['cards'])} 会话={person['session_id'][:8]} ctx_tokens={person['ctx_tokens']} 代数={person.get('generation', 0)} 预算=ctx {person['ctx_tokens']}/{ctx_limit} · 卡 {len(person['cards'])}/{max_cards}")
+        cards = person.get('cards', [])
+        last = cards[-1] if cards and isinstance(cards[-1], dict) else {}
+        ratio = last.get('cached_ratio')
+        cache = f'{ratio:.2%}' if ratio is not None else '?'
+        print(f"缓存占比={cache} {person['name']} {person['role']} {person['model']}/{person['effort']} {person['trust']} 卡数={len(person['cards'])} 会话={person['session_id'][:8]} ctx_tokens={person['ctx_tokens']} 代数={person.get('generation', 0)} 预算=ctx {person['ctx_tokens']}/{ctx_limit} · 卡 {len(person['cards'])}/{max_cards}")
     return 0
 
 
@@ -1058,10 +1093,11 @@ def staff_writeback(card, text, runs):
     if not person:
         return
     session = runs / (card + '.session')
+    session_id = ''
     if session.is_file():
         ids = re.findall(r'session id:\s*([^\s]+)', session.read_text(encoding='utf-8'), re.I)
         if ids:
-            person['session_id'] = ids[-1]
+            session_id = person['session_id'] = ids[-1]
     usage = runs / 'usage.tsv'
     rows = [line.split('\t') for line in usage.read_text(encoding='utf-8').splitlines()] if usage.is_file() else []
     matches = [row for row in rows if len(row) == 5 and row[0] == card]
@@ -1077,6 +1113,25 @@ def staff_writeback(card, text, runs):
     entry = {'id': card, 'mode': mode}
     if matches and matches[-1][4].isdigit():
         entry['tokens'] = int(matches[-1][4])
+    totals = rollout_usage(session_id)
+    if totals:
+        earlier = [c for c in person['cards'] if (c.get('id') if isinstance(c, dict) else c) != card]
+        previous = [c for c in earlier if isinstance(c, dict) and c.get('session_id') == session_id
+                    and isinstance(c.get('rollout_totals'), dict)]
+        entry.update(session_id=session_id, rollout_totals=totals)
+        baseline = previous[-1]['rollout_totals'] if previous else dict.fromkeys(totals, 0)
+        delta = {key: totals[key] - baseline.get(key, 0) for key in totals}
+        if earlier and not previous and mode == 'resume':
+            print('rollout 指标未知: 续用会话缺少上一卡基线')
+        elif all(value >= 0 for value in delta.values()) and delta['cached'] <= delta['input']:
+            entry.update(cached_ratio=delta['cached'] / delta['input'] if delta['input'] else None,
+                         uncached_in=delta['input'] - delta['cached'], out=delta['output'], calls=delta['calls'])
+            ratio = f"{entry['cached_ratio']:.2%}" if entry['cached_ratio'] is not None else '?'
+            print(f"缓存占比={ratio} 未缓存输入={entry['uncached_in']} 输出={entry['out']} 调用={entry['calls']}")
+        else:
+            print('rollout 指标未知: 会话累计值倒退')
+    else:
+        print('rollout 指标未知')
     person['cards'] = [c for c in person['cards'] if (c.get('id') if isinstance(c, dict) else c) != card]
     person['cards'].append(entry)
     save_roster(roster)
@@ -1102,6 +1157,9 @@ def pilot():
         tokens = [int(latest[p.stem]) for p, _ in group if latest.get(p.stem, '').isdigit()]
         print(f"{label} 卡数={count} DONE={done/count:.1%} 平均派发={dispatch/count:.2f} 平均 tokens={sum(tokens)/len(tokens):.0f}" if count and tokens else f"{label} 卡数={count} DONE={done/count:.1%} 平均派发={dispatch/count:.2f} 平均 tokens=?" if count else f'{label} 卡数=0 DONE=? 平均派发=? 平均 tokens=?')
     costs = {'resume': [], 'fresh': []}
+    caches = {'resume': [], 'fresh': []}
+    entries = {entry['id']: entry for person in load_roster() for entry in person.get('cards', [])
+               if isinstance(entry, dict) and 'id' in entry}
     for group in groups:
         for path, content in group:
             marker = runs / (path.stem + '.staff')
@@ -1109,12 +1167,20 @@ def pilot():
                 mode = json.loads(marker.read_text(encoding='utf-8')).get('mode')
             except (OSError, ValueError):
                 mode = 'resume' if field(content, 'STAFF') else 'fresh'
-            if mode in costs and latest.get(path.stem, '').isdigit():
+            if mode not in costs:
+                continue
+            entry = entries.get(path.stem, {})
+            if 'uncached_in' in entry and 'out' in entry:
+                costs[mode].append(entry['uncached_in'] + entry['out'])
+                if entry.get('cached_ratio') is not None:
+                    caches[mode].append(entry['cached_ratio'])
+            elif latest.get(path.stem, '').isdigit():
                 costs[mode].append(int(latest[path.stem]))
     averages = {mode: sum(values) / len(values) if values else None for mode, values in costs.items()}
     for mode, label in (('resume', '续用卡'), ('fresh', '新会话卡')):
         average = f"{averages[mode]:.0f}" if averages[mode] is not None else '?'
-        print(f'{label}: {len(costs[mode])} 张 平均 tokens {average}')
+        cache = f"{sum(caches[mode]) / len(caches[mode]):.2%}" if caches[mode] else '?'
+        print(f'{label}: {len(costs[mode])} 张 平均未缓存输入+输出 {average} 缓存占比 {cache}')
     ratio = f"{averages['resume'] / averages['fresh']:.2f}" if averages['resume'] is not None and averages['fresh'] else '?'
     print('推广条件:固定会话组一次通过率≥新会话组+10pp 或 平均 tokens 不高于 1.2 倍,且至少各 5 张卡; 续用成本/新会话成本 = ' + ratio)
     return 0

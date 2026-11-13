@@ -737,3 +737,58 @@ def test_c1070_roster_rollover_and_dispatch(tmp_path, monkeypatch, capsys):
     assert twice['generation'] == 2
     assert {k:v for k,v in twice.items() if k not in ('generation', 'rolled_at')} == {k:v for k,v in updated.items() if k not in ('generation', 'rolled_at')}
     assert (staff / 'builder-1/PROFILE.md').read_text().count('换岗记录:') == 2
+
+
+def test_rollout_usage_real_and_missing(tmp_path, monkeypatch):
+    import shutil
+    fixture = Path(__file__).parent / 'fixtures/pm_tokens'
+    sessions = tmp_path / '.codex/sessions/2026/11/14'
+    sessions.mkdir(parents=True)
+    source = next(fixture.glob('rollout-*.jsonl'))
+    shutil.copy(source, sessions / source.name)
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    usage = pm.rollout_usage('01a1d5cf-12b2-7bf1-bfbf-a4fa5f785d7e')
+    assert usage == {'input': 1399645, 'cached': 1356544, 'output': 9889, 'calls': 30, 'compactions': 0}
+    assert round(usage['cached'] / usage['input'], 6) == 0.969206
+    assert usage['input'] - usage['cached'] + usage['output'] == 52990
+    assert pm.rollout_usage('missing') is None
+    assert pm.rollout_usage('../*') is None
+
+
+def test_wait_card_rollout_metrics_real(tmp_path, monkeypatch, capsys):
+    import json
+    import shutil
+    import time
+    source = next((Path(__file__).parent / 'fixtures/pm_tokens').glob('rollout-*.jsonl'))
+    sessions = tmp_path / '.codex/sessions/2026/11/14'
+    sessions.mkdir(parents=True)
+    shutil.copy(source, sessions / source.name)
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    cards, runs, reports = (tmp_path / p for p in ('cards', 'runs', 'reports'))
+    for path in (cards, runs, reports):
+        path.mkdir()
+    for key, value in [('PM_CARDS_DIR', cards), ('PM_RUNS_DIR', runs), ('PM_REPORTS_DIR', reports), ('PM_STAFF_PEOPLE_DIR', tmp_path / 'staff')]:
+        monkeypatch.setenv(key, str(value))
+    assert main(['hire', 'builder-1', '--role', 'builder', '--model', 'gpt-6.1-terra', '--effort', 'medium']) == 0
+    original = (Path(__file__).parent / 'fixtures/pm_staff/C1055.md').read_text()
+    (cards / 'C1055.md').write_text(pm.set_status('STAFF: builder-1\n' + original, 'STATUS: dispatched'))
+    (runs / 'C1055.session').write_text('session id: 01a1d5cf-12b2-7bf1-bfbf-a4fa5f785d7e\n')
+    (runs / 'C1055.dispatch.timestamp').write_text(str(time.time_ns() - 10_000_000_000))
+    (reports / 'C1055.md').write_text('VERDICT: PARTIAL\n')
+    assert main(['wait-card', 'C1055', '--timeout', '0']) == 0
+    entry = json.loads((tmp_path / 'staff/roster.json').read_text())[0]['cards'][-1]
+    assert entry['uncached_in'] == 43101 and entry['out'] == 9889 and entry['calls'] == 30
+    assert round(entry['cached_ratio'], 6) == 0.969206
+    assert main(['wait-card', 'C1055', '--timeout', '0']) == 0
+    assert json.loads((tmp_path / 'staff/roster.json').read_text())[0]['cards'][-1] == entry
+    assert main(['roster']) == 0 and main(['pilot']) == 0
+    output = capsys.readouterr().out
+    assert '96.92%' in output and '52990' in output
+    roster_path = tmp_path / 'staff/roster.json'
+    roster = json.loads(roster_path.read_text())
+    roster[0]['cards'] = ['C1054']
+    roster_path.write_text(json.dumps(roster))
+    assert main(['wait-card', 'C1055', '--timeout', '0']) == 0
+    unknown = json.loads(roster_path.read_text())[0]['cards'][-1]
+    assert 'uncached_in' not in unknown and 'cached_ratio' not in unknown
+    assert '缺少上一卡基线' in capsys.readouterr().out
