@@ -2,6 +2,7 @@
 """PM workflow commands."""
 import argparse
 import ast
+import builtins
 from collections import Counter
 import difflib
 from datetime import datetime, timedelta
@@ -175,7 +176,7 @@ def card_path(card):
     path = cards / (card + '.md')
     if not re.fullmatch(r'C[0-9]+', card) or not path.is_file() or path.resolve().parent != cards.resolve():
         choices = [p.stem for p in cards.glob('C*.md') if re.fullmatch(r'C[0-9]+', p.stem)]
-        print(f"card {card} not found; closest: {', '.join(difflib.get_close_matches(card, choices, n=3, cutoff=0))}")
+        print(f"card {redact(card)} not found; closest: {', '.join(difflib.get_close_matches(card, choices, n=3, cutoff=0))}")
         return None
     return path
 
@@ -212,14 +213,51 @@ def card_processes(card):
     return found
 
 
+def redact(text):
+    text = re.sub(r'(?i)(--token(?:\s+|=))\S+', r'\1***', text)
+    text = re.sub(r'(?i)\b(password|passwd|secret|api[_-]?key|authorization|cookie)\s*[=:]\s*\S+', '***', text)
+    text = re.sub(r'(?i)(rediss?://)[^\s@]*@', r'\1***@', text)
+    return re.sub(r'\beyJ[A-Za-z0-9_-]{17,}', '***', text)
+
+
+def denials(args):
+    path = location('PM_GUARD_LOG', '/home/exedev/fw/retros/guard.log')
+    counts = Counter()
+    examples = []
+    total = 0
+    try:
+        with path.open(encoding='utf-8', errors='replace') as lines:
+            for line in lines:
+                fields = line.rstrip('\n').split('\t', 4)
+                if len(fields) != 5 or not fields[0].startswith(args.date) or fields[1] != 'DENY':
+                    continue
+                total += 1
+                counts[fields[3].split(':', 1)[0]] += 1
+                if len(examples) < 5:
+                    examples.append(redact(fields[4])[:80])
+    except OSError as exc:
+        builtins.print(redact(f'guard log unavailable: {exc}'))
+        return 1
+    builtins.print(f'DENY {args.date}: {total}')
+    for category, count in counts.most_common(6):
+        builtins.print(redact(f'{category}: {count}'))
+    for command in examples:
+        builtins.print(f'示例: {command}')
+    builtins.print(f"目标 <5/天;本日 {total} 次 {'达标' if total < 5 else '超标'}")
+    return 0
+
+
 def show_status(card, path):
+    def print(*values, **kwargs):
+        builtins.print(*(redact(str(value)) for value in values), **kwargs)
+
     text = path.read_text(encoding='utf-8')
     for name in ('STATUS', 'ROLE', 'EXECUTOR', 'TITLE'):
-        print(f'{name}: {field(text, name)[:200]}')
+        print(f'{name}: {redact(field(text, name))[:200]}')
     report = location('PM_REPORTS_DIR', '/home/exedev/fw/reports') / (card + '.md')
     if report.is_file():
         with report.open(encoding='utf-8', errors='replace') as f:
-            first = f.readline().strip()[:160]
+            first = redact(f.readline().strip())[:160]
         print(f'report: yes size={report.stat().st_size} first={first}')
     else:
         print('report: no')
@@ -231,7 +269,7 @@ def show_status(card, path):
         from collections import deque
         with log.open(encoding='utf-8', errors='replace') as f:
             for line in deque(f, maxlen=3):
-                print(line.rstrip()[:160])
+                print(redact(line.rstrip())[:160])
     else:
         print('log: none')
     processes = card_processes(card)
@@ -241,7 +279,7 @@ def show_status(card, path):
         for label, command in [('git log', ['log', '-1', '--oneline']), ('git status', ['status', '--short'])]:
             result = subprocess.run(['git', '-C', worktree, *command], capture_output=True, text=True)
             lines = result.stdout.splitlines()[:1 if label == 'git log' else 5]
-            print(label + ': ' + (' | '.join(line[:160] for line in lines) or '(empty or unavailable)'))
+            print(label + ': ' + (' | '.join(redact(line)[:160] for line in lines) or '(empty or unavailable)'))
     evidence = Path('/home/exedev/fw/evidence') / card
     print(f'evidence files: {sum(1 for p in evidence.rglob("*") if p.is_file()) if evidence.is_dir() else 0}')
     if field(text, 'ROLE').lower() == 'builder' and worktree:
@@ -1042,6 +1080,9 @@ def main(argv=None):
     hire_parser.add_argument('--dry-run', action='store_true')
     sub.add_parser('roster')
     sub.add_parser('pilot')
+    denial_parser = sub.add_parser('denials')
+    denial_parser.add_argument('--date', default=datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat(),
+                               type=lambda value: datetime.strptime(value, '%Y-%m-%d').date().isoformat())
     wait = sub.add_parser('wait')
     wait.add_argument('--ledger-event', required=True)
     wait.add_argument('--date', default=datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat())
@@ -1102,6 +1143,8 @@ def main(argv=None):
             command.add_argument('--timeout', type=float, default=1700)
             command.add_argument('--interval', type=float, default=20)
     args = parser.parse_args(argv)
+    if args.command == 'denials':
+        return denials(args)
     if args.command == 'hire':
         return hire(args)
     if args.command == 'roster':

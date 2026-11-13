@@ -1,0 +1,12 @@
+{
+  "2026-11-12.tsv": {
+    "source": "/home/exedev/fw/retros/guard.log",
+    "selection": "2026-11-12 DENY first 200 lines",
+    "sha256": "72ada061be0082c750ce4a33093ebcf8d97e99f91afef22da8884155e571e6c9"
+  },
+  "2026-11-13.tsv": {
+    "source": "/home/exedev/fw/retros/guard.log",
+    "selection": "2026-11-13 DENY first 200 lines",
+    "sha256": "9afdbb7b03bdfb77a649d945f8fd96806006318660d32ddd9b5e5b5784f1ed68"
+  }
+}

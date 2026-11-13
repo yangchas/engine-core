@@ -1,0 +1,66 @@
+2026-11-12T00:49:28+08:00	DENY	Bash	git_command: not allowed	git add -A docs src tests && git status --short && git commit -q -m "C984: slim yesterday pool storage to Redis-first pu
+2026-11-12T01:15:48+08:00	DENY	Bash	redirection: output target not allowed	TMPDIR=/tmp /home/exedev/services/engine-next/shared/venv/bin/python examples/release.py merge --branch C984-pool-storag
+2026-11-12T01:29:26+08:00	DENY	Bash	default_deny: for	cd /home/exedev/fw && for c in C985 C986 C987 C988 C989; do bin/card_callback --ack $c; done; python3 bin/ops_state 2>&1
+2026-11-12T01:31:10+08:00	DENY	Bash	protected_assignment: TD_CONFIG or REDIS_URL	REDIS_URL=redis://127.0.0.1:6380/0 TD_CONFIG=/home/exedev/validation/operator-runs/taos-cfg TMPDIR=/tmp /home/exedev/ser
+2026-11-12T02:41:01+08:00	DENY	Bash	default_deny: until	until python3 /home/exedev/fw/bin/ops_state 2>/dev/null | sed -n 2p | grep -q "running \[\]"; do sleep 20; done; date '+
+2026-11-12T02:41:41+08:00	DENY	Bash	sed: only simple -n allowed	cd /home/exedev/repos/engine_core && rg -o '^      "id": "[^"]+"|^          "(kind|role)": "[^"]+"|^          "name": "[
+2026-11-12T03:09:31+08:00	DENY	Bash	default_deny: ps	cd /home/exedev/core-data/guardian-native/state/ledger && rg -n '"event_id":"daily_dde_0200"|"instance":"daily_dde_0200"
+2026-11-12T03:28:58+08:00	DENY	Bash	forbidden_command: redis-cli	redis-cli -p 6380 -n 0 EXISTS core:view:limit_up_pool:2026-11-11; redis-cli -p 6380 -n 0 TTL core:view:limit_up_pool:202
+2026-11-12T08:41:25+08:00	DENY	Bash	python_script: inline scripts not allowed	cd /home/exedev/core-data/guardian-native/state/ledger; python3 - <<'E' import json for l in open('2026-11-12.jsonl'):  
+2026-11-12T08:48:51+08:00	DENY	Bash	default_deny: awk	cd /home/exedev/core-data/guardian-native/state/ledger; date +%T; awk -F'"seq":' '{print}' 2026-11-12.jsonl | tail -n +1
+2026-11-12T10:07:31+08:00	DENY	Bash	default_deny: free	date +%T; cd /home/exedev/fw; sed -n 1,30p bin/dispatch | head -30; free -m | head -2
+2026-11-12T10:07:48+08:00	DENY	Bash	sed_in_place: forbidden	cd /home/exedev/fw; sed -i 's/^STATUS: ready.*/STATUS: ready(已建worktree engine_core-wt-C994;首次派发因缺worktree预检败,未运行)/' car
+2026-11-12T10:18:10+08:00	DENY	Bash	python_script: script not allowed	cd /home/exedev/fw; ls bin | grep -i release; python3 bin/release.py merge --help 2>&1 | head -15
+2026-11-12T10:18:51+08:00	DENY	Bash	redirection: output target not allowed	cd /home/exedev/repos/engine_core; /home/exedev/services/engine-next/shared/venv/bin/python examples/release.py merge --
+2026-11-12T10:52:56+08:00	DENY	Bash	default_deny: $V	cd /home/exedev/repos/engine_core; V=/home/exedev/services/engine-next/shared/venv/bin/python; $V examples/release.py pl
+2026-11-12T12:04:11+08:00	DENY	Bash	parse: missing command	cd ~ && ls -la ~/.codex 2>/dev/null; echo "---env---"; env | grep -iE 'openai|codex' | sed -E 's/=(.{4}).*/=\1****/'; ec
+2026-11-12T12:04:13+08:00	DENY	Bash	parse: missing command	ls -la ~/.codex; echo "---env---"; env | grep -iE 'openai|codex' | sed -E 's/=(.{4}).*/=\1****/'; echo "---config (no se
+2026-11-12T12:04:16+08:00	DENY	Bash	sed: only simple -n allowed	cd ~/.codex && sed -E 's/("(access_token|refresh_token|id_token|OPENAI_API_KEY)"[[:space:]]*:[[:space:]]*")[^"]{0,8}[^"]
+2026-11-12T12:04:17+08:00	DENY	Bash	sed: only simple -n allowed	cd ~/.codex && grep -nE '^\s*\[|model_provider|base_url|OPENAI|env_key|auth' config.toml | sed -E 's/(sk-)[A-Za-z0-9_-]+
+2026-11-12T12:04:29+08:00	DENY	Bash	default_deny: ps	ps -eo pid,lstart,cmd | grep -i '[c]odex'
+2026-11-12T12:04:38+08:00	DENY	Bash	default_deny: codex	codex login status
+2026-11-12T12:08:03+08:00	DENY	Bash	forbidden_command: kill	kill 4046020
+2026-11-12T12:24:56+08:00	DENY	Bash	default_deny: which	which claude; claude --version 2>&1 | head -2; claude --help 2>&1 | grep -E "^\s+(-p|--print|--model|--permission-mode|-
+2026-11-12T12:24:58+08:00	DENY	Bash	default_deny: claude	claude --help 2>&1 | head -60
+2026-11-12T12:25:10+08:00	DENY	Edit	file_path: not allowed	/home/exedev/fw/bin/dispatch
+2026-11-12T12:25:18+08:00	DENY	Write	file_path: not allowed	/tmp/claude-1000/-home-exedev-repos/45955fc2-84a7-4d06-84ef-fbca4333860c/scratchpad/dispatch_claude_fallback.patch
+2026-11-12T12:28:59+08:00	DENY	Write	file_path: not allowed	/home/exedev/apply_dispatch_claude.sh
+2026-11-12T12:29:40+08:00	DENY	Write	file_path: not allowed	/home/exedev/fw/evidence/C995/apply_dispatch_claude.sh
+2026-11-12T12:29:54+08:00	DENY	Write	file_path: not allowed	/home/exedev/apply_dispatch_claude.sh
+2026-11-12T13:00:49+08:00	DENY	Bash	default_deny: bash	cd /home/exedev/fw; bash -n bin/dispatch && echo SYNTAX_OK; grep -n 'FW_EXECUTOR\|codex exec\|claude -p\|^fi$' bin/dispa
+2026-11-12T13:01:07+08:00	DENY	Bash	python_script: script not allowed	python3 bin/ops_state 2>&1 | tail -n 60; echo ---; wc -l /home/exedev/repos/engine_core-live/src/engine_core/guardian/sc
+2026-11-12T13:01:11+08:00	DENY	Bash	default_deny: which	which redis-cli taos 2>&1; ls /home/exedev/validation/operator-runs/taos-cfg 2>&1 | head; ls -la /home/exedev/core-data/
+2026-11-12T13:01:17+08:00	DENY	Bash	sed: unsafe script	cd /home/exedev/repos/engine_core-live && sed -n '955,1046p;1106,1130p' src/engine_core/guardian/schedule.json
+2026-11-12T13:01:18+08:00	DENY	Bash	sed: unsafe script	cd /home/exedev/repos/engine_core-live && sed -n '1322,1345p;1764,1822p;2004,2030p;2091,2124p' src/engine_core/guardian/
+2026-11-12T13:02:21+08:00	DENY	Bash	shell_expansion: command substitution is forbidden	echo "REDIS_URL set: $([ -n "$REDIS_URL" ] && echo yes || echo no)"; echo "TD_CONFIG set: $([ -n "$TD_CONFIG" ] && echo 
+2026-11-12T13:02:22+08:00	DENY	Bash	forbidden_command: redis-cli	redis-cli --version 2>&1 | head -n 2; ls /usr/bin | grep -i '^redis\|^taos' | head
+2026-11-12T13:02:33+08:00	DENY	Bash	default_deny: awk	cd /home/exedev/core-data/guardian-native/state/ledger && grep -o '"event_id":"[^"]*","instance":"[^"]*","trade_date":"[
+2026-11-12T13:03:22+08:00	DENY	Bash	shell_expansion: command substitution is forbidden	cd /home/exedev/core-data/guardian-native/state/ledger && for f in 2026-11-09.jsonl 2026-11-10.jsonl 2026-11-11.jsonl 20
+2026-11-12T13:05:37+08:00	DENY	Write	file_path: not allowed	/home/exedev/fw/evidence/C995/chain.tsv
+2026-11-12T13:06:26+08:00	DENY	Write	file_path: not allowed	/home/exedev/fw/reports/C995.md
+2026-11-12T13:06:47+08:00	DENY	Bash	default_deny: sha256sum	cd /home/exedev/fw/evidence/C995 && sha256sum chain.txt ledger_extracts.txt report.txt
+2026-11-12T14:39:10+08:00	DENY	Bash	default_deny: for	cd /home/exedev/fw; for c in C998 C999 C1000 C1001; do ls cards/$c.md 2>/dev/null && echo "$c TAKEN" || echo "$c free"; 
+2026-11-12T14:41:21+08:00	DENY	Bash	shell_expansion: command substitution is forbidden	cd /home/exedev/core-data/guardian-native/state/ledger; echo "11-11 lines: $(grep -c FETCH_JOB_UNAVAILABLE 2026-11-11.js
+2026-11-12T15:06:36+08:00	DENY	Bash	default_deny: crontab	crontab -l 2>&1 | cat -n
+2026-11-12T15:08:36+08:00	DENY	Bash	default_deny: diff	cd /home/exedev/fw; tail -3 /tmp/claude-1000/-home-exedev-repos/a938c0a6-4b00-4b85-b570-2b733d4b225e/tasks/bc4110zgo.out
+2026-11-12T16:12:25+08:00	DENY	Bash	default_deny: ps	cd /home/exedev/fw; tail -4 /tmp/claude-1000/-home-exedev-repos/a938c0a6-4b00-4b85-b570-2b733d4b225e/tasks/br3ff3coj.out
+2026-11-12T17:25:50+08:00	DENY	Bash	default_deny: xargs	cd /home/exedev/repos/engine_core-live; echo "py files in src:"; find src -name '*.py' | wc -l; echo "py lines in src:";
+2026-11-12T17:25:58+08:00	DENY	Bash	shell_expansion: command substitution is forbidden	cd /home/exedev/fw; for f in BOTTOMUP-REVIEW.md design/14-CODE-MAP.md design/16-FIELD-CATALOG.md design/17-DEPENDENCIES.
+2026-11-12T17:30:05+08:00	DENY	Bash	default_deny: awk	cd /home/exedev/fw; ls -l --time-style=+%F SOURCE-MATRIX.md design/02-L0-DATASETS.md design/03-DIALECTS.md design/16-FIE
+2026-11-12T19:17:48+08:00	DENY	Bash	default_deny: for	cd /home/exedev; for d in t1_v2 t1v2work repos/t1v2-base-C959 repos/t1v2-wt-C955; do echo "== $d"; git -C $d log --oneli
+2026-11-12T23:31:31+08:00	DENY	Bash	default_deny: for	cd /home/exedev/core-data/reports/2026-11-12; ls -la open_0932 open_0945; for d in open_0932 open_0945; do echo "== $d";
+2026-11-12T23:31:36+08:00	DENY	Bash	python_script: inline scripts not allowed	/home/exedev/services/engine-next/shared/venv/bin/python -c " import json d=json.load(open('/home/exedev/core-data/repor
+2026-11-12T23:31:43+08:00	DENY	Bash	sed: only simple -n allowed	grep -oE '<h[23][^>]*>[^<]{2,40}</h[23]>' /home/exedev/core-data/reports/2026-11-12/open_0945/report.html | sed 's/<[^>]
+2026-11-12T23:33:12+08:00	DENY	Bash	shell_expansion: command substitution is forbidden	cat >> /home/exedev/fw/design/46-OPEN-BUSINESS-DRAFT.md <<'EOF'  --- # 竞价报告(auction_0926)口径草稿——补充 实际产物:`reports/2026-11-
+2026-11-12T23:43:38+08:00	DENY	Write	file_path: not allowed	/home/exedev/fw/reports/C1027.md
+2026-11-12T23:43:55+08:00	DENY	Bash	default_deny: touch	touch /home/exedev/fw/reports/C1027.md && cd /home/exedev/fw && bin/preflight_card cards/C1027.md 2>&1 | tail -5
+2026-11-12T23:44:04+08:00	DENY	Write	file_path: not allowed	/home/exedev/fw/reports/C1027.md
+2026-11-12T23:51:24+08:00	DENY	Bash	python_script: inline scripts not allowed	cd /home/exedev/.claude/projects/-home-exedev-repos; python3 - <<'E' import json rows=[] for l in open('45955fc2-84a7-4d
+2026-11-12T23:51:28+08:00	DENY	Write	file_path: not allowed	/tmp/claude-1000/-home-exedev-repos/00328c8a-c21b-4721-a321-88873aecd9f4/scratchpad/tail.py
+2026-11-12T23:51:29+08:00	DENY	Bash	python_script: script not allowed	python3 -I /tmp/claude-1000/-home-exedev-repos/00328c8a-c21b-4721-a321-88873aecd9f4/scratchpad/tail.py /home/exedev/.cla
+2026-11-12T23:51:31+08:00	DENY	Bash	default_deny: jq	cd /home/exedev/.claude/projects/-home-exedev-repos; tail -n 400 45955fc2-84a7-4d06-84ef-fbca4333860c.jsonl | jq -r 'sel
+2026-11-12T23:52:06+08:00	DENY	Bash	redirection: output target not allowed	cd /home/exedev/fw; printf 'VERDICT: PENDING\n' > reports/C1028.md; mkdir -p evidence/C1028; ls bin | head -30; ls repor
+2026-11-12T23:52:08+08:00	DENY	Write	file_path: not allowed	/home/exedev/fw/reports/C1028.md
+2026-11-12T23:54:11+08:00	DENY	Write	file_path: not allowed	/home/exedev/.claude/plans/binary-humming-corbato.md
+2026-11-12T23:59:11+08:00	DENY	Bash	redirection: output target not allowed	cd /home/exedev/.claude/projects/-home-exedev-repos; grep -c '"promptSource":"typed"' 45955fc2-84a7-4d06-84ef-fbca433386
+2026-11-12T23:59:36+08:00	DENY	Bash	default_deny: for	cd /home/exedev/.claude/projects/-home-exedev-repos; for n in 32 2143 11196 15892; do echo "=== line $n"; sed -n "${n}p"

@@ -1,0 +1,34 @@
+2026-11-13T00:00:07+08:00	DENY	Write	file_path: not allowed	/home/exedev/.claude/plans/binary-humming-corbato.md
+2026-11-13T00:19:29+08:00	DENY	Bash	default_deny: for	cd /home/exedev/fw; for c in C1018 C1019 C1020 C1021 C1022 C1023 C1024 C1025 C1026; do printf '%s: ' $c; head -c 160 rep
+2026-11-13T00:42:11+08:00	DENY	Bash	default_deny: for	cd /home/exedev/core-data/reports/2026-11-12; for f in auction_0926 open_0945; do echo "== $f"; tail -c +9000 $f/manifes
+2026-11-13T00:42:12+08:00	DENY	Bash	sed: only simple -n allowed	cd /home/exedev/core-data/reports/2026-11-12; tail -c 3500 auction_0926/manifest.json | sed 's/"used_date":\[[^]]*\]/"us
+2026-11-13T00:42:12+08:00	DENY	Bash	shell_expansion: command substitution is forbidden	cd /home/exedev/repos/engine_core-live/src/engine_core/guardian; sed -n 1,40p preopen_check.py; sed -n 1,30p chain_sweep
+2026-11-13T00:42:13+08:00	DENY	Bash	shell_expansion: command substitution is forbidden	cd /home/exedev/core-data/guardian-native; head -c 600 config.json; echo; for e in price_volume_postclose price_volume_0
+2026-11-13T00:42:14+08:00	DENY	Bash	default_deny: for	cd /home/exedev/core-data/guardian-native; for id in daily_kline_backfill adjust_factor_postclose price_volume_postclose
+2026-11-13T00:42:28+08:00	DENY	Bash	default_deny: awk	cd /home/exedev/core-data/guardian-native; awk 'NR>=6604&&NR<=6680' config.json | grep -E '"id"|start|deadline|at"|calen
+2026-11-13T08:29:21+08:00	DENY	Bash	default_deny: which	cd /home/exedev/fw; grep -n "EXECUTOR\|claude\|codex" bin/preflight_card bin/postcard bin/runcard 2>/dev/null | cut -c1-
+2026-11-13T08:35:33+08:00	DENY	Write	file_path: not allowed	/home/exedev/fw/reports/C1028.md
+2026-11-13T09:06:28+08:00	DENY	Bash	default_deny: for	cd /home/exedev/.claude/projects/-home-exedev-repos; F=00328c8a-c21b-4721-a321-88873aecd9f4.jsonl; for n in 681 683 685 
+2026-11-13T09:06:31+08:00	DENY	Bash	default_deny: awk	cd /home/exedev/.claude/projects/-home-exedev-repos; awk 'NR>=680 && NR<=706 && /"type":"text","text":"[^"]{500,}/ {prin
+2026-11-13T09:06:38+08:00	DENY	Bash	default_deny: for	cd /home/exedev/.claude/projects/-home-exedev-repos; F=00328c8a-c21b-4721-a321-88873aecd9f4.jsonl; for n in 686 693 706;
+2026-11-13T09:06:40+08:00	DENY	Bash	sed: unsafe script	sed -n '686p;693p;706p' /home/exedev/.claude/projects/-home-exedev-repos/00328c8a-c21b-4721-a321-88873aecd9f4.jsonl | gr
+2026-11-13T09:12:30+08:00	DENY	Bash	shell_expansion: command substitution is forbidden	until [ "$(date +%H%M)" -ge 0950 ]; do sleep 20; done; echo "09:50 reached"
+2026-11-13T09:12:34+08:00	DENY	Bash	default_deny: sleep	sleep 1500; echo "quiet-window-check"
+2026-11-13T09:14:23+08:00	DENY	Bash	default_deny: free	date +%H:%M; free -m | head -2; cd /home/exedev/fw; bin/ops_state 2>&1 | head -4
+2026-11-13T09:27:31+08:00	DENY	Bash	default_deny: bin/real_gate	date +%H:%M; cd /home/exedev/fw; GATE_REPO=/home/exedev/repos/engine_core-wt-C1032 bin/real_gate --date 2026-11-12 --pre
+2026-11-13T11:52:30+08:00	DENY	Bash	default_deny: for	cd /home/exedev/fw/evidence/C1034; for f in local-check.out missing-final-check.out ask-check.out baseline-compare-0920.
+2026-11-13T12:03:10+08:00	DENY	Bash	python_script: script not allowed	cd /home/exedev/repos/engine_core && /home/exedev/services/engine-next/shared/venv/bin/python examples/affected_tests.py
+2026-11-13T12:12:32+08:00	DENY	Bash	default_deny: sha256sum	cd /home/exedev/fw; grep -n "fixed-q2.jsonl" runs/C1034.log | head -3 | cut -c1-700; sha256sum evidence/C1034/fixed-comm
+2026-11-13T14:28:38+08:00	DENY	Bash	default_deny: for	for f in a b; do echo $f; done; echo "date: $(date +%H:%M)"; sed -n '1p;3p' /home/exedev/fw/RULES.md | cut -c1-30
+2026-11-13T14:28:38+08:00	DENY	Bash	forbidden_command: rm	for i in 1; do rm /nonexistent/x; done
+2026-11-13T14:28:39+08:00	DENY	Bash	shell_expansion: unsafe substitution	echo $(rm /nonexistent/x)
+2026-11-13T14:28:39+08:00	DENY	Bash	shell_expansion: dynamic command or argument	ls $(echo /tmp)
+2026-11-13T15:00:15+08:00	DENY	Bash	forbidden_command: systemctl	date +%H:%M:%S; cat /home/exedev/fw/reports/C1047.md | head -40; ls -la /home/exedev/services/t1-v2/ | sed -n 4p; ls /ho
+2026-11-13T16:21:37+08:00	DENY	Bash	jq: unsafe program	jq -n 'env'
+2026-11-13T16:21:37+08:00	DENY	Bash	read_sensitive_path: 敏感路径不可读,需要内容请写 runner 卡	cat ~/core-data/sec*/w*
+2026-11-13T16:21:37+08:00	DENY	Bash	read_secret_env	echo $REDIS_URL
+2026-11-13T16:21:37+08:00	DENY	Bash	ps: unsafe arguments	ps -ef
+2026-11-13T16:21:37+08:00	DENY	Bash	forbidden_command: rm	rm /nonexistent/x
+2026-11-13T16:21:38+08:00	DENY	Bash	read_sensitive_path: 敏感路径不可读,需要内容请写 runner 卡	cat /proc/self/environ
+2026-11-13T16:31:09+08:00	DENY	Bash	default_deny: for	cd /home/exedev/.claude/projects/-home-exedev-repos/memory; for f in feedback-real-data-testing.md feedback-test-only-ch
+2026-11-13T17:32:08+08:00	DENY	Bash	sed: only simple -n allowed	cd /home/exedev/repos/engine_core && git show --stat --oneline HEAD~0 | tail -3; git diff --stat 146066c HEAD | tail -3;

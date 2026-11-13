@@ -628,3 +628,55 @@ def test_staff_wait_and_pilot_real_files(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     expected = [sum(pm.field(p.read_text(), 'ROLE') == 'builder' and not pm.field(p.read_text(), 'STATUS').lower().startswith('ready') and bool(pm.field(p.read_text(), 'STAFF')) == arm for p in cards.glob('C*.md')) for arm in (False, True)]
     assert f'新会话 卡数={expected[0]}' in output and f'固定会话 卡数={expected[1]}' in output
+
+
+def test_denials_real_guard_log(monkeypatch, capsys):
+    fixture = Path(__file__).parent / 'fixtures/pm_guard_log/2026-11-12.tsv'
+    monkeypatch.setenv('PM_GUARD_LOG', str(fixture))
+    assert main(['denials', '--date', '2026-11-12']) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert any('66' in line for line in lines)
+    assert all(any(category in line and str(count) in line for line in lines)
+               for category, count in [('default_deny', 25), ('file_path', 12), ('sed', 6)])
+    assert lines[-1] == '目标 <5/天;本日 66 次 超标'
+    assert len(lines) <= 14
+
+
+def test_redact_token_shapes_and_real_log():
+    # 形态构造，非真实令牌。
+    token = 'eyJ' + 'a' * 60
+    original = f'prefix --token {token} password=hunter2 redis://user:pass@host suffix'
+    assert pm.redact(original) == 'prefix --token *** *** redis://***@host suffix'
+    assert pm.redact(f'authorization: Bearer {token}') == '*** ***'
+    assert pm.redact(f'api_key=abc cookie:xyz --token={token} rediss://u:p@host') == '*** *** --token=*** rediss://***@host'
+    lines = (Path(__file__).parent / 'fixtures/pm_runs/C1060.log').read_text()
+    assert pm.redact(lines) == lines
+
+
+def test_status_real_card_and_report_no_false_redaction(tmp_path, monkeypatch, capsys):
+    source = Path(__file__).parent / 'fixtures/pm_runs'
+    cards, reports, runs = (tmp_path / name for name in ('cards', 'reports', 'runs'))
+    for directory in (cards, reports, runs):
+        directory.mkdir()
+    (cards / 'C1055.md').write_bytes((source / 'C1055.md').read_bytes())
+    (reports / 'C1055.md').write_bytes((source / 'C1055.report').read_bytes())
+    (runs / 'C1055.log').write_bytes((source / 'C1060.log').read_bytes())
+    for key, path in [('PM_CARDS_DIR', cards), ('PM_REPORTS_DIR', reports), ('PM_RUNS_DIR', runs)]:
+        monkeypatch.setenv(key, str(path))
+    assert main(['status', 'C1055']) == 0
+    out = capsys.readouterr().out
+    card = (source / 'C1055.md').read_text()
+    for field in ('STATUS', 'ROLE', 'EXECUTOR', 'TITLE'):
+        assert f'{field}: {pm.field(card, field)[:200]}' in out
+    assert 'first=' + (source / 'C1055.report').read_text().strip()[:160] in out
+    for line in (source / 'C1060.log').read_text().splitlines():
+        assert line[:160] in out
+    # 形态构造，非真实令牌；覆盖 status 与 wait-card 的真实输出路径。
+    token = 'eyJ' + 'b' * 60
+    (reports / 'C1055.md').write_text(f'VERDICT: PARTIAL --token {token}\n')
+    (runs / 'C1055.log').write_text(f'password=example {token}\n')
+    for command in (['status', 'C1055'], ['wait-card', 'C1055', '--timeout', '0']):
+        assert main(command) == 0
+        output = capsys.readouterr().out
+        assert token not in output and 'password=example' not in output
+        assert '--token ***' in output and '*** ***' in output
