@@ -13,8 +13,8 @@ import time
 READ = set('ls cat head tail grep rg wc find stat date echo test true'.split())
 FORBIDDEN = set('redis-cli taos curl wget ssh scp kill pkill rm mv cp tee dd chmod chown sudo systemctl docker'.split())
 GIT = set('log diff status show rev-parse branch merge-base'.split())
-FW_BIN = set('runcard preflight_card card_callback ops_state clean_rh pm'.split())
-SCRIPTS = set('release.py audit_card.py deploy_watch.py pm.py'.split())
+FW_BIN = set('runcard preflight_card card_callback ops_state clean_rh pm real_gate'.split())
+SCRIPTS = set('release.py audit_card.py deploy_watch.py pm.py affected_tests.py'.split())
 ASSIGN = re.compile(r'^[a-zA-Z_][a-zA-Z_0-9]*=')
 
 
@@ -40,11 +40,79 @@ def _output_allowed(path, env):
     return bool(re.fullmatch(r'/home/exedev/\.claude/jobs/[^/]+/tmp/.+', path))
 
 
-def _bash(command, env):
+def _substitutions(command, env):
+    """Validate substitutions before replacing them with inert markers."""
+    out, i, quote = [], 0, None
+    while i < len(command):
+        ch = command[i]
+        if ch == '\\' and quote != "'":
+            if i + 1 >= len(command):
+                return None
+            out.append(command[i:i + 2])
+            i += 2
+            continue
+        if ch in "'\"":
+            if quote is None or quote == ch:
+                quote = None if quote == ch else ch
+            out.append(ch)
+            i += 1
+            continue
+        if quote != "'" and (command.startswith('$(', i) or ch == '\x60'):
+            backtick = ch == '\x60'
+            start = i + (1 if backtick else 2)
+            j, inner_quote = start, None
+            while j < len(command):
+                c = command[j]
+                if c == '\\' and inner_quote != "'":
+                    j += 2
+                    continue
+                if c in "'\"" and (inner_quote is None or inner_quote == c):
+                    inner_quote = None if inner_quote == c else c
+                elif inner_quote != "'" and (command.startswith('$(', j) or (c == '\x60' and not backtick)):
+                    return None
+                elif inner_quote is None and c == ('\x60' if backtick else ')'):
+                    break
+                j += 1
+            if j >= len(command) or not _bash(command[start:j], env, substitution=True)[0]:
+                return None
+            out.append('__PM_SUBSTITUTION__')
+            i = j + 1
+            continue
+        out.append(ch)
+        i += 1
+    return ''.join(out)
+
+
+def _bash(command, env, *, substitution=False, loop_depth=0):
     if not isinstance(command, str):
         return False, 'parse: command must be a string'
-    if '`' in command or '$(' in command or '<(' in command or '>(' in command:
-        return False, 'shell_expansion: command substitution is forbidden'
+    if '<(' in command or '>(' in command:
+        return False, 'shell_expansion: process substitution is forbidden'
+    if substitution and ('$(' in command or '\x60' in command):
+        return False, 'shell_expansion: nested substitution is forbidden'
+    if ('$(' in command or '\x60' in command) and '<<' in command:
+        return False, 'shell_expansion: substitution with heredoc is forbidden'
+    command = _substitutions(command, env)
+    if command is None:
+        return False, 'shell_expansion: unsafe substitution'
+    loop = re.fullmatch(r'\s*for[ \t]+([A-Za-z_][A-Za-z_0-9]*)[ \t]+in[ \t]+([^;\n]+)(?:;|\n)\s*do(?:[ \t]*;|[ \t]*\n|[ \t]+)(.*)(?:;|\n)\s*done\s*;?\s*', command, re.S)
+    if loop:
+        if substitution or loop_depth >= 2:
+            return False, 'loop: nesting limit'
+        if (loop.group(1) in os.environ or loop.group(1) in env
+                or loop.group(1) in {'IFS', 'BASH_ENV', 'ENV', 'CDPATH', 'SHELLOPTS', 'BASHOPTS'}
+                or loop.group(1).startswith(('LD_', 'PYTHON', 'BASH_FUNC_'))):
+            return False, 'loop: environment variable'
+        try:
+            words = shlex.split(loop.group(2))
+        except ValueError:
+            return False, 'loop: invalid word list'
+        if not words or any(not re.fullmatch(r'[A-Za-z0-9_./:+,=-]+', w) or '__PM_SUBSTITUTION__' in w for w in words):
+            return False, 'loop: nonliteral word list'
+        body = loop.group(3)
+        if re.search(r'(^|[;\n&|])\s*cd\s+(?!/)', body):
+            return False, 'loop: relative cd is unsafe'
+        return _bash(body, env, loop_depth=loop_depth + 1)
     # Heredoc bodies are data, never shell commands. Keep them for script checks.
     lines = command.splitlines()
     headers, bodies = [], []
@@ -88,6 +156,11 @@ def _bash(command, env):
     for words in segments:
         if any(ASSIGN.match(w) and w.split('=', 1)[0] in ('TD_CONFIG', 'REDIS_URL') for w in words):
             return False, 'protected_assignment: TD_CONFIG or REDIS_URL'
+        if any(ASSIGN.match(w) and '__PM_SUBSTITUTION__' in w
+               and (w.split('=', 1)[0] in os.environ or w.split('=', 1)[0] in env
+                    or w.split('=', 1)[0] in {'IFS', 'BASH_ENV', 'ENV', 'CDPATH', 'SHELLOPTS', 'BASHOPTS'}
+                    or w.startswith(('LD_', 'PYTHON', 'BASH_FUNC_'))) for w in words):
+            return False, 'protected_assignment: dynamic environment variable'
         if all(ASSIGN.match(w) for w in words):
             continue
         args = []
@@ -98,6 +171,8 @@ def _bash(command, env):
                 if i + 1 >= len(words):
                     return False, 'parse: missing redirection target'
                 target = words[i + 1]
+                if '__PM_SUBSTITUTION__' in target:
+                    return False, 'redirection: substitution in target'
                 fd = args.pop() if args and args[-1].isdigit() else ''
                 if word == '>&':
                     if (fd, target) != ('2', '1'):
@@ -133,11 +208,17 @@ def _bash(command, env):
             return False, 'parse: missing command'
         cmd, rest = args[0], args[1:]
         name = os.path.basename(cmd)
+        if '__PM_SUBSTITUTION__' in cmd or (cmd != 'echo' and any('__PM_SUBSTITUTION__' in x for x in rest)):
+            return False, 'shell_expansion: dynamic command or argument'
+        if substitution and cmd not in READ:
+            return False, 'shell_expansion: substitution command not allowed'
         if name in FORBIDDEN:
             return False, f'forbidden_command: {name}'
         if name == 'cd' and cmd == 'cd':
             if len(rest) != 1 or '$' in rest[0]:
                 return False, 'cd: invalid directory'
+            if loop_depth and not rest[0].startswith('/'):
+                return False, 'loop: relative cd is unsafe'
             cwd = _path(rest[0], cwd)
         elif cmd in READ:
             # find and similar tools may execute commands or write files.
@@ -154,7 +235,7 @@ def _bash(command, env):
             if '-n' not in rest or any(x in rest for x in ('-e', '--expression', '-f', '--file')):
                 return False, 'sed: only simple -n allowed'
             if (len(rest) < 2 or rest[0] != '-n'
-                    or not re.fullmatch(r'(?:[0-9]+(?:,(?:[0-9]+|\$))?p|/[^/\n]*/p)', rest[1])
+                    or not all(re.fullmatch(r'(?:[0-9]+(?:,(?:[0-9]+|\$))?\s*p|/[^/\n]*/\s*p)', item.strip()) for item in rest[1].split(';'))
                     or any(x.startswith('-') for x in rest[2:])):
                 return False, 'sed: unsafe script'
         elif cmd == 'git':

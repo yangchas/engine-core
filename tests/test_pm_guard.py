@@ -59,3 +59,56 @@ def test_main(tmp_path):
             assert 'pm' in result.stderr
     lines = (tmp_path / 'guard.log').read_text().splitlines()
     assert len(lines) == 1 and '\tDENY\t' in lines[0]
+
+
+def test_real_denied_november():
+    samples = SAMPLES['real_denied_2026_11']
+    for sample in samples['real_should_allow']:
+        if sample['feature'] in ('loop', 'subst', 'sed'):
+            command = sample['command']
+            assert decide('Bash', {'command': command}, False)[0], command
+    for command in samples['real_should_deny']:
+        assert not decide('Bash', {'command': command}, False)[0], command
+
+
+def test_wait_until_validation(capsys, monkeypatch):
+    import pytest
+    from examples import pm
+    with pytest.raises(SystemExit):
+        pm.main(['wait-until', '25:99'])
+    with pytest.raises(SystemExit):
+        pm.main(['wait-until', 'invalid'])
+    assert 'HH:MM' in capsys.readouterr().err
+    from datetime import datetime
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 13, 10, 0, tzinfo=tz)
+    monkeypatch.setattr(pm, 'datetime', FixedDateTime)
+    with pytest.raises(SystemExit):
+        pm.main(['wait-until', '11:01'])
+    assert '60' in capsys.readouterr().err
+
+
+def test_sed_multiple_prints():
+    samples = SAMPLES['real_denied_2026_11']['real_should_allow']
+    command = next(c["command"] for c in samples if "955,1046p;1106,1130p" in c["command"])
+    assert decide('Bash', {'command': command}, False)[0]
+    for command in ("sed -n '1p;1w /tmp/x' x", "sed -n '1p;1e id' x", 'sed -i 1p x'):
+        assert not decide('Bash', {'command': command}, False)[0]
+
+
+def test_loop_and_substitution_boundaries():
+    allowed = ("for i in a b; do echo $i; done",
+               "for i in a\ndo\nfor j in b; do echo $j; done\ndone",
+               "echo $(date +%H:%M)", "echo `date +%T`")
+    denied = ("for i in 1; do rm x; done", "for i in $(ls); do echo $i; done",
+              "while true; do echo; done", "until true; do echo; done",
+              "echo $(rm x)", "echo `rm x`", "$(echo ls) /tmp",
+              "echo $(echo $(echo x))", "for i in a; do echo x > /etc/y; done",
+              'for i in a; do python3 -c "print(1)"; done',
+              "find . $(echo -delete)", "echo x > $(echo /dev/null)")
+    for command in allowed:
+        assert decide('Bash', {'command': command}, False)[0], command
+    for command in denied:
+        assert not decide('Bash', {'command': command}, False)[0], command
