@@ -1,0 +1,3 @@
+`-s` 和 `-C` 需要放在 `exec` 层；续用会写回同一会话文件，文件从 724,642 增至 741,483 字节。并发续用的行为尚未验证。
+
+报告为 [C1060.md](/home/exedev/fw/reports/C1060.md)，原始输出和哈希清单位于 [证据目录](/home/exedev/fw/evidence/C1060)。`spec_lint` 最终为 0 findings。由于未取得真实 GATE PASS，报告状态为 **PARTIAL**。
