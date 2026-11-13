@@ -26,7 +26,7 @@ C526_EXCERPT_INDEX = PROVENANCE.get("_c526_excerpts", {})
 SOURCES = {"ths_hot_rank", "kaipan_hot_plates", "kaipan_pool", "wencai_daily_kline",
            "kaipan_ban_reasons", "wencai_limit_up_pool",
            "wencai_limit_up_pool_today", "q2_limit_up_pool_today", "kaipan_plate_members", "kaipan_stock_dde", "baostock_query_all_stock",
-           "baostock_stock_basic"}
+           "baostock_stock_basic", "td_stock_tick"}
 CREDENTIAL_WORDS = ("token", "password", "secret", "cookie", "authorization")
 
 
