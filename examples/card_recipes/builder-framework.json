@@ -4,7 +4,7 @@
     "EXECUTOR": "codex",
     "REPORT": "fw/reports/{id}.md。首行 VERDICT: DONE/BLOCKED/PARTIAL;之后 FACTS/CHANGES/EVIDENCE/OPEN。",
     "ROLE": "builder",
-    "AUTHORIZATION": "可读工作树全部源码与测试。python 用 /home/exedev/services/engine-next/shared/venv/bin/python。环境或执行错误允许修复并重跑。不联网,不读 cookie,不发信,不 push,不合并,不部署,不写 Redis/TD,不改 fw 下任何文件(只写自己的 reports 与 evidence)。",
+    "AUTHORIZATION": "可读工作树全部源码与测试。python 用 /home/exedev/services/engine-next/shared/venv/bin/python。环境或执行错误允许修复并重跑。不联网,不读 cookie,不发信,不 push,不合并,不部署,不写 Redis/TD,不改 fw 下任何文件(只写自己的 reports 与 evidence)。 遇到规格内部矛盾时,选与真实历史失败原因一致的那一种并在报告 OPEN 写明,不要停下来等 PM。不在 shell 里打印环境变量或完整进程命令行。",
     "NOT_DO": "不手写假样本;不 push、不合并、不部署;不顺手重构。",
     "STUBS_ALLOWED": "仅回放真实响应",
     "TEST_BUDGET": "新增测试 ≤3 个;必须包含危险对照;验收清单: {test_files}",
