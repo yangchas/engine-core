@@ -1,0 +1,18 @@
+{
+  "easy": {
+    "MODEL": "gpt-5.6-luna",
+    "EFFORT": "low"
+  },
+  "normal": {
+    "MODEL": "gpt-6.1-terra",
+    "EFFORT": "medium"
+  },
+  "hard": {
+    "MODEL": "gpt-6.1-terra",
+    "EFFORT": "high"
+  },
+  "review": {
+    "MODEL": "gpt-6-sol",
+    "EFFORT": "medium"
+  }
+}

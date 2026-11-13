@@ -9,7 +9,7 @@ GLOBAL_INVARIANT_TESTS = (
     'tests/test_registry_storage.py', 'tests/test_guardian_contract_static.py',
     'tests/test_dataset_registry.py', 'tests/test_baseline_window_declaration.py',
 )
-FIELD = re.compile(r'^([A-Z][A-Z0-9_]*):\s*(.*)$', re.MULTILINE)
+FIELD = re.compile(r'^([A-Z][A-Z0-9_]*):[ \t]*(.*)$', re.MULTILINE)
 PATH = re.compile(r'(?:/home/exedev/|~/)[^\s,，;；。！？、（）() `"\'<>]+')
 TRAILING = '.,:;!?，。；：！？、\'"）)]}】》'
 

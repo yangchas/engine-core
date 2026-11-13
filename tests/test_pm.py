@@ -240,7 +240,8 @@ def test_newcard_real_cards(tmp_path, monkeypatch, capsys):
     cards = tmp_path / 'cards'
     shutil.copytree(Path(__file__).parent / 'fixtures/pm_cards', cards)
     for p in (Path(__file__).parent / 'fixtures/card_lint').glob('C*.md'):
-        shutil.copy(p, cards / p.name)
+        if p.stem != 'C1056':
+            shutil.copy(p, cards / p.name)
     monkeypatch.setenv('PM_CARDS_DIR', str(cards))
     monkeypatch.setenv('PM_NO_WORKTREE', '1')
     args = ['newcard', '--recipe', 'builder-fix', '--title', '修复', '--serves', '目标',
@@ -297,7 +298,7 @@ def test_c1055_newcard_and_new_files(tmp_path, monkeypatch, capsys):
     assert 'COMMIT: yes' in output
     assert str(tmp_path / 'reports/C1055.md') in output
     assert str(tmp_path / 'evidence/C1055') in output
-    assert main(['newcard', '--recipe', 'runner-verify', *args]) == 0
+    assert main(['newcard', '--recipe', 'runner-verify', '--question', '验证什么?', *args]) == 0
     assert 'COMMIT: no' in capsys.readouterr().out
     card = cards / 'C1054.md'
     text = card.read_text()
@@ -361,3 +362,30 @@ def test_c1055_metrics_real_archives(tmp_path, monkeypatch, capsys):
     assert 'C1047:7' in output and 'C1054:2' in output and 'C1049:1' in output
     assert '目标:一次通过率≥70%;平均派发≤1.5;陈旧 ready=0;DENY<5/天' in output
     assert len(output.splitlines()) <= 12
+
+
+def test_c1057_runner_tiers_and_builder(tmp_path, monkeypatch, capsys):
+    from examples.card_lint import lint_card
+    from examples.pm import field
+    cards = tmp_path / 'cards'
+    cards.mkdir()
+    import shutil
+    shutil.copy(Path(__file__).parent / 'fixtures/card_lint/C1056.md', cards / 'C1056.md')
+    monkeypatch.setenv('PM_CARDS_DIR', str(cards))
+    args = ['--title', '探针', '--serves', '目标', '--plan', 'P0 5/6', '--approval', '已授权',
+            '--goal', '观察', '--real-data', '真实卡', '--oracle', '结果一致',
+            '--accept-by', 'real-run', '--dry-run']
+    assert main(['newcard', '--recipe', 'runner-observe', '--tier', 'easy', '--question', '模型是什么?', *args]) == 0
+    output = capsys.readouterr().out
+    assert field(output, 'MODEL') == 'gpt-5.6-luna' and field(output, 'EFFORT') == 'low'
+    assert field(output, 'QUESTION') and field(output, 'NEED_DATA')
+    assert '/home/exedev/fw/reports/C1057.md' in field(output, 'SCOPE_WRITE')
+    assert '/home/exedev/fw/evidence/C1057' in field(output, 'SCOPE_WRITE')
+    assert 'TEST_BUDGET:' not in output
+    assert not any(x.startswith('FAIL') for x in lint_card(output, Path(__file__).parents[1]))
+    assert main(['newcard', '--recipe', 'runner-observe', *args]) == 2
+    assert 'question' in capsys.readouterr().out
+    assert main(['newcard', '--recipe', 'builder-framework', '--tier', 'hard', '--scope', 'examples/pm.py', *args]) == 0
+    output = capsys.readouterr().out
+    assert field(output, 'MODEL') == 'gpt-6.1-terra' and field(output, 'EFFORT') == 'high'
+    assert field(output, 'COMMIT') == 'yes'

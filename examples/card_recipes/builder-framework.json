@@ -25,5 +25,6 @@
   "optional": [
     "scope",
     "param"
-  ]
+  ],
+  "default_tier": "normal"
 }
