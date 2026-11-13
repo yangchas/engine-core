@@ -7,9 +7,9 @@
     "AUTHORIZATION": "只读验收。可读仓库全部源码与测试、真实 Redis(守卫代理,只读)、真实 TD(TD_CONFIG,SELECT/SHOW/DESCRIBE)。python 用 /home/exedev/services/engine-next/shared/venv/bin/python。只写自己的 reports 与 evidence。环境或执行错误允许修复并重跑。不改代码、不提交、不 push、不合并、不部署,不写 Redis/TD,不联网,不读 cookie,不发信。",
     "NOT_DO": "不修改代码、配置、数据;不写 Redis、TD;不触发事件;不重启;不删键;不手工回填。",
     "STUBS_ALLOWED": "无",
-    "TEST_BUDGET": "按指定范围验收: {test_files}",
     "ACCEPT": "各项结果与 ORACLE 对照并附证据位置。",
-    "COMMIT": "no"
+    "COMMIT": "no",
+    "NEED_DATA": "无。若 TD 或 Redis 不可连,写错误原文,不编造。"
   },
   "required": [
     "title",
@@ -19,10 +19,12 @@
     "goal",
     "real_data",
     "oracle",
-    "accept_by"
+    "accept_by",
+    "question"
   ],
   "optional": [
     "scope",
     "param"
-  ]
+  ],
+  "default_tier": "easy"
 }

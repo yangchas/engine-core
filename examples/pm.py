@@ -311,6 +311,11 @@ def newcard(args):
         print('unknown recipe')
         return 2
     recipe = json.loads(recipe_path.read_text(encoding='utf-8'))
+    tiers = json.loads(recipe_path.with_name('tiers.json').read_text(encoding='utf-8'))
+    tier = args.tier or recipe['default_tier']
+    if tier not in tiers:
+        print('unknown tier')
+        return 2
     values = vars(args).copy()
     if args.goal_file:
         values['goal'] = Path(args.goal_file).read_text(encoding='utf-8').strip()
@@ -350,12 +355,15 @@ def newcard(args):
         if str(extra) not in expanded:
             expanded.append(str(extra))
     entries = [('ID', ident), ('STATUS', 'ready'), ('LANE', fixed['LANE']),
-               ('ROLE', fixed['ROLE']), ('EXECUTOR', fixed['EXECUTOR']), ('COMMIT', fixed['COMMIT']),
+               ('ROLE', fixed['ROLE']), ('EXECUTOR', fixed['EXECUTOR']),
+               ('MODEL', tiers[tier]['MODEL']), ('EFFORT', tiers[tier]['EFFORT']), ('COMMIT', fixed['COMMIT']),
                ('TITLE', values['title']), ('SERVES', values['serves']), ('PLAN', values['plan']),
                ('APPROVAL', values['approval']), ('SCOPE_WRITE', ', '.join(expanded)),
                ('REAL_DATA', values['real_data']), ('ORACLE', values['oracle']),
                ('ACCEPT_BY', values['accept_by'])]
-    entries += [(k, fixed[k]) for k in ('TEST_BUDGET', 'STUBS_ALLOWED', 'AUTHORIZATION')]
+    if fixed['ROLE'] == 'runner':
+        entries += [('QUESTION', values['question']), ('NEED_DATA', fixed['NEED_DATA'])]
+    entries += [(k, fixed[k]) for k in ('TEST_BUDGET', 'STUBS_ALLOWED', 'AUTHORIZATION') if k in fixed]
     entries += [('GOAL', values['goal'])] + [(k, fixed[k]) for k in ('NOT_DO', 'REPORT', 'ACCEPT')]
     card = '\n'.join(f'{k}: {v}' for k, v in entries) + '\n'
     if args.dry_run:
@@ -564,6 +572,8 @@ def main(argv=None):
     group.add_argument('--card')
     new = sub.add_parser('newcard')
     new.add_argument('--recipe', required=True)
+    new.add_argument('--tier', choices=('easy', 'normal', 'hard', 'review'))
+    new.add_argument('--question')
     for option in ('title', 'serves', 'plan', 'approval', 'scope', 'real-data', 'oracle', 'accept-by'):
         new.add_argument('--' + option)
     goals = new.add_mutually_exclusive_group()

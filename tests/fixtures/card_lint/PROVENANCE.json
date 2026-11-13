@@ -36,6 +36,10 @@
     "auction_PROVENANCE.json": {
       "source": "tests/fixtures/real/auction_baseline_20261106/PROVENANCE.json",
       "sha256": "63df6948404ce14ab72100b7dc971b0e0f65a0185f3c0e48b5c1f5e2171c0581"
+    },
+    "C1056.md": {
+      "source": "/home/exedev/fw/cards/C1056.md",
+      "sha256": "189327a11388db01b524b23d6b099c4c3fef9b65d1c13c2848f69f43098c6d4b"
     }
   }
 }
