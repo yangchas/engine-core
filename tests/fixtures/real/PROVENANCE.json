@@ -2215,5 +2215,35 @@
   "bytes": 223627,
   "kind": "derived_real_cache_fixture",
   "selection": "first 4000 states in source JSON insertion order; envelope symbol_count and states_sha256 recomputed; algorithm_version unchanged"
+ },
+ "redis_auction_full_row_2026-11-12_1207.json": {
+  "source": "redis_auction_full_row",
+  "trade_date": "2026-11-12",
+  "fetched_at": "2026-11-13T12:07:12+08:00",
+  "bytes": 801,
+  "sha256": "520d97bf1cd6b556fbe82632c46d41c436dd561e437bea88b767c3c98fe6c972",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py redis_auction_full_row --date 2026-11-12 --tag 0925 --symbols 600103,002520,000001",
+  "key": "core:auction:full:2026-11-12:0925",
+  "selection": "exact symbols from published row map"
+ },
+ "t1v2_replay_row_2026-11-12_1207.json": {
+  "source": "t1v2_replay_row",
+  "trade_date": "2026-11-12",
+  "fetched_at": "2026-11-13T12:07:12+08:00",
+  "bytes": 863,
+  "sha256": "2cd48c04b8c091cfbc6a013a36ad3cd26b841a930d2618af05ba627886bdacfd",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py t1v2_replay_row --date 2026-11-12 --tag 0925 --symbols 600103,002520,000001 --journal /home/exedev/fw/evidence/C1034/fixed-commands.jsonl --candidate-commit 52d11d9 --replay-window 2026-11-12 09:15:00..09:26:00",
+  "journal": "/home/exedev/fw/evidence/C1034/fixed-commands.jsonl",
+  "journal_sha256": "335cc29456c85718ce60ba550281c7f23866fa28454d219ce797018875c17414",
+  "candidate_commit": "52d11d9",
+  "replay_window": "2026-11-12 09:15:00..09:26:00",
+  "selection": "exact symbols from unique SET publication for date and tag",
+  "candidate_replay_command_c1038": "TDENGINE_HOST=localhost REDIS_HOST=127.0.0.1 REDIS_PORT=6380 CORE_DATA_ROOT=/home/exedev/core-data REDIS_Q2_PREFIX=core:test:c1034:q2: REDIS_A2_PREFIX=core:test:c1034:a2: REDIS_M2_PREFIX=core:test:c1034:m2: REDIS_LEGACY_AUCTION_PREFIX=core:test:c1034:market:auction: REDIS_LEGACY_ANCHOR_PREFIX=core:test:c1034:market:auction:anchor: REDIS_CORE_AUCTION_FULL_PREFIX=core:test:c1034:core:auction:full: /home/exedev/repos/t1v2-wt-C1034/build/t1_v2_c1034 --replay --start '2026-11-12 09:15:00' --end '2026-11-12 09:26:00' --speed 1000 --replay-write-redis",
+  "candidate_replay_command_note": "C1038 Redis replay is an independent reproduction, not the journal-producing replay.",
+  "journal_replay_command_c1034": "/bin/bash -lc 'set -o pipefail; endpoint=$(awk '\"'\"'$1==\"firstEp\" {print $2; exit}'\"' \\\"\"'$TD_CONFIG/taos.cfg\"); TDENGINE_HOST=\"${endpoint%:*}\" TDENGINE_PORT=\"${endpoint##*:}\" REDIS_LEGACY_AUCTION_PREFIX='\"'test:c1034:core:auction:full:' REDIS_CORE_AUCTION_FULL_PREFIX='test:c1034:core:auction:full:' REPLAY_SPEED=1000 ENABLE_FILE_LOG=0 ./build/t1_v2_c1034 --replay --start '2026-11-12 09:15:00' --end '2026-11-12 09:26:00' --q2frame /home/exedev/fw/evidence/C1034/fixed-q2.jsonl --auction-commands /home/exedev/fw/evidence/C1034/fixed-commands.jsonl 2>&1 | tee /home/exedev/fw/evidence/C1034/local-replay.log | tail -n 5\" in /home/exedev/repos/t1v2-wt-C1034",
+  "journal_replay_command_source": "/home/exedev/fw/runs/C1034.log:2841",
+  "journal_replay_command_source_sha256": "06fa8d6970e81e9b75d6ce702f4d700ac3ea8ba94e5f58c5937ead10b44bff2f"
  }
 }

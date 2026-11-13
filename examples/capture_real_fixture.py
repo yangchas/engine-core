@@ -294,11 +294,16 @@ def main(argv=None) -> int:
                                                      "wencai_daily_kline", "wencai_limit_up_pool_today",
                                                      "q2_limit_up_pool_today",
                                                      "baostock_query_all_stock",
-                                                     "baostock_stock_basic", "td_stock_tick"])
+                                                     "baostock_stock_basic", "td_stock_tick", "redis_auction_full_row", "t1v2_replay_row"])
     parser.add_argument("--date", default=datetime.now(TZ).date().isoformat())
     parser.add_argument("--level", type=int, default=1)
     parser.add_argument("--plate-code")
     parser.add_argument("--symbol")
+    parser.add_argument("--symbols")
+    parser.add_argument("--tag")
+    parser.add_argument("--journal")
+    parser.add_argument("--candidate-commit")
+    parser.add_argument("--replay-window")
     parser.add_argument("--start")
     parser.add_argument("--end")
     parser.add_argument("--index", type=int, default=0)
@@ -331,9 +336,39 @@ def main(argv=None) -> int:
     fetched_at = datetime.now(TZ).isoformat(timespec="seconds")
     if args.index < 0 or not 1 <= args.page_size <= 2000:
         parser.error("--index must be non-negative and --page-size must be 1..2000")
-    source, raw, meta = capture(args.kind, args.date, args.level,
-                                plate_code=args.plate_code, index=args.index,
-                                page_size=args.page_size, symbol=args.symbol, start=args.start, end=args.end)
+    if args.kind in {"redis_auction_full_row", "t1v2_replay_row"}:
+        symbols = (args.symbols or "").split(",")
+        if not all(len(s) == 6 and s.isdigit() for s in symbols) or args.tag not in {"0920", "0924", "0925"}:
+            parser.error("six-digit --symbols and valid --tag required")
+        source = args.kind
+        if args.kind == "redis_auction_full_row":
+            import redis
+            client = redis.Redis.from_url(os.environ["REDIS_URL"])
+            key = f"core:auction:full:{args.date}:{args.tag}"
+            payload, metadata = client.mget([key, key + ":meta"])
+            if payload is None or metadata is None:
+                raise SystemExit("missing Redis publication")
+            data, publication = json.loads(payload), json.loads(metadata)
+            if hashlib.sha256(payload).hexdigest() != publication["sha256"] or len(data) != publication["rows"]:
+                raise SystemExit("invalid Redis publication")
+            raw = {"key": key, "ttl": client.ttl(key), "meta": {k: publication[k] for k in ("rows", "sha256")}, "rows": {s: data[s] for s in symbols}}
+            meta = {"key": key, "selection": "exact symbols from published row map"}
+        else:
+            if not all((args.journal, args.candidate_commit, args.replay_window)):
+                parser.error("--journal, --candidate-commit and --replay-window required")
+            journal = Path(args.journal).resolve()
+            content = journal.read_bytes()
+            suffix = f"core:auction:full:{args.date}:{args.tag}"
+            matches = [x for line in content.splitlines() if (x := json.loads(line)).get("type") == "set" and x.get("key", "").endswith(suffix)]
+            if len(matches) != 1:
+                raise SystemExit("expected exactly one replay publication")
+            data = json.loads(matches[0]["value"])
+            raw = {"key": matches[0]["key"], "rows": {s: data[s] for s in symbols}}
+            meta = {"journal": str(journal), "journal_sha256": hashlib.sha256(content).hexdigest(), "candidate_commit": args.candidate_commit, "replay_window": args.replay_window, "selection": "exact symbols from unique SET publication for date and tag"}
+    else:
+        source, raw, meta = capture(args.kind, args.date, args.level,
+                                    plate_code=args.plate_code, index=args.index,
+                                    page_size=args.page_size, symbol=args.symbol, start=args.start, end=args.end)
     body = json.dumps(raw, ensure_ascii=False, sort_keys=True, default=str, indent=1).encode("utf-8") + b"\n"
     level = f"_L{args.level}" if args.kind == "kaipan_pool" else ""
     plate_part = f"_{args.plate_code}_i{args.index}" if args.kind == "kaipan_plate_members" else ""

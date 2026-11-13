@@ -123,3 +123,36 @@ def test_missing_auction_v6_facts_are_explicit_and_do_not_use_fallback_stocks():
     assert payload["status"] == "MISSING"
     assert payload["stocks"] == []
     assert payload["snapshots"][0]["status"] == "MISSING"
+
+
+def _c1041_rows(kind):
+    import json
+    from pathlib import Path
+    real = Path(__file__).parent / 'fixtures' / 'real'
+    rows = json.loads(next(real.glob(f'{kind}_2026-11-12_*.json')).read_text())['rows']
+    return [dict(row, symbol=symbol, source='redis_auction_full', auction_tag='0925') for symbol, row in rows.items()]
+
+
+def test_c1041_real_final_row_replay_and_live():
+    rows = _c1041_rows('t1v2_replay_row')
+    for now, status in [(None, 'VERIFIED_REPLAY'), ('2026-11-12T09:26:05+08:00', 'VERIFIED')]:
+        result = build_auction_stock_facts('2026-11-12', '2026-11-12T09:26:00+08:00', rows, [], now=now)
+        seal = next(r['seal'] for r in result['rows'] if r['symbol'] == '600103')
+        assert (seal['status'], seal['seal_amount_yuan'], seal['basis']) == (status, 810813942, 'FINAL_TICK')
+
+
+def test_c1041_real_indicative_nonlimit_and_old():
+    result = build_auction_stock_facts('2026-11-12', '2026-11-12T09:26:00+08:00', _c1041_rows('t1v2_replay_row'), [])
+    rows = {r['symbol']: r for r in result['rows']}
+    assert rows['002520']['seal']['basis'] == 'LAST_AUCTION_TICK'
+    assert rows['000001']['seal']['status'] == 'NOT_LIMIT'
+    old = build_auction_stock_facts('2026-11-12', '2026-11-12T09:26:00+08:00', _c1041_rows('redis_auction_full_row'), [])
+    seal = next(r['seal'] for r in old['rows'] if r['symbol'] == '600103')
+    assert (seal['status'], seal['reason'], seal['seal_amount_yuan']) == ('UNKNOWN', 'ROW_SCHEMA_OLD', None)
+
+
+def test_c1041_unknown_label():
+    rows = _c1041_rows('redis_auction_full_row')
+    result = build_auction_stock_facts('2026-11-12', '2026-11-12T09:26:00+08:00', rows, [])
+    assert result['seal_label'] == result['summary']['seal_label'] == '未取得'
+    assert result['seal_scope_label'].startswith('未取得 ')

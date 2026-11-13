@@ -12,6 +12,9 @@ FIELDS = {'price_milli', 'pre_close_milli', 'change_bp', 'amount_yuan',
           'bid_amount_yuan', 'rank_amount', 'src'}
 
 
+OPTIONAL_FIELDS = {'ask_amount_yuan', 'tick_ts_ms'}
+
+
 class ViewError(ValueError):
     pass
 
@@ -55,13 +58,17 @@ def read_auction_view(client, day: str, tag: str, *, prefix: str = 'core:auction
         raise ViewError('empty_view')
     result = []
     for symbol, record in data.items():
-        if not re.fullmatch(r'[0-9]{6}', symbol) or not isinstance(record, dict) or set(record) != FIELDS:
+        if not re.fullmatch(r'[0-9]{6}', symbol) or not isinstance(record, dict) or set(record) not in (FIELDS, FIELDS | OPTIONAL_FIELDS):
             raise ViewError('invalid_structure')
         for field in FIELDS - {'src'}:
             value = record[field]
             if value is None and field in {'price_milli', 'pre_close_milli', 'change_bp'}:
                 continue
             if type(value) is not int or (field != 'change_bp' and value < 0):
+                raise ViewError('invalid_field')
+        if OPTIONAL_FIELDS <= record.keys():
+            if (type(record['ask_amount_yuan']) is not int or record['ask_amount_yuan'] < 0
+                    or type(record['tick_ts_ms']) is not int or record['tick_ts_ms'] <= 0):
                 raise ViewError('invalid_field')
         src = record['src']
         if src not in ('auction_match', 'indicative_bid_ask_mid', 'missing'):
