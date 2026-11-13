@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PM workflow commands."""
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import os
 import re
@@ -169,6 +169,8 @@ def main(argv=None):
     wait.add_argument('--timeout', type=float, default=1700)
     wait.add_argument('--interval', type=float, default=20)
     wait.add_argument('--state-root', type=Path, default=Path.home() / 'core-data/guardian-native')
+    wait_until = sub.add_parser('wait-until')
+    wait_until.add_argument('time', metavar='HH:MM')
     accept_parser = sub.add_parser('accept')
     accept_parser.add_argument('card')
     accept_parser.add_argument('--dry-run', action='store_true')
@@ -177,6 +179,22 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command == 'accept':
         return accept(args)
+    if args.command == 'wait-until':
+        if not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', args.time):
+            parser.error('时间格式必须为 HH:MM')
+        now = datetime.now(ZoneInfo('Asia/Shanghai'))
+        hour, minute = map(int, args.time.split(':'))
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target < now:
+            target += timedelta(days=1)
+        delay = (target - now).total_seconds()
+        if delay > 3600:
+            parser.error('等待超过 60 分钟，请分段等待')
+        deadline = time.monotonic() + delay
+        while (remaining := deadline - time.monotonic()) > 0:
+            time.sleep(min(30, remaining))
+        print(f'{args.time} reached')
+        return 0
     if args.timeout < 0 or args.interval <= 0:
         parser.error('timeout must be nonnegative and interval must be positive')
     try:

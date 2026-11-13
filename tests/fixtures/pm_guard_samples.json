@@ -66,5 +66,58 @@
   "/home/exedev/repos/engine_core/examples/x.py",
   "/home/exedev/.claude/jobs/8015506a/tmp/x.py",
   "/home/exedev/fw/bin/role_guard"
- ]
+ ],
+ "real_denied_2026_11": {
+  "_doc": "来源 /home/exedev/fw/retros/guard.log；仅选 DENY Bash 且 detail 长度小于 120 字符的完整记录；抽取日期 2026-11-13。",
+  "real_should_allow": [
+   {
+    "command": "free -m | head -3; ps -eo pid,rss,etime,args --sort=-rss | head -8 | cut -c1-150",
+    "feature": "tool",
+    "needs_card": "C1046"
+   },
+   {
+    "command": "cd /home/exedev/fw && ed=$(grep -c \"^SCOPE_WRITE\" cards/C844.md); echo scope_lines=$ed",
+    "feature": "subst"
+   },
+   {
+    "command": "ls -l /home/exedev/fw/cards/C957.md /home/exedev/fw/reports/C957.md; free -m",
+    "feature": "tool",
+    "needs_card": "C1046"
+   },
+   {
+    "command": "sha256sum -c SHA256SUMS",
+    "feature": "tool",
+    "needs_card": "C1046"
+   },
+   {
+    "command": "date +%T; cd /home/exedev/fw; sed -n 1,30p bin/dispatch | head -30; free -m | head -2",
+    "feature": "tool",
+    "needs_card": "C1046"
+   },
+   {
+    "command": "ps -eo pid,lstart,cmd | grep -i '[c]odex'",
+    "feature": "tool",
+    "needs_card": "C1046"
+   },
+   {
+    "command": "cd /home/exedev/repos/engine_core-live && sed -n '955,1046p;1106,1130p' src/engine_core/guardian/schedule.json",
+    "feature": "sed"
+   },
+   {
+    "command": "cd /home/exedev/fw/evidence/C995 && sha256sum chain.txt ledger_extracts.txt report.txt",
+    "feature": "tool",
+    "needs_card": "C1046"
+   },
+   {
+    "command": "date +%H:%M; free -m | head -2; cd /home/exedev/fw; bin/ops_state 2>&1 | head -4",
+    "feature": "tool",
+    "needs_card": "C1046"
+   }
+  ],
+  "real_should_deny": [
+   "cd /home/exedev/fw && echo \"# C971 报告(占位)\" > reports/C971.md && echo ok",
+   "until [ \"$(date +%H%M)\" -ge 0950 ]; do sleep 20; done; echo \"09:50 reached\"",
+   "sleep 1500; echo \"quiet-window-check\""
+  ]
+ }
 }
