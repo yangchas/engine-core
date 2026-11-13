@@ -1,0 +1,7 @@
+{
+  "source_path": "/home/exedev/core-data/guardian-native/state/ledger/2026-11-06.jsonl",
+  "extraction_command": "rg '\"event_id\":\"td_resource_check_0825\"' /home/exedev/core-data/guardian-native/state/ledger/2026-11-06.jsonl | head -n 3",
+  "date": "2026-11-06",
+  "line_count": 3,
+  "sha256": "d885ce647a7f503ef3bd4dff392b7c88670206d7053a5b86d80533f83e869243"
+}

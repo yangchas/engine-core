@@ -1,0 +1,2249 @@
+{
+ "_core_artifacts": {
+  "core_artifacts/c522/daily_kline/2026-10-23/formal/manifest.json": {
+   "bytes": 1785,
+   "command": "cp /home/exedev/core-data/daily_kline/trade_date=2026-10-23/source=baostock/sha256-28ccf68f99ff600c/manifest.json tests/fixtures/real/core_artifacts/c522/daily_kline/2026-10-23/formal/manifest.json",
+   "copied_at": "2026-10-24T00:57:01+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_manifest",
+   "sha256": "6952848d015a9dbee1c4397b19a5870572652cff5d03f706f77378d7c6a9b134",
+   "source": "baostock",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-10-23/source=baostock/sha256-28ccf68f99ff600c/manifest.json",
+   "trade_date": "2026-10-23",
+   "version": "sha256-28ccf68f99ff600c"
+  },
+  "core_artifacts/c522/daily_kline/2026-10-23/formal/rows.jsonl.gz": {
+   "bytes": 263355,
+   "command": "cp /home/exedev/core-data/daily_kline/trade_date=2026-10-23/source=baostock/sha256-28ccf68f99ff600c/rows.jsonl.gz tests/fixtures/real/core_artifacts/c522/daily_kline/2026-10-23/formal/rows.jsonl.gz",
+   "copied_at": "2026-10-24T00:57:01+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_rows",
+   "sha256": "ba78b718b01d2041813bd02aefdfa251610596bb36d42114099fa6c720990b2b",
+   "source": "baostock",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-10-23/source=baostock/sha256-28ccf68f99ff600c/rows.jsonl.gz",
+   "trade_date": "2026-10-23",
+   "version": "sha256-28ccf68f99ff600c"
+  },
+  "core_artifacts/c522/daily_kline/2026-10-23/provisional/manifest.json": {
+   "bytes": 1334,
+   "command": "cp /home/exedev/core-data/daily_kline/trade_date=2026-10-23/source=baostock>wencai>q2_final/sha256-28ccf68f99ff600c/manifest.json tests/fixtures/real/core_artifacts/c522/daily_kline/2026-10-23/provisional/manifest.json",
+   "copied_at": "2026-10-24T00:57:01+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_manifest",
+   "sha256": "8728228f1be9a96c50b642d017378b89245c9f150dab8320a7177ffe023cde34",
+   "source": "baostock>wencai>q2_final",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-10-23/source=baostock>wencai>q2_final/sha256-28ccf68f99ff600c/manifest.json",
+   "trade_date": "2026-10-23",
+   "version": "sha256-28ccf68f99ff600c"
+  },
+  "core_artifacts/c522/daily_kline/2026-10-23/provisional/rows.jsonl.gz": {
+   "bytes": 263355,
+   "command": "cp /home/exedev/core-data/daily_kline/trade_date=2026-10-23/source=baostock>wencai>q2_final/sha256-28ccf68f99ff600c/rows.jsonl.gz tests/fixtures/real/core_artifacts/c522/daily_kline/2026-10-23/provisional/rows.jsonl.gz",
+   "copied_at": "2026-10-24T00:57:01+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_rows",
+   "sha256": "ba78b718b01d2041813bd02aefdfa251610596bb36d42114099fa6c720990b2b",
+   "source": "baostock>wencai>q2_final",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-10-23/source=baostock>wencai>q2_final/sha256-28ccf68f99ff600c/rows.jsonl.gz",
+   "trade_date": "2026-10-23",
+   "version": "sha256-28ccf68f99ff600c"
+  },
+  "core_artifacts/c533/daily_kline/2026-10-21/chain/manifest.json": {
+   "bytes": 1514,
+   "command": "cp /home/exedev/core-data/daily_kline/trade_date=2026-10-21/source=baostock>wencai>q2_final/sha256-8259d72528dd6dad/manifest.json tests/fixtures/real/core_artifacts/c533/daily_kline/2026-10-21/chain/manifest.json",
+   "copied_at": "2026-10-25T03:45:02+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_manifest",
+   "sha256": "d4fa208e165eafa8e14ca66cb88c02bf6209bebd0becc90cfc029412dbf7b885",
+   "source": "baostock>wencai>q2_final",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-10-21/source=baostock>wencai>q2_final/sha256-8259d72528dd6dad/manifest.json",
+   "trade_date": "2026-10-21",
+   "version": "sha256-8259d72528dd6dad"
+  },
+  "core_artifacts/c533/daily_kline/2026-06-26/legacy_baostock_rows_first1.jsonl.gz": {
+   "bytes": 217,
+   "command": "extract first original JSONL row from source_path and gzip with mtime=0",
+   "copied_at": "2026-10-25T03:53:58+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_rows_excerpt",
+   "row_count": 1,
+   "selection": "first original JSONL row",
+   "sha256": "1539e34dc07e75389964e0212e48065b92ec213c462766f36ff006a062d0b79f",
+   "source": "baostock",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-06-26/source=baostock/sha256-9be9781525e1046b/rows.jsonl.gz",
+   "trade_date": "2026-06-26",
+   "version": "sha256-9be9781525e1046b"
+  },
+  "core_artifacts/c540/symbol_universe/2026-10-21/actual/manifest.json": {
+   "bytes": 1174,
+   "command": "cp /home/exedev/core-data/symbol_universe/trade_date=2026-10-21/source=baostock_query_all_stock/sha256-b8dd391fbbe4c584/manifest.json core_artifacts/c540/symbol_universe/2026-10-21/actual/manifest.json",
+   "copied_at": "2026-10-25T21:34:02+08:00",
+   "dataset": "symbol_universe",
+   "kind": "core_artifact_manifest",
+   "sha256": "dfbba50221beaa654e42b7ce3803d0e84b1a719d59820df38f26fb19da3043ab",
+   "source": "baostock_query_all_stock",
+   "source_path": "/home/exedev/core-data/symbol_universe/trade_date=2026-10-21/source=baostock_query_all_stock/sha256-b8dd391fbbe4c584/manifest.json",
+   "trade_date": "2026-10-21",
+   "version": "sha256-b8dd391fbbe4c584"
+  },
+  "core_artifacts/c540/symbol_universe/2026-10-21/actual/rows.jsonl.gz": {
+   "bytes": 73524,
+   "command": "cp /home/exedev/core-data/symbol_universe/trade_date=2026-10-21/source=baostock_query_all_stock/sha256-b8dd391fbbe4c584/rows.jsonl.gz core_artifacts/c540/symbol_universe/2026-10-21/actual/rows.jsonl.gz",
+   "copied_at": "2026-10-25T21:34:02+08:00",
+   "dataset": "symbol_universe",
+   "kind": "core_artifact_rows",
+   "sha256": "237bb04f3b1348939c2121090af8081e368628e1281c356e15a4d54cf86e879d",
+   "source": "baostock_query_all_stock",
+   "source_path": "/home/exedev/core-data/symbol_universe/trade_date=2026-10-21/source=baostock_query_all_stock/sha256-b8dd391fbbe4c584/rows.jsonl.gz",
+   "trade_date": "2026-10-21",
+   "version": "sha256-b8dd391fbbe4c584"
+  },
+  "core_artifacts/c540/symbol_universe/2026-10-23/actual/manifest.json": {
+   "bytes": 1174,
+   "command": "cp /home/exedev/core-data/symbol_universe/trade_date=2026-10-23/source=baostock_query_all_stock/sha256-ae64d7ca01670eca/manifest.json core_artifacts/c540/symbol_universe/2026-10-23/actual/manifest.json",
+   "copied_at": "2026-10-25T21:34:02+08:00",
+   "dataset": "symbol_universe",
+   "kind": "core_artifact_manifest",
+   "sha256": "bce7a87c05dd5bdeab9e3fc9913bb81439b65971ce0684c6958ddd644548beb0",
+   "source": "baostock_query_all_stock",
+   "source_path": "/home/exedev/core-data/symbol_universe/trade_date=2026-10-23/source=baostock_query_all_stock/sha256-ae64d7ca01670eca/manifest.json",
+   "trade_date": "2026-10-23",
+   "version": "sha256-ae64d7ca01670eca"
+  },
+  "core_artifacts/c540/symbol_universe/2026-10-23/actual/rows.jsonl.gz": {
+   "bytes": 73537,
+   "command": "cp /home/exedev/core-data/symbol_universe/trade_date=2026-10-23/source=baostock_query_all_stock/sha256-ae64d7ca01670eca/rows.jsonl.gz core_artifacts/c540/symbol_universe/2026-10-23/actual/rows.jsonl.gz",
+   "copied_at": "2026-10-25T21:34:02+08:00",
+   "dataset": "symbol_universe",
+   "kind": "core_artifact_rows",
+   "sha256": "c14dc70b0e742f900a918bc333a47dd7764d055465c9aa336ac9f0ce74bc06cb",
+   "source": "baostock_query_all_stock",
+   "source_path": "/home/exedev/core-data/symbol_universe/trade_date=2026-10-23/source=baostock_query_all_stock/sha256-ae64d7ca01670eca/rows.jsonl.gz",
+   "trade_date": "2026-10-23",
+   "version": "sha256-ae64d7ca01670eca"
+  },
+  "core_artifacts/c540/daily_kline/2026-10-21/partial/manifest.json": {
+   "bytes": 1514,
+   "command": "cp /home/exedev/core-data/daily_kline/trade_date=2026-10-21/source=baostock>wencai>q2_final/sha256-8259d72528dd6dad/manifest.json core_artifacts/c540/daily_kline/2026-10-21/partial/manifest.json",
+   "copied_at": "2026-10-25T21:34:02+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_manifest",
+   "sha256": "d4fa208e165eafa8e14ca66cb88c02bf6209bebd0becc90cfc029412dbf7b885",
+   "source": "baostock>wencai>q2_final",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-10-21/source=baostock>wencai>q2_final/sha256-8259d72528dd6dad/manifest.json",
+   "trade_date": "2026-10-21",
+   "version": "sha256-8259d72528dd6dad"
+  },
+  "core_artifacts/c540/daily_kline/2026-10-21/partial/rows.jsonl.gz": {
+   "bytes": 87102,
+   "command": "cp /home/exedev/core-data/daily_kline/trade_date=2026-10-21/source=baostock>wencai>q2_final/sha256-8259d72528dd6dad/rows.jsonl.gz core_artifacts/c540/daily_kline/2026-10-21/partial/rows.jsonl.gz",
+   "copied_at": "2026-10-25T21:34:02+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_rows",
+   "sha256": "e8af68e3d30828c25056cef2913948986eef7dabe689f79c0d3c59d4c8ae0269",
+   "source": "baostock>wencai>q2_final",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-10-21/source=baostock>wencai>q2_final/sha256-8259d72528dd6dad/rows.jsonl.gz",
+   "trade_date": "2026-10-21",
+   "version": "sha256-8259d72528dd6dad"
+  },
+  "core_artifacts/c594/daily_kline/2026-10-28/coverage_0668/manifest.json": {
+   "bytes": 3194,
+   "command": "cp /home/exedev/core-data/daily_kline/trade_date=2026-10-28/source=baostock/sha256-11910003cb97bc5f/manifest.json tests/fixtures/real/core_artifacts/c594/daily_kline/2026-10-28/coverage_0668/manifest.json",
+   "copied_at": "2026-10-28T23:00:13+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_manifest",
+   "sha256": "b570400c6dac8d2b13619745d55e818525e24905c72b865bc1843011d87ea3b8",
+   "source": "baostock",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-10-28/source=baostock/sha256-11910003cb97bc5f/manifest.json",
+   "trade_date": "2026-10-28",
+   "version": "sha256-11910003cb97bc5f"
+  },
+  "core_artifacts/c594/daily_kline/2026-10-28/coverage_0668/rows.jsonl.gz": {
+   "bytes": 173380,
+   "command": "cp /home/exedev/core-data/daily_kline/trade_date=2026-10-28/source=baostock/sha256-11910003cb97bc5f/rows.jsonl.gz tests/fixtures/real/core_artifacts/c594/daily_kline/2026-10-28/coverage_0668/rows.jsonl.gz",
+   "copied_at": "2026-10-28T23:00:13+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_rows",
+   "sha256": "ec050ab77056399a0d6e437db002b54cb10c3861dcfe35fb074876365f369c37",
+   "source": "baostock",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-10-28/source=baostock/sha256-11910003cb97bc5f/rows.jsonl.gz",
+   "trade_date": "2026-10-28",
+   "version": "sha256-11910003cb97bc5f"
+  },
+  "core_artifacts/c594/daily_kline/2026-10-28/coverage_0986/manifest.json": {
+   "bytes": 3157,
+   "command": "cp /home/exedev/core-data/daily_kline/trade_date=2026-10-28/source=baostock/sha256-7d183db2ab889e12/manifest.json tests/fixtures/real/core_artifacts/c594/daily_kline/2026-10-28/coverage_0986/manifest.json",
+   "copied_at": "2026-10-28T23:00:15+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_manifest",
+   "sha256": "1185ef610d82e258e5cb5154d4b522102b9017416fdb4ae860b18158cf749bde",
+   "source": "baostock",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-10-28/source=baostock/sha256-7d183db2ab889e12/manifest.json",
+   "trade_date": "2026-10-28",
+   "version": "sha256-7d183db2ab889e12"
+  },
+  "core_artifacts/c594/daily_kline/2026-10-28/coverage_0986/rows.jsonl.gz": {
+   "bytes": 257139,
+   "command": "cp /home/exedev/core-data/daily_kline/trade_date=2026-10-28/source=baostock/sha256-7d183db2ab889e12/rows.jsonl.gz tests/fixtures/real/core_artifacts/c594/daily_kline/2026-10-28/coverage_0986/rows.jsonl.gz",
+   "copied_at": "2026-10-28T23:00:15+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_rows",
+   "sha256": "1f16056ef9f17aa0e8c8da288a557d02698830a37ebf003ec0e806d194b12e9d",
+   "source": "baostock",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-10-28/source=baostock/sha256-7d183db2ab889e12/rows.jsonl.gz",
+   "trade_date": "2026-10-28",
+   "version": "sha256-7d183db2ab889e12"
+  },
+  "core_artifacts/c594/symbol_universe/2026-10-28/baostock_query_all_stock/manifest.json": {
+   "bytes": 1418,
+   "command": "cp /home/exedev/core-data/symbol_universe/trade_date=2026-10-28/source=baostock_query_all_stock/sha256-08c8f8c688bdd288/manifest.json tests/fixtures/real/core_artifacts/c594/symbol_universe/2026-10-28/baostock_query_all_stock/manifest.json",
+   "copied_at": "2026-10-28T23:00:18+08:00",
+   "dataset": "symbol_universe",
+   "kind": "core_artifact_manifest",
+   "sha256": "830dc691200cf5c99f3e82e5996aeec7cebb54f1bffe4c148547f07dad1b1103",
+   "source": "baostock_query_all_stock",
+   "source_path": "/home/exedev/core-data/symbol_universe/trade_date=2026-10-28/source=baostock_query_all_stock/sha256-08c8f8c688bdd288/manifest.json",
+   "trade_date": "2026-10-28",
+   "version": "sha256-08c8f8c688bdd288"
+  },
+  "core_artifacts/c594/symbol_universe/2026-10-28/baostock_query_all_stock/rows.jsonl.gz": {
+   "bytes": 73519,
+   "command": "cp /home/exedev/core-data/symbol_universe/trade_date=2026-10-28/source=baostock_query_all_stock/sha256-08c8f8c688bdd288/rows.jsonl.gz tests/fixtures/real/core_artifacts/c594/symbol_universe/2026-10-28/baostock_query_all_stock/rows.jsonl.gz",
+   "copied_at": "2026-10-28T23:00:18+08:00",
+   "dataset": "symbol_universe",
+   "kind": "core_artifact_rows",
+   "sha256": "d1ebbfc53ce6fb05fb39a75f9415106b1e397825c5a4a15e6b2ccb790adbcb9d",
+   "source": "baostock_query_all_stock",
+   "source_path": "/home/exedev/core-data/symbol_universe/trade_date=2026-10-28/source=baostock_query_all_stock/sha256-08c8f8c688bdd288/rows.jsonl.gz",
+   "trade_date": "2026-10-28",
+   "version": "sha256-08c8f8c688bdd288"
+  },
+  "core_artifacts/c594/plate_registry/2026-10-13/current/manifest.json": {
+   "bytes": 1388,
+   "command": "cp /home/exedev/core-data/plate_registry/trade_date=2026-10-13/source=import_from_validation/sha256-e60d77f986a69861/manifest.json tests/fixtures/real/core_artifacts/c594/plate_registry/2026-10-13/current/manifest.json",
+   "copied_at": "2026-10-29T04:20:39+08:00",
+   "dataset": "plate_registry",
+   "kind": "core_artifact_manifest",
+   "sha256": "655d8917ad100c959f43f8c11b0f7170cff59e94010b69cae466392713441491",
+   "source": "UNKNOWN",
+   "source_path": "/home/exedev/core-data/plate_registry/trade_date=2026-10-13/source=import_from_validation/sha256-e60d77f986a69861/manifest.json",
+   "trade_date": "2026-10-13",
+   "version": "sha256-e60d77f986a69861"
+  },
+  "core_artifacts/c594/plate_registry/2026-10-13/current/rows.jsonl.gz": {
+   "bytes": 17900,
+   "command": "cp /home/exedev/core-data/plate_registry/trade_date=2026-10-13/source=import_from_validation/sha256-e60d77f986a69861/rows.jsonl.gz tests/fixtures/real/core_artifacts/c594/plate_registry/2026-10-13/current/rows.jsonl.gz",
+   "copied_at": "2026-10-29T04:20:39+08:00",
+   "dataset": "plate_registry",
+   "kind": "core_artifact_rows",
+   "sha256": "abbc56c7ece00433c820d491bebcbaea1faca1a4addce5614a68c306d2c98e74",
+   "source": "UNKNOWN",
+   "source_path": "/home/exedev/core-data/plate_registry/trade_date=2026-10-13/source=import_from_validation/sha256-e60d77f986a69861/rows.jsonl.gz",
+   "trade_date": "2026-10-13",
+   "version": "sha256-e60d77f986a69861"
+  },
+  "core_artifacts/c594/plate_members/2026-10-28/current/manifest.json": {
+   "bytes": 1426,
+   "command": "cp /home/exedev/core-data/plate_members/trade_date=2026-10-28/source=kaipan_getHisPlateIds/sha256-509339f55a225534/manifest.json tests/fixtures/real/core_artifacts/c594/plate_members/2026-10-28/current/manifest.json",
+   "copied_at": "2026-10-29T04:20:40+08:00",
+   "dataset": "plate_members",
+   "kind": "core_artifact_manifest",
+   "sha256": "e6d08bb879760d30b93aa85c9ec480309bee03541431ba1426ff9ed49a7fe0fb",
+   "source": "kaipan_getHisPlateIds",
+   "source_path": "/home/exedev/core-data/plate_members/trade_date=2026-10-28/source=kaipan_getHisPlateIds/sha256-509339f55a225534/manifest.json",
+   "trade_date": "2026-10-28",
+   "version": "sha256-509339f55a225534"
+  },
+  "core_artifacts/c594/plate_members/2026-10-28/current/rows.jsonl.gz": {
+   "bytes": 957625,
+   "command": "cp /home/exedev/core-data/plate_members/trade_date=2026-10-28/source=kaipan_getHisPlateIds/sha256-509339f55a225534/rows.jsonl.gz tests/fixtures/real/core_artifacts/c594/plate_members/2026-10-28/current/rows.jsonl.gz",
+   "copied_at": "2026-10-29T04:20:40+08:00",
+   "dataset": "plate_members",
+   "kind": "core_artifact_rows",
+   "sha256": "ca745416100faaccb98445c37483b3d01f9855f4573f0a020b5eee4dc2eab755",
+   "source": "kaipan_getHisPlateIds",
+   "source_path": "/home/exedev/core-data/plate_members/trade_date=2026-10-28/source=kaipan_getHisPlateIds/sha256-509339f55a225534/rows.jsonl.gz",
+   "trade_date": "2026-10-28",
+   "version": "sha256-509339f55a225534"
+  },
+  "core_artifacts/c594/stock_static/2026-10-14/current/manifest.json": {
+   "bytes": 1650,
+   "command": "cp /home/exedev/core-data/stock_static/trade_date=2026-10-14/source=import_from_validation/sha256-ec9dd58b7cab36a2/manifest.json tests/fixtures/real/core_artifacts/c594/stock_static/2026-10-14/current/manifest.json",
+   "copied_at": "2026-10-29T04:20:40+08:00",
+   "dataset": "stock_static",
+   "kind": "core_artifact_manifest",
+   "sha256": "609900c766625791548bdfe0a9216bda853298a3e185f3102dd8298731c3c0d9",
+   "source": "UNKNOWN",
+   "source_path": "/home/exedev/core-data/stock_static/trade_date=2026-10-14/source=import_from_validation/sha256-ec9dd58b7cab36a2/manifest.json",
+   "trade_date": "2026-10-14",
+   "version": "sha256-ec9dd58b7cab36a2"
+  },
+  "core_artifacts/c594/stock_static/2026-10-14/current/rows.jsonl.gz": {
+   "bytes": 216463,
+   "command": "cp /home/exedev/core-data/stock_static/trade_date=2026-10-14/source=import_from_validation/sha256-ec9dd58b7cab36a2/rows.jsonl.gz tests/fixtures/real/core_artifacts/c594/stock_static/2026-10-14/current/rows.jsonl.gz",
+   "copied_at": "2026-10-29T04:20:40+08:00",
+   "dataset": "stock_static",
+   "kind": "core_artifact_rows",
+   "sha256": "4849cbb7b0121f07b0e5a6de34d68b35c5e653bab9f9bdb675fc1bf38bad7241",
+   "source": "UNKNOWN",
+   "source_path": "/home/exedev/core-data/stock_static/trade_date=2026-10-14/source=import_from_validation/sha256-ec9dd58b7cab36a2/rows.jsonl.gz",
+   "trade_date": "2026-10-14",
+   "version": "sha256-ec9dd58b7cab36a2"
+  },
+  "core_artifacts/c594/stock_static/2026-10-29/c573_guardian/manifest.json": {
+   "bytes": 2587,
+   "command": "cp /home/exedev/core-data/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-0fefa9a4f0def573/manifest.json tests/fixtures/real/core_artifacts/c594/stock_static/2026-10-29/c573_guardian/manifest.json",
+   "copied_at": "2026-10-29T04:55:58+08:00",
+   "dataset": "stock_static",
+   "kind": "core_artifact_manifest",
+   "sha256": "ce28fce5296e658ba27338f126d73c7c4f892892c1bdbac8702b5471db37ac86",
+   "source": "baostock_stock_basic",
+   "source_path": "/home/exedev/core-data/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-0fefa9a4f0def573/manifest.json",
+   "trade_date": "2026-10-29",
+   "version": "sha256-0fefa9a4f0def573"
+  },
+  "core_artifacts/c594/stock_static/2026-10-29/c573_guardian/rows.jsonl.gz": {
+   "bytes": 81399,
+   "command": "cp /home/exedev/core-data/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-0fefa9a4f0def573/rows.jsonl.gz tests/fixtures/real/core_artifacts/c594/stock_static/2026-10-29/c573_guardian/rows.jsonl.gz",
+   "copied_at": "2026-10-29T04:55:58+08:00",
+   "dataset": "stock_static",
+   "kind": "core_artifact_rows",
+   "sha256": "575bd8a2aede336e59c47b7fb1152700b5146ce6f26ab671b2557d3e3113dab2",
+   "source": "baostock_stock_basic",
+   "source_path": "/home/exedev/core-data/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-0fefa9a4f0def573/rows.jsonl.gz",
+   "trade_date": "2026-10-29",
+   "version": "sha256-0fefa9a4f0def573"
+  },
+  "core_artifacts/c594/daily_kline/2026-10-28/C582-formal/manifest.json": {
+   "bytes": 3157,
+   "command": "cp /home/exedev/core-data/daily_kline/trade_date=2026-10-28/source=baostock/sha256-7d183db2ab889e12/manifest.json tests/fixtures/real/core_artifacts/c594/daily_kline/2026-10-28/C582-formal/manifest.json",
+   "copied_at": "2026-10-29T06:58:39+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_manifest",
+   "sha256": "1185ef610d82e258e5cb5154d4b522102b9017416fdb4ae860b18158cf749bde",
+   "source": "baostock",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-10-28/source=baostock/sha256-7d183db2ab889e12/manifest.json",
+   "trade_date": "2026-10-28",
+   "version": "sha256-7d183db2ab889e12"
+  },
+  "core_artifacts/c594/daily_kline/2026-10-28/C582-formal/rows.jsonl.gz": {
+   "bytes": 257139,
+   "command": "cp /home/exedev/core-data/daily_kline/trade_date=2026-10-28/source=baostock/sha256-7d183db2ab889e12/rows.jsonl.gz tests/fixtures/real/core_artifacts/c594/daily_kline/2026-10-28/C582-formal/rows.jsonl.gz",
+   "copied_at": "2026-10-29T06:58:39+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_rows",
+   "sha256": "1f16056ef9f17aa0e8c8da288a557d02698830a37ebf003ec0e806d194b12e9d",
+   "source": "baostock",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-10-28/source=baostock/sha256-7d183db2ab889e12/rows.jsonl.gz",
+   "trade_date": "2026-10-28",
+   "version": "sha256-7d183db2ab889e12"
+  },
+  "core_artifacts/c594/symbol_universe/2026-10-28/C582-actual/manifest.json": {
+   "bytes": 1418,
+   "command": "cp /home/exedev/core-data/symbol_universe/trade_date=2026-10-28/source=baostock_query_all_stock/sha256-08c8f8c688bdd288/manifest.json tests/fixtures/real/core_artifacts/c594/symbol_universe/2026-10-28/C582-actual/manifest.json",
+   "copied_at": "2026-10-29T06:58:40+08:00",
+   "dataset": "symbol_universe",
+   "kind": "core_artifact_manifest",
+   "sha256": "830dc691200cf5c99f3e82e5996aeec7cebb54f1bffe4c148547f07dad1b1103",
+   "source": "baostock_query_all_stock",
+   "source_path": "/home/exedev/core-data/symbol_universe/trade_date=2026-10-28/source=baostock_query_all_stock/sha256-08c8f8c688bdd288/manifest.json",
+   "trade_date": "2026-10-28",
+   "version": "sha256-08c8f8c688bdd288"
+  },
+  "core_artifacts/c594/symbol_universe/2026-10-28/C582-actual/rows.jsonl.gz": {
+   "bytes": 73519,
+   "command": "cp /home/exedev/core-data/symbol_universe/trade_date=2026-10-28/source=baostock_query_all_stock/sha256-08c8f8c688bdd288/rows.jsonl.gz tests/fixtures/real/core_artifacts/c594/symbol_universe/2026-10-28/C582-actual/rows.jsonl.gz",
+   "copied_at": "2026-10-29T06:58:40+08:00",
+   "dataset": "symbol_universe",
+   "kind": "core_artifact_rows",
+   "sha256": "d1ebbfc53ce6fb05fb39a75f9415106b1e397825c5a4a15e6b2ccb790adbcb9d",
+   "source": "baostock_query_all_stock",
+   "source_path": "/home/exedev/core-data/symbol_universe/trade_date=2026-10-28/source=baostock_query_all_stock/sha256-08c8f8c688bdd288/rows.jsonl.gz",
+   "trade_date": "2026-10-28",
+   "version": "sha256-08c8f8c688bdd288"
+  },
+  "core_artifacts/c639/catalog.json": {
+   "bytes": 342098,
+   "command": "cp /home/exedev/core-data/catalog.json tests/fixtures/real/core_artifacts/c639/catalog.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "catalog",
+   "kind": "core_catalog_snapshot",
+   "sha256": "36c9bb2013636d4446a42c27edb735649a84451b592f36c4a15a7e8d18527adc",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/catalog.json",
+   "trade_date": null,
+   "version": null
+  },
+  "core_artifacts/c639/daily_indicators/trade_date=2026-10-19/source=core_derived/sha256-1c18e935f8765c3e/manifest.json": {
+   "bytes": 1106,
+   "command": "cp /home/exedev/core-data/daily_indicators/trade_date=2026-10-19/source=core_derived/sha256-1c18e935f8765c3e/manifest.json tests/fixtures/real/core_artifacts/c639/daily_indicators/trade_date=2026-10-19/source=core_derived/sha256-1c18e935f8765c3e/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_indicators",
+   "kind": "core_artifact_manifest",
+   "sha256": "72ce755e5c19c915185f34914d7505e78785d9e9a817528cabde677ab365cb33",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_indicators/trade_date=2026-10-19/source=core_derived/sha256-1c18e935f8765c3e/manifest.json",
+   "trade_date": "2026-10-19",
+   "version": "sha256-1c18e935f8765c3e"
+  },
+  "core_artifacts/c639/daily_indicators/trade_date=2026-10-20/source=core_derived/sha256-992f877045692056/manifest.json": {
+   "bytes": 790,
+   "command": "cp /home/exedev/core-data/daily_indicators/trade_date=2026-10-20/source=core_derived/sha256-992f877045692056/manifest.json tests/fixtures/real/core_artifacts/c639/daily_indicators/trade_date=2026-10-20/source=core_derived/sha256-992f877045692056/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_indicators",
+   "kind": "core_artifact_manifest",
+   "sha256": "83a6f5b390ce9700ed2b69ad5c735a05d598cc56ae2dd18f1a3616258018bdec",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_indicators/trade_date=2026-10-20/source=core_derived/sha256-992f877045692056/manifest.json",
+   "trade_date": "2026-10-20",
+   "version": "sha256-992f877045692056"
+  },
+  "core_artifacts/c639/daily_indicators/trade_date=2026-10-21/source=core_derived/sha256-27947bea56c8f242/manifest.json": {
+   "bytes": 783,
+   "command": "cp /home/exedev/core-data/daily_indicators/trade_date=2026-10-21/source=core_derived/sha256-27947bea56c8f242/manifest.json tests/fixtures/real/core_artifacts/c639/daily_indicators/trade_date=2026-10-21/source=core_derived/sha256-27947bea56c8f242/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_indicators",
+   "kind": "core_artifact_manifest",
+   "sha256": "719a6ced8e7a3768256991816dc4433284d36bf23b1b1ffa432b819a564f65b6",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_indicators/trade_date=2026-10-21/source=core_derived/sha256-27947bea56c8f242/manifest.json",
+   "trade_date": "2026-10-21",
+   "version": "sha256-27947bea56c8f242"
+  },
+  "core_artifacts/c639/daily_indicators/trade_date=2026-10-22/source=derived_v1/sha256-de4e1a88f76e5a7f/manifest.json": {
+   "bytes": 12870,
+   "command": "cp /home/exedev/core-data/daily_indicators/trade_date=2026-10-22/source=derived_v1/sha256-de4e1a88f76e5a7f/manifest.json tests/fixtures/real/core_artifacts/c639/daily_indicators/trade_date=2026-10-22/source=derived_v1/sha256-de4e1a88f76e5a7f/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_indicators",
+   "kind": "core_artifact_manifest",
+   "sha256": "a50a4b940c238081f20b347b53ea17c83fb231bfcf03835bbe8a0d35ee059ca2",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_indicators/trade_date=2026-10-22/source=derived_v1/sha256-de4e1a88f76e5a7f/manifest.json",
+   "trade_date": "2026-10-22",
+   "version": "sha256-de4e1a88f76e5a7f"
+  },
+  "core_artifacts/c639/daily_indicators/trade_date=2026-10-23/source=derived_v1/sha256-cf14c9d6e2cc97d6/manifest.json": {
+   "bytes": 12983,
+   "command": "cp /home/exedev/core-data/daily_indicators/trade_date=2026-10-23/source=derived_v1/sha256-cf14c9d6e2cc97d6/manifest.json tests/fixtures/real/core_artifacts/c639/daily_indicators/trade_date=2026-10-23/source=derived_v1/sha256-cf14c9d6e2cc97d6/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_indicators",
+   "kind": "core_artifact_manifest",
+   "sha256": "2369ef803229db250f68230655932d22baca9dfcb2ddf8d4a4028441415954c6",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_indicators/trade_date=2026-10-23/source=derived_v1/sha256-cf14c9d6e2cc97d6/manifest.json",
+   "trade_date": "2026-10-23",
+   "version": "sha256-cf14c9d6e2cc97d6"
+  },
+  "core_artifacts/c639/daily_indicators/trade_date=2026-10-26/source=derived_v1/sha256-4c8108387ea41f27/manifest.json": {
+   "bytes": 13113,
+   "command": "cp /home/exedev/core-data/daily_indicators/trade_date=2026-10-26/source=derived_v1/sha256-4c8108387ea41f27/manifest.json tests/fixtures/real/core_artifacts/c639/daily_indicators/trade_date=2026-10-26/source=derived_v1/sha256-4c8108387ea41f27/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_indicators",
+   "kind": "core_artifact_manifest",
+   "sha256": "9e174d30b000d29bd0b026606c14e3bf6e27e3965b8973c0056a7738b33c4c0c",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_indicators/trade_date=2026-10-26/source=derived_v1/sha256-4c8108387ea41f27/manifest.json",
+   "trade_date": "2026-10-26",
+   "version": "sha256-4c8108387ea41f27"
+  },
+  "core_artifacts/c639/daily_indicators/trade_date=2026-10-27/source=derived_v1/sha256-24daaa143b6c8825/manifest.json": {
+   "bytes": 13231,
+   "command": "cp /home/exedev/core-data/daily_indicators/trade_date=2026-10-27/source=derived_v1/sha256-24daaa143b6c8825/manifest.json tests/fixtures/real/core_artifacts/c639/daily_indicators/trade_date=2026-10-27/source=derived_v1/sha256-24daaa143b6c8825/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_indicators",
+   "kind": "core_artifact_manifest",
+   "sha256": "cbf79e1ceb23000fdbc29396fb2ce351c9aff47cfc19be3559f14b3ecb42245a",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_indicators/trade_date=2026-10-27/source=derived_v1/sha256-24daaa143b6c8825/manifest.json",
+   "trade_date": "2026-10-27",
+   "version": "sha256-24daaa143b6c8825"
+  },
+  "core_artifacts/c639/daily_indicators/trade_date=2026-10-28/source=derived_v1/sha256-74ada285380e0c66/manifest.json": {
+   "bytes": 13360,
+   "command": "cp /home/exedev/core-data/daily_indicators/trade_date=2026-10-28/source=derived_v1/sha256-74ada285380e0c66/manifest.json tests/fixtures/real/core_artifacts/c639/daily_indicators/trade_date=2026-10-28/source=derived_v1/sha256-74ada285380e0c66/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_indicators",
+   "kind": "core_artifact_manifest",
+   "sha256": "a74058d2bf9152c37c40e364bdcf5e888a7b3bb2a75694c985a8f352fceb8566",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_indicators/trade_date=2026-10-28/source=derived_v1/sha256-74ada285380e0c66/manifest.json",
+   "trade_date": "2026-10-28",
+   "version": "sha256-74ada285380e0c66"
+  },
+  "core_artifacts/c639/daily_indicators/trade_date=2026-10-29/source=derived_v1/sha256-b672fe3d65846569/manifest.json": {
+   "bytes": 13462,
+   "command": "cp /home/exedev/core-data/daily_indicators/trade_date=2026-10-29/source=derived_v1/sha256-b672fe3d65846569/manifest.json tests/fixtures/real/core_artifacts/c639/daily_indicators/trade_date=2026-10-29/source=derived_v1/sha256-b672fe3d65846569/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_indicators",
+   "kind": "core_artifact_manifest",
+   "sha256": "71c5c39d31014c34c1e7cbf6a9512de01ca8bfa5449c875d49d9da377203c7c3",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_indicators/trade_date=2026-10-29/source=derived_v1/sha256-b672fe3d65846569/manifest.json",
+   "trade_date": "2026-10-29",
+   "version": "sha256-b672fe3d65846569"
+  },
+  "core_artifacts/c639/daily_indicators/trade_date=2026-10-30/source=derived_v1/sha256-99f50a8c86c16a66/manifest.json": {
+   "bytes": 13578,
+   "command": "cp /home/exedev/core-data/daily_indicators/trade_date=2026-10-30/source=derived_v1/sha256-99f50a8c86c16a66/manifest.json tests/fixtures/real/core_artifacts/c639/daily_indicators/trade_date=2026-10-30/source=derived_v1/sha256-99f50a8c86c16a66/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_indicators",
+   "kind": "core_artifact_manifest",
+   "sha256": "5a4f7f8ea7de7d3fc5b2646951878d3d9855631e8ed7ad2db922e6bd7d8e813e",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_indicators/trade_date=2026-10-30/source=derived_v1/sha256-99f50a8c86c16a66/manifest.json",
+   "trade_date": "2026-10-30",
+   "version": "sha256-99f50a8c86c16a66"
+  },
+  "core_artifacts/c639/daily_report_features/trade_date=2026-10-19/source=core_derived/sha256-153df8fc269a5be2/manifest.json": {
+   "bytes": 1079,
+   "command": "cp /home/exedev/core-data/daily_report_features/trade_date=2026-10-19/source=core_derived/sha256-153df8fc269a5be2/manifest.json tests/fixtures/real/core_artifacts/c639/daily_report_features/trade_date=2026-10-19/source=core_derived/sha256-153df8fc269a5be2/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_report_features",
+   "kind": "core_artifact_manifest",
+   "sha256": "62b86eefb7fb6ce1e832655829459078497b4a74b25f3adf543dab263d30064b",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_report_features/trade_date=2026-10-19/source=core_derived/sha256-153df8fc269a5be2/manifest.json",
+   "trade_date": "2026-10-19",
+   "version": "sha256-153df8fc269a5be2"
+  },
+  "core_artifacts/c639/daily_report_features/trade_date=2026-10-20/source=core_derived/sha256-d77ac132c41562b1/manifest.json": {
+   "bytes": 821,
+   "command": "cp /home/exedev/core-data/daily_report_features/trade_date=2026-10-20/source=core_derived/sha256-d77ac132c41562b1/manifest.json tests/fixtures/real/core_artifacts/c639/daily_report_features/trade_date=2026-10-20/source=core_derived/sha256-d77ac132c41562b1/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_report_features",
+   "kind": "core_artifact_manifest",
+   "sha256": "be4342717aafc857b3ec5dd371b7dad2a5837d5766104ee6b7d032f3d0860833",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_report_features/trade_date=2026-10-20/source=core_derived/sha256-d77ac132c41562b1/manifest.json",
+   "trade_date": "2026-10-20",
+   "version": "sha256-d77ac132c41562b1"
+  },
+  "core_artifacts/c639/daily_report_features/trade_date=2026-10-21/source=core_derived/sha256-fe567bd3a0f7eeaf/manifest.json": {
+   "bytes": 814,
+   "command": "cp /home/exedev/core-data/daily_report_features/trade_date=2026-10-21/source=core_derived/sha256-fe567bd3a0f7eeaf/manifest.json tests/fixtures/real/core_artifacts/c639/daily_report_features/trade_date=2026-10-21/source=core_derived/sha256-fe567bd3a0f7eeaf/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_report_features",
+   "kind": "core_artifact_manifest",
+   "sha256": "47960641409048d5ef894b0d8244ec5488c9a150d34d0733a77e762b73c7564b",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_report_features/trade_date=2026-10-21/source=core_derived/sha256-fe567bd3a0f7eeaf/manifest.json",
+   "trade_date": "2026-10-21",
+   "version": "sha256-fe567bd3a0f7eeaf"
+  },
+  "core_artifacts/c639/daily_report_features/trade_date=2026-10-22/source=derived_v1/sha256-098c68f5a57a87f6/manifest.json": {
+   "bytes": 13232,
+   "command": "cp /home/exedev/core-data/daily_report_features/trade_date=2026-10-22/source=derived_v1/sha256-098c68f5a57a87f6/manifest.json tests/fixtures/real/core_artifacts/c639/daily_report_features/trade_date=2026-10-22/source=derived_v1/sha256-098c68f5a57a87f6/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_report_features",
+   "kind": "core_artifact_manifest",
+   "sha256": "ff02f25491bbe28daeb9cdc96cc43a48af783be9e97d464496fcf955901d38cd",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_report_features/trade_date=2026-10-22/source=derived_v1/sha256-098c68f5a57a87f6/manifest.json",
+   "trade_date": "2026-10-22",
+   "version": "sha256-098c68f5a57a87f6"
+  },
+  "core_artifacts/c639/daily_report_features/trade_date=2026-10-23/source=derived_v1/sha256-94c52f1214eed340/manifest.json": {
+   "bytes": 13348,
+   "command": "cp /home/exedev/core-data/daily_report_features/trade_date=2026-10-23/source=derived_v1/sha256-94c52f1214eed340/manifest.json tests/fixtures/real/core_artifacts/c639/daily_report_features/trade_date=2026-10-23/source=derived_v1/sha256-94c52f1214eed340/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_report_features",
+   "kind": "core_artifact_manifest",
+   "sha256": "e91f41253c18d1a0b1ca9375d5be376038d5fa215f3aa7a2c7f22c290b174704",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_report_features/trade_date=2026-10-23/source=derived_v1/sha256-94c52f1214eed340/manifest.json",
+   "trade_date": "2026-10-23",
+   "version": "sha256-94c52f1214eed340"
+  },
+  "core_artifacts/c639/daily_report_features/trade_date=2026-10-26/source=derived_v1/sha256-cc0c74930837a90e/manifest.json": {
+   "bytes": 13488,
+   "command": "cp /home/exedev/core-data/daily_report_features/trade_date=2026-10-26/source=derived_v1/sha256-cc0c74930837a90e/manifest.json tests/fixtures/real/core_artifacts/c639/daily_report_features/trade_date=2026-10-26/source=derived_v1/sha256-cc0c74930837a90e/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_report_features",
+   "kind": "core_artifact_manifest",
+   "sha256": "a76ea207fe1a001a9c8d957718ee4e524fd9d60a5308a54f1b93788eff542bb7",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_report_features/trade_date=2026-10-26/source=derived_v1/sha256-cc0c74930837a90e/manifest.json",
+   "trade_date": "2026-10-26",
+   "version": "sha256-cc0c74930837a90e"
+  },
+  "core_artifacts/c639/daily_report_features/trade_date=2026-10-27/source=derived_v1/sha256-ce91dba9568cbf75/manifest.json": {
+   "bytes": 13596,
+   "command": "cp /home/exedev/core-data/daily_report_features/trade_date=2026-10-27/source=derived_v1/sha256-ce91dba9568cbf75/manifest.json tests/fixtures/real/core_artifacts/c639/daily_report_features/trade_date=2026-10-27/source=derived_v1/sha256-ce91dba9568cbf75/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_report_features",
+   "kind": "core_artifact_manifest",
+   "sha256": "541e4c0cca0300988385f64816a7dbfb055e8d5c0ba6700dec8ad40509622484",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_report_features/trade_date=2026-10-27/source=derived_v1/sha256-ce91dba9568cbf75/manifest.json",
+   "trade_date": "2026-10-27",
+   "version": "sha256-ce91dba9568cbf75"
+  },
+  "core_artifacts/c639/daily_report_features/trade_date=2026-10-28/source=derived_v1/sha256-4e103d8bfcfa588d/manifest.json": {
+   "bytes": 13711,
+   "command": "cp /home/exedev/core-data/daily_report_features/trade_date=2026-10-28/source=derived_v1/sha256-4e103d8bfcfa588d/manifest.json tests/fixtures/real/core_artifacts/c639/daily_report_features/trade_date=2026-10-28/source=derived_v1/sha256-4e103d8bfcfa588d/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_report_features",
+   "kind": "core_artifact_manifest",
+   "sha256": "43af4adf2b61f6c8b6fa6dc908ae266b3cdd165b0ff2f4352acabd5db54d9a1a",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_report_features/trade_date=2026-10-28/source=derived_v1/sha256-4e103d8bfcfa588d/manifest.json",
+   "trade_date": "2026-10-28",
+   "version": "sha256-4e103d8bfcfa588d"
+  },
+  "core_artifacts/c639/daily_report_features/trade_date=2026-10-29/source=derived_v1/sha256-1bf49fef716bf56a/manifest.json": {
+   "bytes": 13826,
+   "command": "cp /home/exedev/core-data/daily_report_features/trade_date=2026-10-29/source=derived_v1/sha256-1bf49fef716bf56a/manifest.json tests/fixtures/real/core_artifacts/c639/daily_report_features/trade_date=2026-10-29/source=derived_v1/sha256-1bf49fef716bf56a/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_report_features",
+   "kind": "core_artifact_manifest",
+   "sha256": "32e78b1354bf605e8e5e08e1f42b0549d33de3c4df77d1386ee1bbbaf1f36f5e",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_report_features/trade_date=2026-10-29/source=derived_v1/sha256-1bf49fef716bf56a/manifest.json",
+   "trade_date": "2026-10-29",
+   "version": "sha256-1bf49fef716bf56a"
+  },
+  "core_artifacts/c639/daily_report_features/trade_date=2026-10-30/source=derived_v1/sha256-c73316159983a803/manifest.json": {
+   "bytes": 13941,
+   "command": "cp /home/exedev/core-data/daily_report_features/trade_date=2026-10-30/source=derived_v1/sha256-c73316159983a803/manifest.json tests/fixtures/real/core_artifacts/c639/daily_report_features/trade_date=2026-10-30/source=derived_v1/sha256-c73316159983a803/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "daily_report_features",
+   "kind": "core_artifact_manifest",
+   "sha256": "9876711860cfb85cd30aa80a6880a53dd9c18cd59c2873307ddc17de99109691",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_report_features/trade_date=2026-10-30/source=derived_v1/sha256-c73316159983a803/manifest.json",
+   "trade_date": "2026-10-30",
+   "version": "sha256-c73316159983a803"
+  },
+  "core_artifacts/c639/ladder_daily/trade_date=2026-10-19/source=derived_daily_kline/sha256-536446b5a7a4b55f/manifest.json": {
+   "bytes": 5613,
+   "command": "cp /home/exedev/core-data/ladder_daily/trade_date=2026-10-19/source=derived_daily_kline/sha256-536446b5a7a4b55f/manifest.json tests/fixtures/real/core_artifacts/c639/ladder_daily/trade_date=2026-10-19/source=derived_daily_kline/sha256-536446b5a7a4b55f/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "ladder_daily",
+   "kind": "core_artifact_manifest",
+   "sha256": "27dc01d197dc589aa9b3c6223d0db7e07b05bf654d51fda51ab7a82f588b2ee3",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/ladder_daily/trade_date=2026-10-19/source=derived_daily_kline/sha256-536446b5a7a4b55f/manifest.json",
+   "trade_date": "2026-10-19",
+   "version": "sha256-536446b5a7a4b55f"
+  },
+  "core_artifacts/c639/ladder_daily/trade_date=2026-10-20/source=derived_daily_kline/sha256-32a70f4202624ddf/manifest.json": {
+   "bytes": 6514,
+   "command": "cp /home/exedev/core-data/ladder_daily/trade_date=2026-10-20/source=derived_daily_kline/sha256-32a70f4202624ddf/manifest.json tests/fixtures/real/core_artifacts/c639/ladder_daily/trade_date=2026-10-20/source=derived_daily_kline/sha256-32a70f4202624ddf/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "ladder_daily",
+   "kind": "core_artifact_manifest",
+   "sha256": "c3acc474200f4c305bf371293b2e4901fa94ce60e3b0f710923b02cdecfe7025",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/ladder_daily/trade_date=2026-10-20/source=derived_daily_kline/sha256-32a70f4202624ddf/manifest.json",
+   "trade_date": "2026-10-20",
+   "version": "sha256-32a70f4202624ddf"
+  },
+  "core_artifacts/c639/ladder_daily/trade_date=2026-10-21/source=derived_daily_kline/sha256-3e591938bf24b9f7/manifest.json": {
+   "bytes": 6474,
+   "command": "cp /home/exedev/core-data/ladder_daily/trade_date=2026-10-21/source=derived_daily_kline/sha256-3e591938bf24b9f7/manifest.json tests/fixtures/real/core_artifacts/c639/ladder_daily/trade_date=2026-10-21/source=derived_daily_kline/sha256-3e591938bf24b9f7/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "ladder_daily",
+   "kind": "core_artifact_manifest",
+   "sha256": "dace779f2bba393bb0208f9202bb6c9c2049f00ad5a031104af4c97443a3dc83",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/ladder_daily/trade_date=2026-10-21/source=derived_daily_kline/sha256-3e591938bf24b9f7/manifest.json",
+   "trade_date": "2026-10-21",
+   "version": "sha256-3e591938bf24b9f7"
+  },
+  "core_artifacts/c639/ladder_daily/trade_date=2026-10-22/source=derived_daily_kline/sha256-9a2d4dced14942ca/manifest.json": {
+   "bytes": 7323,
+   "command": "cp /home/exedev/core-data/ladder_daily/trade_date=2026-10-22/source=derived_daily_kline/sha256-9a2d4dced14942ca/manifest.json tests/fixtures/real/core_artifacts/c639/ladder_daily/trade_date=2026-10-22/source=derived_daily_kline/sha256-9a2d4dced14942ca/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "ladder_daily",
+   "kind": "core_artifact_manifest",
+   "sha256": "df8590501d9a77b7552431a37f55724d3c9b9e8a520b6a633a5456fceae62134",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/ladder_daily/trade_date=2026-10-22/source=derived_daily_kline/sha256-9a2d4dced14942ca/manifest.json",
+   "trade_date": "2026-10-22",
+   "version": "sha256-9a2d4dced14942ca"
+  },
+  "core_artifacts/c639/ladder_daily/trade_date=2026-10-23/source=derived_daily_kline/sha256-1da175bcef00d3c5/manifest.json": {
+   "bytes": 8172,
+   "command": "cp /home/exedev/core-data/ladder_daily/trade_date=2026-10-23/source=derived_daily_kline/sha256-1da175bcef00d3c5/manifest.json tests/fixtures/real/core_artifacts/c639/ladder_daily/trade_date=2026-10-23/source=derived_daily_kline/sha256-1da175bcef00d3c5/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "ladder_daily",
+   "kind": "core_artifact_manifest",
+   "sha256": "dff0fba2572b1f6df906a761e2047e10557be65ba53bab5e71f4e59cdb67c0ad",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/ladder_daily/trade_date=2026-10-23/source=derived_daily_kline/sha256-1da175bcef00d3c5/manifest.json",
+   "trade_date": "2026-10-23",
+   "version": "sha256-1da175bcef00d3c5"
+  },
+  "core_artifacts/c639/ladder_daily/trade_date=2026-10-26/source=derived_daily_kline/sha256-17e278dd4e8f942a/manifest.json": {
+   "bytes": 6435,
+   "command": "cp /home/exedev/core-data/ladder_daily/trade_date=2026-10-26/source=derived_daily_kline/sha256-17e278dd4e8f942a/manifest.json tests/fixtures/real/core_artifacts/c639/ladder_daily/trade_date=2026-10-26/source=derived_daily_kline/sha256-17e278dd4e8f942a/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "ladder_daily",
+   "kind": "core_artifact_manifest",
+   "sha256": "24fed4d524e0d38211b7f9951276b8afbb6ff1b5d5f2849533ab9fa25d3c0b76",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/ladder_daily/trade_date=2026-10-26/source=derived_daily_kline/sha256-17e278dd4e8f942a/manifest.json",
+   "trade_date": "2026-10-26",
+   "version": "sha256-17e278dd4e8f942a"
+  },
+  "core_artifacts/c639/ladder_daily/trade_date=2026-10-27/source=derived_daily_kline/sha256-6610ae23a03293dc/manifest.json": {
+   "bytes": 7310,
+   "command": "cp /home/exedev/core-data/ladder_daily/trade_date=2026-10-27/source=derived_daily_kline/sha256-6610ae23a03293dc/manifest.json tests/fixtures/real/core_artifacts/c639/ladder_daily/trade_date=2026-10-27/source=derived_daily_kline/sha256-6610ae23a03293dc/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "ladder_daily",
+   "kind": "core_artifact_manifest",
+   "sha256": "17f6c9a31d2db247ae1e73a8eb4bca11fc36b06c93b23ddcb0e4f20551994461",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/ladder_daily/trade_date=2026-10-27/source=derived_daily_kline/sha256-6610ae23a03293dc/manifest.json",
+   "trade_date": "2026-10-27",
+   "version": "sha256-6610ae23a03293dc"
+  },
+  "core_artifacts/c639/ladder_daily/trade_date=2026-10-28/source=derived_daily_kline/sha256-a5d41bdc2e5f3548/manifest.json": {
+   "bytes": 7305,
+   "command": "cp /home/exedev/core-data/ladder_daily/trade_date=2026-10-28/source=derived_daily_kline/sha256-a5d41bdc2e5f3548/manifest.json tests/fixtures/real/core_artifacts/c639/ladder_daily/trade_date=2026-10-28/source=derived_daily_kline/sha256-a5d41bdc2e5f3548/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "ladder_daily",
+   "kind": "core_artifact_manifest",
+   "sha256": "aa555ca7e77511775a6959802ed343a20ba3bc6d7068d9ad9f3328cf526b8871",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/ladder_daily/trade_date=2026-10-28/source=derived_daily_kline/sha256-a5d41bdc2e5f3548/manifest.json",
+   "trade_date": "2026-10-28",
+   "version": "sha256-a5d41bdc2e5f3548"
+  },
+  "core_artifacts/c639/ladder_daily/trade_date=2026-10-29/source=derived_daily_kline/sha256-f2a6c7d4995011de/manifest.json": {
+   "bytes": 6446,
+   "command": "cp /home/exedev/core-data/ladder_daily/trade_date=2026-10-29/source=derived_daily_kline/sha256-f2a6c7d4995011de/manifest.json tests/fixtures/real/core_artifacts/c639/ladder_daily/trade_date=2026-10-29/source=derived_daily_kline/sha256-f2a6c7d4995011de/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "ladder_daily",
+   "kind": "core_artifact_manifest",
+   "sha256": "6990e5372642a3c3155c4e177b89889e27d6c8931c953e8d42a539c3bbbf22d3",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/ladder_daily/trade_date=2026-10-29/source=derived_daily_kline/sha256-f2a6c7d4995011de/manifest.json",
+   "trade_date": "2026-10-29",
+   "version": "sha256-f2a6c7d4995011de"
+  },
+  "core_artifacts/c639/ladder_daily/trade_date=2026-10-30/source=derived_daily_kline/sha256-c99239cafbcba83c/manifest.json": {
+   "bytes": 7028,
+   "command": "cp /home/exedev/core-data/ladder_daily/trade_date=2026-10-30/source=derived_daily_kline/sha256-c99239cafbcba83c/manifest.json tests/fixtures/real/core_artifacts/c639/ladder_daily/trade_date=2026-10-30/source=derived_daily_kline/sha256-c99239cafbcba83c/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "ladder_daily",
+   "kind": "core_artifact_manifest",
+   "sha256": "56d6a087290ebfaeab7016402ec07608dc2cf48b72fb835cbf03ea1e4c96cd65",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/ladder_daily/trade_date=2026-10-30/source=derived_daily_kline/sha256-c99239cafbcba83c/manifest.json",
+   "trade_date": "2026-10-30",
+   "version": "sha256-c99239cafbcba83c"
+  },
+  "core_artifacts/c639/stock_day_facts/trade_date=2026-10-19/source=core_derived/sha256-a062437cb6fbd979/manifest.json": {
+   "bytes": 1081,
+   "command": "cp /home/exedev/core-data/stock_day_facts/trade_date=2026-10-19/source=core_derived/sha256-a062437cb6fbd979/manifest.json tests/fixtures/real/core_artifacts/c639/stock_day_facts/trade_date=2026-10-19/source=core_derived/sha256-a062437cb6fbd979/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "stock_day_facts",
+   "kind": "core_artifact_manifest",
+   "sha256": "07bea725f394440c392f91b57a3b5bf00f4f9ce81070a45358ee939e361ca2dc",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/stock_day_facts/trade_date=2026-10-19/source=core_derived/sha256-a062437cb6fbd979/manifest.json",
+   "trade_date": "2026-10-19",
+   "version": "sha256-a062437cb6fbd979"
+  },
+  "core_artifacts/c639/stock_day_facts/trade_date=2026-10-20/source=core_derived/sha256-66a5e80e1ae83cdf/manifest.json": {
+   "bytes": 1064,
+   "command": "cp /home/exedev/core-data/stock_day_facts/trade_date=2026-10-20/source=core_derived/sha256-66a5e80e1ae83cdf/manifest.json tests/fixtures/real/core_artifacts/c639/stock_day_facts/trade_date=2026-10-20/source=core_derived/sha256-66a5e80e1ae83cdf/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "stock_day_facts",
+   "kind": "core_artifact_manifest",
+   "sha256": "204372a0c5f511d755d36dcda57e78853d221f7abe79a36789cd880fd6e8376e",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/stock_day_facts/trade_date=2026-10-20/source=core_derived/sha256-66a5e80e1ae83cdf/manifest.json",
+   "trade_date": "2026-10-20",
+   "version": "sha256-66a5e80e1ae83cdf"
+  },
+  "core_artifacts/c639/stock_day_facts/trade_date=2026-10-21/source=registry_item_fetch/sha256-80106a0dbcd13193/manifest.json": {
+   "bytes": 846,
+   "command": "cp /home/exedev/core-data/stock_day_facts/trade_date=2026-10-21/source=registry_item_fetch/sha256-80106a0dbcd13193/manifest.json tests/fixtures/real/core_artifacts/c639/stock_day_facts/trade_date=2026-10-21/source=registry_item_fetch/sha256-80106a0dbcd13193/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "stock_day_facts",
+   "kind": "core_artifact_manifest",
+   "sha256": "01dd22e338791f7a80b44963363461e4b03b627e99d25fc2f3c7007e5962f2ce",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/stock_day_facts/trade_date=2026-10-21/source=registry_item_fetch/sha256-80106a0dbcd13193/manifest.json",
+   "trade_date": "2026-10-21",
+   "version": "sha256-80106a0dbcd13193"
+  },
+  "core_artifacts/c639/stock_day_facts/trade_date=2026-10-22/source=core_derived/sha256-802b5202dda71cb4/manifest.json": {
+   "bytes": 1064,
+   "command": "cp /home/exedev/core-data/stock_day_facts/trade_date=2026-10-22/source=core_derived/sha256-802b5202dda71cb4/manifest.json tests/fixtures/real/core_artifacts/c639/stock_day_facts/trade_date=2026-10-22/source=core_derived/sha256-802b5202dda71cb4/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "stock_day_facts",
+   "kind": "core_artifact_manifest",
+   "sha256": "712f578670c41ceeb44430de31aad2264d70f3085b7ab103b98e6eddf348e5c4",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/stock_day_facts/trade_date=2026-10-22/source=core_derived/sha256-802b5202dda71cb4/manifest.json",
+   "trade_date": "2026-10-22",
+   "version": "sha256-802b5202dda71cb4"
+  },
+  "core_artifacts/c639/stock_day_facts/trade_date=2026-10-23/source=core_derived/sha256-c5f4e297d415763b/manifest.json": {
+   "bytes": 1225,
+   "command": "cp /home/exedev/core-data/stock_day_facts/trade_date=2026-10-23/source=core_derived/sha256-c5f4e297d415763b/manifest.json tests/fixtures/real/core_artifacts/c639/stock_day_facts/trade_date=2026-10-23/source=core_derived/sha256-c5f4e297d415763b/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "stock_day_facts",
+   "kind": "core_artifact_manifest",
+   "sha256": "95d13f6d63c4f70e849a0eacf6edc1ee51a2db3cb3f1d6d630c997254f91488f",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/stock_day_facts/trade_date=2026-10-23/source=core_derived/sha256-c5f4e297d415763b/manifest.json",
+   "trade_date": "2026-10-23",
+   "version": "sha256-c5f4e297d415763b"
+  },
+  "core_artifacts/c639/stock_day_facts/trade_date=2026-10-27/source=core_derived/sha256-ce69846a8a840e56/manifest.json": {
+   "bytes": 1225,
+   "command": "cp /home/exedev/core-data/stock_day_facts/trade_date=2026-10-27/source=core_derived/sha256-ce69846a8a840e56/manifest.json tests/fixtures/real/core_artifacts/c639/stock_day_facts/trade_date=2026-10-27/source=core_derived/sha256-ce69846a8a840e56/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "stock_day_facts",
+   "kind": "core_artifact_manifest",
+   "sha256": "2cf77abb8255531e159018dbca1d6b4e0cc33e3fafe9bbc6b40c955a248750da",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/stock_day_facts/trade_date=2026-10-27/source=core_derived/sha256-ce69846a8a840e56/manifest.json",
+   "trade_date": "2026-10-27",
+   "version": "sha256-ce69846a8a840e56"
+  },
+  "core_artifacts/c639/stock_day_facts/trade_date=2026-10-28/source=core_derived/sha256-536caeb374bff5f9/manifest.json": {
+   "bytes": 1225,
+   "command": "cp /home/exedev/core-data/stock_day_facts/trade_date=2026-10-28/source=core_derived/sha256-536caeb374bff5f9/manifest.json tests/fixtures/real/core_artifacts/c639/stock_day_facts/trade_date=2026-10-28/source=core_derived/sha256-536caeb374bff5f9/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "stock_day_facts",
+   "kind": "core_artifact_manifest",
+   "sha256": "3305823e7688fa3d932c3c515454e8a27bd33d7515ce14bcd23f526dd1c2316e",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/stock_day_facts/trade_date=2026-10-28/source=core_derived/sha256-536caeb374bff5f9/manifest.json",
+   "trade_date": "2026-10-28",
+   "version": "sha256-536caeb374bff5f9"
+  },
+  "core_artifacts/c639/stock_day_facts/trade_date=2026-10-29/source=core_derived/sha256-88ebcb011e64b643/manifest.json": {
+   "bytes": 1225,
+   "command": "cp /home/exedev/core-data/stock_day_facts/trade_date=2026-10-29/source=core_derived/sha256-88ebcb011e64b643/manifest.json tests/fixtures/real/core_artifacts/c639/stock_day_facts/trade_date=2026-10-29/source=core_derived/sha256-88ebcb011e64b643/manifest.json",
+   "copied_at": "2026-11-02T11:45:44+08:00",
+   "dataset": "stock_day_facts",
+   "kind": "core_artifact_manifest",
+   "sha256": "f06038e3c08885c53ecfbecca40ae4042e03ac2aa53a6e9f5e998103bcfcca6c",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/stock_day_facts/trade_date=2026-10-29/source=core_derived/sha256-88ebcb011e64b643/manifest.json",
+   "trade_date": "2026-10-29",
+   "version": "sha256-88ebcb011e64b643"
+  },
+  "core_artifacts/c641/catalog.json": {
+   "bytes": 359453,
+   "command": "cp /home/exedev/core-data/catalog.json tests/fixtures/real/core_artifacts/c641/catalog.json",
+   "copied_at": "2026-11-02T18:43:27+08:00",
+   "dataset": "catalog",
+   "kind": "core_catalog_snapshot",
+   "sha256": "bdd79b270c069fad70754ef0581ebc4d06629051c870be43a97eb36aef6d1244",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/catalog.json",
+   "trade_date": null,
+   "version": null
+  },
+  "core_artifacts/c641/daily_kline/trade_date=2026-11-02/source=wencai/sha256-5a4b196545b5c719/manifest.json": {
+   "bytes": 4937,
+   "command": "cp /home/exedev/core-data/daily_kline/trade_date=2026-11-02/source=wencai/sha256-5a4b196545b5c719/manifest.json tests/fixtures/real/core_artifacts/c641/daily_kline/trade_date=2026-11-02/source=wencai/sha256-5a4b196545b5c719/manifest.json",
+   "copied_at": "2026-11-02T18:43:27+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_manifest",
+   "sha256": "f7c5348790c99e18c2bd5008f6755a491e110551f947fabae6f2994b1c217bd0",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-11-02/source=wencai/sha256-5a4b196545b5c719/manifest.json",
+   "trade_date": "2026-11-02",
+   "version": "sha256-5a4b196545b5c719"
+  },
+  "core_artifacts/c641/daily_kline/trade_date=2026-11-02/source=baostock/sha256-0842910cd5bcf104/manifest.json": {
+   "bytes": 4274,
+   "command": "cp /home/exedev/core-data/daily_kline/trade_date=2026-11-02/source=baostock/sha256-0842910cd5bcf104/manifest.json tests/fixtures/real/core_artifacts/c641/daily_kline/trade_date=2026-11-02/source=baostock/sha256-0842910cd5bcf104/manifest.json",
+   "copied_at": "2026-11-02T18:43:27+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_manifest",
+   "sha256": "7194d7d24b3178efbf2c699583c5f1f5fa9b37b3a1505de805149b2de0a7210e",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-11-02/source=baostock/sha256-0842910cd5bcf104/manifest.json",
+   "trade_date": "2026-11-02",
+   "version": "sha256-0842910cd5bcf104"
+  },
+  "core_artifacts/c641/symbol_universe/trade_date=2026-11-02/source=baostock_query_all_stock/sha256-c3db5abbdb4797b2/manifest.json": {
+   "bytes": 1418,
+   "command": "cp /home/exedev/core-data/symbol_universe/trade_date=2026-11-02/source=baostock_query_all_stock/sha256-c3db5abbdb4797b2/manifest.json tests/fixtures/real/core_artifacts/c641/symbol_universe/trade_date=2026-11-02/source=baostock_query_all_stock/sha256-c3db5abbdb4797b2/manifest.json",
+   "copied_at": "2026-11-02T18:43:27+08:00",
+   "dataset": "symbol_universe",
+   "kind": "core_artifact_manifest",
+   "sha256": "36299604eebfae945cdd0933af226cdb1116e9c96f2f89923b721aff94cce779",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/symbol_universe/trade_date=2026-11-02/source=baostock_query_all_stock/sha256-c3db5abbdb4797b2/manifest.json",
+   "trade_date": "2026-11-02",
+   "version": "sha256-c3db5abbdb4797b2"
+  },
+  "core_artifacts/c651/catalog.json": {
+   "bytes": 395720,
+   "command": "cp /home/exedev/core-data/catalog.json tests/fixtures/real/core_artifacts/c651/catalog.json",
+   "copied_at": "2026-11-03T17:01:36+08:00",
+   "dataset": "catalog",
+   "kind": "core_catalog_snapshot",
+   "sha256": "8e6225fb2b79037151b08c74d6924042e5ec722689df9edaa0bacdb06e1a95a7",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/catalog.json",
+   "trade_date": null,
+   "version": null
+  },
+  "core_artifacts/c651/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-d2f57645aafb76b7/manifest.json": {
+   "bytes": 2587,
+   "command": "cp /home/exedev/core-data/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-d2f57645aafb76b7/manifest.json tests/fixtures/real/core_artifacts/c651/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-d2f57645aafb76b7/manifest.json",
+   "copied_at": "2026-11-03T17:01:36+08:00",
+   "dataset": "stock_static",
+   "kind": "core_artifact_manifest",
+   "sha256": "2672b2f47c516159994167071bce96026aa1855ec701f6766bbbd577eece79bb",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-d2f57645aafb76b7/manifest.json",
+   "trade_date": "2026-10-29",
+   "version": "sha256-d2f57645aafb76b7"
+  },
+  "core_artifacts/c651/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-d2f57645aafb76b7/rows.jsonl.gz": {
+   "bytes": 81398,
+   "command": "cp /home/exedev/core-data/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-d2f57645aafb76b7/rows.jsonl.gz tests/fixtures/real/core_artifacts/c651/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-d2f57645aafb76b7/rows.jsonl.gz",
+   "copied_at": "2026-11-03T17:01:36+08:00",
+   "dataset": "stock_static",
+   "kind": "core_artifact_rows",
+   "sha256": "b1fc374f927eae6da02ae956a72c60970b04e86198564ec8644f977fe673c75c",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-d2f57645aafb76b7/rows.jsonl.gz",
+   "trade_date": "2026-10-29",
+   "version": "sha256-d2f57645aafb76b7"
+  },
+  "core_artifacts/c664/catalog.json": {
+   "bytes": 400145,
+   "command": "cp /home/exedev/core-data/catalog.json tests/fixtures/real/core_artifacts/c664/catalog.json",
+   "copied_at": "2026-11-04T01:04:18+08:00",
+   "dataset": "catalog",
+   "kind": "core_catalog_snapshot",
+   "sha256": "28f4c37a83a95f8cc6c9832d3ef4c842c1d072242da5ad7a1aa04fd8efaa695c",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/catalog.json",
+   "trade_date": null,
+   "version": null
+  },
+  "core_artifacts/c664/plate_members/trade_date=2026-10-29/source=kaipan_getHisPlateIds/sha256-9a9492578bf6327b/manifest.json": {
+   "bytes": 1426,
+   "command": "cp /home/exedev/core-data/plate_members/trade_date=2026-10-29/source=kaipan_getHisPlateIds/sha256-9a9492578bf6327b/manifest.json tests/fixtures/real/core_artifacts/c664/plate_members/trade_date=2026-10-29/source=kaipan_getHisPlateIds/sha256-9a9492578bf6327b/manifest.json",
+   "copied_at": "2026-11-04T01:04:18+08:00",
+   "dataset": "plate_members",
+   "kind": "core_artifact_manifest",
+   "sha256": "76ba5bc4cc2b2200c57520e10ef83e712a9a480c9ef435c705f52fbd078df2e2",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/plate_members/trade_date=2026-10-29/source=kaipan_getHisPlateIds/sha256-9a9492578bf6327b/manifest.json",
+   "trade_date": "2026-10-29",
+   "version": "sha256-9a9492578bf6327b"
+  },
+  "core_artifacts/c664/plate_members/trade_date=2026-10-29/source=kaipan_getHisPlateIds/sha256-9a9492578bf6327b/rows.jsonl.gz": {
+   "bytes": 962156,
+   "command": "cp /home/exedev/core-data/plate_members/trade_date=2026-10-29/source=kaipan_getHisPlateIds/sha256-9a9492578bf6327b/rows.jsonl.gz tests/fixtures/real/core_artifacts/c664/plate_members/trade_date=2026-10-29/source=kaipan_getHisPlateIds/sha256-9a9492578bf6327b/rows.jsonl.gz",
+   "copied_at": "2026-11-04T01:04:18+08:00",
+   "dataset": "plate_members",
+   "kind": "core_artifact_rows",
+   "sha256": "46a13a3c642c5d7f7d3449fc97738f366877dce8ebfda7012dc2d1041c0f6398",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/plate_members/trade_date=2026-10-29/source=kaipan_getHisPlateIds/sha256-9a9492578bf6327b/rows.jsonl.gz",
+   "trade_date": "2026-10-29",
+   "version": "sha256-9a9492578bf6327b"
+  }
+ },
+ "kaipan_hot_plates_2026-10-23_1441.json": {
+  "bytes": 13022,
+  "call": "getHisPlates",
+  "command": "examples/capture_real_fixture.py kaipan_hot_plates --date 2026-10-23",
+  "fetched_at": "2026-10-23T14:41:16+08:00",
+  "kind": "raw_upstream_response",
+  "params": {
+   "date": "2026-10-23",
+   "index": "0",
+   "size": "50"
+  },
+  "sha256": "ef2bd1fb590a777546c066b4b7960674209fb1461971ad087a59ad0c6253c04e",
+  "source": "kaipan_hot_plates",
+  "trade_date": "2026-10-23"
+ },
+ "kaipan_pool_2026-10-22_L1_1444.json": {
+  "bytes": 7753,
+  "call": "getHisBans",
+  "command": "examples/capture_real_fixture.py kaipan_pool --date 2026-10-22 --level 1",
+  "fetched_at": "2026-10-23T14:44:08+08:00",
+  "kind": "raw_upstream_response",
+  "params": {
+   "ban": "1",
+   "date": "2026-10-22",
+   "size": "2000"
+  },
+  "sha256": "072a9f9c93aa50acdf05bb9e6866bf4abad357616fd07e481d732f2bdf7d4d2d",
+  "source": "kaipan_pool",
+  "trade_date": "2026-10-22"
+ },
+ "kaipan_pool_2026-10-22_L2_1444.json": {
+  "bytes": 1656,
+  "call": "getHisBans",
+  "command": "examples/capture_real_fixture.py kaipan_pool --date 2026-10-22 --level 2",
+  "fetched_at": "2026-10-23T14:44:09+08:00",
+  "kind": "raw_upstream_response",
+  "params": {
+   "ban": "2",
+   "date": "2026-10-22",
+   "size": "2000"
+  },
+  "sha256": "dca06a9791b56f4213065957660c94de0dd4b5cc55a40d2e6fe46131148ea8f5",
+  "source": "kaipan_pool",
+  "trade_date": "2026-10-22"
+ },
+ "kaipan_pool_2026-10-23_L1_1444.json": {
+  "bytes": 50,
+  "call": "getHisBans",
+  "command": "examples/capture_real_fixture.py kaipan_pool --date 2026-10-23 --level 1",
+  "fetched_at": "2026-10-23T14:44:11+08:00",
+  "kind": "raw_upstream_response",
+  "params": {
+   "ban": "1",
+   "date": "2026-10-23",
+   "size": "2000"
+  },
+  "sha256": "91109fb8f88c77f8098647637a822dc870aaeaa1017f9968c546549af6ba97f6",
+  "source": "kaipan_pool",
+  "trade_date": "2026-10-23"
+ },
+ "ths_hot_rank_2026-10-23_1441.json": {
+  "bytes": 37451,
+  "command": "examples/capture_real_fixture.py ths_hot_rank",
+  "endpoint": "https://dq.10jqka.com.cn/fuyao/hot_list_data/out/hot_list/v1/stock",
+  "fetched_at": "2026-10-23T14:41:13+08:00",
+  "kind": "raw_upstream_response",
+  "params": {
+   "list_type": "tech",
+   "stock_type": "a",
+   "type": "day"
+  },
+  "sha256": "262b602c30d653d8b13d3d0c9fa6e435f5f2b937f71f558cab775c90b41f3640",
+  "source": "ths_hot_rank",
+  "trade_date": "2026-10-23"
+ },
+ "_c526_excerpts": {
+  "c526/redis_q2_hashes_20261023_first60.json.gz": {
+   "bytes": 4123,
+   "command": "bounded JSON excerpt: first 60 symbol entries (each q2 hash value preserved); values preserved from source capture",
+   "fetched_at": "2026-10-25T00:29:08.148141+08:00",
+   "kind": "raw_upstream_excerpt",
+   "sha256": "a445494272dfd67b73d1ba567c767bcc7246ec545e7712e9f2cf096da0eede54",
+   "source": "redis_q2",
+   "source_path": "/home/exedev/validation/s1/V0/redis_q2_hashes_20261023.json.gz",
+   "source_sha256": "6256c9cc3c30016b2b92d1ee093348ef6db80457473b6cd5df1e81fd70909bb1",
+   "trade_date": "2026-10-23",
+   "selection": "first 60 symbol entries (each q2 hash value preserved)",
+   "selected_keys": [
+    "000001",
+    "000002",
+    "000006",
+    "000007",
+    "000008",
+    "000009",
+    "000010",
+    "000011",
+    "000012",
+    "000014",
+    "000016",
+    "000017",
+    "000019",
+    "000020",
+    "000021",
+    "000025",
+    "000026",
+    "000027",
+    "000028",
+    "000029",
+    "000030",
+    "000031",
+    "000032",
+    "000034",
+    "000035",
+    "000036",
+    "000037",
+    "000039",
+    "000042",
+    "000045",
+    "000048",
+    "000049",
+    "000050",
+    "000055",
+    "000056",
+    "000058",
+    "000059",
+    "000060",
+    "000061",
+    "000062",
+    "000063",
+    "000065",
+    "000066",
+    "000068",
+    "000069",
+    "000070",
+    "000078",
+    "000088",
+    "000089",
+    "000090",
+    "000096",
+    "000099",
+    "000100",
+    "000151",
+    "000153",
+    "000155",
+    "000156",
+    "000157",
+    "000158",
+    "000159"
+   ],
+   "warning": "This is the 2026-10-23 after-close terminal hash state; parsing and unit checks only, not a 09:25 point-in-time value."
+  },
+  "c526/redis_auction_keys_20261023_0925.json.gz": {
+   "bytes": 15422,
+   "command": "bounded JSON excerpt: the two requested keys, copied as complete key values; values preserved from source capture",
+   "fetched_at": "2026-10-25T00:29:07.784141+08:00",
+   "kind": "raw_upstream_excerpt",
+   "sha256": "5ef387ee66bb8f4aca7bc72c7ca9590b54cc758eef0f51ff443646dfcec5d2a4",
+   "source": "redis_auction_keys",
+   "source_path": "/home/exedev/validation/s1/V0/redis_auction_keys_20261023.json.gz",
+   "source_sha256": "aff930429e0823480e5d86a03ca7dc573e067c05da6e64cfd4107980d5b5413f",
+   "trade_date": "2026-10-23",
+   "selection": "the two requested keys, copied as complete key values",
+   "selected_keys": [
+    "a2:20261023:0925",
+    "market:auction:20261023:0925"
+   ]
+  },
+  "c526/daily_kline_baostock_first200.json": {
+   "bytes": 362,
+   "command": "bounded JSON excerpt: first 200 rows (source returned 1 rows); values preserved from source capture",
+   "fetched_at": "2026-10-24T02:11:14+00:00",
+   "kind": "raw_upstream_excerpt",
+   "sha256": "60feabe8b4638a9861d0b35149b970b7337e6d934007b4be0d0f641750639696",
+   "source": "baostock",
+   "source_path": "/home/exedev/validation/s1/C525/raw/daily_kline_baostock_a1_20261024T021114.258435Z.json",
+   "source_sha256": "0dd323f975dfe0e8a22a0029e8dce6d4c3e2916f11bebc8ed4a4738253aafd4e",
+   "trade_date": "2026-10-23",
+   "selection": "first 200 rows (source returned 1 rows)",
+   "row_count": 1
+  },
+  "c526/daily_kline_wencai_first200.json": {
+   "bytes": 98,
+   "command": "bounded JSON excerpt: first 200 rows (source returned 0 rows); values preserved from source capture",
+   "fetched_at": "2026-10-24T02:11:26+00:00",
+   "kind": "raw_upstream_excerpt",
+   "sha256": "72b65f5352496aea46eaba0448768456795c05439061c2031cf2281da17e796e",
+   "source": "wencai",
+   "source_path": "/home/exedev/validation/s1/C525/raw/daily_kline_wencai_a1_20261024T021126.827496Z.json",
+   "source_sha256": "ebff96cd7423b6e01c45485e152982a0ec655c72359ab8f54c83597e636af985",
+   "trade_date": "2026-10-23",
+   "selection": "first 200 rows (source returned 0 rows)",
+   "row_count": 0
+  },
+  "c526/daily_kline_q2_final_first200.json.gz": {
+   "bytes": 36793,
+   "command": "bounded JSON excerpt: first 200 rows (source returned 5221 rows); values preserved from source capture",
+   "fetched_at": "2026-10-24T02:11:37+00:00",
+   "kind": "raw_upstream_excerpt",
+   "sha256": "f2293a6d05740756f18d5f67b284a48cb22b7358790f2bb4c5a74667ce316be9",
+   "source": "q2_final",
+   "source_path": "/home/exedev/validation/s1/C525/raw/daily_kline_q2_final_a1_20261024T021137.847854Z.json",
+   "source_sha256": "88a7b1eb846cee348fbec86e2048a8a4074ba09612234a8c16834132de9a63db",
+   "trade_date": "2026-10-23",
+   "selection": "first 200 rows (source returned 5221 rows)",
+   "row_count": 200,
+   "original_file": "c526/daily_kline_q2_final_first200.json",
+   "original_content_sha256": "735b355952a491b331f3b7c994d6adf09f4fa871f3f56fe9d9d739130a24a24d",
+   "uncompressed_content_sha256": "735b355952a491b331f3b7c994d6adf09f4fa871f3f56fe9d9d739130a24a24d"
+  },
+  "c526/wencai_auction_fallback_first60.json.gz": {
+   "bytes": 3014,
+   "command": "bounded JSON excerpt: first 60 rows (source returned 606 rows); values preserved from source capture",
+   "fetched_at": "2026-10-24T02:12:12+00:00",
+   "kind": "raw_upstream_excerpt",
+   "sha256": "d7046238fdf861db641f5141a0af3c40f05502bab58773e443dbc4f489ddc126",
+   "source": "wencai_auction",
+   "source_path": "/home/exedev/validation/s1/C525/raw/wencai_auction_fallback_a1_20261024T021212.976721Z.json",
+   "source_sha256": "77048995b197e7948d843a7f229c60ea8547b794cb499b1240b66307b66bd50e",
+   "trade_date": "2026-10-23",
+   "selection": "first 60 rows (source returned 606 rows)",
+   "row_count": 60,
+   "original_file": "c526/wencai_auction_fallback_first60.json",
+   "original_content_sha256": "3295be6b94e412a896c319fd4cf0edad52ff8de56852096c83800d17570a1d09",
+   "uncompressed_content_sha256": "3295be6b94e412a896c319fd4cf0edad52ff8de56852096c83800d17570a1d09"
+  }
+ },
+ "_c527_excerpts": {
+  "c527/td_auction_snapshot_v2_20261023_first70.json.gz": {
+   "bytes": 1555,
+   "command": "bounded JSON excerpt: first 60 auction_tag=0925 rows plus first 5 limit_state=1 and first 5 limit_state=-1 rows; cols and selected row values preserved",
+   "fetched_at": "2026-10-25T01:18:58+08:00",
+   "kind": "raw_upstream_excerpt",
+   "sha256": "aca55549d80f0f28200c55986a59a0d6d6cd9e829593324e3500f17f79a588f5",
+   "source": "td_auction_snapshot_v2",
+   "source_path": "/home/exedev/validation/s1/V0/td_auction_snapshot_v2_20261023.json.gz",
+   "source_sha256": "43bd0161350f2fbc93e08c6a5cd12456bf5b6759204fa86ed95fc017741ab4be",
+   "trade_date": "2026-10-23",
+   "selection": "60 first rows with auction_tag=0925, plus first 5 rows each with limit_state=1 and -1; unique source row order retained",
+   "selected_rows": 70,
+   "source_row_count": 15672,
+   "original_file": "c527/td_auction_snapshot_v2_20261023_first70.json",
+   "original_content_sha256": "c4938819e184c18dfc6eb685ae36a5a06761125317387dee5e44f20c6d8129ce",
+   "uncompressed_content_sha256": "c4938819e184c18dfc6eb685ae36a5a06761125317387dee5e44f20c6d8129ce"
+  },
+  "c527/wencai_auction_upstream_first60.json.gz": {
+   "bytes": 5177,
+   "command": "bounded JSON excerpt: first 60 raw upstream rows; row values and native column names preserved",
+   "fetched_at": "2026-10-25T01:18:58+08:00",
+   "kind": "raw_upstream_excerpt",
+   "sha256": "a462a8eae43acdfd7dce6bd2767d70d9a08e3a2300ac2bd7d3973cd56e8db50f",
+   "source": "wencai_auction",
+   "source_path": "/home/exedev/validation/s1/C525/raw/wencai_upstream_a1_20261024T021209.997815Z.json",
+   "source_sha256": "1d69d2b02752fa5055bf787f0213396fe93265d4c740693d487d6eb7550cd26e",
+   "trade_date": "2026-10-23",
+   "selection": "first 60 rows from the captured raw Wencai auction query response",
+   "selected_rows": 60,
+   "source_row_count": 603,
+   "original_file": "c527/wencai_auction_upstream_first60.json",
+   "original_content_sha256": "4e1f0d8dbf632eb7c2ed2b95dd170ec087a6d2816f43bb3660677250e8dcbd57",
+   "uncompressed_content_sha256": "4e1f0d8dbf632eb7c2ed2b95dd170ec087a6d2816f43bb3660677250e8dcbd57"
+  }
+ },
+ "_c528_manifests": {
+  "c528/daily_kline_baostock_manifest.json": {
+   "bytes": 1785,
+   "command": "verbatim copy of the production daily_kline baostock manifest for adapter resolution",
+   "kind": "raw_production_manifest",
+   "sha256": "6952848d015a9dbee1c4397b19a5870572652cff5d03f706f77378d7c6a9b134",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-10-23/source=baostock/sha256-28ccf68f99ff600c/manifest.json",
+   "source_sha256": "6952848d015a9dbee1c4397b19a5870572652cff5d03f706f77378d7c6a9b134",
+   "trade_date": "2026-10-23"
+  }
+ },
+ "wencai_daily_kline_2026-10-26_2109.json": {
+  "bytes": 24346,
+  "call": "pywencai.get",
+  "command": "examples/capture_real_fixture.py wencai_daily_kline --date 2026-10-26",
+  "fetched_at": "2026-10-27T21:09:32+08:00",
+  "kind": "raw_upstream_response",
+  "page_count": 1,
+  "params": {
+   "loop": false,
+   "max_pages": 10,
+   "max_requests": 10,
+   "min_interval_seconds": 10,
+   "page_size": 1000,
+   "query": "2026-10-26开盘价，最高价，最低价，收盘价，前收盘价，涨跌幅，成交量(股)，成交额(元)，股票代码"
+  },
+  "sha256": "3a936735b8eb6ddb077d0689cc41595c3fdb715a74daef37f297297fa9cb839e",
+  "source": "wencai_daily_kline",
+  "source_dates": {
+   "amount_yuan": "2026-10-26",
+   "close": "2026-10-26",
+   "high": "2026-10-26",
+   "low": "2026-10-26",
+   "open": "2026-10-26",
+   "pct_chg": "2026-10-26",
+   "pre_close": "2026-10-26",
+   "volume": "2026-10-26"
+  },
+  "trade_date": "2026-10-26"
+ },
+ "baostock_query_all_stock_2026-10-28_2301.json": {
+  "bytes": 413287,
+  "call": "baostock.query_all_stock",
+  "command": "examples/capture_real_fixture.py baostock_query_all_stock --date 2026-10-28",
+  "fetched_at": "2026-10-28T23:01:05+08:00",
+  "kind": "raw_upstream_response",
+  "params": {
+   "day": "2026-10-28"
+  },
+  "request_count": 1,
+  "row_count": 7433,
+  "sha256": "6310735e13a2c6170bb1137a7ccd0d6a0b5ba005c2654939e00ffc6e2d236c0b",
+  "source": "baostock_query_all_stock",
+  "trade_date": "2026-10-28"
+ },
+ "baostock_stock_basic_2026-10-29_0418.json": {
+  "source": "baostock_stock_basic",
+  "trade_date": "2026-10-29",
+  "fetched_at": "2026-10-29T04:18:56+08:00",
+  "bytes": 356047,
+  "sha256": "d4a82c7c909287ad312aaf22a8d43ffbf503aefc5d69a3cfc9a6e3ee540c1786",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py baostock_stock_basic --date 2026-10-29",
+  "call": "baostock.query_stock_basic",
+  "params": {},
+  "request_count": 1,
+  "row_count": 4000,
+  "source_date_echo": null,
+  "snapshot_semantics": "current response; provider supplies no source-date echo"
+ },
+ "kaipan_plate_members_2026-10-28_801050_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:42+08:00",
+  "bytes": 14629,
+  "sha256": "9c37ccb181ef276b095578e66a4e757e4d32f41f36fdc4913538168a2a0ed1c5",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801050 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801050",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 20,
+  "source_date_echo": null
+ },
+ "kaipan_plate_members_2026-10-28_801535_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:43+08:00",
+  "bytes": 18379,
+  "sha256": "d9af0ca85df4ab2559d15a10bab8fe2a2d79ceb956efb437e61511e1ac8b6dc5",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801535 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801535",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 25,
+  "source_date_echo": null
+ },
+ "kaipan_plate_members_2026-10-28_801873_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:44+08:00",
+  "bytes": 24381,
+  "sha256": "4468d225a37bf6114f2b627257f9d3ed74139166fbd4963814762b0e27a1cb92",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801873 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801873",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 33,
+  "source_date_echo": null
+ },
+ "kaipan_plate_members_2026-10-28_801295_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:45+08:00",
+  "bytes": 32031,
+  "sha256": "c73e8cd0e12c17627f83ca4e028b4176a2244478a38a8e24f67a65990e1bf08a",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801295 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801295",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 43,
+  "source_date_echo": null
+ },
+ "kaipan_plate_members_2026-10-28_801200_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:46+08:00",
+  "bytes": 43555,
+  "sha256": "d70c1cc7f956e011f48bbde969033bf915915b5d7a2ef0b84ef38a22e52d02f5",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801200 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801200",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 59,
+  "source_date_echo": null
+ },
+ "kaipan_plate_members_2026-10-28_801376_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:47+08:00",
+  "bytes": 61997,
+  "sha256": "53b40a246f5b2fc02f5c9b664defd1cea31f2c9049c9cb748c99ba743e870bd2",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801376 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801376",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 84,
+  "source_date_echo": null
+ },
+ "kaipan_plate_members_2026-10-28_801182_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:48+08:00",
+  "bytes": 85077,
+  "sha256": "a2312634d5c20f6dbae6bad95b15992d8efb8700299adfe6291a9b7395555260",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801182 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801182",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 118,
+  "source_date_echo": null
+ },
+ "kaipan_plate_members_2026-10-28_801260_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:49+08:00",
+  "bytes": 147202,
+  "sha256": "24aa367abe6bf8eef6bd8639845cd48ee2b34d0fdd6098b0e1fbf9117d078abd",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801260 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801260",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 203,
+  "source_date_echo": null
+ },
+ "kaipan_plate_members_2026-10-28_801553_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:50+08:00",
+  "bytes": 259717,
+  "sha256": "7e86637786ba8ca11caf5df45e61cb6905d9406c5f06a4a308b663e6f9c21ad9",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801553 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801553",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 362,
+  "source_date_echo": null
+ },
+ "kaipan_plate_members_2026-10-28_801085_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:51+08:00",
+  "bytes": 1102677,
+  "sha256": "9634e457e9cd66d04dde6c224e2f668dc15dc2d3789041f482642921f4b6b593",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801085 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801085",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 1530,
+  "source_date_echo": null
+ },
+ "baostock_stock_basic_2026-10-29_0454.json": {
+  "source": "baostock_stock_basic",
+  "trade_date": "2026-10-29",
+  "fetched_at": "2026-10-29T04:54:33+08:00",
+  "bytes": 795612,
+  "sha256": "4187921b6a98342a35f70b10802894f44fa53d514e9892ce28cc473d65c38641",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py baostock_stock_basic --date 2026-10-29",
+  "call": "baostock.query_stock_basic",
+  "params": {},
+  "request_count": 1,
+  "row_count": 9024,
+  "source_date_echo": null,
+  "snapshot_semantics": "current response; provider supplies no source-date echo"
+ },
+ "kaipan_ban_reasons_2026-10-29_002982_st200_0537.json": {
+  "source": "kaipan_ban_reasons",
+  "trade_date": "2026-10-29",
+  "fetched_at": "2026-10-29T05:37:45+08:00",
+  "bytes": 28307,
+  "sha256": "44c681bf9f15d9bf352e5bc9b89ba2496b2f50db6d9ccda033522a8a8678c516",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_ban_reasons --symbol 002982 --st 200",
+  "call": "getBanReasons",
+  "params": {
+   "code": "002982",
+   "st": 200
+  },
+  "request_count": 1,
+  "response_count": 31
+ },
+ "kaipan_pool_2026-10-23_L1_0537.json": {
+  "source": "kaipan_pool",
+  "trade_date": "2026-10-23",
+  "fetched_at": "2026-10-29T05:37:58+08:00",
+  "bytes": 22320,
+  "sha256": "56d407935da4344a983ed2b2efd83db0463ac16de84443bc44c0c7f0669bbfec",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_pool --date 2026-10-23 --level 1",
+  "call": "getHisBans",
+  "params": {
+   "date": "2026-10-23",
+   "ban": "1",
+   "size": "2000"
+  }
+ },
+ "kaipan_ban_reasons_2026-10-29_003021_st200_0538.json": {
+  "source": "kaipan_ban_reasons",
+  "trade_date": "2026-10-29",
+  "fetched_at": "2026-10-29T05:38:40+08:00",
+  "bytes": 55480,
+  "sha256": "325e16d206c0958e981df984cf4e6d9460a5009b8a5e925ebd1e1a3e7eeed3fb",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_ban_reasons --symbol 003021 --st 200",
+  "call": "getBanReasons",
+  "params": {
+   "code": "003021",
+   "st": 200
+  },
+  "request_count": 1,
+  "response_count": 51
+ },
+ "wencai_limit_up_pool_2026-10-23_0539.json": {
+  "source": "wencai_limit_up_pool",
+  "trade_date": "2026-10-23",
+  "fetched_at": "2026-10-29T05:39:35+08:00",
+  "bytes": 132239,
+  "sha256": "dc5d048f7068fd9ff9a3d463d94e711c0d85974bd1f1e12f1cb2f693f44b046a",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py wencai_limit_up_pool --date 2026-10-23",
+  "call": "pywencai.wencai.get_robot_data",
+  "params": {
+   "query": "2026-10-23涨停;连板天数;去除st"
+  },
+  "request_count": 1,
+  "response_count": 82,
+  "reported_total": 82,
+  "cookie_status": "used"
+ },
+ "wencai_limit_up_pool_2026-10-26_0539.json": {
+  "source": "wencai_limit_up_pool",
+  "trade_date": "2026-10-26",
+  "fetched_at": "2026-10-29T05:39:41+08:00",
+  "bytes": 83618,
+  "sha256": "4abda53ed1fe704564116360297d91aef4e55460c5983e49badb542431738f27",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py wencai_limit_up_pool --date 2026-10-26",
+  "call": "pywencai.wencai.get_robot_data",
+  "params": {
+   "query": "2026-10-26涨停;连板天数;去除st"
+  },
+  "request_count": 1,
+  "response_count": 55,
+  "reported_total": 55,
+  "cookie_status": "used"
+ },
+ "kaipan_pool_2026-10-26_L1_0540.json": {
+  "source": "kaipan_pool",
+  "trade_date": "2026-10-26",
+  "fetched_at": "2026-10-29T05:40:35+08:00",
+  "bytes": 12778,
+  "sha256": "394e90343503fe203e1d535245b3817a5ff1b59d987a3a2272ba3e9182e48357",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_pool --date 2026-10-26 --level 1",
+  "call": "getHisBans",
+  "params": {
+   "date": "2026-10-26",
+   "ban": "1",
+   "size": "2000"
+  }
+ },
+ "wencai_limit_up_pool_today_2026-10-28_0702.json": {
+  "source": "wencai_limit_up_pool_today",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T07:02:09+08:00",
+  "bytes": 115899,
+  "sha256": "a7ac32d1b8746864dc156fcd8d7247eb808a798906f827d2c5d11fa027cb625b",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py wencai_limit_up_pool_today --date 2026-10-28",
+  "call": "pywencai.wencai.get_robot_data",
+  "params": {
+   "query": "2026-10-28涨停;封单额;开板次数;首次涨停时间;最终涨停时间;去除st",
+   "page": 1,
+   "perpage": 100,
+   "retry": 0,
+   "max_requests": 1
+  },
+  "request_count": 1,
+  "reported_total": 72,
+  "complete": true,
+  "truncated": false
+ },
+ "q2_limit_up_pool_today_2026-10-28_0702.json": {
+  "source": "q2_limit_up_pool_today",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T07:02:57+08:00",
+  "bytes": 2411019,
+  "sha256": "1ccae307151ffb8eb086457503b3266e049b25f5bf4fdc3a9565577b9938de33",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py q2_limit_up_pool_today --date 2026-10-28",
+  "call": "Redis SMEMBERS + pipelined HGETALL",
+  "key": "q2:active:20261028",
+  "active_symbol_count": 5226,
+  "field_names": [
+   "a20",
+   "a24",
+   "a25",
+   "am",
+   "amt",
+   "amt2m",
+   "amt5m",
+   "ar",
+   "br",
+   "ia",
+   "iv",
+   "ln",
+   "ls",
+   "mk",
+   "mn",
+   "mx",
+   "pc",
+   "ph",
+   "px",
+   "spd1m",
+   "ts",
+   "vec3m",
+   "vec5m",
+   "vol"
+  ],
+  "read_only_commands": [
+   "EXISTS",
+   "SMEMBERS",
+   "HGETALL"
+  ]
+ },
+ "kaipan_stock_dde_2026-10-29_000001_1516.json": {
+  "source": "kaipan_stock_dde",
+  "trade_date": "2026-10-29",
+  "fetched_at": "2026-10-29T15:16:02+08:00",
+  "bytes": 54805,
+  "sha256": "1198f415236442adf27957c47106f5e4b34899cebd3ae721250031539af86488",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_stock_dde --symbol 000001 --date 2026-10-29",
+  "call": "getHisStockDDE",
+  "params": {
+   "code": "000001",
+   "date": "2026-10-29"
+  },
+  "request_count": 1,
+  "source_date_echo": "Date"
+ },
+ "kaipan_stock_dde_2026-10-29_600519_1539.json": {
+  "source": "kaipan_stock_dde",
+  "trade_date": "2026-10-29",
+  "fetched_at": "2026-10-29T15:39:58+08:00",
+  "bytes": 55537,
+  "sha256": "13437cd047cb1138fef400d5d7a2484a43252666482160017a637488952c6a73",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_stock_dde --symbol 600519 --date 2026-10-29",
+  "call": "getHisStockDDE",
+  "params": {
+   "code": "600519",
+   "date": "2026-10-29"
+  },
+  "request_count": 1,
+  "source_date_echo": "Date"
+ },
+ "kaipan_stock_dde_2026-10-29_688001_1540.json": {
+  "source": "kaipan_stock_dde",
+  "trade_date": "2026-10-29",
+  "fetched_at": "2026-10-29T15:40:03+08:00",
+  "bytes": 45116,
+  "sha256": "dcb0ce5293957543ca701a6cb18aa01d3b9924cf8602407743b790f3cca699ab",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_stock_dde --symbol 688001 --date 2026-10-29",
+  "call": "getHisStockDDE",
+  "params": {
+   "code": "688001",
+   "date": "2026-10-29"
+  },
+  "request_count": 1,
+  "source_date_echo": "Date"
+ },
+ "kaipan_stock_dde_2026-11-02_000831_0731.json": {
+  "source": "kaipan_stock_dde",
+  "trade_date": "2026-11-02",
+  "fetched_at": "2026-11-03T07:31:28+08:00",
+  "bytes": 54139,
+  "sha256": "c808465e4734e03c9bf29a75034616f8b471095daf803157418649e149a23963",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_stock_dde --symbol 000831 --date 2026-11-02",
+  "call": "getHisStockDDE",
+  "params": {
+   "code": "000831",
+   "date": "2026-11-02"
+  },
+  "request_count": 1,
+  "source_date_echo": "Date"
+ },
+ "_td_recordings": {
+  "td/errors/query_memory_exhausted_0x073a.json": {
+   "kind": "raw_td_error",
+   "sha256": "c6a57b7ec7d26264a7cf729e6f9eadce0b939a8dbd6f5a2a451fc487faa8b4cf",
+   "bytes": 319,
+   "command": "examples/capture_td_error.py query_memory_exhausted_0x073a /home/exedev/core-data/guardian-native/state/ledger/2026-11-03.jsonl --seq 135",
+   "source": {
+    "ledger": "/home/exedev/core-data/guardian-native/state/ledger/2026-11-03.jsonl",
+    "seq": 135,
+    "ts": "2026-11-03T08:38:18.263732595+08:00",
+    "record_sha256": "3341c6fb997bef9780b17abde38ae61bfca57c3b1e6eedbd0dc0c5799478c341"
+   }
+  },
+  "td/plate_amount_2day.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "plate_amount_2day",
+   "sha256": "9739bdb99f16b7c300711f8c48918e41db9e181e8235944d984b806d18eba0d0",
+   "bytes": 231744,
+   "recorded_at": "2026-11-04T01:01:32+08:00",
+   "statements": 2,
+   "rows": 37632,
+   "errors": 0,
+   "command": "examples/record_td_scenario.py plate_amount_2day",
+   "call": {
+    "function": "plate_amount_baseline._read_td",
+    "args": [
+     "2026-11-02",
+     [
+      "2026-10-29",
+      "2026-10-30"
+     ]
+    ]
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/plate_amount_slice_halving.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "plate_amount_slice_halving",
+   "sha256": "6ef6b0f802627d67afdd8f1db9321f5bbece5aea97f94ee30efc1cc1a506a7ba",
+   "bytes": 147983,
+   "recorded_at": "2026-11-04T01:01:35+08:00",
+   "statements": 4,
+   "rows": 20945,
+   "errors": 1,
+   "command": "examples/record_td_scenario.py plate_amount_slice_halving",
+   "call": {
+    "function": "plate_amount_baseline._read_td",
+    "args": [
+     "2026-11-02",
+     [
+      "2026-10-29",
+      "2026-10-30"
+     ]
+    ],
+    "injected": "2-day tick slice -> real error 0x073a"
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/plate_amount_symbol_split.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "plate_amount_symbol_split",
+   "sha256": "6569d3e39ee733fbcc1b5e25713e4356bf160fb13b1380921b6722a0e9ced347",
+   "bytes": 90820,
+   "recorded_at": "2026-11-04T01:01:38+08:00",
+   "statements": 5,
+   "rows": 12909,
+   "errors": 1,
+   "command": "examples/record_td_scenario.py plate_amount_symbol_split",
+   "call": {
+    "function": "plate_amount_baseline._read_td",
+    "args": [
+     "2026-11-02",
+     [
+      "2026-10-30"
+     ]
+    ],
+    "injected": "unfiltered 1-day tick slice -> real error 0x073a"
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/plate_amount_auction_halving.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "plate_amount_auction_halving",
+   "sha256": "7e5924a04817365b2de33ad5999d5065fef62a0903d283cbb2cdb43c56fefe7e",
+   "bytes": 36271,
+   "recorded_at": "2026-11-04T01:01:39+08:00",
+   "statements": 3,
+   "rows": 5223,
+   "errors": 1,
+   "command": "examples/record_td_scenario.py plate_amount_auction_halving",
+   "call": {
+    "function": "plate_amount_baseline._read_auction_rows",
+    "args": [
+     [
+      "2026-10-29",
+      "2026-10-30"
+     ]
+    ],
+    "injected": "2-day auction slice -> real error 0x073a"
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/dde_suspended.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "dde_suspended",
+   "sha256": "0bf67375176d201a01c515eccfd45685db63e64987bbdfac04f4feb17874eb74",
+   "bytes": 286,
+   "recorded_at": "2026-11-04T01:03:44+08:00",
+   "statements": 1,
+   "rows": 1,
+   "errors": 0,
+   "command": "examples/record_td_scenario.py dde_suspended",
+   "call": {
+    "function": "TaosDdeStore.read_suspended",
+    "args": [
+     [
+      "000831"
+     ],
+     "2026-11-02"
+    ]
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/dde_not_flagged_1103.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "dde_not_flagged_1103",
+   "sha256": "e27b1e43dda3e2b44cc539d6d3190f71a96abd988d86adc0b96c72e06205c59b",
+   "bytes": 294,
+   "recorded_at": "2026-11-04T01:03:46+08:00",
+   "statements": 1,
+   "rows": 0,
+   "errors": 0,
+   "command": "examples/record_td_scenario.py dde_not_flagged_1103",
+   "call": {
+    "function": "TaosDdeStore.read_suspended",
+    "args": [
+     [
+      "000831"
+     ],
+     "2026-11-03"
+    ]
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/errors/table_does_not_exist.json": {
+   "kind": "raw_td_error",
+   "sha256": "dcc505257621b7b86914ccac5dd89af2293cac297b74815b2e210587dfc95a35",
+   "bytes": 288,
+   "command": "examples/capture_td_error.py table_does_not_exist --provoke 'SELECT ts FROM market_data1.recorded_missing_table_c663 LIMIT 1'",
+   "source": {
+    "provoked_by": "SELECT ts FROM market_data1.recorded_missing_table_c663 LIMIT 1",
+    "recorded_at": "2026-11-04T01:03:52+08:00",
+    "client_exception": "ProgrammingError"
+   }
+  },
+  "td/plate_amount_other_error.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "plate_amount_other_error",
+   "sha256": "b158fd3f171aeb4da4912f80bf85e7479d676340506a0f75ab7e872c5d39e1c1",
+   "bytes": 36205,
+   "recorded_at": "2026-11-04T01:03:54+08:00",
+   "statements": 2,
+   "rows": 5223,
+   "errors": 1,
+   "command": "examples/record_td_scenario.py plate_amount_other_error",
+   "call": {
+    "function": "plate_amount_baseline._read_td",
+    "args": [
+     "2026-11-02",
+     [
+      "2026-10-30"
+     ]
+    ],
+    "injected": "tick statement -> real error 'table does not exist'"
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/outputs/reference_snapshot_plate_members_latest.json": {
+   "kind": "raw_td_function_output",
+   "sha256": "0c7da35ef61a0b84a95c43796b16345deb981fa88345a31fc772622f6699ef0f",
+   "bytes": 535,
+   "recorded_at": "2026-11-04T01:04:40+08:00",
+   "call": {
+    "function": "ReferenceSnapshotStore.read_latest",
+    "args": [
+     "plate_members"
+    ]
+   },
+   "command": "examples/record_td_scenario.py reference_snapshot_plate_members_latest",
+   "source": "core TD (read-only)"
+  },
+  "td/show_queries.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "show_queries",
+   "sha256": "5319a79c51085dc0fa5561422bbea7439f521239ecc0c832f112381189542e10",
+   "bytes": 564,
+   "recorded_at": "2026-11-04T10:29:24+08:00",
+   "statements": 1,
+   "rows": 1,
+   "errors": 0,
+   "command": "examples/record_td_scenario.py show_queries",
+   "call": {
+    "function": "td_resource_check.fetch_queries",
+    "owners": {
+     "3118193": "/home/exedev/services/engine-next/shared/venv/bin/python -m engine_next.app_main --environment server"
+    }
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/plate_amount_day_1029.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "plate_amount_day_1029",
+   "sha256": "50b60fdecca1ff53c6ce7c65e2060526708a4707bbcf23a0fd9e233748e2455b",
+   "bytes": 56604,
+   "recorded_at": "2026-11-05T19:25:48+08:00",
+   "statements": 2,
+   "rows": 8036,
+   "errors": 0,
+   "command": "examples/record_td_scenario.py plate_amount_day_1029",
+   "call": {
+    "function": "plate_amount_baseline._read_days",
+    "args": [
+     [
+      "2026-10-29"
+     ]
+    ]
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/plate_amount_day_1030.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "plate_amount_day_1030",
+   "sha256": "e65378e6ca3d03440e07bdd141fde2af5246749ee413b22bb9b8d4724845f827",
+   "bytes": 91479,
+   "recorded_at": "2026-11-05T19:25:50+08:00",
+   "statements": 2,
+   "rows": 12909,
+   "errors": 0,
+   "command": "examples/record_td_scenario.py plate_amount_day_1030",
+   "call": {
+    "function": "plate_amount_baseline._read_days",
+    "args": [
+     [
+      "2026-10-30"
+     ]
+    ]
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  }
+ },
+ "_c662_recordings": {
+  "c662/redis_auction_keys_20261103.json.gz": {
+   "bytes": 28949,
+   "sha256": "3b8d4a4534243b040aad01799f5998ae39730c8f06c7e2e014520630313ea0ae",
+   "kind": "raw_upstream_recording",
+   "source": "redis_auction_keys",
+   "trade_date": "2026-11-03",
+   "fetched_at": "2026-11-04T13:21:26+08:00",
+   "command": "examples/record_quote_slice_fixture.py 2026-11-03 --tag 0925",
+   "note": "read-only recording"
+  },
+  "c662/redis_q2_hashes_20261103.json.gz": {
+   "bytes": 333691,
+   "sha256": "e3609afa6e066682a823b88e2ae372cbf6e6d18ed07c659fba9486cf2ec9b547",
+   "kind": "raw_upstream_recording",
+   "source": "redis_q2_hashes",
+   "trade_date": "2026-11-03",
+   "fetched_at": "2026-11-04T13:21:26+08:00",
+   "command": "examples/record_quote_slice_fixture.py 2026-11-03 --tag 0925",
+   "note": "q2 hashes are the state at recording time, not a point-in-time 09:25 value"
+  },
+  "c662/td_auction_snapshot_v2_20261103.json.gz": {
+   "bytes": 95023,
+   "sha256": "9ed33183afccc99a5f26640d7fb31ffc099e5437d4891b2018e195453c9d81b6",
+   "kind": "raw_upstream_recording",
+   "source": "td_auction_snapshot_v2",
+   "trade_date": "2026-11-03",
+   "fetched_at": "2026-11-04T13:21:26+08:00",
+   "command": "examples/record_quote_slice_fixture.py 2026-11-03 --tag 0925",
+   "note": "read-only recording"
+  }
+ },
+ "_proc_recordings": {
+  "proc/meminfo_2026-11-05_1805.txt": {
+   "bytes": 1279,
+   "command": "cp /proc/meminfo tests/fixtures/real/proc/meminfo_2026-11-05_1805.txt",
+   "fetched_at": "2026-11-05T18:11:06+08:00",
+   "kind": "raw_proc_file",
+   "note": "this host: shared 7.4 GB VM with taosd (pid 1105), redis and other tenants",
+   "sha256": "6737b21d752e0ad6409dee32d0b077632e5f3c1a87cc0a9e637d3f8172bcba02",
+   "source_path": "/proc/meminfo"
+  },
+  "proc/taosd_status_2026-11-05_1805.txt": {
+   "bytes": 1159,
+   "command": "cp /proc/1105/status tests/fixtures/real/proc/taosd_status_2026-11-05_1805.txt",
+   "fetched_at": "2026-11-05T18:11:06+08:00",
+   "kind": "raw_proc_file",
+   "note": "this host: shared 7.4 GB VM with taosd (pid 1105), redis and other tenants",
+   "sha256": "eb2b799f1a7f5d30680ae571c3e4b0e02b3062892294d475a5bb000acbdf5c0e",
+   "source_path": "/proc/1105/status"
+  }
+ },
+ "_ledger_instance_state_c751": {
+  "ledger_instance_state_20261106.jsonl": {
+   "bytes": 1136,
+   "command": "rg '\"event_id\":\"td_resource_check_0825\"' /home/exedev/core-data/guardian-native/state/ledger/2026-11-06.jsonl | head -n 3",
+   "dataset": "guardian_ledger",
+   "kind": "ledger_excerpt",
+   "sha256": "d885ce647a7f503ef3bd4dff392b7c88670206d7053a5b86d80533f83e869243",
+   "source_path": "/home/exedev/core-data/guardian-native/state/ledger/2026-11-06.jsonl"
+  },
+  "ledger_instance_state_PROVENANCE.json": {
+   "bytes": 368,
+   "command": "UNKNOWN: provenance metadata created in C751",
+   "dataset": "guardian_ledger",
+   "kind": "ledger_excerpt_provenance",
+   "sha256": "c79e84e4bfa48a40ed08c7841aefbf299565e8d837af0ce87b29982316c18419",
+   "source_path": "/home/exedev/core-data/guardian-native/state/ledger/2026-11-06.jsonl"
+  }
+ },
+ "_daily_kline_c756": {
+  "daily_kline_c756/td_symbols_by_day.jsonl.gz": {
+   "bytes": 1202840,
+   "command": "gzip -n -c /home/exedev/validation/realdata/daily_kline_20261107/c756/td_symbols_by_day.jsonl > tests/fixtures/real/daily_kline_c756/td_symbols_by_day.jsonl.gz",
+   "copied_at": "2026-11-07T18:15:32+08:00",
+   "dataset": "daily_kline",
+   "kind": "td_daily_symbols_recording",
+   "sha256": "f186a611df86ecad3494f13135988085fdfdff2a720dfac24dd2ed299d59ee20",
+   "source": "tdengine",
+   "source_path": "/home/exedev/validation/realdata/daily_kline_20261107/c756/td_symbols_by_day.jsonl"
+  },
+  "daily_kline_c756/PROVENANCE.json": {
+   "bytes": 2395,
+   "command": "cp /home/exedev/validation/realdata/daily_kline_20261107/c756/PROVENANCE.json tests/fixtures/real/daily_kline_c756/PROVENANCE.json",
+   "copied_at": "2026-11-07T18:15:32+08:00",
+   "dataset": "daily_kline",
+   "kind": "td_daily_symbols_provenance",
+   "sha256": "2e0e7c1a9bdd272ee4b4fe5392714f9a1d26343b8d501513f74c2d4424c91482",
+   "source": "tdengine",
+   "source_path": "/home/exedev/validation/realdata/daily_kline_20261107/c756/PROVENANCE.json"
+  }
+ },
+ "_daily_kline_c755": {
+  "daily_kline_c755/baostock_raw.jsonl": {
+   "bytes": 8605,
+   "sha256": "c7d2c2021cb709b7620553fb04c78fac96746e4decd118add4169d6eebcd243d",
+   "command": "cp /home/exedev/validation/realdata/daily_kline_20261107/c755/baostock_raw.jsonl tests/fixtures/real/daily_kline_c755/baostock_raw.jsonl",
+   "source_path": "/home/exedev/validation/realdata/daily_kline_20261107/c755/baostock_raw.jsonl",
+   "source": "Baostock public service",
+   "kind": "raw_baostock_recording"
+  },
+  "daily_kline_c755/PROVENANCE.json": {
+   "bytes": 1289,
+   "sha256": "b2945274e35fb353538adeb50102683ee25080a2120633415e1efce7174b8b48",
+   "command": "cp /home/exedev/validation/realdata/daily_kline_20261107/c755/PROVENANCE.json tests/fixtures/real/daily_kline_c755/PROVENANCE.json",
+   "source_path": "/home/exedev/validation/realdata/daily_kline_20261107/c755/PROVENANCE.json",
+   "source": "Baostock public service",
+   "kind": "raw_baostock_provenance"
+  }
+ },
+ "_plate_amount_baseline_c731": {
+  "plate_amount_baseline_c731/td_inputs_auction.jsonl.gz": {
+   "kind": "raw_td_result",
+   "source": "TDengine market_data1, read-only, TD_CONFIG environment",
+   "captured_at": "2026-11-07T15:26:30.084267+08:00",
+   "source_path": "/home/exedev/validation/realdata/plate_amount_baseline_20261106/td_inputs_auction.jsonl.gz",
+   "command": "cp /home/exedev/validation/realdata/plate_amount_baseline_20261106/td_inputs_auction.jsonl.gz tests/fixtures/real/plate_amount_baseline_c731/td_inputs_auction.jsonl.gz",
+   "sha256": "98363f4ce851532d7e24171778f3cd167bee5bcf0630c9f0578f987f403ac853",
+   "bytes": 962963,
+   "rows": 146247,
+   "columns": [
+    "ts",
+    "symbol",
+    "trade_date",
+    "auction_tag",
+    "match_amt_yuan"
+   ],
+   "capture_command": "/home/exedev/validation/realdata/plate_amount_baseline_20261106/capture_inputs.py",
+   "note": "Only successful SELECTs observed before CLI failure; 0945 inputs are incomplete and must not be used as a full-window fixture"
+  },
+  "plate_amount_baseline_c731/td_inputs_0945.jsonl.gz": {
+   "kind": "raw_td_result",
+   "source": "TDengine market_data1, read-only, TD_CONFIG environment",
+   "captured_at": "2026-11-07T15:26:30.084267+08:00",
+   "source_path": "/home/exedev/validation/realdata/plate_amount_baseline_20261106/td_inputs_0945.jsonl.gz",
+   "command": "cp /home/exedev/validation/realdata/plate_amount_baseline_20261106/td_inputs_0945.jsonl.gz tests/fixtures/real/plate_amount_baseline_c731/td_inputs_0945.jsonl.gz",
+   "sha256": "65fba7a33a2cbd836c53e821aa7d2d03beb85181709c63b18e548b69c14ce4ef",
+   "bytes": 35858,
+   "rows": 5796,
+   "columns": [
+    "_wstart",
+    "symbol",
+    "LAST(amt_yuan)"
+   ],
+   "capture_command": "/home/exedev/validation/realdata/plate_amount_baseline_20261106/capture_inputs.py",
+   "note": "Only successful SELECTs observed before CLI failure; 0945 inputs are incomplete and must not be used as a full-window fixture"
+  }
+ },
+ "_c778_excerpts": {
+  "auction_amount_facts_c731/td_inputs_auction.jsonl.gz": {
+   "source_path": "/home/exedev/validation/realdata/plate_amount_baseline_20261106/td_inputs_auction.jsonl.gz",
+   "source_sha256": "98363f4ce851532d7e24171778f3cd167bee5bcf0630c9f0578f987f403ac853",
+   "sha256": "d04d55a0c18596b52f764ba72f578e83c7dd058858ab441b53c5770e3f40947c",
+   "rows": 15671,
+   "selection": "trade_date 20261103, 20261104, 20261105",
+   "command": "python - <<'PY'\nimport gzip,json,hashlib,pathlib\nroot=pathlib.Path('tests/fixtures/real'); out=root/'auction_amount_facts_c731'; src=pathlib.Path('/home/exedev/validation/realdata/plate_amount_baseline_20261106'); prov=json.loads((root/'PROVENANCE.json').read_text()); entries={}\nfor filename in ('td_inputs_auction.jsonl.gz','td_inputs_0945.jsonl.gz'):\n with gzip.open(src/filename,'rt') as f: lines=[line for line in f if (json.loads(line)[2] in ('20261103','20261104','20261105') if 'auction' in filename else json.loads(line)[0].endswith('09:30:01'))]\n dest=out/filename\n with dest.open('wb') as raw:\n  with gzip.GzipFile(filename='',mode='wb',fileobj=raw,mtime=0) as z: z.write(''.join(lines).encode())\n entries[str(dest.relative_to(root))]={'source_path':str(src/filename),'source_sha256':hashlib.sha256((src/filename).read_bytes()).hexdigest(),'sha256':hashlib.sha256(dest.read_bytes()).hexdigest(),'rows':len(lines),'selection':'trade_date 20261103, 20261104, 20261105' if 'auction' in filename else '_wstart 2026-09-18 09:30:01','command':\"python gzip JSONL filter: \"+(\"row[2] in {20261103,20261104,20261105}\" if 'auction' in filename else \"row[0] == 2026-09-18 09:30:01\"),'source':'C731 TD read-only capture'}\nprov['_c778_excerpts']=entries\n(root/'PROVENANCE.json').write_text(json.dumps(prov,ensure_ascii=False,indent=1)+'\\n')\nprint([(x,y['rows']) for x,y in entries.items()])\nPY",
+   "source": "C731 TD read-only capture"
+  },
+  "auction_amount_facts_c731/td_inputs_0945.jsonl.gz": {
+   "source_path": "/home/exedev/validation/realdata/plate_amount_baseline_20261106/td_inputs_0945.jsonl.gz",
+   "source_sha256": "65fba7a33a2cbd836c53e821aa7d2d03beb85181709c63b18e548b69c14ce4ef",
+   "sha256": "65b8546776a36c3861526ec046c6d347c85b3281bd705b4e1232823b9cc599f4",
+   "rows": 2898,
+   "selection": "_wstart 2026-09-18 09:30:01",
+   "command": "python - <<'PY'\nimport gzip,json,hashlib,pathlib\nroot=pathlib.Path('tests/fixtures/real'); out=root/'auction_amount_facts_c731'; src=pathlib.Path('/home/exedev/validation/realdata/plate_amount_baseline_20261106'); prov=json.loads((root/'PROVENANCE.json').read_text()); entries={}\nfor filename in ('td_inputs_auction.jsonl.gz','td_inputs_0945.jsonl.gz'):\n with gzip.open(src/filename,'rt') as f: lines=[line for line in f if (json.loads(line)[2] in ('20261103','20261104','20261105') if 'auction' in filename else json.loads(line)[0].endswith('09:30:01'))]\n dest=out/filename\n with dest.open('wb') as raw:\n  with gzip.GzipFile(filename='',mode='wb',fileobj=raw,mtime=0) as z: z.write(''.join(lines).encode())\n entries[str(dest.relative_to(root))]={'source_path':str(src/filename),'source_sha256':hashlib.sha256((src/filename).read_bytes()).hexdigest(),'sha256':hashlib.sha256(dest.read_bytes()).hexdigest(),'rows':len(lines),'selection':'trade_date 20261103, 20261104, 20261105' if 'auction' in filename else '_wstart 2026-09-18 09:30:01','command':\"python gzip JSONL filter: \"+(\"row[2] in {20261103,20261104,20261105}\" if 'auction' in filename else \"row[0] == 2026-09-18 09:30:01\"),'source':'C731 TD read-only capture'}\nprov['_c778_excerpts']=entries\n(root/'PROVENANCE.json').write_text(json.dumps(prov,ensure_ascii=False,indent=1)+'\\n')\nprint([(x,y['rows']) for x,y in entries.items()])\nPY",
+   "source": "C731 TD read-only capture"
+  }
+ },
+ "td_stock_tick_2026-11-12_600103_092500_092600_0923.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-12",
+  "fetched_at": "2026-11-13T09:23:25+08:00",
+  "bytes": 359,
+  "sha256": "9b3df64c6e962940a67de803363016ab1065c076744aa2dcc2ce3947c7d7b034",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-12 --symbol 600103 --start 09:25:00 --end 09:26:00",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='600103' AND ts>='2026-11-12 09:25:00' AND ts<='2026-11-12 09:26:00' ORDER BY ts",
+  "row_count": 1
+ },
+ "td_stock_tick_2026-11-12_600103_093950_094000_0923.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-12",
+  "fetched_at": "2026-11-13T09:23:32+08:00",
+  "bytes": 819,
+  "sha256": "cbd56a130febc23ce7b5f21ab002bc42bbc8bb9fa78db002776c16bc83b384b1",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-12 --symbol 600103 --start 09:39:50 --end 09:40:00",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='600103' AND ts>='2026-11-12 09:39:50' AND ts<='2026-11-12 09:40:00' ORDER BY ts",
+  "row_count": 4
+ },
+ "td_stock_tick_2026-11-12_600519_092500_092600_0923.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-12",
+  "fetched_at": "2026-11-13T09:23:52+08:00",
+  "bytes": 372,
+  "sha256": "a804cc3bc889a71e7bc38b9105de8df2f27c962fe2b05b9e0a35e60b2d57b668",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-12 --symbol 600519 --start 09:25:00 --end 09:26:00",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='600519' AND ts>='2026-11-12 09:25:00' AND ts<='2026-11-12 09:26:00' ORDER BY ts",
+  "row_count": 1
+ },
+ "td_stock_tick_2026-11-12_002160_092500_092600_0923.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-12",
+  "fetched_at": "2026-11-13T09:23:58+08:00",
+  "bytes": 364,
+  "sha256": "9bf9460b80424626189e161e0612962d477e9cbafc591882354f17770c4bae1f",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-12 --symbol 002160 --start 09:25:00 --end 09:26:00",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='002160' AND ts>='2026-11-12 09:25:00' AND ts<='2026-11-12 09:26:00' ORDER BY ts",
+  "row_count": 1
+ },
+ "td_stock_tick_2026-11-12_600103_092450_092459_0925.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-12",
+  "fetched_at": "2026-11-13T09:25:16+08:00",
+  "bytes": 795,
+  "sha256": "724322eb9d7826762e9460b1a3bfb0d7ba9d193bd468282c2f94920c17331d65",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-12 --symbol 600103 --start 09:24:50 --end 09:24:59",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='600103' AND ts>='2026-11-12 09:24:50' AND ts<='2026-11-12 09:24:59' ORDER BY ts",
+  "row_count": 4
+ },
+ "td_stock_tick_2026-11-12_000909_092500_092503_1046.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-12",
+  "fetched_at": "2026-11-13T10:46:12+08:00",
+  "bytes": 349,
+  "sha256": "755e9665ae18601017b32ec9270a408f92cf511fb320a102e50d7a8862be1078",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-12 --symbol 000909 --start 09:25:00 --end 09:25:03",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='000909' AND ts>='2026-11-12 09:25:00' AND ts<='2026-11-12 09:25:03' ORDER BY ts",
+  "row_count": 1
+ },
+ "td_stock_tick_2026-11-12_600818_092500_092503_1046.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-12",
+  "fetched_at": "2026-11-13T10:46:13+08:00",
+  "bytes": 346,
+  "sha256": "6a41ee72484732f52776e5b571beaab81d0b61d226f85de344437f8846ee3e89",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-12 --symbol 600818 --start 09:25:00 --end 09:25:03",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='600818' AND ts>='2026-11-12 09:25:00' AND ts<='2026-11-12 09:25:03' ORDER BY ts",
+  "row_count": 1
+ },
+ "live_states_2026-11-12_094000_first4000.json.gz": {
+  "source": "core-data live_states cache",
+  "source_path": "/home/exedev/core-data/live_states/2026-11-12/094000/8652ecc65aac0fb8090718ba91b18a380a9371871547dd2beefc305ab6b20054.json.gz",
+  "source_sha256": "db13073ae24abe7093bbed371c083226c670dba9477e616307f239fd7b5c84e7",
+  "sha256": "9c5b171b4be4f0ac014bc050680b9679dcf40004101234bc25dbaf6887157fbc",
+  "bytes": 223627,
+  "kind": "derived_real_cache_fixture",
+  "selection": "first 4000 states in source JSON insertion order; envelope symbol_count and states_sha256 recomputed; algorithm_version unchanged"
+ },
+ "redis_auction_full_row_2026-11-12_1207.json": {
+  "source": "redis_auction_full_row",
+  "trade_date": "2026-11-12",
+  "fetched_at": "2026-11-13T12:07:12+08:00",
+  "bytes": 801,
+  "sha256": "520d97bf1cd6b556fbe82632c46d41c436dd561e437bea88b767c3c98fe6c972",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py redis_auction_full_row --date 2026-11-12 --tag 0925 --symbols 600103,002520,000001",
+  "key": "core:auction:full:2026-11-12:0925",
+  "selection": "exact symbols from published row map"
+ },
+ "t1v2_replay_row_2026-11-12_1207.json": {
+  "source": "t1v2_replay_row",
+  "trade_date": "2026-11-12",
+  "fetched_at": "2026-11-13T12:07:12+08:00",
+  "bytes": 863,
+  "sha256": "2cd48c04b8c091cfbc6a013a36ad3cd26b841a930d2618af05ba627886bdacfd",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py t1v2_replay_row --date 2026-11-12 --tag 0925 --symbols 600103,002520,000001 --journal /home/exedev/fw/evidence/C1034/fixed-commands.jsonl --candidate-commit 52d11d9 --replay-window 2026-11-12 09:15:00..09:26:00",
+  "journal": "/home/exedev/fw/evidence/C1034/fixed-commands.jsonl",
+  "journal_sha256": "335cc29456c85718ce60ba550281c7f23866fa28454d219ce797018875c17414",
+  "candidate_commit": "52d11d9",
+  "replay_window": "2026-11-12 09:15:00..09:26:00",
+  "selection": "exact symbols from unique SET publication for date and tag",
+  "candidate_replay_command_c1038": "TDENGINE_HOST=localhost REDIS_HOST=127.0.0.1 REDIS_PORT=6380 CORE_DATA_ROOT=/home/exedev/core-data REDIS_Q2_PREFIX=core:test:c1034:q2: REDIS_A2_PREFIX=core:test:c1034:a2: REDIS_M2_PREFIX=core:test:c1034:m2: REDIS_LEGACY_AUCTION_PREFIX=core:test:c1034:market:auction: REDIS_LEGACY_ANCHOR_PREFIX=core:test:c1034:market:auction:anchor: REDIS_CORE_AUCTION_FULL_PREFIX=core:test:c1034:core:auction:full: /home/exedev/repos/t1v2-wt-C1034/build/t1_v2_c1034 --replay --start '2026-11-12 09:15:00' --end '2026-11-12 09:26:00' --speed 1000 --replay-write-redis",
+  "candidate_replay_command_note": "C1038 Redis replay is an independent reproduction, not the journal-producing replay.",
+  "journal_replay_command_c1034": "/bin/bash -lc 'set -o pipefail; endpoint=$(awk '\"'\"'$1==\"firstEp\" {print $2; exit}'\"' \\\"\"'$TD_CONFIG/taos.cfg\"); TDENGINE_HOST=\"${endpoint%:*}\" TDENGINE_PORT=\"${endpoint##*:}\" REDIS_LEGACY_AUCTION_PREFIX='\"'test:c1034:core:auction:full:' REDIS_CORE_AUCTION_FULL_PREFIX='test:c1034:core:auction:full:' REPLAY_SPEED=1000 ENABLE_FILE_LOG=0 ./build/t1_v2_c1034 --replay --start '2026-11-12 09:15:00' --end '2026-11-12 09:26:00' --q2frame /home/exedev/fw/evidence/C1034/fixed-q2.jsonl --auction-commands /home/exedev/fw/evidence/C1034/fixed-commands.jsonl 2>&1 | tee /home/exedev/fw/evidence/C1034/local-replay.log | tail -n 5\" in /home/exedev/repos/t1v2-wt-C1034",
+  "journal_replay_command_source": "/home/exedev/fw/runs/C1034.log:2841",
+  "journal_replay_command_source_sha256": "06fa8d6970e81e9b75d6ce702f4d700ac3ea8ba94e5f58c5937ead10b44bff2f"
+ }
+}
