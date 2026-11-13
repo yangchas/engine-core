@@ -1083,6 +1083,8 @@ def main(argv=None):
     hire_parser.add_argument('--dry-run', action='store_true')
     sub.add_parser('roster')
     sub.add_parser('pilot')
+    daycheck = sub.add_parser('daycheck')
+    daycheck.add_argument('--date', required=True)
     denial_parser = sub.add_parser('denials')
     denial_parser.add_argument('--date', default=datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat(),
                                type=lambda value: datetime.strptime(value, '%Y-%m-%d').date().isoformat())
@@ -1146,6 +1148,12 @@ def main(argv=None):
             command.add_argument('--timeout', type=float, default=1700)
             command.add_argument('--interval', type=float, default=20)
     args = parser.parse_args(argv)
+    if args.command == 'daycheck':
+        try:
+            from examples.day_check import main as day_check_main
+        except ModuleNotFoundError:
+            from day_check import main as day_check_main
+        return day_check_main(['--date', args.date])
     if args.command == 'denials':
         return denials(args)
     if args.command == 'hire':

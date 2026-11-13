@@ -1,0 +1,12 @@
+{
+  "ledger.jsonl": {
+    "sha256": "ebc42b0790831997c2015854be35854d7521b94345e24210505b28927bee72c8",
+    "source": "/home/exedev/fw/evidence/C1066/ledger-matches.txt",
+    "selection": "startup_0830 ATTEMPT_END and INSTANCE_STATE lines"
+  },
+  "manifest.json": {
+    "sha256": "84bd4412cbc2f9e78c82c83e9d4871a7407aea02a00069af128478d21848d893",
+    "source": "/home/exedev/core-data/reports/2026-11-12/auction_0926/manifest.json",
+    "selection": "slices.auction_stock_facts.quality"
+  }
+}
