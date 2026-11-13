@@ -651,12 +651,43 @@ def card_command(args):
             if card_processes(args.card):
                 print('refused: card already running')
                 return 2
+            env = os.environ.copy()
+            if args.to:
+                person = next((p for p in load_roster() if p['name'] == args.to), None)
+                if not person or person.get('status') != 'active':
+                    print('refused: staff unavailable')
+                    return 2
+                cards_dir = location('PM_CARDS_DIR', str(CARDS))
+                for other in cards_dir.glob('C*.md'):
+                    if other != path and field(other.read_text(encoding='utf-8'), 'STAFF') == args.to and card_processes(other.stem):
+                        print('refused: staff already running')
+                        return 2
+                current = path.read_text(encoding='utf-8')
+                if field(current, 'ROLE') == 'auditor':
+                    references = re.findall(r'\bC[0-9]+\b', '\n'.join(line for line in current.splitlines() if line.startswith(('DEPENDS:', 'SERVES:', 'GOAL:', 'TITLE:'))))
+                    for ref in references:
+                        target = cards_dir / (ref + '.md')
+                        if ref != args.card and target.is_file() and field(target.read_text(encoding='utf-8'), 'STAFF') == args.to:
+                            print('refused: auditor is implementer')
+                            return 2
+                current = set_field(current, 'STAFF', args.to)
+                for name in ('MODEL', 'EFFORT'):
+                    if not field(current, name):
+                        current = set_field(current, name, person[name.lower()])
+                env.pop('RESUME_ID', None)
+                env.pop('FW_PERSIST', None)
+                if person.get('session_id'):
+                    env['RESUME_ID'] = person['session_id']
+                    current = sync_preamble(current, person)
+                else:
+                    env['FW_PERSIST'] = '1'
+                path.write_text(current, encoding='utf-8')
             runs = location('PM_RUNS_DIR', '/home/exedev/fw/runs')
             runs.mkdir(parents=True, exist_ok=True)
             (runs / (args.card + '.dispatch.timestamp')).write_text(str(time.time_ns()), encoding='utf-8')
             with (runs / (args.card + '.dispatch.out')).open('ab') as out:
                 process = subprocess.Popen([os.environ.get('PM_RUNCARD', '/home/exedev/fw/bin/runcard'), args.card],
-                                           stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+                                           stdout=out, stderr=subprocess.STDOUT, start_new_session=True, env=env)
             current = path.read_text(encoding='utf-8')
             stamp = datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds')
             path.write_text(set_status(current, f'STATUS: dispatched({stamp})'), encoding='utf-8')
@@ -699,6 +730,8 @@ def card_command(args):
                 else:
                     status = 'PARTIAL(自动;报告首行未含 VERDICT)'
                 path.write_text(set_status(current, 'STATUS: ' + status), encoding='utf-8')
+            if fresh and field(current, 'STAFF'):
+                staff_writeback(args.card, current, runs)
             print('exited')
             return show_status(args.card, path)
         if not announced:
@@ -876,9 +909,139 @@ def scorecard(args):
     return 0
 
 
+def staff_root():
+    return location('PM_STAFF_PEOPLE_DIR', '/home/exedev/fw/staff')
+
+
+def load_roster():
+    path = staff_root() / 'roster.json'
+    return json.loads(path.read_text(encoding='utf-8')) if path.exists() else []
+
+
+def save_roster(roster):
+    root = staff_root()
+    root.mkdir(parents=True, exist_ok=True)
+    temporary = root / 'roster.json.tmp'
+    temporary.write_text(json.dumps(roster, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    temporary.replace(root / 'roster.json')
+
+
+def hire(args):
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', args.name):
+        print('invalid name')
+        return 2
+    roster = load_roster()
+    directory = staff_root() / args.name
+    if directory.exists() or any(p['name'] == args.name for p in roster):
+        print('staff already exists')
+        return 2
+    date = datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
+    files = {'PROFILE.md': f'岗位: {args.role}\n模型: {args.model}\n强度: {args.effort}\n入职日: {date}\n会话 ID: \n信任: L0 试用\n状态: active\n',
+             'MEMORY.md': '# core 记忆\n≤1.5k token，由本人每张卡后更新。\n\n## 导师点评\n',
+             'SKILLS.md': '# SKILLS\n', 'RULES.md': '# RULES\n'}
+    if args.dry_run:
+        for name, content in files.items():
+            print(f'{directory / name}\n{content}', end='')
+        return 0
+    directory.mkdir(parents=True)
+    for name, content in files.items():
+        (directory / name).write_text(content, encoding='utf-8')
+    roster.append(dict(name=args.name, role=args.role, model=args.model, effort=args.effort, session_id='', hired=date, trust='L0', status='active', ctx_tokens=0, cards=[]))
+    save_roster(roster)
+    print('hired ' + args.name)
+    return 0
+
+
+def roster_list():
+    for person in load_roster()[:12]:
+        print(f"{person['name']} {person['role']} {person['model']}/{person['effort']} {person['trust']} 卡数={len(person['cards'])} 会话={person['session_id'][:8]} ctx_tokens={person['ctx_tokens']}")
+    return 0
+
+
+def set_field(text, name, value):
+    line = name + ': ' + value
+    if re.search(r'^' + name + ':', text, re.M):
+        return re.sub(r'^' + name + r':[^\n]*', lambda _: line, text, count=1, flags=re.M)
+    return line + '\n' + text
+
+
+def git_output(*args):
+    result = subprocess.run(['git', '-C', str(location('PM_REPO', str(ROOT))), *args], capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else ''
+
+
+def sync_preamble(text, person):
+    text = re.sub(r'(?ms)^## 续用会话同步前言\(PM 自动生成 [^\n]*\)\n.*?(?=^GOAL:)', '', text)
+    cards = person.get('cards', [])
+    last = cards[-1] if cards else ''
+    commit = git_output('log', '-1', '--format=%h', '--fixed-strings', '--grep=' + last) if last else ''
+    changes = git_output('log', '--oneline', '-12', commit + '..HEAD') if commit else ''
+    stamp = datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds')
+    block = (f'## 续用会话同步前言(PM 自动生成 {stamp})\nHEAD: {git_output("rev-parse", "--short", "HEAD")}\n'
+             f'上一张卡: {last or "无"} 提交: {commit or "未知"}\n{changes}\n'
+             '你的记忆里关于文件内容的印象可能已过时,先 `git status`、重新读要改的文件\n'
+             '本卡的 CONTEXT 文件与卡正文为准,与你的旧印象冲突时以它们为准\n'
+             "开工前在 evidence 目录写 ≤8 行'我的理解'\n\n")
+    return re.sub(r'^GOAL:', lambda _: block + 'GOAL:', text, count=1, flags=re.M)
+
+
+def staff_writeback(card, text, runs):
+    name = field(text, 'STAFF')
+    roster = load_roster()
+    person = next ( (p for p in roster if p['name'] == name), None)
+    if not person:
+        return
+    session = runs / (card + '.session')
+    if session.is_file():
+        ids = re.findall(r'session id:\s*([^\s]+)', session.read_text(encoding='utf-8'), re.I)
+        if ids:
+            person['session_id'] = ids[-1]
+    if card not in person['cards']:
+        person['cards'].append(card)
+    usage = runs / 'usage.tsv'
+    rows = [line.split('\t') for line in usage.read_text(encoding='utf-8').splitlines()] if usage.is_file() else []
+    matches = [row for row in rows if len(row) == 5 and row[0] == card]
+    if matches and matches[-1][4].isdigit():
+        person['ctx_tokens'] = int(matches[-1][4])
+    else:
+        print('tokens 未记录')
+    save_roster(roster)
+
+
+def pilot():
+    runs = location('PM_RUNS_DIR', '/home/exedev/fw/runs')
+    usage = runs / 'usage.tsv'
+    rows = [line.split('\t') for line in usage.read_text(encoding='utf-8').splitlines()] if usage.is_file() else []
+    latest = {r[0]: r[4] for r in rows if len(r) == 5}
+    groups = [[], []]
+    for path in location('PM_CARDS_DIR', str(CARDS)).glob('C*.md'):
+        if not re.fullmatch(r'C[0-9]+', path.stem):
+            continue
+        content = path.read_text(encoding='utf-8')
+        if field(content, 'ROLE') != 'builder' or field(content, 'STATUS').lower().startswith('ready'):
+            continue
+        groups[bool(field(content, 'STAFF'))].append((path, content))
+    for label, group in zip(('新会话', '固定会话'), groups):
+        count = len(group)
+        done = sum(field(t, 'STATUS').startswith('DONE') for _, t in group)
+        dispatch = sum(1 + len(list((runs / 'archive').glob(p.stem + '.md.*'))) for p, _ in group)
+        tokens = [int(latest[p.stem]) for p, _ in group if latest.get(p.stem, '').isdigit()]
+        print(f"{label} 卡数={count} DONE={done/count:.1%} 平均派发={dispatch/count:.2f} 平均 tokens={sum(tokens)/len(tokens):.0f}" if count and tokens else f"{label} 卡数={count} DONE={done/count:.1%} 平均派发={dispatch/count:.2f} 平均 tokens=?" if count else f'{label} 卡数=0 DONE=? 平均派发=? 平均 tokens=?')
+    print('推广条件:固定会话组一次通过率≥新会话组+10pp 或 平均 tokens 不高于 1.2 倍,且至少各 5 张卡')
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest='command', required=True)
+    hire_parser = sub.add_parser('hire')
+    hire_parser.add_argument('name')
+    hire_parser.add_argument('--role', required=True, choices=('builder', 'runner', 'auditor', 'observer'))
+    hire_parser.add_argument('--model', required=True)
+    hire_parser.add_argument('--effort', required=True)
+    hire_parser.add_argument('--dry-run', action='store_true')
+    sub.add_parser('roster')
+    sub.add_parser('pilot')
     wait = sub.add_parser('wait')
     wait.add_argument('--ledger-event', required=True)
     wait.add_argument('--date', default=datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat())
@@ -930,6 +1093,7 @@ def main(argv=None):
         command = sub.add_parser(name)
         command.add_argument('card')
         if name == 'dispatch':
+            command.add_argument('--to')
             command.add_argument('--no-lint', action='store_true')
             command.add_argument('--no-pack', action='store_true')
         if name == 'setstatus':
@@ -938,6 +1102,12 @@ def main(argv=None):
             command.add_argument('--timeout', type=float, default=1700)
             command.add_argument('--interval', type=float, default=20)
     args = parser.parse_args(argv)
+    if args.command == 'hire':
+        return hire(args)
+    if args.command == 'roster':
+        return roster_list()
+    if args.command == 'pilot':
+        return pilot()
     if args.command == 'lesson':
         return lesson_add(args)
     if args.command == 'scorecard':

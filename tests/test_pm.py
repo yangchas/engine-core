@@ -541,3 +541,90 @@ def test_c1061_metrics_real_status_lines(tmp_path, monkeypatch, capsys):
     assert main(['metrics']) == 0
     other = int(re.search(r'其他=(\d+)', capsys.readouterr().out).group(1))
     assert other / len(lines) <= 0.10
+
+
+def test_staff_hire_real_workflow(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv('PM_STAFF_PEOPLE_DIR', str(tmp_path))
+    args = ['hire', 'builder-1', '--role', 'builder', '--model', 'gpt-6.1-terra', '--effort', 'medium']
+    assert main(args) == 0
+    profile = (tmp_path / 'builder-1/PROFILE.md').read_text()
+    assert all(value in profile for value in ('builder', 'gpt-6.1-terra', 'medium', 'L0'))
+    assert all((tmp_path / 'builder-1' / name).is_file() for name in ('PROFILE.md', 'MEMORY.md', 'SKILLS.md', 'RULES.md'))
+    assert main(args) == 2
+    assert main(['roster']) == 0
+    assert 'builder-1' in capsys.readouterr().out
+
+
+def test_staff_dispatch_real_history(tmp_path, monkeypatch):
+    import json
+    import time
+    fixture = Path(__file__).parent / 'fixtures/pm_staff'
+    cards = tmp_path / 'cards'
+    cards.mkdir()
+    original = (fixture / 'C1055.md').read_text()
+    card = cards / 'C1099.md'
+    card.write_text(pm.set_status(original.replace('ID: C1055', 'ID: C1099', 1), 'STATUS: ready'))
+    for key, value in [('PM_CARDS_DIR', cards), ('PM_STAFF_PEOPLE_DIR', tmp_path / 'staff'), ('PM_RUNS_DIR', tmp_path / 'runs'), ('PM_PREFLIGHT', '/bin/true')]:
+        monkeypatch.setenv(key, str(value))
+    runner = tmp_path / 'runcard'
+    output = tmp_path / 'received'
+    runner.write_text('#!/bin/sh\nprintf "%s %s\\n" "$RESUME_ID" "$FW_PERSIST" >> "' + str(output) + '"\nsleep 2\n')
+    runner.chmod(0o755)
+    monkeypatch.setenv('PM_RUNCARD', str(runner))
+    assert main(['hire', 'builder-1', '--role', 'builder', '--model', 'gpt-6.1-terra', '--effort', 'medium']) == 0
+    assert main(['dispatch', 'C1099', '--to', 'builder-1', '--no-lint', '--no-pack']) == 0
+    for _ in range(100):
+        if output.exists():
+            break
+        time.sleep(.01)
+    assert output.read_text().splitlines()[0] == ' 1'
+    other = cards / 'C1098.md'
+    other.write_text(pm.set_status(original.replace('ID: C1055', 'ID: C1098', 1), 'STATUS: ready'))
+    assert main(['dispatch', 'C1098', '--to', 'builder-1', '--no-lint', '--no-pack']) == 2
+    while pm.card_processes('C1099'):
+        time.sleep(.05)
+    roster_path = tmp_path / 'staff/roster.json'
+    roster = json.loads(roster_path.read_text())
+    roster[0]['session_id'] = (fixture / 'C1058.session').read_text().split('session id: ')[-1].split()[0]
+    roster[0]['cards'] = ['C1058']
+    roster_path.write_text(json.dumps(roster))
+    card.write_text(pm.set_status(card.read_text(), 'STATUS: ready'))
+    assert main(['dispatch', 'C1099', '--to', 'builder-1', '--no-lint', '--no-pack']) == 0
+    for _ in range(100):
+        if len(output.read_text().splitlines()) == 2:
+            break
+        time.sleep(.01)
+    assert output.read_text().splitlines()[1].strip() == roster[0]['session_id']
+    text = card.read_text()
+    assert 'C1059: add staff memory and scorecards' in text
+    assert 'C1061: add read-only status reconciliation and improve metrics' in text
+    while pm.card_processes('C1099'):
+        time.sleep(.05)
+
+
+def test_staff_wait_and_pilot_real_files(tmp_path, monkeypatch, capsys):
+    import json
+    import shutil
+    import time
+    fixture = Path(__file__).parent / 'fixtures/pm_staff'
+    cards, runs, reports = (tmp_path / p for p in ('cards', 'runs', 'reports'))
+    for path in (cards, runs, reports):
+        path.mkdir()
+    for key, value in [('PM_CARDS_DIR', cards), ('PM_RUNS_DIR', runs), ('PM_REPORTS_DIR', reports), ('PM_STAFF_PEOPLE_DIR', tmp_path / 'staff')]:
+        monkeypatch.setenv(key, str(value))
+    assert main(['hire', 'builder-1', '--role', 'builder', '--model', 'gpt-6.1-terra', '--effort', 'medium']) == 0
+    original = (fixture / 'C1055.md').read_text()
+    (cards / 'C1055.md').write_text(pm.set_status('STAFF: builder-1\n' + original, 'STATUS: dispatched'))
+    (cards / 'C1054.md').write_text(pm.set_status(original.replace('ID: C1055', 'ID: C1054', 1), 'STATUS: DONE'))
+    shutil.copy(fixture / 'C1058.session', runs / 'C1055.session')
+    shutil.copy(fixture / 'usage.tsv', runs / 'usage.tsv')
+    (runs / 'C1055.dispatch.timestamp').write_text(str(time.time_ns() - 10_000_000_000))
+    (reports / 'C1055.md').write_text('VERDICT: DONE\n')
+    assert main(['wait-card', 'C1055', '--timeout', '0']) == 0
+    person = json.loads((tmp_path / 'staff/roster.json').read_text())[0]
+    assert person['session_id'] == (fixture / 'C1058.session').read_text().split('session id: ')[-1].split()[0]
+    assert 'C1055' in person['cards']
+    assert main(['pilot']) == 0
+    output = capsys.readouterr().out
+    expected = [sum(pm.field(p.read_text(), 'ROLE') == 'builder' and not pm.field(p.read_text(), 'STATUS').lower().startswith('ready') and bool(pm.field(p.read_text(), 'STAFF')) == arm for p in cards.glob('C*.md')) for arm in (False, True)]
+    assert f'新会话 卡数={expected[0]}' in output and f'固定会话 卡数={expected[1]}' in output
