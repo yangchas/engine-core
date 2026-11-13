@@ -40,6 +40,18 @@
     "C1056.md": {
       "source": "/home/exedev/fw/cards/C1056.md",
       "sha256": "189327a11388db01b524b23d6b099c4c3fef9b65d1c13c2848f69f43098c6d4b"
+    },
+    "card_C1072.md": {
+      "source": "/home/exedev/fw/cards/C1072.md",
+      "extraction": "lines 1-20, unmodified; captured 2026-11-14",
+      "source_sha256": "8971e00a3cb4ebda03ecbf0b30b364678b7acc3c71c19904a35383bd54a940a2",
+      "sha256": "5a45f3fe0695568a6a294cddc717f65b8667818dd571e15e06ec32dbbd283fa8"
+    },
+    "card_C1074.md": {
+      "source": "/home/exedev/fw/cards/C1074.md",
+      "extraction": "lines 1-20, unmodified; captured 2026-11-14",
+      "source_sha256": "89d4500cac93816ec6091d344e971649d76e61d53a4493110c2b2fc37c67e131",
+      "sha256": "426f0fa863fd0719b1dba4e0b5c0ae9a899c4ce7301f5d0f5e2baf54139a73d0"
     }
   }
 }

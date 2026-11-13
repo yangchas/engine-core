@@ -72,9 +72,13 @@ def lint_card(card, repo):
         add('FAIL', 'missing_path', '路径不存在，请核对：' + ', '.join(missing_paths))
 
     scope = fields.get('SCOPE_WRITE', '')
+    default_stubs = '无需新增 kind,不使用采集工具;夹具为真实文件摘录并附 PROVENANCE'
+    without_default = re.sub(r'^STUBS_ALLOWED:\s*' + re.escape(default_stubs) + r'\s*$', '', card, flags=re.MULTILINE)
+    capture_requested = re.search(r'(?:抓[^\n]*夹具|夹具[^\n]*抓)', without_default)
+    exemption = re.search(r'无需新增\s*kind|已有\s*kind\s*覆盖', without_default, re.I)
     if (role == 'builder' and re.search(r'夹具|fixture|PROVENANCE|回放', card, re.I)
             and 'capture_real_fixture' not in scope
-            and not re.search(r'无需新增\s*kind|已有\s*kind\s*覆盖', card, re.I)):
+            and not exemption and (capture_requested or default_stubs not in card)):
         add('WARN', 'fixture_tool_not_in_scope', '把 examples/capture_real_fixture.py 与 tests/test_real_fixtures.py 放进 SCOPE_WRITE 并写明新增 kind')
 
     scoped = re.findall(r'(?:src|examples|tests)/[\w./-]+\.py', scope)
