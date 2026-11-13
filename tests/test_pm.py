@@ -623,7 +623,7 @@ def test_staff_wait_and_pilot_real_files(tmp_path, monkeypatch, capsys):
     assert main(['wait-card', 'C1055', '--timeout', '0']) == 0
     person = json.loads((tmp_path / 'staff/roster.json').read_text())[0]
     assert person['session_id'] == (fixture / 'C1058.session').read_text().split('session id: ')[-1].split()[0]
-    assert 'C1055' in person['cards']
+    assert any(c.get('id') == 'C1055' and c.get('mode') == 'resume' and c.get('tokens') == 38990 for c in person['cards'])
     assert main(['pilot']) == 0
     output = capsys.readouterr().out
     expected = [sum(pm.field(p.read_text(), 'ROLE') == 'builder' and not pm.field(p.read_text(), 'STATUS').lower().startswith('ready') and bool(pm.field(p.read_text(), 'STAFF')) == arm for p in cards.glob('C*.md')) for arm in (False, True)]
@@ -700,3 +700,40 @@ def test_redact_related_shapes_and_normal_text():
     assert pm.redact('Set-Cookie: sid=abc; Path=/') == '***'
     assert pm.redact('authorization header is missing') == 'authorization header is missing'
     assert pm.redact('token count: 5') == 'token count: 5'
+
+
+def test_c1070_roster_rollover_and_dispatch(tmp_path, monkeypatch, capsys):
+    import json
+    import shutil
+    import time
+    fixture = Path(__file__).parent / 'fixtures/pm_staff/c1070'
+    staff, cards, runs = (tmp_path / p for p in ('staff', 'cards', 'runs'))
+    staff.mkdir(); cards.mkdir(); runs.mkdir()
+    shutil.copy(fixture / 'roster.json', staff / 'roster.json')
+    roster = json.loads((staff / 'roster.json').read_text())
+    for person in roster:
+        (staff / person['name']).mkdir()
+        (staff / person['name'] / 'PROFILE.md').write_text('PROFILE\n')
+    for key, value in [('PM_CARDS_DIR', cards), ('PM_STAFF_PEOPLE_DIR', staff), ('PM_RUNS_DIR', runs), ('PM_PREFLIGHT', '/bin/true')]:
+        monkeypatch.setenv(key, str(value))
+    monkeypatch.setenv('RESUME_ID', 'inherited-dangerous-session')
+    original = (fixture.parent / 'C1055.md').read_text()
+    runner = tmp_path / 'runcard'; received = tmp_path / 'received'
+    runner.write_text('#!/bin/sh\nprintf "%s|%s|%s\\n" "$RESUME_ID" "$FW_PERSIST" "$FW_COMPACT_LIMIT" >> "' + str(received) + '"\n')
+    runner.chmod(0o755); monkeypatch.setenv('PM_RUNCARD', str(runner))
+    for card, person in [('C700098', 'builder-1'), ('C700099', 'auditor-1')]:
+        (cards / (card + '.md')).write_text(pm.set_status(original.replace('ID: C1055', 'ID: ' + card, 1), 'STATUS: ready'))
+        assert main(['dispatch', card, '--to', person, '--no-lint', '--no-pack']) == 0
+        for _ in range(100):
+            if received.exists() and len(received.read_text().splitlines()) == (1 if card == 'C700098' else 2): break
+            time.sleep(.01)
+    lines = received.read_text().splitlines()
+    assert lines[0] == '|1|40000'
+    assert lines[1] == roster[1]['session_id'] + '||40000'
+    updated = json.loads((staff / 'roster.json').read_text())[0]
+    assert updated['generation'] == 1 and updated['session_id'] == '' and updated['ctx_tokens'] == 0
+    assert main(['rollover', 'builder-1', '--reason', '测试']) == 0
+    twice = json.loads((staff / 'roster.json').read_text())[0]
+    assert twice['generation'] == 2
+    assert {k:v for k,v in twice.items() if k not in ('generation', 'rolled_at')} == {k:v for k,v in updated.items() if k not in ('generation', 'rolled_at')}
+    assert (staff / 'builder-1/PROFILE.md').read_text().count('换岗记录:') == 2

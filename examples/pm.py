@@ -715,6 +715,10 @@ def card_command(args):
                 for name in ('MODEL', 'EFFORT'):
                     if not field(current, name):
                         current = set_field(current, name, person[name.lower()])
+                if person.get('ctx_tokens', 0) > int(os.environ.get('PM_STAFF_CTX_LIMIT', '60000')) or len(person.get('cards', [])) >= int(os.environ.get('PM_STAFF_MAX_CARDS', '3')):
+                    rollover_staff(person['name'], '自动:ctx/卡数超限')
+                    person = next(p for p in load_roster() if p['name'] == args.to)
+                env['FW_COMPACT_LIMIT'] = os.environ.get('PM_STAFF_COMPACT', '40000')
                 env.pop('RESUME_ID', None)
                 env.pop('FW_PERSIST', None)
                 if person.get('session_id'):
@@ -725,6 +729,8 @@ def card_command(args):
                 path.write_text(current, encoding='utf-8')
             runs = location('PM_RUNS_DIR', '/home/exedev/fw/runs')
             runs.mkdir(parents=True, exist_ok=True)
+            if args.to:
+                (runs / (args.card + '.staff')).write_text(json.dumps({'name': args.to, 'mode': 'resume' if env.get('RESUME_ID') else 'fresh', 'ts': datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds')}, ensure_ascii=False) + '\n', encoding='utf-8')
             (runs / (args.card + '.dispatch.timestamp')).write_text(str(time.time_ns()), encoding='utf-8')
             with (runs / (args.card + '.dispatch.out')).open('ab') as out:
                 process = subprocess.Popen([os.environ.get('PM_RUNCARD', '/home/exedev/fw/bin/runcard'), args.card],
@@ -993,9 +999,27 @@ def hire(args):
     return 0
 
 
+def rollover_staff(name, reason):
+    roster = load_roster()
+    person = next((p for p in roster if p['name'] == name), None)
+    if person is None:
+        print('staff unavailable')
+        return 2
+    now = datetime.now(ZoneInfo('Asia/Shanghai'))
+    profile = staff_root() / name / 'PROFILE.md'
+    with profile.open('a', encoding='utf-8') as handle:
+        handle.write(f"换岗记录:{now.date().isoformat()}|{reason}|{person.get('session_id', '')[:8]}|{person.get('ctx_tokens', 0)}|{len(person.get('cards', []))}\n")
+    person.update(session_id='', ctx_tokens=0, cards=[], generation=person.get('generation', 0) + 1, rolled_at=now.isoformat(timespec='seconds'))
+    save_roster(roster)
+    print(f"rollover {name} 代数={person['generation']} 原因={reason}")
+    return 0
+
+
 def roster_list():
+    ctx_limit = int(os.environ.get('PM_STAFF_CTX_LIMIT', '60000'))
+    max_cards = int(os.environ.get('PM_STAFF_MAX_CARDS', '3'))
     for person in load_roster()[:12]:
-        print(f"{person['name']} {person['role']} {person['model']}/{person['effort']} {person['trust']} 卡数={len(person['cards'])} 会话={person['session_id'][:8]} ctx_tokens={person['ctx_tokens']}")
+        print(f"{person['name']} {person['role']} {person['model']}/{person['effort']} {person['trust']} 卡数={len(person['cards'])} 会话={person['session_id'][:8]} ctx_tokens={person['ctx_tokens']} 代数={person.get('generation', 0)} 预算=ctx {person['ctx_tokens']}/{ctx_limit} · 卡 {len(person['cards'])}/{max_cards}")
     return 0
 
 
@@ -1015,8 +1039,9 @@ def sync_preamble(text, person):
     text = re.sub(r'(?ms)^## 续用会话同步前言\(PM 自动生成 [^\n]*\)\n.*?(?=^GOAL:)', '', text)
     cards = person.get('cards', [])
     last = cards[-1] if cards else ''
+    last = last.get('id', '') if isinstance(last, dict) else last
     commit = git_output('log', '-1', '--format=%h', '--fixed-strings', '--grep=' + last) if last else ''
-    changes = git_output('log', '--oneline', '-12', commit + '..HEAD') if commit else ''
+    changes = git_output('log', '--oneline', '-20', commit + '..HEAD') if commit else ''
     stamp = datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds')
     block = (f'## 续用会话同步前言(PM 自动生成 {stamp})\nHEAD: {git_output("rev-parse", "--short", "HEAD")}\n'
              f'上一张卡: {last or "无"} 提交: {commit or "未知"}\n{changes}\n'
@@ -1037,8 +1062,6 @@ def staff_writeback(card, text, runs):
         ids = re.findall(r'session id:\s*([^\s]+)', session.read_text(encoding='utf-8'), re.I)
         if ids:
             person['session_id'] = ids[-1]
-    if card not in person['cards']:
-        person['cards'].append(card)
     usage = runs / 'usage.tsv'
     rows = [line.split('\t') for line in usage.read_text(encoding='utf-8').splitlines()] if usage.is_file() else []
     matches = [row for row in rows if len(row) == 5 and row[0] == card]
@@ -1046,6 +1069,16 @@ def staff_writeback(card, text, runs):
         person['ctx_tokens'] = int(matches[-1][4])
     else:
         print('tokens 未记录')
+    staff_file = runs / (card + '.staff')
+    try:
+        mode = json.loads(staff_file.read_text(encoding='utf-8')).get('mode', 'resume')
+    except (OSError, ValueError):
+        mode = 'resume'
+    entry = {'id': card, 'mode': mode}
+    if matches and matches[-1][4].isdigit():
+        entry['tokens'] = int(matches[-1][4])
+    person['cards'] = [c for c in person['cards'] if (c.get('id') if isinstance(c, dict) else c) != card]
+    person['cards'].append(entry)
     save_roster(roster)
 
 
@@ -1068,7 +1101,22 @@ def pilot():
         dispatch = sum(1 + len(list((runs / 'archive').glob(p.stem + '.md.*'))) for p, _ in group)
         tokens = [int(latest[p.stem]) for p, _ in group if latest.get(p.stem, '').isdigit()]
         print(f"{label} 卡数={count} DONE={done/count:.1%} 平均派发={dispatch/count:.2f} 平均 tokens={sum(tokens)/len(tokens):.0f}" if count and tokens else f"{label} 卡数={count} DONE={done/count:.1%} 平均派发={dispatch/count:.2f} 平均 tokens=?" if count else f'{label} 卡数=0 DONE=? 平均派发=? 平均 tokens=?')
-    print('推广条件:固定会话组一次通过率≥新会话组+10pp 或 平均 tokens 不高于 1.2 倍,且至少各 5 张卡')
+    costs = {'resume': [], 'fresh': []}
+    for group in groups:
+        for path, content in group:
+            marker = runs / (path.stem + '.staff')
+            try:
+                mode = json.loads(marker.read_text(encoding='utf-8')).get('mode')
+            except (OSError, ValueError):
+                mode = 'resume' if field(content, 'STAFF') else 'fresh'
+            if mode in costs and latest.get(path.stem, '').isdigit():
+                costs[mode].append(int(latest[path.stem]))
+    averages = {mode: sum(values) / len(values) if values else None for mode, values in costs.items()}
+    for mode, label in (('resume', '续用卡'), ('fresh', '新会话卡')):
+        average = f"{averages[mode]:.0f}" if averages[mode] is not None else '?'
+        print(f'{label}: {len(costs[mode])} 张 平均 tokens {average}')
+    ratio = f"{averages['resume'] / averages['fresh']:.2f}" if averages['resume'] is not None and averages['fresh'] else '?'
+    print('推广条件:固定会话组一次通过率≥新会话组+10pp 或 平均 tokens 不高于 1.2 倍,且至少各 5 张卡; 续用成本/新会话成本 = ' + ratio)
     return 0
 
 
@@ -1082,6 +1130,9 @@ def main(argv=None):
     hire_parser.add_argument('--effort', required=True)
     hire_parser.add_argument('--dry-run', action='store_true')
     sub.add_parser('roster')
+    roll = sub.add_parser('rollover')
+    roll.add_argument('name')
+    roll.add_argument('--reason', default='手动')
     sub.add_parser('pilot')
     daycheck = sub.add_parser('daycheck')
     daycheck.add_argument('--date', required=True)
@@ -1158,6 +1209,8 @@ def main(argv=None):
         return denials(args)
     if args.command == 'hire':
         return hire(args)
+    if args.command == 'rollover':
+        return rollover_staff(args.name, args.reason)
     if args.command == 'roster':
         return roster_list()
     if args.command == 'pilot':
