@@ -649,7 +649,7 @@ def test_redact_token_shapes_and_real_log():
     assert pm.redact(original) == 'prefix --token *** *** redis://***@host suffix'
     assert pm.redact(f'authorization: Bearer {token}') == '*** ***'
     assert pm.redact(f'api_key=abc cookie:xyz --token={token} rediss://u:p@host') == '*** *** --token=*** rediss://***@host'
-    lines = (Path(__file__).parent / 'fixtures/pm_runs/C1060.log').read_text()
+    lines = (Path(__file__).parent / 'fixtures/pm_runs/C1060.log.txt').read_text()
     assert pm.redact(lines) == lines
 
 
@@ -660,7 +660,7 @@ def test_status_real_card_and_report_no_false_redaction(tmp_path, monkeypatch, c
         directory.mkdir()
     (cards / 'C1055.md').write_bytes((source / 'C1055.md').read_bytes())
     (reports / 'C1055.md').write_bytes((source / 'C1055.report').read_bytes())
-    (runs / 'C1055.log').write_bytes((source / 'C1060.log').read_bytes())
+    (runs / 'C1055.log').write_bytes((source / 'C1060.log.txt').read_bytes())
     for key, path in [('PM_CARDS_DIR', cards), ('PM_REPORTS_DIR', reports), ('PM_RUNS_DIR', runs)]:
         monkeypatch.setenv(key, str(path))
     assert main(['status', 'C1055']) == 0
@@ -669,7 +669,7 @@ def test_status_real_card_and_report_no_false_redaction(tmp_path, monkeypatch, c
     for field in ('STATUS', 'ROLE', 'EXECUTOR', 'TITLE'):
         assert f'{field}: {pm.field(card, field)[:200]}' in out
     assert 'first=' + (source / 'C1055.report').read_text().strip()[:160] in out
-    for line in (source / 'C1060.log').read_text().splitlines():
+    for line in (source / 'C1060.log.txt').read_text().splitlines():
         assert line[:160] in out
     # 形态构造，非真实令牌；覆盖 status 与 wait-card 的真实输出路径。
     token = 'eyJ' + 'b' * 60

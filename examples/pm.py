@@ -2,7 +2,6 @@
 """PM workflow commands."""
 import argparse
 import ast
-import builtins
 from collections import Counter
 import difflib
 from datetime import datetime, timedelta
@@ -236,21 +235,18 @@ def denials(args):
                 if len(examples) < 5:
                     examples.append(redact(fields[4])[:80])
     except OSError as exc:
-        builtins.print(redact(f'guard log unavailable: {exc}'))
+        print(redact(f'guard log unavailable: {exc}'))
         return 1
-    builtins.print(f'DENY {args.date}: {total}')
+    print(f'DENY {args.date}: {total}')
     for category, count in counts.most_common(6):
-        builtins.print(redact(f'{category}: {count}'))
+        print(redact(f'{category}: {count}'))
     for command in examples:
-        builtins.print(f'示例: {command}')
-    builtins.print(f"目标 <5/天;本日 {total} 次 {'达标' if total < 5 else '超标'}")
+        print(f'示例: {command}')
+    print(f"目标 <5/天;本日 {total} 次 {'达标' if total < 5 else '超标'}")
     return 0
 
 
 def show_status(card, path):
-    def print(*values, **kwargs):
-        builtins.print(*(redact(str(value)) for value in values), **kwargs)
-
     text = path.read_text(encoding='utf-8')
     for name in ('STATUS', 'ROLE', 'EXECUTOR', 'TITLE'):
         print(f'{name}: {redact(field(text, name))[:200]}')
@@ -297,11 +293,11 @@ def show_status(card, path):
             findings = audit(worktree, base, text)
             actionable = [line for line in findings if not line.startswith('NOTE ')]
             for line in actionable[:4]:
-                print(line)
+                print(redact(line))
             if not actionable:
                 print('audit: ok')
         except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
-            print(f'audit: unavailable ({str(exc)[:120]})')
+            print(f'audit: unavailable ({redact(str(exc))[:120]})')
     return 0
 
 

@@ -18,11 +18,11 @@
     "reports/C1054.md": "50982247d252da77e920ca661a353631079d00cce52ef1f49b02a4d9ef194db3",
     "C1055.md": "177677bd7bc341bb452bc7025c31afaa5ed49b25712cb95f4adac7109dadadb0",
     "C1055.report": "ec6b780dfe9178d1d4f48dce53f181ce73054271fdddd44b515ef104a119ac77",
-    "C1060.log": "dcc9c6d0d656fd8c28d5b3731f4b303d2be2a249fb75294f292faa7e658a0df3"
+    "C1060.log.txt": "dcc9c6d0d656fd8c28d5b3731f4b303d2be2a249fb75294f292faa7e658a0df3"
   },
   "selection": {
     "C1055.md": "real C1055 card capture",
     "C1055.report": "first line of /home/exedev/fw/reports/C1055.md",
-    "C1060.log": "last 3 lines of /home/exedev/fw/runs/C1060.log"
+    "C1060.log.txt": "last 3 lines of /home/exedev/fw/runs/C1060.log"
   }
 }
