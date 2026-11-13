@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """PM workflow commands."""
 import argparse
+import difflib
 from datetime import datetime, timedelta
 import json
 import os
@@ -160,6 +161,179 @@ def latest_state(lines, event_id):
     return latest
 
 
+
+def location(name, default):
+    return Path(os.environ.get(name, default))
+
+
+def card_path(card):
+    cards = location('PM_CARDS_DIR', str(CARDS))
+    path = cards / (card + '.md')
+    if not re.fullmatch(r'C[0-9]+', card) or not path.is_file() or path.resolve().parent != cards.resolve():
+        choices = [p.stem for p in cards.glob('C*.md') if re.fullmatch(r'C[0-9]+', p.stem)]
+        print(f"card {card} not found; closest: {', '.join(difflib.get_close_matches(card, choices, n=3, cutoff=0))}")
+        return None
+    return path
+
+
+def field(text, name):
+    match = re.search(r'^' + re.escape(name) + r':\s*([^\r\n]*)', text, re.MULTILINE)
+    return match.group(1).strip() if match else ''
+
+
+def card_processes(card):
+    # Only retain elapsed seconds; never expose the command line or environment.
+    found = []
+    try:
+        uptime = float(Path('/proc/uptime').read_text().split()[0])
+        ticks = os.sysconf('SC_CLK_TCK')
+        for proc in Path('/proc').iterdir():
+            if not proc.name.isdigit() or int(proc.name) == os.getpid():
+                continue
+            try:
+                argv = (proc / 'cmdline').read_bytes().split(b'\0')
+                argv = [x.decode(errors='replace') for x in argv if x]
+                matched = any(Path(x).name == 'runcard' and i + 1 < len(argv) and argv[i + 1] == card
+                              for i, x in enumerate(argv))
+                matched |= any(x == 'dispatch' and any(Path(y).name == card + '.md' for y in argv[i + 1:])
+                               for i, x in enumerate(argv))
+                if matched:
+                    stat = (proc / 'stat').read_text().rsplit(')', 1)[1].split()
+                    if stat[0] != 'Z':
+                        found.append(max(0, int(uptime - int(stat[19]) / ticks)))
+            except (OSError, ValueError, IndexError):
+                continue
+    except OSError:
+        pass
+    return found
+
+
+def show_status(card, path):
+    text = path.read_text(encoding='utf-8')
+    for name in ('STATUS', 'ROLE', 'EXECUTOR', 'TITLE'):
+        print(f'{name}: {field(text, name)[:200]}')
+    report = location('PM_REPORTS_DIR', '/home/exedev/fw/reports') / (card + '.md')
+    if report.is_file():
+        with report.open(encoding='utf-8', errors='replace') as f:
+            first = f.readline().strip()[:160]
+        print(f'report: yes size={report.stat().st_size} first={first}')
+    else:
+        print('report: no')
+    runs = location('PM_RUNS_DIR', '/home/exedev/fw/runs')
+    logs = [p for p in runs.glob(card + '*') if p.is_file()]
+    if logs:
+        log = max(logs, key=lambda p: p.stat().st_mtime)
+        print('log modified: ' + datetime.fromtimestamp(log.stat().st_mtime).isoformat(timespec='seconds'))
+        from collections import deque
+        with log.open(encoding='utf-8', errors='replace') as f:
+            for line in deque(f, maxlen=3):
+                print(line.rstrip()[:160])
+    else:
+        print('log: none')
+    processes = card_processes(card)
+    print(f'process: running {max(processes)}s' if processes else 'process: exited')
+    worktree = worktree_from_card(text)
+    if worktree:
+        for label, command in [('git log', ['log', '-1', '--oneline']), ('git status', ['status', '--short'])]:
+            result = subprocess.run(['git', '-C', worktree, *command], capture_output=True, text=True)
+            lines = result.stdout.splitlines()[:1 if label == 'git log' else 5]
+            print(label + ': ' + (' | '.join(line[:160] for line in lines) or '(empty or unavailable)'))
+    evidence = Path('/home/exedev/fw/evidence') / card
+    print(f'evidence files: {sum(1 for p in evidence.rglob("*") if p.is_file()) if evidence.is_dir() else 0}')
+    return 0
+
+
+def card_command(args):
+    if args.command == 'cards':
+        cards = location('PM_CARDS_DIR', str(CARDS))
+        reports = location('PM_REPORTS_DIR', '/home/exedev/fw/reports')
+        paths = sorted((p for p in cards.glob('C*.md') if re.fullmatch(r'C[0-9]+', p.stem)),
+                       key=lambda p: int(p.stem[1:]), reverse=True)
+        rows = []
+        for path in paths:
+            text = path.read_text(encoding='utf-8')
+            status = field(text, 'STATUS')
+            if args.open and not status.startswith(('ready', 'dispatched')):
+                continue
+            if len(rows) >= max(0, args.limit):
+                break
+            rows.append(f"{path.stem} | {status[:50]} | {field(text, 'ROLE')} | {field(text, 'EXECUTOR')} | {field(text, 'TITLE')[:40]} | {'有' if (reports / path.name).is_file() else '无'}")
+        group = max(1, (len(rows) + 14) // 15)
+        for start in range(0, len(rows), group):
+            print('  ;  '.join(rows[start:start + group]))
+        return 0
+    path = card_path(args.card)
+    if path is None:
+        return 2
+    if args.command == 'status':
+        return show_status(args.card, path)
+    if args.command == 'setstatus':
+        if len(args.text) > 200 or '\n' in args.text or '\r' in args.text:
+            print('invalid status text')
+            return 2
+        text = path.read_text(encoding='utf-8')
+        if not re.search(r'^STATUS:', text, re.MULTILINE):
+            print('missing STATUS')
+            return 2
+        print('before: STATUS: ' + field(text, 'STATUS'))
+        path.write_text(set_status(text, 'STATUS: ' + args.text), encoding='utf-8')
+        print('after: STATUS: ' + args.text)
+        return 0
+    if args.command == 'dispatch':
+        try:
+            result = subprocess.run([os.environ.get('PM_PREFLIGHT', '/home/exedev/fw/bin/preflight_card'), str(path)],
+                                    capture_output=True, text=True)
+            if result.returncode:
+                print('\n'.join((result.stdout + result.stderr).splitlines()[:8]))
+                return 2
+            if not field(path.read_text(encoding='utf-8'), 'STATUS').startswith('ready'):
+                print('refused: STATUS is not ready')
+                return 2
+            if card_processes(args.card):
+                print('refused: card already running')
+                return 2
+            runs = location('PM_RUNS_DIR', '/home/exedev/fw/runs')
+            runs.mkdir(parents=True, exist_ok=True)
+            with (runs / (args.card + '.dispatch.out')).open('ab') as out:
+                process = subprocess.Popen([os.environ.get('PM_RUNCARD', '/home/exedev/fw/bin/runcard'), args.card],
+                                           stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+            print(f'dispatched {args.card} pid={process.pid};盯进度: bin/pm status {args.card};等待: bin/pm wait-card {args.card}')
+            return 0
+        except OSError as exc:
+            print(f'dispatch failed: {exc.strerror}')
+            return 2
+    if args.timeout < 0 or args.interval <= 0:
+        print('timeout must be nonnegative and interval must be positive')
+        return 2
+    deadline = time.monotonic() + args.timeout
+    report = location('PM_REPORTS_DIR', '/home/exedev/fw/reports') / (args.card + '.md')
+    last_size = None
+    stable_since = None
+    announced = False
+    while True:
+        running = bool(card_processes(args.card))
+        now = time.monotonic()
+        if not running:
+            print('exited')
+            return show_status(args.card, path)
+        if not announced:
+            print('running', flush=True)
+            announced = True
+        try:
+            size = report.stat().st_size
+        except FileNotFoundError:
+            size = None
+        if size != last_size:
+            last_size, stable_since = size, now if size is not None else None
+        if stable_since is not None and now - stable_since >= 30:
+            print('report ready')
+            return show_status(args.card, path)
+        remaining = deadline - now
+        if remaining <= 0:
+            print('TIMEOUT')
+            return 2
+        time.sleep(min(args.interval, remaining))
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest='command', required=True)
@@ -176,7 +350,20 @@ def main(argv=None):
     accept_parser.add_argument('--dry-run', action='store_true')
     accept_parser.add_argument('--no-audit', action='store_true')
     accept_parser.add_argument('--deep', action='store_true')
+    cards = sub.add_parser('cards')
+    cards.add_argument('--open', action='store_true')
+    cards.add_argument('--limit', type=int, default=20)
+    for name in ('status', 'dispatch', 'setstatus', 'wait-card'):
+        command = sub.add_parser(name)
+        command.add_argument('card')
+        if name == 'setstatus':
+            command.add_argument('text')
+        if name == 'wait-card':
+            command.add_argument('--timeout', type=float, default=1700)
+            command.add_argument('--interval', type=float, default=20)
     args = parser.parse_args(argv)
+    if args.command in ('cards', 'status', 'dispatch', 'setstatus', 'wait-card'):
+        return card_command(args)
     if args.command == 'accept':
         return accept(args)
     if args.command == 'wait-until':

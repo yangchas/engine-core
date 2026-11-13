@@ -161,3 +161,72 @@ def test_accept_refuses_empty_diff(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(pm, 'CARDS', cards)
     assert pm.main(['accept', 'C999', '--dry-run']) == 2
     assert capsys.readouterr().out == f'ACCEPT C999 REFUSED setup: empty diff vs base {base}\n'
+
+
+def test_card_listing_and_status(tmp_path, monkeypatch, capsys):
+    import shutil
+    cards = tmp_path / 'cards'
+    shutil.copytree(Path(__file__).parent / 'fixtures/pm_cards', cards)
+    monkeypatch.setenv('PM_CARDS_DIR', str(cards))
+    monkeypatch.setenv('PM_REPORTS_DIR', str(tmp_path / 'reports'))
+    monkeypatch.setenv('PM_RUNS_DIR', str(tmp_path / 'runs'))
+    assert main(['cards', '--limit', '2']) == 0
+    output = capsys.readouterr().out
+    assert 'C1047' in output and 'C1046' in output and 'C1045' not in output
+    assert main(['status', 'C1045']) == 0
+    output = capsys.readouterr().out
+    assert 'STATUS:' in output and 'ROLE:' in output and 'EXECUTOR:' in output
+    assert main(['status', 'C999999']) == 2
+    assert 'C104' in capsys.readouterr().out
+
+
+def test_dispatch_workflow(tmp_path, monkeypatch, capsys):
+    import shutil
+    import examples.pm as pm
+    cards = tmp_path / 'cards'
+    shutil.copytree(Path(__file__).parent / 'fixtures/pm_cards', cards)
+    monkeypatch.setenv('PM_CARDS_DIR', str(cards))
+    monkeypatch.setenv('PM_RUNS_DIR', str(tmp_path / 'runs'))
+    preflight = tmp_path / 'preflight'
+    preflight.write_text('#!/bin/sh\necho PREFLIGHT OK\n')
+    preflight.chmod(0o755)
+    runner = tmp_path / 'runner'
+    runner.write_text('#!/bin/sh\nexit 0\n')
+    runner.chmod(0o755)
+    monkeypatch.setenv('PM_PREFLIGHT', str(preflight))
+    monkeypatch.setenv('PM_RUNCARD', str(runner))
+    monkeypatch.setattr(pm, 'card_processes', lambda card: [])
+    card = cards / 'C1045.md'
+    card.write_text(pm.set_status(card.read_text(), 'STATUS: ready'))
+    assert main(['dispatch', 'C1045']) == 0
+    assert 'dispatched C1045' in capsys.readouterr().out
+    assert (tmp_path / 'runs/C1045.dispatch.out').exists()
+    preflight.write_text('#!/bin/sh\necho preflight-failed\nexit 1\n')
+    assert main(['dispatch', 'C1045']) == 2
+    assert 'preflight-failed' in capsys.readouterr().out
+    preflight.write_text('#!/bin/sh\necho PREFLIGHT OK\n')
+    monkeypatch.setattr(pm, 'card_processes', lambda card: [1])
+    assert main(['dispatch', 'C1045']) == 2
+    monkeypatch.setattr(pm, 'card_processes', lambda card: [])
+    card.write_text(pm.set_status(card.read_text(), 'STATUS: done'))
+    assert main(['dispatch', 'C1045']) == 2
+
+
+def test_setstatus_and_wait_card(tmp_path, monkeypatch, capsys):
+    import shutil
+    import examples.pm as pm
+    cards = tmp_path / 'cards'
+    shutil.copytree(Path(__file__).parent / 'fixtures/pm_cards', cards)
+    monkeypatch.setenv('PM_CARDS_DIR', str(cards))
+    monkeypatch.setenv('PM_REPORTS_DIR', str(tmp_path / 'reports'))
+    monkeypatch.setenv('PM_RUNS_DIR', str(tmp_path / 'runs'))
+    assert main(['setstatus', 'C1045', 'ready test']) == 0
+    assert 'STATUS: ready test' in capsys.readouterr().out
+    monkeypatch.setattr(pm, 'card_processes', lambda card: [1])
+    assert main(['wait-card', 'C1045', '--timeout', '0']) == 2
+    assert 'TIMEOUT' in capsys.readouterr().out
+    states = iter([[1], [], []])
+    monkeypatch.setattr(pm, 'card_processes', lambda card: next(states))
+    assert main(['wait-card', 'C1045', '--timeout', '1', '--interval', '0.001']) == 0
+    output = capsys.readouterr().out
+    assert 'running' in output and 'exited' in output
