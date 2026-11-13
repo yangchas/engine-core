@@ -1087,7 +1087,9 @@ def sync_preamble(text, person):
     last = cards[-1] if cards else ''
     last = last.get('id', '') if isinstance(last, dict) else last
     commit = git_output('log', '-1', '--format=%h', '--fixed-strings', '--grep=' + last) if last else ''
-    changes = git_output('log', '--oneline', '-20', commit + '..HEAD') if commit else ''
+    log_fixture = os.environ.get('PM_SYNC_GIT_LOG')
+    changes = (Path(log_fixture).read_text(encoding='utf-8').strip() if log_fixture else
+               git_output('log', '--oneline', '-20', commit + '..HEAD')) if commit else ''
     stamp = datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds')
     block = (f'## 续用会话同步前言(PM 自动生成 {stamp})\nHEAD: {git_output("rev-parse", "--short", "HEAD")}\n'
              f'上一张卡: {last or "无"} 提交: {commit or "未知"}\n{changes}\n'

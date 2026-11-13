@@ -559,6 +559,7 @@ def test_staff_dispatch_real_history(tmp_path, monkeypatch):
     import json
     import time
     fixture = Path(__file__).parent / 'fixtures/pm_staff'
+    monkeypatch.setenv('PM_SYNC_GIT_LOG', str(fixture / 'git_log_c1058_to_c1061.txt'))
     cards = tmp_path / 'cards'
     cards.mkdir()
     original = (fixture / 'C1055.md').read_text()
@@ -600,6 +601,30 @@ def test_staff_dispatch_real_history(tmp_path, monkeypatch):
     assert 'C1061: add read-only status reconciliation and improve metrics' in text
     while pm.card_processes('C1099'):
         time.sleep(.05)
+
+
+
+def test_sync_preamble_fixed_history_survives_new_commits(tmp_path, monkeypatch):
+    import subprocess
+
+    repo = tmp_path / 'repo'
+    fixture = Path(__file__).parent / 'fixtures/pm_staff/git_log_c1058_to_c1061.txt'
+    subprocess.run(['git', 'clone', '--quiet', '--shared', '--no-checkout', str(pm.ROOT), str(repo)], check=True)
+    monkeypatch.setenv('PM_REPO', str(repo))
+    monkeypatch.setenv('PM_SYNC_GIT_LOG', str(fixture))
+    person = {'cards': ['C1058']}
+    before = pm.sync_preamble('GOAL: test\n', person)
+    for _ in range(30):
+        subprocess.run(['git', '-C', str(repo), '-c', 'user.name=Test', '-c',
+                        'user.email=test@example.invalid', 'commit', '--quiet', '--allow-empty',
+                        '-m', 'Unrelated test commit'], check=True)
+    after = pm.sync_preamble('GOAL: test\n', person)
+    for line in fixture.read_text().splitlines():
+        assert line in before and line in after
+    monkeypatch.delenv('PM_SYNC_GIT_LOG')
+    actual = pm.sync_preamble('GOAL: test\n', person)
+    assert actual.count('Unrelated test commit') == 20
+    assert 'C1059: add staff memory and scorecards' not in actual
 
 
 def test_staff_wait_and_pilot_real_files(tmp_path, monkeypatch, capsys):

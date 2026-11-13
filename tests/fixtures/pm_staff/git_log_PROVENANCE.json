@@ -1,0 +1,8 @@
+{
+  "file": "git_log_c1058_to_c1061.txt",
+  "source": "/home/exedev/repos/engine_core Git history",
+  "command": "git log --oneline -20 da0ec13..1617fd5",
+  "from_commit": "da0ec130d07ed43b9dc2deba4a0de1d74d5ea77f",
+  "to_commit": "1617fd5e1ce2429b9b0bdeca5d0458380e92a4f7",
+  "sha256": "4465187beaf6c3f2b618493e6536ce91a11dcde0bb1d207b41cd598a06db9f08"
+}
