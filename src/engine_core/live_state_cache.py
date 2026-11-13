@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 
 SCHEMA = "CoreLiveStatesV1"
-ALGORITHM_VERSION = "states-at-v2"
+ALGORITHM_VERSION = "states-at-v3"
 DATA_SOURCE = "market_data1.stock_tick_v2"
 
 

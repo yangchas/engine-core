@@ -20,6 +20,7 @@ import argparse
 import hashlib
 import importlib
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -155,7 +156,35 @@ def _baostock_stock_basic() -> tuple[object, dict]:
 
 
 def capture(kind: str, day: str, level: int, *, plate_code: str | None = None,
-            index: int = 0, page_size: int = 2000, symbol: str | None = None) -> tuple[str, object, dict]:
+            index: int = 0, page_size: int = 2000, symbol: str | None = None,
+            start: str | None = None, end: str | None = None) -> tuple[str, object, dict]:
+    if kind == "td_stock_tick":
+        import taos
+        if not symbol or len(symbol) != 6 or not symbol.isdigit():
+            raise SystemExit("--symbol must be a six-digit stock code")
+        try:
+            datetime.strptime(day, "%Y-%m-%d")
+            datetime.strptime(start or "", "%H:%M:%S")
+            datetime.strptime(end or "", "%H:%M:%S")
+        except ValueError:
+            raise SystemExit("--date, --start and --end must be valid date and times")
+        if start > end:
+            raise SystemExit("--start must not follow --end")
+        columns = "ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol"
+        sql = (f"SELECT {columns} FROM market_data1.stock_tick_v2 WHERE symbol='{symbol}' "
+               f"AND ts>='{day} {start}' AND ts<='{day} {end}' ORDER BY ts")
+        options = {"config": os.environ["TD_CONFIG"], "database": "market_data1"}
+        for key, option in (("TD_HOST", "host"), ("TD_PORT", "port"), ("TD_USER", "user"), ("TD_PASSWORD", "password")):
+            if os.getenv(key):
+                options[option] = int(os.environ[key]) if option == "port" else os.environ[key]
+        connection = taos.connect(**options)
+        try:
+            cursor = connection.cursor()
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            return kind, {"columns": columns.split(","), "rows": rows}, {"sql": sql, "row_count": len(rows)}
+        finally:
+            connection.close()
     if kind == "ths_hot_rank":
         raw, meta = _ths_raw()
         return "ths_hot_rank", raw, meta
@@ -265,11 +294,13 @@ def main(argv=None) -> int:
                                                      "wencai_daily_kline", "wencai_limit_up_pool_today",
                                                      "q2_limit_up_pool_today",
                                                      "baostock_query_all_stock",
-                                                     "baostock_stock_basic"])
+                                                     "baostock_stock_basic", "td_stock_tick"])
     parser.add_argument("--date", default=datetime.now(TZ).date().isoformat())
     parser.add_argument("--level", type=int, default=1)
     parser.add_argument("--plate-code")
     parser.add_argument("--symbol")
+    parser.add_argument("--start")
+    parser.add_argument("--end")
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--page-size", type=int, default=2000)
     parser.add_argument("--from-catalog", action="store_true",
@@ -302,11 +333,13 @@ def main(argv=None) -> int:
         parser.error("--index must be non-negative and --page-size must be 1..2000")
     source, raw, meta = capture(args.kind, args.date, args.level,
                                 plate_code=args.plate_code, index=args.index,
-                                page_size=args.page_size, symbol=args.symbol)
+                                page_size=args.page_size, symbol=args.symbol, start=args.start, end=args.end)
     body = json.dumps(raw, ensure_ascii=False, sort_keys=True, default=str, indent=1).encode("utf-8") + b"\n"
     level = f"_L{args.level}" if args.kind == "kaipan_pool" else ""
     plate_part = f"_{args.plate_code}_i{args.index}" if args.kind == "kaipan_plate_members" else ""
-    symbol_part = f"_{args.symbol}" if args.kind == "kaipan_stock_dde" else ""
+    symbol_part = f"_{args.symbol}" if args.kind in {"kaipan_stock_dde", "td_stock_tick"} else ""
+    if args.kind == "td_stock_tick":
+        symbol_part += f"_{args.start.replace(":", "")}_{args.end.replace(":", "")}"
     name = f"{source}_{args.date}{level}{plate_part}{symbol_part}_{fetched_at[11:16].replace(':', '')}.json"
     REAL.mkdir(parents=True, exist_ok=True)
     (REAL / name).write_bytes(body)

@@ -18,7 +18,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Mapping
 
-from .auction_tracking import Tick, derive_state, _at_limit
+from .auction_tracking import Tick, derive_state, seal_order, _at_limit
 
 STATE_PRIMARY_WINDOW_SECONDS = 60
 STATE_FALLBACK_WINDOW_SECONDS = 300
@@ -541,7 +541,11 @@ def _sql_states(td: Any, cutoff: datetime) -> dict[str, dict[str, Any]]:
         missing_outputs = {output for source in missing for output in required.get(source, ())}
         for key in missing_outputs:
             state[key] = None
-        state["field_quality"] = {key: "MISSING" for key in missing}
+        seal_tick = Tick(trade_date=cutoff.date().isoformat(), ts=tick_time, symbol=str(symbol).zfill(6),
+                         **{key: int(row[key]) if row.get(key) is not None else None for key in numeric_fields})
+        seal = seal_order(seal_tick, state.get("price_milli"))
+        state.update(seal)
+        state["field_quality"] = {**{key: "MISSING" for key in missing}, **seal["field_quality"]}
         state["missing_field_count"] = len(missing)
         state["high_milli"] = row.get("h_milli")
         state["low_milli"] = row.get("l_milli")
@@ -557,7 +561,9 @@ def states_at(td: Any, cutoff: datetime | str) -> dict[str, dict[str, Any]]:
     cutoff = _as_datetime(cutoff)
     cacheable = cutoff < datetime.now() and _state_cache_enabled()
     def cache_has_range_fields(value: Mapping[str, Mapping[str, Any]] | None) -> bool:
-        return bool(value) and all("high_milli" in row and "low_milli" in row for row in value.values())
+        return bool(value) and all(all(key in row for key in ("high_milli", "low_milli",
+                                                              "seal_bid_at_limit", "seal_ask_at_limit"))
+                                   for row in value.values())
     if cacheable:
         from . import live_state_cache
         cached = live_state_cache.read(cutoff)

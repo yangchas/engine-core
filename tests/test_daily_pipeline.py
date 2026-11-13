@@ -315,11 +315,13 @@ def test_live_section_stocks_current_price_and_limit_state_use_asof_checkpoint(a
             if clock == "09:25:06":
                 return {"600001": {"pct_change": 1, "price_milli": 10_000,
                                     "prev_close_milli": 10_000, "rest_bid_shares": 0,
-                                    "rest_ask_shares": 0, "amt_yuan": 100}}
+                                    "rest_ask_shares": 0, "seal_bid_at_limit": False,
+                                    "seal_ask_at_limit": False, "amt_yuan": 100}}
             current = 10.32 if clock == "09:32:00" else 10.38 if clock == "09:38:00" else 10.45
             return {"600001": {"pct_change": current - 10, "price_milli": round(current * 1000),
                                 "prev_close_milli": 10_000, "rest_bid_shares": 10 if clock == "09:32:00" else 0,
-                                "rest_ask_shares": 0, "amt_yuan": 500}}
+                                "rest_ask_shares": 0, "seal_bid_at_limit": False,
+                                "seal_ask_at_limit": False, "amt_yuan": 500}}
 
     rows = _live_section_stocks(States(), trade_date="2026-10-16", stage="open", asof=asof,
                                 relations={}, plate_names={}, stock_names={}, history_path=None)
