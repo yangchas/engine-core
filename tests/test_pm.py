@@ -837,3 +837,40 @@ def test_rollout_missing_baseline_and_pilot_real(tmp_path, monkeypatch, capsys, 
     else:
         pm.pilot()
         assert '续用卡: 0 张 平均未缓存输入+输出 ?' in capsys.readouterr().out
+
+@pytest.mark.parametrize('recipe', ['builder-fix', 'builder-framework'])
+def test_builder_recipe_requires_commit_attribution(recipe, tmp_path, monkeypatch, capsys):
+    import shutil
+    cards = tmp_path / 'cards'
+    shutil.copytree(Path(__file__).parent / 'fixtures/pm_cards', cards)
+    monkeypatch.setenv('PM_CARDS_DIR', str(cards))
+    args = ['newcard', '--recipe', recipe, '--title', '修复', '--serves', '目标',
+            '--plan', 'P0 2/6', '--approval', '已授权', '--scope', 'examples/pm.py',
+            '--goal', '修复问题', '--real-data', '真实卡', '--oracle', '结果一致',
+            '--accept-by', 'fail-first-real-fixture', '--dry-run']
+    assert main(args) == 0
+    output = capsys.readouterr().out
+    assert '修复问题\n提交信息以卡号开头,末尾空一行加 Co-Authored-By: Codex <noreply@openai.com>。\nNOT_DO:' in output
+
+
+def test_memory_real_staff_duplicate_and_invalid(tmp_path, monkeypatch):
+    import shutil
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    staff = tmp_path / 'staff'
+    shutil.copytree(Path(__file__).parent / 'fixtures/pm_staff/c1076', staff)
+    monkeypatch.setenv('PM_STAFF_DIR', str(staff))
+    memory = staff / 'auditor-1/MEMORY.md'
+    before = memory.read_text(encoding='utf-8')
+    roster = (staff / 'roster.json').read_bytes()
+    assert main(['memory', 'auditor-1', '一条心得']) == 0
+    updated = memory.read_text(encoding='utf-8')
+    date = datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
+    assert updated == before + ('' if before.endswith('\n') or not before else '\n') + f'{date}|一条心得\n'
+    assert main(['memory', 'auditor-1', '一条心得']) == 0
+    for name, text in [('absent', '一条心得'), ('../auditor-1', '一条心得'),
+                       ('auditor-1', '字' * 201), ('auditor-1', '一行\n两行')]:
+        assert main(['memory', name, text]) != 0
+    assert memory.read_text(encoding='utf-8') == updated
+    assert (staff / 'roster.json').read_bytes() == roster
+    assert not (staff / 'absent').exists()

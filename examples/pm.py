@@ -609,7 +609,10 @@ def newcard(args):
         entries += [('QUESTION', values['question']), ('NEED_DATA', fixed['NEED_DATA'])]
     entries += [(k, fixed[k]) for k in ('TEST_BUDGET', 'STUBS_ALLOWED', 'AUTHORIZATION') if k in fixed]
     understanding = "第 0 步:先写 ≤8 行'我的理解'(目标、不做什么、关键约束、怎么验收、不确定点)到 evidence 目录下 understanding.md,再开工。\n" if tier == 'hard' else ''
-    entries += [('GOAL', understanding + '先读 CONTEXT 文件。\n' + values['goal'])] + [(k, fixed[k]) for k in ('NOT_DO', 'REPORT', 'ACCEPT')]
+    goal = understanding + '先读 CONTEXT 文件。\n' + values['goal']
+    if fixed.get('GOAL_SUFFIX'):
+        goal += '\n' + fixed['GOAL_SUFFIX']
+    entries += [('GOAL', goal)] + [(k, fixed[k]) for k in ('NOT_DO', 'REPORT', 'ACCEPT')]
     card = '\n'.join(f'{k}: {v}' for k, v in entries) + '\n'
     if args.dry_run:
         print(card, end='')
@@ -1193,6 +1196,36 @@ def pilot():
     return 0
 
 
+def memory_add(name, text):
+    root = location('PM_STAFF_DIR', '/home/exedev/fw/staff')
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', name):
+        print('invalid staff name')
+        return 2
+    text = text.strip()
+    if not text or len(text) > 200 or '\n' in text or '\r' in text:
+        print('memory must be one line of at most 200 characters')
+        return 2
+    path = root / name / 'MEMORY.md'
+    try:
+        roster = json.loads((root / 'roster.json').read_text(encoding='utf-8'))
+        if not isinstance(roster, list) or not any(isinstance(item, dict) and item.get('name') == name for item in roster):
+            print('unknown staff member')
+            return 2
+        if path.parent.resolve().parent != root.resolve() or path.resolve().parent != path.parent.resolve():
+            print('invalid staff memory path')
+            return 2
+        content = path.read_text(encoding='utf-8')
+        if any(re.fullmatch(r'\d{4}-\d{2}-\d{2}\|' + re.escape(text), line) for line in content.splitlines()):
+            return 0
+        date = datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
+        with path.open('a', encoding='utf-8') as output:
+            output.write(('\n' if content and not content.endswith('\n') else '') + f'{date}|{text}\n')
+    except (OSError, ValueError):
+        print('cannot read staff roster or memory')
+        return 2
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest='command', required=True)
@@ -1203,6 +1236,9 @@ def main(argv=None):
     hire_parser.add_argument('--effort', required=True)
     hire_parser.add_argument('--dry-run', action='store_true')
     sub.add_parser('roster')
+    memory_parser = sub.add_parser('memory')
+    memory_parser.add_argument('name')
+    memory_parser.add_argument('text')
     roll = sub.add_parser('rollover')
     roll.add_argument('name')
     roll.add_argument('--reason', default='手动')
@@ -1280,6 +1316,8 @@ def main(argv=None):
         return day_check_main(['--date', args.date])
     if args.command == 'denials':
         return denials(args)
+    if args.command == 'memory':
+        return memory_add(args.name, args.text)
     if args.command == 'hire':
         return hire(args)
     if args.command == 'rollover':
