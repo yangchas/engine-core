@@ -1,0 +1,27 @@
+STAFF: builder-1
+ID: C1077
+STATUS: DONE(已合并4141902,精确清单7文件54测试通过;深度1联跑 test_c589/test_pm 失败待查;新会话49613tokens缓存93%;11-14)
+LANE: A
+ROLE: builder
+EXECUTOR: codex
+MODEL: gpt-6.1-terra
+EFFORT: medium
+COMMIT: yes
+TITLE: 配方默认 STUBS_ALLOWED 不再触发夹具工具警告
+CONTEXT: fw/context/C1077.md(先读)
+SERVES: 用户2026-11-14 减少失败/脚本化;每张构建卡都要手改 STUBS_ALLOWED
+PLAN: P0 固定职员制(会话预算)
+APPROVAL: 用户2026-11-14 继续推进;审核审批自行决定
+SCOPE_WRITE: /home/exedev/repos/engine_core-wt-C1077/examples/card_recipes/builder-fix.json, /home/exedev/repos/engine_core-wt-C1077/examples/card_recipes/builder-framework.json, /home/exedev/repos/engine_core-wt-C1077/examples/card_lint.py, /home/exedev/repos/engine_core-wt-C1077/tests/test_card_lint.py, /home/exedev/repos/engine_core-wt-C1077/tests/fixtures/card_lint, /home/exedev/fw/reports/C1077.md, /home/exedev/fw/evidence/C1077
+REAL_DATA: 真实卡 fw/cards/C1072.md 与 C1074.md(修改前触发警告,修改后手改版)的头部内容夹具摘录并附 PROVENANCE
+ORACLE: 用配方默认生成的构建卡头(含默认 STUBS_ALLOWED)经 card_lint 不再出现 fixture_tool_not_in_scope 警告;而真实需要采集工具却没放进 SCOPE 的卡(C1031 同类)仍告警
+ACCEPT_BY: fail-first-real-fixture
+TEST_BUDGET: 新增测试 ≤3 个;必须包含危险对照;验收清单: tests/test_card_lint.py tests/test_real_fixtures.py tests/test_trade_day_context.py tests/test_registry_storage.py tests/test_guardian_contract_static.py tests/test_dataset_registry.py tests/test_baseline_window_declaration.py
+STUBS_ALLOWED: 仅回放真实响应
+AUTHORIZATION: 可读工作树全部源码与测试。python 用 /home/exedev/services/engine-next/shared/venv/bin/python。环境或执行错误允许修复并重跑。不联网,不读 cookie,不发信,不 push,不合并,不部署,不写 Redis/TD,不改 fw 下任何文件(只写自己的 reports 与 evidence)。 遇到规格内部矛盾时,选与真实历史失败原因一致的那一种并在报告 OPEN 写明,不要停下来等 PM。不在 shell 里打印环境变量或完整进程命令行。
+GOAL: 先读 CONTEXT 文件。
+读 C1072/C1074 的 STUBS_ALLOWED 修改前后与 card_lint 的 fixture_tool_not_in_scope 规则。把两个 builder 配方的默认 STUBS_ALLOWED 改成不触发警告的措辞(无需新增 kind,不使用采集工具;夹具为真实文件摘录并附 PROVENANCE),但保留规则对真正需要采集工具的卡的告警。先写失败测试,新增≤2个含危险对照。
+提交信息以卡号开头,末尾空一行加 Co-Authored-By: Codex <noreply@openai.com>。
+NOT_DO: 不手写假样本;不 push、不合并、不部署;不顺手重构。
+REPORT: fw/reports/C1077.md。首行 VERDICT: DONE/BLOCKED/PARTIAL;之后 FACTS/CHANGES/EVIDENCE/OPEN。并在报告末尾写 HANDOFF 小节(3–5 行:做了什么、做的决定、踩的坑、下一步建议)
+ACCEPT: 指定验收命令 exit=0;fail-first 证据完整;git status 干净且提交以 C1077: 开头。

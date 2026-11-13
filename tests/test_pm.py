@@ -899,3 +899,44 @@ def test_memory_real_staff_duplicate_and_invalid(tmp_path, monkeypatch):
     assert memory.read_text(encoding='utf-8') == updated
     assert (staff / 'roster.json').read_bytes() == roster
     assert not (staff / 'absent').exists()
+
+@pytest.mark.parametrize('case', ['green', 'red', 'missing', 'merge_failure'])
+def test_ship_real_history(tmp_path, monkeypatch, capsys, case):
+    import subprocess
+    fixtures = Path(__file__).parent / 'fixtures/pm_ship'
+    card = 'C1072' if case == 'red' else 'C1079'
+    for name in ('cards', 'reports', 'runs', 'evidence', 'staff'):
+        path = tmp_path / name
+        path.mkdir()
+        monkeypatch.setenv('PM_' + name.upper() + '_DIR', str(path))
+    monkeypatch.setenv('PM_STAFF_PEOPLE_DIR', str(tmp_path / 'staff'))
+    (tmp_path / 'cards' / (card + '.md')).write_bytes((fixtures / (card + '-card.txt')).read_bytes())
+    report = fixtures / (card + '-report.txt' if case in ('red', 'missing') else 'C001-report.txt')
+    (tmp_path / 'reports' / (card + '.md')).write_bytes(report.read_bytes())
+    (tmp_path / 'evidence' / card).mkdir()
+    (tmp_path / 'evidence' / card / 'AUTO.md').write_bytes((fixtures / (card + '-auto.txt')).read_bytes())
+    original = subprocess.run
+    calls = []
+    def run(command, **kwargs):
+        if any(str(part).endswith('/release.py') for part in command):
+            calls.append(command)
+            status = (tmp_path / 'cards' / (card + '.md')).read_text()
+            assert 'STATUS: DONE' not in status
+            if case == 'merge_failure':
+                return subprocess.CompletedProcess(command, 1, 'FAILED tests/test_pm.py::test_staff_dispatch_real_history\n', '')
+            return subprocess.CompletedProcess(command, 0, 'merged C1079 as 00107df; tests ran on the merged tree\n', '')
+        return original(command, **kwargs)
+    monkeypatch.setattr(subprocess, 'run', run)
+    result = main(['ship', card])
+    output = capsys.readouterr().out.splitlines()
+    status = (tmp_path / 'cards' / (card + '.md')).read_text()
+    assert len(output) == 1 and len(output[0]) <= 160
+    if case == 'green':
+        assert result == 0 and 'MERGED 00107df' in output[0]
+        assert 'STATUS: DONE' in status and '--max-tests-files' in calls[0]
+    else:
+        assert result != 0 and 'NOT MERGED' in output[0]
+        assert 'STATUS: PARTIAL' in status and 'STATUS: DONE' not in status
+        assert bool(calls) == (case == 'merge_failure')
+        if calls:
+            assert 'test_pm.py' in status

@@ -1,0 +1,35 @@
+STAFF: builder-1
+ID: C1079
+STATUS: DONE(已合并00107df,深度1模式108测试通过;test_pm不再依赖实时git日志;续用81932tokens缓存95.6%;11-14)
+LANE: A
+ROLE: builder
+EXECUTOR: codex
+MODEL: gpt-6.1-terra
+EFFORT: medium
+COMMIT: yes
+TITLE: 修 test_staff_dispatch_real_history 依赖实时 git 日志
+CONTEXT: fw/context/C1079.md(先读)
+SERVES: 用户2026-11-14 减少失败;C1078 查明根因
+PLAN: P0 固定职员制(会话预算)
+APPROVAL: 用户2026-11-14 继续推进;审核审批自行决定
+SCOPE_WRITE: /home/exedev/repos/engine_core-wt-C1079/examples/pm.py, /home/exedev/repos/engine_core-wt-C1079/tests/test_pm.py, /home/exedev/repos/engine_core-wt-C1079/tests/fixtures/pm_staff, /home/exedev/fw/reports/C1079.md, /home/exedev/fw/evidence/C1079
+REAL_DATA: C1078 报告 fw/reports/C1078.md 与 evidence/C1078/README.md;真实 git 日志摘录(含 C1059/C1061 提交行)作夹具并附 PROVENANCE
+ORACLE: 该测试在主干单跑通过,且在新增 30 条无关提交后仍通过;sync_preamble 的真实行为(只取最近 N 条)不被放宽
+ACCEPT_BY: fail-first-real-fixture
+TEST_BUDGET: 新增测试 ≤2 个;真实夹具 fail-first;验收清单: tests/test_pm.py tests/test_real_fixtures.py tests/test_trade_day_context.py tests/test_registry_storage.py tests/test_guardian_contract_static.py tests/test_dataset_registry.py tests/test_baseline_window_declaration.py
+STUBS_ALLOWED: 无需新增 kind,不使用采集工具;夹具为真实文件摘录并附 PROVENANCE
+AUTHORIZATION: 可读工作树全部源码与测试。python 用 /home/exedev/services/engine-next/shared/venv/bin/python。环境或执行错误允许修复并重跑。不联网,不读 cookie,不发信,不 push,不合并,不部署,不写 Redis/TD,不改 fw 下任何文件(只写自己的 reports 与 evidence)。 遇到规格内部矛盾时,选与真实历史失败原因一致的那一种并在报告 OPEN 写明,不要停下来等 PM。不在 shell 里打印环境变量或完整进程命令行。
+## 续用会话同步前言(PM 自动生成 2026-11-14T02:14:28+08:00)
+HEAD: 4141902
+上一张卡: C1077 提交: 4141902
+
+你的记忆里关于文件内容的印象可能已过时,先 `git status`、重新读要改的文件
+本卡的 CONTEXT 文件与卡正文为准,与你的旧印象冲突时以它们为准
+开工前在 evidence 目录写 ≤8 行'我的理解'
+
+GOAL: 先读 CONTEXT 文件。
+先读 fw/reports/C1078.md。根因:测试依赖实时 git log 最近 20 条里出现 C1059/C1061。把测试改为用固定的真实 git 日志夹具(摘录真实提交行,PROVENANCE),通过可注入的日志来源(参数或环境变量)喂给 sync_preamble;不得放宽 sync_preamble 的最近 N 条逻辑,不得删除断言。先在主干单跑记录失败输出作 fail-first 证据。新增测试≤2个,含'新增无关提交后仍通过'的危险对照。
+提交信息以卡号开头,末尾空一行加 Co-Authored-By: Codex <noreply@openai.com>。
+NOT_DO: 不手写假样本;不 push、不合并、不部署;不顺手重构。
+REPORT: fw/reports/C1079.md。首行 VERDICT: DONE/BLOCKED/PARTIAL;之后 FACTS/CHANGES/EVIDENCE/OPEN。并在报告末尾写 HANDOFF 小节(3–5 行:做了什么、做的决定、踩的坑、下一步建议)
+ACCEPT: 指定验收命令 exit=0;fail-first 证据完整;git status 干净且提交以 C1079: 开头。

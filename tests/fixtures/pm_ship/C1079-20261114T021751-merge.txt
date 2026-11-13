@@ -1,0 +1,6 @@
+0.81s call     tests/test_pm.py::test_pack_real_precedents_and_dangerous_control
+0.62s call     tests/test_guardian_contract_static.py::test_the_scan_finds_replies
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_real_fixtures.py:199: live contract test: run with --live
+107 passed, 1 skipped in 41.42s
+选中 8 个测试文件、共 108 个测试、耗时 41.42 秒; --deep=no; mode=depth1

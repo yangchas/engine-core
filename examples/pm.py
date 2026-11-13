@@ -2,6 +2,7 @@
 """PM workflow commands."""
 import argparse
 import ast
+import contextlib
 from collections import Counter
 import difflib
 from datetime import datetime, timedelta
@@ -794,6 +795,92 @@ def card_command(args):
         time.sleep(min(args.interval, remaining))
 
 
+def ship(args):
+    evidence = location('PM_EVIDENCE_DIR', '/home/exedev/fw/evidence') / args.card
+    if not re.fullmatch(r'C[0-9]+', args.card):
+        print('NOT MERGED invalid card')
+        return 2
+    evidence.mkdir(parents=True, exist_ok=True)
+    result = 2
+    message = 'unknown failure'
+    with (evidence / 'ship.log').open('a', encoding='utf-8') as log, contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
+        try:
+            path = card_path(args.card)
+            if path is None:
+                message = 'card not found'
+            else:
+                if args.command == 'run':
+                    dispatched = card_command(argparse.Namespace(command='dispatch', card=args.card, to=args.to, no_lint=False, no_pack=False))
+                else:
+                    dispatched = 0
+                text = path.read_text(encoding='utf-8')
+                writable = field(text, 'COMMIT').lower() == 'yes'
+                def partial(reason):
+                    current = path.read_text(encoding='utf-8')
+                    path.write_text(set_status(current, 'STATUS: PARTIAL(' + reason[:160] + ')'), encoding='utf-8')
+                if dispatched:
+                    if writable:
+                        partial('dispatch failed')
+                    message = 'dispatch failed'
+                else:
+                    if writable:
+                        partial('等待合并')
+                    waited = card_command(argparse.Namespace(command='wait-card', card=args.card, timeout=1700, interval=20))
+                    report = location('PM_REPORTS_DIR', '/home/exedev/fw/reports') / (args.card + '.md')
+                    first = report.read_text(encoding='utf-8').splitlines()[0] if report.is_file() and report.stat().st_size else ''
+                    verdict = re.match(r'^VERDICT\s*:\s*(DONE|PARTIAL|BLOCKED)\b', first, re.I)
+                    runs = location('PM_RUNS_DIR', '/home/exedev/fw/runs')
+                    usage = runs / 'usage.tsv'
+                    rows = [line.split('\t') for line in usage.read_text(encoding='utf-8').splitlines()] if usage.is_file() else []
+                    tokens = next((row[4] for row in reversed(rows) if len(row) == 5 and row[0] == args.card and row[4].isdigit()), '?')
+                    cache = '?'
+                    for person in load_roster():
+                        for entry in person.get('cards', []):
+                            if isinstance(entry, dict) and entry.get('id') == args.card and entry.get('cached_ratio') is not None:
+                                cache = f"{entry['cached_ratio']:.2%}"
+                    if waited:
+                        message = 'wait failed'
+                    elif not writable:
+                        message = f"{first or 'VERDICT missing'} tokens={tokens}"
+                        result = 0 if verdict else 2
+                    else:
+                        auto = evidence / 'AUTO.md'
+                        auto_text = auto.read_text(encoding='utf-8') if auto.is_file() else ''
+                        auto_result = re.search(r'^AUTO-RESULT:\s*(GREEN|RED)\b', auto_text, re.M)
+                        files = set(re.findall(r'tests/[\w./-]+\.py', field(text, 'TEST_BUDGET')))
+                        if not auto_result or auto_result.group(1) != 'GREEN':
+                            message = 'AUTO ' + (auto_result.group(1) if auto_result else 'missing')
+                        elif not verdict:
+                            message = 'report VERDICT missing'
+                        elif verdict.group(1).upper() != 'DONE':
+                            message = 'report ' + verdict.group(1).upper()
+                        elif not files:
+                            message = 'TEST_BUDGET missing test files'
+                        else:
+                            command = [PYTHON, str(ROOT / 'examples/release.py'), 'merge', '--branch', args.card, '--card', args.card, '--max-tests-files', str(len(files))]
+                            merged = subprocess.run(command, capture_output=True, text=True)
+                            print(merged.stdout, merged.stderr)
+                            sha = re.search(r'\bmerged\s+' + re.escape(args.card) + r'\s+as\s+([0-9a-fA-F]{7,40})\b', merged.stdout)
+                            if merged.returncode or not sha:
+                                failed = re.findall(r'FAILED\s+(tests/[^\s:]+(?:::[^\s]+)?)', merged.stdout + '\n' + merged.stderr)
+                                message = 'merge failed' + (': ' + ', '.join(failed) if failed else f' exit={merged.returncode}')
+                            else:
+                                message = f'MERGED {sha.group(1)} tokens={tokens} cache={cache}'
+                                current = path.read_text(encoding='utf-8')
+                                path.write_text(set_status(current, 'STATUS: DONE(' + message + ')'), encoding='utf-8')
+                                result = 0
+                        if result:
+                            partial(message)
+        except (OSError, ValueError, KeyError) as exc:
+            print(repr(exc))
+            message = 'error ' + type(exc).__name__
+            if 'path' in locals() and path is not None and 'writable' in locals() and writable:
+                partial(message)
+    prefix = '' if result == 0 else 'NOT MERGED '
+    print((args.card + ' ' + prefix + message).replace('\n', ' ')[:160])
+    return result
+
+
 def status_category(status):
     value = status.strip().upper()
     if value.startswith(('READY', 'PLANNED', 'DRAFT', 'PREPARED', 'APPROVED')):
@@ -1297,6 +1384,11 @@ def main(argv=None):
     cards = sub.add_parser('cards')
     cards.add_argument('--open', action='store_true')
     cards.add_argument('--limit', type=int, default=20)
+    for name in ('ship', 'run'):
+        command = sub.add_parser(name)
+        command.add_argument('card')
+        if name == 'run':
+            command.add_argument('--to')
     for name in ('status', 'dispatch', 'setstatus', 'wait-card'):
         command = sub.add_parser(name)
         command.add_argument('card')
@@ -1310,6 +1402,8 @@ def main(argv=None):
             command.add_argument('--timeout', type=float, default=1700)
             command.add_argument('--interval', type=float, default=20)
     args = parser.parse_args(argv)
+    if args.command in ('ship', 'run'):
+        return ship(args)
     if args.command == 'daycheck':
         try:
             from examples.day_check import main as day_check_main
