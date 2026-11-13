@@ -711,6 +711,53 @@ def card_command(args):
         time.sleep(min(args.interval, remaining))
 
 
+def status_category(status):
+    value = status.strip().upper()
+    if value.startswith(('READY', 'PLANNED', 'DRAFT', 'PREPARED', 'APPROVED')):
+        return 'ready'
+    if value.startswith('DISPATCHED'):
+        return 'dispatched'
+    if value.startswith(('DONE', '已合并', 'MERGED')):
+        return 'DONE'
+    if value.startswith('PARTIAL'):
+        return 'PARTIAL'
+    if value.startswith('BLOCKED'):
+        return 'BLOCKED'
+    if value.startswith(('SUPERSEDED', 'REJECTED')):
+        return 'SUPERSEDED'
+    return '其他'
+
+
+def reconcile(args):
+    cards = location('PM_CARDS_DIR', str(CARDS))
+    reports = location('PM_REPORTS_DIR', '/home/exedev/fw/reports')
+    changes = []
+    today = datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
+    for path in sorted(cards.glob('C*.md')):
+        if not re.fullmatch(r'C[0-9]+', path.stem):
+            continue
+        content = path.read_text(encoding='utf-8')
+        if not field(content, 'STATUS').lower().startswith(('ready', 'dispatched')):
+            continue
+        report = reports / path.name
+        if not report.is_file() or not report.stat().st_size:
+            continue
+        first = next((line.strip() for line in report.read_text(encoding='utf-8').splitlines() if line.strip()), '')
+        verdict = re.search(r'\b(DONE|PARTIAL|BLOCKED)\b', first, re.IGNORECASE)
+        result = verdict.group(1).upper() if verdict else 'PARTIAL'
+        detail = f'对账 {today};待复核' if verdict else f'对账 {today};待复核;报告首行未含 VERDICT'
+        changes.append((path, content, result, f'STATUS: {result}({detail})'))
+    counts = Counter(item[2] for item in changes)
+    print(f'陈旧卡: {len(changes)}')
+    print('将写入: ' + ' '.join(f'{key}={counts[key]}' for key in ('DONE', 'PARTIAL', 'BLOCKED')))
+    for path, content, result, line in changes[:min(args.limit, 10) if args.limit is not None else 10]:
+        print(f'{path.stem}: {line}')
+    if args.apply:
+        for path, content, result, line in changes[:args.limit] if args.limit is not None else changes:
+            path.write_text(set_status(content, line), encoding='utf-8')
+    return 0
+
+
 def metrics(args):
     cards = location('PM_CARDS_DIR', str(CARDS))
     reports = location('PM_REPORTS_DIR', '/home/exedev/fw/reports')
@@ -735,18 +782,19 @@ def metrics(args):
             if not times or datetime.fromtimestamp(max(times), ZoneInfo('Asia/Shanghai')).date().isoformat() < args.since:
                 continue
         total += 1
-        category = next((key for key in categories if status.startswith(key)), '其他')
+        category = status_category(status)
         counts[category] += 1
         stale += category == 'ready' and report.is_file()
         if dispatched:
-            rows.append((path.stem, len(archives) + 1, status))
+            rows.append((path.stem, len(archives) + 1, status, report.is_file() and report.stat().st_size > 0))
     rows.sort(key=lambda row: (-row[1], int(row[0][1:])))
     average = sum(row[1] for row in rows) / len(rows) if rows else 0
-    rate = sum(count == 1 and status.startswith('DONE') for _, count, status in rows) / len(rows) if rows else 0
+    reported = [row for row in rows if row[3]]
+    rate = sum(count == 1 and status_category(status) == 'DONE' for _, count, status, _ in reported) / len(reported) if reported else 0
     print(f'卡总数: {total} | 已派发: {len(rows)}')
     print('状态: ' + ' '.join(f'{key}={counts[key]}' for key in counts))
     print(f'陈旧 ready: {stale}')
-    print('派发最多: ' + (' '.join(f'{card}:{count}' for card, count, _ in rows[:3]) or '无'))
+    print('派发最多: ' + (' '.join(f'{card}:{count}' for card, count, _, _ in rows[:3]) or '无'))
     print(f'平均派发: {average:.2f} | 一次通过率: {rate:.1%}')
     log = location('PM_GUARD_LOG', '/home/exedev/fw/retros/guard.log')
     today = datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
@@ -757,6 +805,7 @@ def metrics(args):
     except OSError:
         print('今日 DENY: UNKNOWN')
     print('目标:一次通过率≥70%;平均派发≤1.5;陈旧 ready=0;DENY<5/天')
+    print('一次通过率口径: 已派发且有非空报告的卡')
     return 0
 
 def lesson_add(args):
@@ -869,6 +918,9 @@ def main(argv=None):
         lesson_parser.add_argument('--' + option, required=True)
     score_parser = sub.add_parser('scorecard')
     score_parser.add_argument('--since', type=lambda value: datetime.strptime(value, '%Y-%m-%d').date().isoformat())
+    reconcile_parser = sub.add_parser('reconcile')
+    reconcile_parser.add_argument('--apply', action='store_true')
+    reconcile_parser.add_argument('--limit', type=int)
     metric_parser = sub.add_parser('metrics')
     metric_parser.add_argument('--since', type=lambda value: datetime.strptime(value, '%Y-%m-%d').date().isoformat())
     cards = sub.add_parser('cards')
@@ -892,6 +944,10 @@ def main(argv=None):
         return scorecard(args)
     if args.command == 'pack':
         return pack(args)
+    if args.command == 'reconcile':
+        if args.limit is not None and args.limit < 0:
+            parser.error('--limit 必须非负')
+        return reconcile(args)
     if args.command == 'metrics':
         return metrics(args)
     if args.command == 'newcard':

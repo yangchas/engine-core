@@ -498,3 +498,46 @@ def test_scorecard_real_usage(monkeypatch, capsys):
     row = next(line for line in output.splitlines() if 'builder' in line and 'gpt-6.1-terra' in line and 'medium' in line)
     assert f'卡数={len(matching)}' in row and f'平均 tokens={sum(numbers) / len(numbers):.0f}' in row
     assert '缺数据' in output and len(output.splitlines()) <= 14
+
+
+def test_c1061_reconcile_real_status_and_report(tmp_path, monkeypatch, capsys):
+    import shutil
+    lines = (Path(__file__).parent / 'fixtures/pm_status/status_lines.txt').read_text().splitlines()
+    ready = next(line for line in lines if line.lower().startswith('status: ready'))
+    dispatched = next(line for line in lines if line.lower().startswith('status: dispatched'))
+    done = next(line for line in lines if line.startswith('STATUS: DONE'))
+    cards, reports = tmp_path / 'cards', tmp_path / 'reports'
+    cards.mkdir(); reports.mkdir()
+    for number, line in enumerate((ready, dispatched, ready, done), 1):
+        (cards / f'C{number}.md').write_text(line + '\n')
+    source = Path(__file__).parent / 'fixtures/pm_runs/reports/C1054.md'
+    shutil.copyfile(source, reports / 'C1.md')
+    shutil.copyfile(source, reports / 'C2.md')
+    (reports / 'C3.md').touch()
+    shutil.copyfile(source, reports / 'C4.md')
+    monkeypatch.setenv('PM_CARDS_DIR', str(cards)); monkeypatch.setenv('PM_REPORTS_DIR', str(reports))
+    before = {p.name: p.read_bytes() for p in cards.iterdir()}
+    assert main(['reconcile']) == 0
+    assert '陈旧卡: 2' in capsys.readouterr().out
+    assert before == {p.name: p.read_bytes() for p in cards.iterdir()}
+    assert main(['reconcile', '--apply']) == 0
+    capsys.readouterr()
+    after = {p.name: p.read_bytes() for p in cards.iterdir()}
+    assert after['C3.md'] == before['C3.md'] and after['C4.md'] == before['C4.md']
+    assert main(['reconcile', '--apply']) == 0
+    assert '陈旧卡: 0' in capsys.readouterr().out
+    assert after == {p.name: p.read_bytes() for p in cards.iterdir()}
+
+
+def test_c1061_metrics_real_status_lines(tmp_path, monkeypatch, capsys):
+    import re
+    lines = (Path(__file__).parent / 'fixtures/pm_status/status_lines.txt').read_text().splitlines()
+    cards = tmp_path / 'cards'; cards.mkdir()
+    for number, line in enumerate(lines):
+        (cards / f'C{number}.md').write_text(line + '\n')
+    monkeypatch.setenv('PM_CARDS_DIR', str(cards))
+    monkeypatch.setenv('PM_REPORTS_DIR', str(tmp_path / 'reports'))
+    monkeypatch.setenv('PM_RUNS_DIR', str(tmp_path / 'runs'))
+    assert main(['metrics']) == 0
+    other = int(re.search(r'其他=(\d+)', capsys.readouterr().out).group(1))
+    assert other / len(lines) <= 0.10

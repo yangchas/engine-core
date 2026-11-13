@@ -1,0 +1,419 @@
+STATUS: ready(待 Codex 额度恢复后派发;builder 不得用 Haiku 派)
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready(第二版:修正 TTL 口径矛盾、报告路径、测试范围;首版 BLOCKED 见 reports/C1004.md 已复盘)
+STATUS: ready(待 Codex 额度恢复后派发;builder 不得用 Haiku 派)
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: REJECTED(用户2026-11-12 决定不合并:该卡在不合适的执行环境下产出(先 Codex 中途断额度、后由非指定模型接续),合并有风险;且与用户"门禁太多"的方向相反。分支 C1010 提交 434b963 保留不合并,不重做。)
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: draft(用户11-12要求一个一个推进;轮到时把 A–L 十二项改为 A–S 十九项再派)
+STATUS: draft(用户11-12要求一个一个推进;轮到时把 A–L 十二项改为 A–S 十九项再派)
+STATUS: SUPERSEDED(用户11-12 改为从业务出发,竞价先由 C1017 业务视角审计;函数级竞价族审计待 C1017 结论后再决定是否需要,需要时另立新卡)
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: SUPERSEDED(与 C1027 重叠,C1027 已 PARTIAL 并覆盖开盘取证;TD 部分由 C1029 补;11-13 PM 核实)
+STATUS: ready
+STATUS: ready
+STATUS: SUPERSEDED(BLOCKED 未改代码:测试范围>150 与夹具工具无 TD tick 入口;由 C1032 取代,复盘见 retros/2026-11-13-C1031-blocked.md)
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: SUPERSEDED(BLOCKED 未改代码:夹具采集工具不支持所需来源;由 C1041 取代,复盘见 retros/2026-11-13-C1039-blocked.md)
+STATUS: PARTIAL(Codex 仅用约3万token即停,原卡一次要求7类规则过大;已拆小:C1045=for循环+命令替换+提交遗留改动,C1046=只读小工具;11-13 PM)
+STATUS: PARTIAL(夹具已采集、4 个测试修复前失败、候选改动在工作树未提交;验收清单 depth-1 超 250 上限被停;由 C1042 在同一工作树续做)
+STATUS: ready
+STATUS: ready
+STATUS: DONE(ACCEPT:real_gate 0 fail/29 项;c5ec227 已部署 11-13 13:31)
+STATUS: ready
+STATUS: DONE(已合并 318e1d2 含 C1049;只读小工具与敏感路径加固;11-13)
+STATUS: DONE(已部署 t1_v2 52d11d9;current=20261113_C1047_52d11d9;PID 292229;11-13 15:09:55;第7次派发成功;明日首验见 watchlist)
+STATUS: PARTIAL(5 项 PASS/2 项 FAIL:盘前 auction_baseline 缺失与竞价检查门假降级待核实;11-13)
+STATUS: DONE(已合并 318e1d2;守卫 jq/通配符/密钥变量加固;11-13)
+STATUS: DONE(已合并 1c41b2d;pm cards/status/dispatch/setstatus/wait-card;11-13)
+STATUS: BLOCKED→由 C1052 续做(PM 的规则 3 与预定验收矛盾,已裁定;11-13)
+STATUS: DONE(已合并 9c4222b;card_lint+约束库5条;50 passed;11-13)
+STATUS: DONE(已合并 4f9cd8d;pm newcard/testlist/配方4个/dispatch 先 lint;8 文件 65 passed;11-13)
+STATUS: DONE(已合并 414723b;test_audit+接入 pm status/wait-card+配方样板;65 passed;11-13)
+STATUS: DONE(已合并 ccbdd80;STATUS 生命周期+pm metrics+4 缺陷修复;176 测试;基线:一次通过率21.6%,陈旧ready=154,今日DENY=33;11-13)
+STATUS: DONE(探针:gpt-5.6-luna/low 经卡头启动可用;误跑 pytest 源于 runner-observe 配方 TEST_BUDGET 样板,C1057 修;usage.tsv 未记 tokens('?');11-13)
+STATUS: DONE(已合并;--tier 分档+runner 配方修正+lint 空字段;84 passed;11-13)
+STATUS: DONE(已合并;pm pack 六节+接入 newcard/dispatch;73 passed;11-13)
+STATUS: DONE(已合并 7ed9d0d;pack 岗位记忆/专题简报/交接链+lesson add+scorecard;注意:引入 tests/fixtures/pm_runs 1031 个报告文件(5.7MB)属夹具膨胀,待瘦身;11-13)
+STATUS: PARTIAL(自动;报告首行未含 VERDICT)
+STATUS: dispatched(2026-11-13T17:44:25+08:00)
+STATUS: DONE (提交信息以 C362 标记;此卡只作编号登记,无派发)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE(已合并;部署情况见 DEPLOY)
+STATUS: DONE-PENDING-MERGE(分支 codex/C653-storage-declaration,提交 b85538a;合并/部署待用户说"部署")
+STATUS: PLANNED(2026-11-03 立卡,未开工;开工需用户说"继续"/指定,合并需"部署")
+STATUS: PLANNED(2026-11-03 立卡,未开工;开工需用户说"继续"/指定,合并需"部署")
+STATUS: PLANNED(2026-11-03 立卡,未开工;开工需用户说"继续"/指定,合并需"部署")
+STATUS: PLANNED(2026-11-03 立卡,未开工;开工需用户说"继续"/指定,合并需"部署")
+STATUS: PLANNED(2026-11-03 立卡,未开工;开工需用户说"继续"/指定,合并需"部署")
+STATUS: PLANNED(2026-11-03 立卡,未开工;开工需用户说"继续"/指定,合并需"部署")
+STATUS: DONE-PENDING-MERGE(分支 codex/C660-td-resource-check;含 8 个排程事件,**合并后需重启 guardiand**,等用户说"部署")
+STATUS: DONE(只读核对;结果见 fw/reports/acceptance/R0.md)
+STATUS: DONE(分诊;修复拆为 C662a–d,见 KNOWN_FAILURES.md)
+STATUS: DONE-PENDING-MERGE(分支 codex/C664-real-data-tests 含 C663 三个提交;合并/部署待用户)
+STATUS: DONE-PENDING-MERGE(分支 codex/C664-real-data-tests,提交 73f23a0;合并/部署待用户)
+STATUS: DONE(待合并;见 RESULT)
+STATUS: DONE(待合并;见 RESULT)
+STATUS: PLANNED(2026-11-04 立卡,未开工;顺序与依赖见 design/30 §3–§6)
+STATUS: PLANNED(2026-11-04 立卡,未开工;顺序与依赖见 design/30 §3–§6)
+STATUS: DONE(待合并;见 RESULT)
+STATUS: PLANNED(2026-11-04 立卡,未开工;审计见 design/31)
+STATUS: DONE-PENDING-MERGE(B8/B9/B12/B13;分支 codex/C671-state-to-redis,叠在 C664 之上;合并/部署待用户;**重启 guardiand 不需要**)
+STATUS: PLANNED(2026-11-04 立卡,未开工;审计见 design/31)
+STATUS: PLANNED(2026-11-04 立卡,未开工;审计见 design/31)
+STATUS: PLANNED(2026-11-04 立卡,未开工;审计见 design/31)
+STATUS: DONE-PENDING-MERGE(分支 codex/C675-td-exhaustion-retryable,叠在 C671 之上;合并/部署待用户)
+STATUS: PREPARED(分支 codex/C676-failure-classes-memory,提交 fd5b34d;**未合并、未部署,等用户说"部署"**;需要重启 guardiand)
+STATUS: DONE-PENDING-MERGE(分支 codex/C677-backfill-cli-td-retryable,提交见 git;只改 Python,不需重启;等用户"部署")
+STATUS: PLANNED(2026-11-04 立卡,未开工;顺序见 PLAN-MASTER §11.6)
+STATUS: PLANNED(2026-11-04 立卡,未开工;顺序见 PLAN-MASTER §11.6)
+STATUS: DONE(已合并 0004fa0;已部署A批 2026-11-05 23:42)
+STATUS: DONE(已合并 87ac281;已部署A批 2026-11-05 23:42;pending 码已由 C691 收尾)
+STATUS: DONE(已合并 81f96fb;已部署A批 2026-11-05 23:42)
+STATUS: DONE(已合并 ec84532;已部署A批 2026-11-05 23:42)
+STATUS: DONE(已合并 9e15bf8;已部署A批 2026-11-05 23:42)
+STATUS: DONE(已合并;已部署A批 2026-11-05 23:42)
+STATUS: DONE(已合并 f32a41a;已部署A批 2026-11-05 23:42)
+STATUS: DONE(已合并;已部署A批 2026-11-05 23:42)
+STATUS: DONE(已合并;代码已合并;预算配置属 B 批,尚未部署)
+STATUS: DONE(已合并;已部署A批 2026-11-05 23:42)
+STATUS: DONE(已合并;已部署A批 2026-11-05 23:42)
+STATUS: DONE(已合并)
+STATUS: DONE(已合并)
+STATUS: DONE(已合并;已部署 2026-11-06 01:15)
+STATUS: DONE(已合并;配置,待 B 批重启窗口)
+STATUS: DONE(已合并)
+STATUS: DONE(已合并 9ba6cd3)
+STATUS: DONE(已合并 61622cf;无部署内容,只是工具)
+STATUS: READY-TO-DISPATCH(2026-11-06 07:57 尚未派发;模型 gpt-6.1-terra medium;避开 08:25–09:50,计划 09:55 后派)
+STATUS: DONE(scout 已出报告 reports/C700.md)
+STATUS: DONE(由 A/B 对比中的 terra 版本合并;见 RESULT)
+STATUS: DONE(已合并;已部署A批 2026-11-06 11:00)
+STATUS: DONE(已合并;已部署A批 2026-11-06 11:00)
+STATUS: REJECTED 2026-11-06 11:38(大脑撤回,不合并):方向违背用户的测试与验收规则——用户要求测试/验收连接真实数据源(TD/Redis/Kaipan),不是把它们隔离掉。分支 C705-offline-tests-no-td 与 worktree 保留供清理,不合并。见 fw/retros/2026-11-06-real-sources.md
+STATUS: DONE(scout 已出报告 reports/C706.md)
+STATUS: DONE(已合并 651032f;仅测试/示例脚本,无需部署)
+STATUS: DONE(已合并;A批待部署)
+STATUS: DONE(已合并 91798f8;A批待部署)
+STATUS: DONE
+STATUS: DONE(已合并;A批待部署)
+STATUS: DONE(scout 结论见 STATE.md 2026-11-06 C712)
+STATUS: DONE(已合并 c9d8384;已部署)
+STATUS: DONE(已合并 1a2de36;已部署)
+STATUS: DONE(已合并 94273f2;已部署)
+STATUS: DONE(已合并 e4a1b9f;已部署)
+STATUS: DONE(已合并;见 STATE.md)
+STATUS: DONE(已合并;见 STATE.md)
+STATUS: DONE(已合并;见 STATE.md)
+STATUS: DONE(已合并;见 STATE.md)
+STATUS: DONE(已合并;见 STATE.md)
+STATUS: DONE(已合并 8cf4e07;无部署内容,只是工具)
+STATUS: DONE(已合并 a2447bd;工具,不进 live)
+STATUS: DONE(已合并 4406757;待部署,A 批)
+STATUS: DONE(PARTIAL 报告已采纳:TD 可连;冷缓存 0x073a×43;线上无 11-06 产物)
+STATUS: DONE(已合并 5f1a0c0;缺口由 C737 修复)
+STATUS: DONE(已合并 90d6d56;无部署内容,工具;守卫已接入 role_guard 垫片)
+STATUS: DONE(PARTIAL 报告已采纳:同一 SQL 这次成功,0x073a 是瞬时状态相关)
+STATUS: DONE(PARTIAL 报告已采纳:周六实验室未复现;连接/游标释放对照 0 次失败)
+STATUS: DONE(PARTIAL 报告已采纳:账本给出线上每次尝试约 8 分钟、重试间隔 60/120 秒;scout 沙箱连不上 Redis)
+STATUS: DONE(PARTIAL 报告已采纳:14 个快照已转存;11-06 08:25 余量 472MB 触发 TD_MEMORY_HEADROOM_LOW;11-05 快照已过期)
+STATUS: DONE(已合并 a637481;待部署,A 批)
+STATUS: DONE(PARTIAL 报告已采纳:C730 真实验收 PASS;C744 契约 PASS,runner 沙箱 /proc 只见 4 个进程,top_processes 需在主机上由线上运行验证)
+STATUS: DONE(PARTIAL 报告已采纳:TD 122 个交易日,最近 120 日无缺;补数不稳)
+STATUS: DONE(PARTIAL 报告已采纳:预热链 8 步整体失败,报告读取点已能回退)
+STATUS: DONE(已合并 afdbacc;代码默认关闭,待配置批启用)
+STATUS: DONE(已合并 d1b5f35;已上线 config v39 2026-11-07 17:41)
+STATUS: DONE(PARTIAL 报告已采纳:演练环境别的步骤先失败,降级路径无法单独验证;改用 C752 + 周一线上自然触发)
+STATUS: DONE(已合并 c6b3277;已上线 Python 批 2026-11-07 17:40;fw/bin/pm 垫片已建)
+STATUS: DONE(PARTIAL 报告已采纳:候选 v39 校验通过,隔离启动演练 0 告警 0 MISSED;ladder 展开差异与 heartbeat 哈希已核实无问题)
+STATUS: DONE(C744 主机侧验收 PASS)
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 1d9eecc)
+STATUS: ready
+STATUS: DONE(已合并 82cbe70)
+STATUS: DONE(已合并 2e5b99a)
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 f58dcc3)
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 2cbb692)
+STATUS: DONE(已合并 e193bac)
+STATUS: DONE(已合并 edb6859)
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 98cf57c)
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 fac5bf7)
+STATUS: DONE(已合并 7ecd5c1)
+STATUS: DONE(已合并 4e2fce6)
+STATUS: DONE(已合并 1cce7aa)
+STATUS: DONE(已合并 829284e)
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: SUPERSEDED(用户 2026-11-08:接口名 getHisStockDDE 已说明是历史数据,直接规定 DDE 获取=D+1 日 02:00、截止 06:30,不做验证实验,也取消周一 D6 采样)
+STATUS: DONE(已合并 05eb903)
+STATUS: DONE(已合并 6398053)
+STATUS: DONE(已合并 48a6e9f)
+STATUS: DONE(已合并 0e74cfc)
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 30e754a)
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 3249632)
+STATUS: DONE(已合并;提交 4cb5792)
+STATUS: ready
+STATUS: DONE(已合并 0e7c437)
+STATUS: DONE(已合并 ad93e6b)
+STATUS: DONE(已合并 7b7bd88)
+STATUS: DONE(报告 PARTIAL 已读;运行已结束,见 reports/C818.md)
+STATUS: ready
+STATUS: DONE(已合并 5534b42)
+STATUS: ready
+STATUS: DONE(已合并 a8b8ccd)
+STATUS: DONE(已合并 0df1809)
+STATUS: SUPERSEDED(并入 C822 续做,不要派发)
+STATUS: DONE(已合并 8d69092)
+STATUS: ready
+STATUS: DONE(已合并 7330da3)
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 7f8905f)
+STATUS: DONE(已合并 b2b6632)
+STATUS: ready
+STATUS: DONE(已合并 8eb0be9)
+STATUS: ready
+STATUS: DONE(已合并 d754a26)
+STATUS: ready
+STATUS: DONE(已合并 7072532)
+STATUS: ready
+STATUS: DONE(已合并 81818ad)
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 d4822a2)
+STATUS: ready
+STATUS: DONE(已合并 3380b2e)
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 abbc4d1)
+STATUS: ready
+STATUS: DONE(已合并 289f271)
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 c38c756)
+STATUS: DONE(已合并 4ca9e71)
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 9444551)
+STATUS: ready
+STATUS: DONE(已合并 502ec19)
+STATUS: DONE(已合并 b3637ef)
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 ed7548d)
+STATUS: ready
+STATUS: DONE(已合并 2a2b750)
+STATUS: ready
+STATUS: DONE(已合并 5f5540b)
+STATUS: ready
+STATUS: DONE(已合并 0c370f3)
+STATUS: ready
+STATUS: DONE(已合并 c7597c8)
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 c60605b)
+STATUS: ready
+STATUS: DONE(已合并 b42b68d)
+STATUS: ready
+STATUS: DONE(已合并 80a0f18)
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 9383f66)
+STATUS: ready
+STATUS: DONE(已合并 781cad4)
+STATUS: ready
+STATUS: DONE(已合并 420c2ce)
+STATUS: DONE(已合并 6c4ab79)
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 37300cb)
+STATUS: DONE(已合并 8d49f35)
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 37bbe82)
+STATUS: ready
+STATUS: DONE(已合并 25e79f6)
+STATUS: ready
+STATUS: DONE(已合并 75c180e)
+STATUS: DONE(已合并 a6035ed)
+STATUS: DONE(已合并 3536dcb)
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 a6f3fc7)
+STATUS: DONE(已合并 38c2bd5;直接 release.py merge,闸门 7 文件/83 测试/29 秒;pm audit 未跑)
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 f2c56fa)
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 776fc9a)
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 237df31)
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 2193c11)
+STATUS: DONE(已合并 88bfa44)
+STATUS: ready
+STATUS: DONE(已合并 4f7fda4)
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并 913ba08)
+STATUS: APPROVED(用户 2026-11-10 "全部同意";决定:①D 到 D+4 共 5 个交易日有效;②ban_reasons/broken_boards/first_failed/theme_conclusions 暂不纳入;③旧 cache:* 键清理前先列清单给用户看再删;④板块成员只写报告用到的字段)。实现拆为 C943–C946 串行派发。
+STATUS: DONE(已合并 6328afc)
+STATUS: DONE(已合并 9618fb2)
+STATUS: DONE(已合并 ca7b5b4)
+STATUS: DONE(已合并 705881f)
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: ready
+STATUS: SUPERSEDED(位置错误:竞价快照由 t1_v2 保存,不是 Core;本卡不得合并。见用户 2026-11-10 纠正)
+STATUS: SUPERSEDED(错误基线与范围冲突已复盘;由C956及C958接替)
+STATUS: PARTIAL(已提交9713c01;C958补齐协议与验收;未部署)
+STATUS: PARTIAL(已收回;C958处理协议与边界;大脑已独立运行C956自测exit0)
+STATUS: DONE(54a3d1b实现与独立验收通过;2026-11-10已部署t1_v2;独立源码仓库未合并)
+STATUS: DONE(独立验收已收回;报告证据齐全;外层进程中断无自动回调;未部署)
+STATUS: PARTIAL(两次未完成已复盘;7cd133f隔离候选作废留证;不再沿候选推进,不可合并发布)
+STATUS: PARTIAL(已收回部署前核验;上游应用健康待确认)
+STATUS: DONE(只读取证与离线红绿已收回;候选止血由C963实施;真实gate待修复)
+STATUS: DONE(四行止血已应用；候选精确一致且bash -n通过；真实gate仍暂停)
+STATUS: BLOCKED(两次失败已复盘;停止原卡全包重派,按复盘分阶段处理同一根因)
+STATUS: DONE(回调DONE/GREEN；离线复现与方案已收回；真实工作流未修改)
+STATUS: PARTIAL(首次回调exit5；仅复现基线故障，未改代码或提交；停止原样重派)
+STATUS: PARTIAL(两次exit5已复盘；候选84930f6作废留证，不再沿候选推进；临时行情测试违规及TD后台线程待处理；不得合并部署或原样重派)
+STATUS: PARTIAL(回调exit5已复核；真实数据与报告主链已调查，Redis替代不可证明；新版输出、历史到达时刻及开盘失败原因等待继续研究)
+STATUS: PARTIAL(仅备卡未派发;报告占位被role_guard拒绝,待正式权限修复)
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已收回;真实Redis只读取证)
+STATUS: ready
+STATUS: ready
+STATUS: DONE(已合并6fc3ea3;C980真源ACTIVE验收PASS;待部署)
+STATUS: DONE(2b9bacc;由C979验收并随46348ab部署;真实竞价输出待观察)
+STATUS: DONE(46348ab;C979定点验收并部署;正式竞价键待真实时段观察)
+STATUS: DONE(已合并 ba47943)
+STATUS: DONE(已部署46348ab;release=20261111_C979_46348ab;ELF=e3588ce4;仅正式时段产出待观察)
+STATUS: DONE(PM真实数据验收PASS;C975/C978复用;C982单次Python驱动分派及隔离热写读通过;未合并部署)
+STATUS: DONE(只读取证已复核;11-10三源93行一致;迁移进入C982;暂停real_gate非本卡门槛)
+STATUS: PARTIAL(候选9084c6f真实单函数及Python驱动分派验收PASS;热写读93行零差异;待合并部署;正式线上未验)
+STATUS: PARTIAL(只读诊断已收回;原发布阻塞已释放;二进制一致性等仍UNKNOWN;无生产变更)
+STATUS: DONE(已合并 c37c324;待部署;随C985-C989同分支;裁定见11-11审计§十三)
+STATUS: DONE(已合并 c37c324;待部署)
+STATUS: DONE(已合并 c37c324;待部署)
+STATUS: DONE(已合并 c37c324;待部署)
+STATUS: DONE(已合并 c37c324;待部署)
+STATUS: DONE(已合并 c37c324;待部署;C984-C989同分支一并合并)
+STATUS: PARTIAL(四次BLOCKED已复盘,见11-12审计§十四;limit_pool_d1演练SUCCEEDED;stock_theme演练缺plate_members;其余事件未演练;不再续派)
+STATUS: DONE(已合并 f191374;演练器工具,无需部署)
+STATUS: ready
+STATUS: PARTIAL(只读取证已收回;45项登记/前十缺口/原清单更正见evidence/C993/findings.md;读者全集与规模未全核;不迁移不实施)
+STATUS: MERGED-DEPLOYED(15ab6b5,已部署10:54);卡判定PARTIAL(runner);未全部验收:real_gate BLOCKED原因未查(不能判定为误报;可能与演练产生的/tmp结果文件有关,待查);608项受影响测试未跑;隔离演练读回READY/85行/degraded=false已确认;exact闸门111测试通过。原"非代码问题"说法作废。
+STATUS: ready
+STATUS: ready(待 Codex 额度恢复后派发;不得用 FW_EXECUTOR=claude 派,见 STATE 11-12 更正:Haiku runner 受 role_guard 约束)
+STATUS: ready(探针卡:验证 FW_EXECUTOR=claude 下 runner 不再受 role_guard 拦截;须先由用户应用 bin/dispatch 的 --setting-sources 修复)
+STATUS: ready
+STATUS: ready
