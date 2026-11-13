@@ -1,0 +1,32 @@
+[
+  {
+    "name": "builder-1",
+    "role": "builder",
+    "model": "gpt-6.1-terra",
+    "effort": "medium",
+    "session_id": "01a1d59b-a291-7ab3-bce4-b02ce7580b9b",
+    "hired": "2026-11-13",
+    "trust": "L0",
+    "status": "active",
+    "ctx_tokens": 173319,
+    "cards": [
+      "C1063",
+      "C1065",
+      "C1068"
+    ]
+  },
+  {
+    "name": "auditor-1",
+    "role": "auditor",
+    "model": "gpt-6-sol",
+    "effort": "medium",
+    "session_id": "01a1d5a6-ba8a-70d0-9c6d-a5c75e9c7a25",
+    "hired": "2026-11-14",
+    "trust": "L0",
+    "status": "active",
+    "ctx_tokens": 40340,
+    "cards": [
+      "C1064"
+    ]
+  }
+]
