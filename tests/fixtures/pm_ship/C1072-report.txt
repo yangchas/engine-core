@@ -1,0 +1,8 @@
+**C1072 已实现并提交，状态为 PARTIAL**：真实 real_gate 尚待 runner 执行。
+
+- `wait-card` 记录 rollout 缓存占比和未缓存 token；`roster` 与 `pilot` 已显示相应指标。旧续用会话缺少上一卡基线时，本卡指标显示为未知。
+- 真实 rollout 核对结果：缓存占比 `0.969206`，未缓存输入加输出 `52990`。
+- 验收结果：`99 passed, 1 skipped in 42.65s`；跳过的是默认未启用的 live 契约测试。
+- 提交：`debf4ad`；工作树干净。
+
+完整证据与交接见 [C1072 报告](/home/exedev/fw/reports/C1072.md)。

@@ -1,0 +1,6 @@
+0.10s call     tests/test_baseline_window_declaration.py::test_daily_pipeline_passes_baseline_product_to_both_readers
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_real_fixtures.py:199: live contract test: run with --live
+53 passed, 1 skipped in 27.45s
+EXACT_SET (depth1 selected 9 > cap)
+选中 7 个测试文件、共 54 个测试、耗时 27.45 秒; --deep=no; mode=exact

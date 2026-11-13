@@ -1,0 +1,57 @@
+{
+  "C1072-card.txt": {
+    "source": "/home/exedev/fw/cards/C1072.md",
+    "sha256": "8971e00a3cb4ebda03ecbf0b30b364678b7acc3c71c19904a35383bd54a940a2"
+  },
+  "C1072-auto.txt": {
+    "source": "/home/exedev/fw/evidence/C1072/AUTO.md",
+    "sha256": "3b324d8d149c265c734903bd776bfd31cd9ffd47bec876a5de68eb98c3afc10f"
+  },
+  "C1072-report.txt": {
+    "source": "/home/exedev/fw/reports/C1072.md",
+    "sha256": "a7aa9e733942fdb3420ffad92d22f8960f051f7229e057138008fba7a91b47e7"
+  },
+  "C1077-card.txt": {
+    "source": "/home/exedev/fw/cards/C1077.md",
+    "sha256": "2969f13b51e46b16c4816d625da65434bfa8c19619e22f2b452d337c5d35f625"
+  },
+  "C1077-auto.txt": {
+    "source": "/home/exedev/fw/evidence/C1077/AUTO.md",
+    "sha256": "cc12cce717d5794cc260d168eec9989fc84db0e993d0bcd0f5b5e985a9a421c0"
+  },
+  "C1077-report.txt": {
+    "source": "/home/exedev/fw/reports/C1077.md",
+    "sha256": "66636362dd90a5614369d1fb7af5c3359fdfcc0cc02b4fce923eaee41227eaa7"
+  },
+  "C1079-card.txt": {
+    "source": "/home/exedev/fw/cards/C1079.md",
+    "sha256": "ec4cdf512b59720677bd221cfa4afe113f15d09797c7721cfa8e534242a01edd"
+  },
+  "C1079-auto.txt": {
+    "source": "/home/exedev/fw/evidence/C1079/AUTO.md",
+    "sha256": "5dbbbaac6d8295e658c0746d2580061c58a394afbf0763afee4fc25943bc094a"
+  },
+  "C1079-report.txt": {
+    "source": "/home/exedev/fw/reports/C1079.md",
+    "sha256": "12749a3af6207d6d85d7b173b688aa90cd1c003e6f2f5ba5b7c26474d2be1b3c"
+  },
+  "C001-report.txt": {
+    "source": "/home/exedev/fw/reports/C001.md",
+    "sha256": "2b68be08944d948aa146ba58045ea0acf4a99c67f4f510c520939c807f6286d0"
+  },
+  "C1077-20261114T020905-merge.txt": {
+    "source": "/home/exedev/fw/evidence/release/merge/C1077-20261114T020905-pytest.log",
+    "selection": "last 6 lines",
+    "sha256": "de8620f66316a74a07e61738a035faf2a9825a4c5c72415e4b7b406a869ea53c"
+  },
+  "C1077-20261114T021123-merge.txt": {
+    "source": "/home/exedev/fw/evidence/release/merge/C1077-20261114T021123-pytest.log",
+    "selection": "last 6 lines",
+    "sha256": "34cd07703d5b117ef5a0628fc4cd9997ff3c7f92d08e502e26b18dc2b3cb598e"
+  },
+  "C1079-20261114T021751-merge.txt": {
+    "source": "/home/exedev/fw/evidence/release/merge/C1079-20261114T021751-pytest.log",
+    "selection": "last 6 lines",
+    "sha256": "5298062f9b4104cb7c26e6b64a1b9b41d20bbb43aedf366ddf1ce1f03526cb0e"
+  }
+}

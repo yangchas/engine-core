@@ -1,0 +1,11 @@
+# AUTO C1072 2026-11-14 01:23:38
+verdict: 
+police: changed files: 0 POLICE OK 
+HEAD: debf4ad C1072: record rollout cache and uncached token usage
+ examples/pm.py                                     | 74 ++++++++++++++++++++--
+ tests/fixtures/pm_tokens/PROVENANCE                |  4 ++
+ ...8-00-01a1d5cf-12b2-7bf1-bfbf-a4fa5f785d7e.jsonl | 30 +++++++++
+ tests/test_pm.py                                   | 55 ++++++++++++++++
+ 4 files changed, 159 insertions(+), 4 deletions(-)
+RED: 缺 Co-Authored-By
+AUTO-RESULT: RED → /home/exedev/fw/evidence/C1072/AUTO.md
