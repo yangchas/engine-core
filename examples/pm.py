@@ -7,6 +7,8 @@ import json
 import os
 import re
 import selectors
+import shlex
+import sys
 import subprocess
 from pathlib import Path
 import time
@@ -243,6 +245,111 @@ def show_status(card, path):
     return 0
 
 
+
+def lint_module():
+    # Support both module import and direct execution of examples/pm.py.
+    try:
+        from examples import card_lint
+    except ModuleNotFoundError:
+        import card_lint
+    return card_lint
+
+
+def scoped_files(text, worktree):
+    scope = field(text, 'SCOPE_WRITE')
+    files = []
+    for match in re.findall(r'(?:src|examples|tests)/[\w./-]+\.py', scope):
+        files.append(match)
+    return files
+
+
+def testlist(args):
+    repo = Path(__file__).resolve().parents[1]
+    if args.card:
+        path = card_path(args.card)
+        if path is None:
+            return 2
+        text = path.read_text(encoding='utf-8')
+        repo = Path(worktree_from_card(text) or repo)
+        files = scoped_files(text, repo)
+    else:
+        files = [f.strip() for f in (args.files or '').split(',') if f.strip()]
+    selected = lint_module().exact_test_list(files, repo)
+    for item in selected:
+        print(item)
+    print(f"cd {shlex.quote(str(repo))} && TMPDIR=/tmp PYTHONPATH=src:. env -u TD_CONFIG -u REDIS_URL {shlex.quote(PYTHON)} -m pytest -q --no-header -p no:cacheprovider {' '.join(map(shlex.quote, selected))}; echo exit=$?")
+    return 0
+
+
+def newcard(args):
+    recipe_path = Path(__file__).with_name('card_recipes') / (args.recipe + '.json')
+    if not re.fullmatch(r'[a-z0-9-]+', args.recipe) or not recipe_path.is_file():
+        print('unknown recipe')
+        return 2
+    recipe = json.loads(recipe_path.read_text(encoding='utf-8'))
+    values = vars(args).copy()
+    if args.goal_file:
+        values['goal'] = Path(args.goal_file).read_text(encoding='utf-8').strip()
+    for item in args.param:
+        if '=' not in item:
+            print('invalid --param: expected k=v')
+            return 2
+        key, value = item.split('=', 1)
+        values[key.replace('-', '_')] = value
+    missing = [key for key in recipe['required'] if not values.get(key)]
+    if missing:
+        print('missing required: ' + ', '.join(missing))
+        return 2
+    cards = location('PM_CARDS_DIR', str(CARDS))
+    repo = Path(__file__).resolve().parents[1]
+    numbers = [int(p.stem[1:]) for p in cards.glob('C*.md') if re.fullmatch(r'C[0-9]+', p.stem)]
+    number = max(numbers, default=0) + 1
+    while True:
+        ident = f'C{number}'
+        path = cards / (ident + '.md')
+        if args.dry_run:
+            break
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            break
+        except FileExistsError:
+            number += 1
+    worktree = repo.parent / ('engine_core-wt-' + ident)
+    scope = [x.strip() for x in (values.get('scope') or '').split(',') if x.strip()]
+    files = [x for x in scope if x.startswith(('src/', 'examples/', 'tests/'))]
+    selected = lint_module().exact_test_list(files, repo)
+    context = {**values, 'id': ident, 'test_files': ' '.join(selected)}
+    fixed = {k: v.format_map(context) for k, v in recipe['fixed'].items()}
+    expanded = [str(worktree / x) if not Path(x).is_absolute() else x for x in scope]
+    entries = [('ID', ident), ('STATUS', 'ready'), ('LANE', fixed['LANE']),
+               ('ROLE', fixed['ROLE']), ('EXECUTOR', fixed['EXECUTOR']),
+               ('TITLE', values['title']), ('SERVES', values['serves']), ('PLAN', values['plan']),
+               ('APPROVAL', values['approval']), ('SCOPE_WRITE', ', '.join(expanded)),
+               ('REAL_DATA', values['real_data']), ('ORACLE', values['oracle']),
+               ('ACCEPT_BY', values['accept_by'])]
+    entries += [(k, fixed[k]) for k in ('TEST_BUDGET', 'STUBS_ALLOWED', 'AUTHORIZATION')]
+    entries += [('GOAL', values['goal'])] + [(k, fixed[k]) for k in ('NOT_DO', 'REPORT', 'ACCEPT')]
+    card = '\n'.join(f'{k}: {v}' for k, v in entries) + '\n'
+    if args.dry_run:
+        print(card, end='')
+        return 0
+    with os.fdopen(fd, 'w', encoding='utf-8') as output:
+        output.write(card)
+    if fixed['ROLE'] == 'builder' and scope and not (args.no_worktree or os.environ.get('PM_NO_WORKTREE') == '1'):
+        result = subprocess.run(['git', '-C', str(repo), 'worktree', 'add', '-b', ident,
+                                 str(worktree), os.environ.get('PM_BASE', 'HEAD')], capture_output=True, text=True)
+        if result.returncode:
+            print(f'{ident} {path}\nworktree failed: {result.stderr.strip()}')
+            return 2
+    findings = lint_module().lint_card(card, worktree if worktree.is_dir() else repo)
+    print(f'{ident} {path}')
+    for finding in findings:
+        print(finding)
+    if not findings:
+        print('lint PASS')
+    print(f'bin/pm dispatch {ident}')
+    return 2 if any(f.startswith('FAIL ') for f in findings) else 0
+
 def card_command(args):
     if args.command == 'cards':
         cards = location('PM_CARDS_DIR', str(CARDS))
@@ -281,6 +388,13 @@ def card_command(args):
         return 0
     if args.command == 'dispatch':
         try:
+            if not args.no_lint:
+                lint = os.environ.get('PM_CARD_LINT', str(Path(__file__).with_name('card_lint.py')))
+                result = subprocess.run([PYTHON, lint, str(path)], capture_output=True, text=True)
+                if result.stdout or result.stderr:
+                    print((result.stdout + result.stderr).rstrip())
+                if result.returncode:
+                    return 2
             result = subprocess.run([os.environ.get('PM_PREFLIGHT', '/home/exedev/fw/bin/preflight_card'), str(path)],
                                     capture_output=True, text=True)
             if result.returncode:
@@ -350,18 +464,38 @@ def main(argv=None):
     accept_parser.add_argument('--dry-run', action='store_true')
     accept_parser.add_argument('--no-audit', action='store_true')
     accept_parser.add_argument('--deep', action='store_true')
+    listing = sub.add_parser('testlist')
+    group = listing.add_mutually_exclusive_group(required=True)
+    group.add_argument('--files')
+    group.add_argument('--card')
+    new = sub.add_parser('newcard')
+    new.add_argument('--recipe', required=True)
+    for option in ('title', 'serves', 'plan', 'approval', 'scope', 'real-data', 'oracle', 'accept-by'):
+        new.add_argument('--' + option)
+    goals = new.add_mutually_exclusive_group()
+    goals.add_argument('--goal')
+    goals.add_argument('--goal-file')
+    new.add_argument('--param', action='append', default=[])
+    new.add_argument('--dry-run', action='store_true')
+    new.add_argument('--no-worktree', action='store_true')
     cards = sub.add_parser('cards')
     cards.add_argument('--open', action='store_true')
     cards.add_argument('--limit', type=int, default=20)
     for name in ('status', 'dispatch', 'setstatus', 'wait-card'):
         command = sub.add_parser(name)
         command.add_argument('card')
+        if name == 'dispatch':
+            command.add_argument('--no-lint', action='store_true')
         if name == 'setstatus':
             command.add_argument('text')
         if name == 'wait-card':
             command.add_argument('--timeout', type=float, default=1700)
             command.add_argument('--interval', type=float, default=20)
     args = parser.parse_args(argv)
+    if args.command == 'newcard':
+        return newcard(args)
+    if args.command == 'testlist':
+        return testlist(args)
     if args.command in ('cards', 'status', 'dispatch', 'setstatus', 'wait-card'):
         return card_command(args)
     if args.command == 'accept':
