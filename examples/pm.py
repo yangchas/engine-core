@@ -611,6 +611,8 @@ def newcard(args):
     entries += [(k, fixed[k]) for k in ('TEST_BUDGET', 'STUBS_ALLOWED', 'AUTHORIZATION') if k in fixed]
     understanding = "第 0 步:先写 ≤8 行'我的理解'(目标、不做什么、关键约束、怎么验收、不确定点)到 evidence 目录下 understanding.md,再开工。\n" if tier == 'hard' else ''
     goal = understanding + '先读 CONTEXT 文件。\n' + values['goal']
+    if fixed['ROLE'] == 'builder' and 'PM 明确豁免' not in goal and 'PM 明确豁免' not in fixed.get('GOAL_SUFFIX', ''):
+        goal = '【PM 明确豁免】测试超过150个先停不适用；只跑 TEST_BUDGET 与点名文件，不做依赖扩展。\n' + goal
     if fixed.get('GOAL_SUFFIX'):
         goal += '\n' + fixed['GOAL_SUFFIX']
     entries += [('GOAL', goal)] + [(k, fixed[k]) for k in ('NOT_DO', 'REPORT', 'ACCEPT')]
@@ -828,7 +830,7 @@ def ship(args):
                     waited = card_command(argparse.Namespace(command='wait-card', card=args.card, timeout=1700, interval=20))
                     report = location('PM_REPORTS_DIR', '/home/exedev/fw/reports') / (args.card + '.md')
                     first = report.read_text(encoding='utf-8').splitlines()[0] if report.is_file() and report.stat().st_size else ''
-                    verdict = re.match(r'^VERDICT\s*:\s*(DONE|PARTIAL|BLOCKED)\b', first, re.I)
+                    verdict = re.match(r'^[\W_]*(?:VERDICT\s*:\s*[\W_]*)?(DONE|PARTIAL|BLOCKED)(?![A-Za-z0-9_])', first, re.I)
                     runs = location('PM_RUNS_DIR', '/home/exedev/fw/runs')
                     usage = runs / 'usage.tsv'
                     rows = [line.split('\t') for line in usage.read_text(encoding='utf-8').splitlines()] if usage.is_file() else []
@@ -851,7 +853,7 @@ def ship(args):
                         if not auto_result or auto_result.group(1) != 'GREEN':
                             message = 'AUTO ' + (auto_result.group(1) if auto_result else 'missing')
                         elif not verdict:
-                            message = 'report VERDICT missing'
+                            message = 'report VERDICT missing: ' + first[:80]
                         elif verdict.group(1).upper() != 'DONE':
                             message = 'report ' + verdict.group(1).upper()
                         elif not files:

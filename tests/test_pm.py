@@ -940,3 +940,44 @@ def test_ship_real_history(tmp_path, monkeypatch, capsys, case):
         assert bool(calls) == (case == 'merge_failure')
         if calls:
             assert 'test_pm.py' in status
+
+
+def test_c1105_historical_report_verdict(tmp_path, monkeypatch, capsys):
+    import examples.pm as pm
+    fixtures = Path(__file__).parent / 'fixtures/pm_ship'
+    for name in ('cards', 'reports', 'runs', 'evidence', 'staff'):
+        (tmp_path / name).mkdir()
+        monkeypatch.setenv('PM_' + name.upper() + '_DIR', str(tmp_path / name))
+    monkeypatch.setenv('PM_STAFF_PEOPLE_DIR', str(tmp_path / 'staff'))
+    card = 'C1079'
+    (tmp_path / 'cards' / (card + '.md')).write_bytes((fixtures / (card + '-card.txt')).read_bytes())
+    evidence = tmp_path / 'evidence' / card
+    evidence.mkdir()
+    (evidence / 'AUTO.md').write_bytes((fixtures / (card + '-auto.txt')).read_bytes())
+    monkeypatch.setattr(pm, 'card_command', lambda args: 0)
+    report = tmp_path / 'reports' / (card + '.md')
+    # Verbatim C1103 report first line as recorded in /home/exedev/fw/context/C1105.md (先例).
+    historical = '**PARTIAL：未复现合并门失败，尚无法确认根因或修复。**'
+    for first, expected in [(historical, 'report PARTIAL'), ('VERDICT: DONELESS', 'report VERDICT missing'), ('**BLOCKED**:', 'report BLOCKED')]:
+        report.write_text(first + '\n')
+        assert main(['ship', card]) == 2
+        output = capsys.readouterr().out
+        assert expected in output
+        if expected.endswith('missing'):
+            assert first in output
+
+
+def test_c1105_builder_exemption(tmp_path, monkeypatch, capsys):
+    cards = tmp_path / 'cards'
+    cards.mkdir()
+    monkeypatch.setenv('PM_CARDS_DIR', str(cards))
+    args = ['--title', '修复', '--serves', '目标', '--plan', 'P0 2/6', '--approval', '已授权',
+            '--scope', 'examples/pm.py', '--real-data', '真实卡', '--oracle', '结果一致',
+            '--accept-by', 'fail-first-real-fixture', '--dry-run']
+    assert main(['newcard', '--recipe', 'builder-fix', '--goal', '修复问题', *args]) == 0
+    output = capsys.readouterr().out
+    assert 'PM 明确豁免' in output and '150' in output and '不做依赖扩展' in output
+    assert main(['newcard', '--recipe', 'builder-fix', '--goal', '修复问题【PM 明确豁免】', *args]) == 0
+    assert capsys.readouterr().out.count('PM 明确豁免') == 1
+    assert main(['newcard', '--recipe', 'runner-verify', '--question', '验证什么?', '--goal', '观察', *args]) == 0
+    assert 'PM 明确豁免' not in capsys.readouterr().out

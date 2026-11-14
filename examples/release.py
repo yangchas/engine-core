@@ -161,6 +161,10 @@ def run_checked(command: list[str], cwd: Path, log: Path, env: dict[str, str] | 
     log.write_text(done.stdout + done.stderr, encoding="utf-8")
     failing = [line for line in (done.stdout + done.stderr).splitlines()
                if line.startswith(("FAILED", "ERROR", "--- FAIL", "FAIL\t", "panic:"))]
+    if done.returncode:
+        print(f"test log: {log}")
+        for line in [line for line in (done.stdout + done.stderr).splitlines() if line.startswith("E   ")][:3]:
+            print(line)
     return done.returncode, failing
 
 
@@ -442,6 +446,9 @@ def cmd_merge(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    python = "/home/exedev/services/engine-next/shared/venv/bin/python"
+    if sys.executable != python and Path(python).is_file() and "RELEASE_NO_REEXEC" not in os.environ:
+        os.execv(python, [python, *sys.argv])
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", choices=["plan", "accept", "apply", "rollback", "merge", "errors"])
     parser.add_argument("rest", nargs="*")
