@@ -22,7 +22,7 @@ def test_registry_declares_tiered_storage_and_bounded_redis_views():
     assert get_dataset("daily_kline").redis_ttl_seconds == 7 * 86400
     assert get_dataset("hot_plates").redis_ttl_trade_days == 5
     assert get_dataset("hot_rank").redis_ttl_seconds == 2 * 86400
-    assert get_dataset("limit_up_pool").redis_ttl_seconds == 4 * 86400
+    assert get_dataset("limit_up_pool").redis_ttl_trade_days == 5
     assert get_dataset("limit_reasons").redis_ttl_seconds == 4 * 86400
     assert get_dataset("plate_members").redis_ttl_seconds == 4 * 86400
     assert get_dataset("hot_rank").source == "ths_hot_rank"
@@ -36,8 +36,12 @@ def test_registry_declares_tiered_storage_and_bounded_redis_views():
     for name, spec in DATASETS.items():
         if not spec.hot_view or name not in items:
             continue
-        if name == "hot_plates":
+        if name in {"hot_plates", "limit_up_pool"}:
             assert items[name]["redis_ttl_trade_days"] == spec.redis_ttl_trade_days
+            assert spec.redis_ttl_seconds is None
+            view = next(location for location in items[name]["storage"] if location["kind"] == "redis_view")
+            assert view["retention"] == {"kind": "trading_days", "count": 5, "anchor": "data_date",
+                                         "expire_time": "00:00:00", "timezone": "Asia/Shanghai"}
             continue
         assert isinstance(spec.redis_ttl_seconds, int) and spec.redis_ttl_seconds > 0
         assert items[name].get("redis_ttl_seconds") == spec.redis_ttl_seconds

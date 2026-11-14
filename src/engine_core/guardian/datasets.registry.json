@@ -435,6 +435,7 @@
     },
     {
       "id": "limit_up_pool",
+      "redis_ttl_trade_days": 5,
       "owner": "kaipan_fetch",
       "artifact": {
         "catalog_dataset": "limit_up_pool",

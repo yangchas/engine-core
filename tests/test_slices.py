@@ -368,30 +368,40 @@ def test_previous_trade_date_uses_observed_core_dates_and_fails_closed():
     assert previous_trade_date(Catalog([]), "2026-10-17") is None
 
 
-def test_legacy_source_and_file_fallback_are_explicit(tmp_path):
+def test_legacy_source_and_file_fallback_are_explicit(monkeypatch):
     from engine_core.slices import SliceProviders
+    from engine_core.data_pipeline import limit_pool_hot_view
+    from pathlib import Path
 
+    def no_td():
+        raise ValueError("td_unavailable")
+
+    monkeypatch.setattr(limit_pool_hot_view, "_td_store", no_td)
     class Redis:
+        def get(self, key):
+            assert key == "core:view:limit_up_pool:2026-10-23"
+            return None
+
         def hgetall(self, key):
-            return {"600001": '{"lb_days":2}'} if key.endswith("2026-10-14") else {}
+            raise AssertionError("legacy Redis must not be read")
 
-    file_path = tmp_path / "fallback.json"
-    file_path.write_text('[{"symbol":"600002","event_time":"2026-10-14T00:00:00+08:00",'
-                         '"available_at":"2026-10-14T01:00:00+08:00"}]')
-    reader = SliceReader(SliceProviders(redis=Redis(), file_fallback=False).providers())
-    missing = reader.get("yest_limit_pool", trade_date="2026-10-15",
-                         asof="2026-10-15T09:02:00+08:00", source_date="2026-10-14",
-                         fallback_file=str(file_path))
-    assert missing.meta["status"] == "DEGRADED"
-    assert missing.meta["source"] == "legacy_redis"
-    assert missing.meta["reason"] == "NO_ASOF"
+    def forbidden(*args):
+        raise AssertionError("legacy and file fallback must not be called")
 
-    enabled = SliceReader(SliceProviders(redis=None, file_fallback=True).providers())
-    fallback = enabled.get("yest_limit_pool", trade_date="2026-10-15",
-                           asof="2026-10-15T09:02:00+08:00", source_date="2026-10-14",
-                           fallback_file=str(file_path))
-    assert fallback.meta["source"] == "FILE_FALLBACK"
-    assert fallback.meta["status"] == "PARTIAL"
+    monkeypatch.setattr(SliceProviders, "_legacy", forbidden)
+    monkeypatch.setattr(SliceProviders, "_file", forbidden)
+    file_path = Path(__file__).parent / "fixtures/real/kaipan_pool_2026-10-23_L1_0537.json"
+    assert file_path.is_file()
+    for allow_file in (False, True):
+        reader = SliceReader(SliceProviders(redis=Redis(), file_fallback=allow_file).providers())
+        missing = reader.get("yest_limit_pool", trade_date="2026-10-26",
+                             asof="2026-10-26T09:02:00+08:00", source_date="2026-10-23",
+                             fallback_file=str(file_path))
+        assert missing.rows == []
+        assert missing.meta["status"] == "MISSING"
+        assert missing.meta["source"] == "td"
+        assert missing.meta["reason"] == "td_unavailable"
+        assert missing.meta["fallback_reason"] == "redis_missing"
 
 
 def test_reference_import_dry_run_and_execute(tmp_path):
