@@ -12,7 +12,30 @@ from engine_core.data_pipeline.storage import ArtifactCatalog
 from engine_core.guardian.commands import validate_handler_postcondition
 
 
-def test_gap_only_records_missing_slot_and_references_previous_snapshot(tmp_path, monkeypatch):
+@pytest.fixture(autouse=True)
+def gap_redis(monkeypatch):
+    from fnmatch import fnmatch
+    from engine_core.data_pipeline import limit_pool_hot_view, redis_day_view
+
+    class Redis:
+        def __init__(self):
+            self.values = {}
+        def scan_iter(self, match, count=100):
+            return [key for key in self.values if fnmatch(key, match)]
+        def get(self, key):
+            return self.values.get(key)
+        def set(self, key, value, ex, nx=False):
+            if nx and key in self.values:
+                return False
+            self.values[key] = value
+            return True
+    redis = Redis()
+    monkeypatch.setattr(limit_pool_hot_view, '_client', lambda: redis)
+    monkeypatch.setattr(redis_day_view, 'expire_at', lambda _day: 4070908800)
+    return redis
+
+
+def test_gap_only_records_missing_slot_and_references_previous_snapshot(tmp_path, monkeypatch, gap_redis):
     from engine_core.data_pipeline import limit_pool_hot_view
 
     fixture_dir = Path(__file__).parent / "fixtures/real/c1094"
@@ -20,16 +43,7 @@ def test_gap_only_records_missing_slot_and_references_previous_snapshot(tmp_path
     view = json.loads(raw)
     key = json.loads((fixture_dir / "PROVENANCE.json").read_text())["view.json"]["key"]
 
-    class Redis:
-        def scan_iter(self, match, count):
-            assert match == f"core:cache:data:hot_plates:{view['trade_date']}:*"
-            return [key]
-
-        def get(self, requested):
-            assert requested == key
-            return raw
-
-    monkeypatch.setattr(limit_pool_hot_view, "_client", lambda: Redis())
+    gap_redis.values[key] = raw
     day = view["trade_date"]
     declared = ["hot_plates", "kaipan_hot_091610"]
     assert validate_handler_postcondition("kaipan_hot_capture", day,
@@ -113,7 +127,7 @@ def test_history_job_started_after_deadline_records_gaps_without_building_provid
     assert len([line for line in capsys.readouterr().out.splitlines()
                 if '"status": "GAP"' in line]) == 3
     for day in dates[:3]:
-        path = ArtifactCatalog(tmp_path).locate("hot_plates_gaps", day)
-        assert path is not None
+        from engine_core.data_pipeline.hot_plates_gaps import _existing_gap_rows
+        assert ArtifactCatalog(tmp_path).locate("hot_plates_gaps", day) is None
         assert any(row["event_id"] == f"kaipan_history_{day.replace('-', '')}"
-                   for row in ArtifactCatalog(tmp_path).read_rows(path))
+                   for row in _existing_gap_rows(tmp_path, day))

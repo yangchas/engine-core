@@ -7,8 +7,6 @@ from pathlib import Path
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
-from .jobs import JobRunner
-from .storage import ArtifactCatalog
 from ..errors import CoreError
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -40,11 +38,18 @@ def _snapshot_manifests(root: Path, trade_date: str) -> list[dict[str, Any]]:
         return []
 
 
-def _existing_gap_rows(catalog: ArtifactCatalog, trade_date: str) -> list[dict[str, Any]]:
-    path = catalog.locate("hot_plates_gaps", trade_date)
-    if path is None:
-        return []
-    return [dict(row) for row in catalog.read_rows(path)]
+def _existing_gap_rows(root: str | Path, trade_date: str) -> list[dict[str, Any]]:
+    """Read the Redis ledger; historical catalog rows are not a fallback."""
+    from .limit_pool_hot_view import _client
+    client = _client()
+    rows = []
+    for key in client.scan_iter(match=f"core:cache:data:hot_plates_gaps:{trade_date}:*", count=100):
+        raw = client.get(key)
+        if raw:
+            row = json.loads(raw)
+            if isinstance(row, dict) and row.get("trade_date") == trade_date:
+                rows.append(row)
+    return rows
 
 
 def prior_hot_plate_dates(root: str | Path, session_date: str, count: int) -> list[str]:
@@ -80,8 +85,7 @@ def record_hot_plates_gap(root: str | Path, trade_date: str, event_id: str,
     """Append one idempotent GAP row and reference the newest earlier snapshot as STALE."""
     day = date.fromisoformat(trade_date).isoformat()
     root_path = Path(root).expanduser()
-    catalog = ArtifactCatalog(root_path)
-    rows = _existing_gap_rows(catalog, day)
+    rows = _existing_gap_rows(root_path, day)
     previous = next((row for row in rows if row.get("event_id") == event_id), None)
     if previous is not None:
         return previous
@@ -115,14 +119,21 @@ def record_hot_plates_gap(root: str | Path, trade_date: str, event_id: str,
     rows.append(gap)
     if not persist:
         return gap
-    observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
-    if observed.tzinfo is None:
-        observed = observed.replace(tzinfo=SHANGHAI)
-    now = observed.astimezone(SHANGHAI).isoformat()
-    JobRunner(artifact_root=root_path).run(
-        "hot_plates_gaps", day,
-        fetch=lambda _day: {"rows": rows, "expected_count": len(rows)},
-        now=now, source="guardian_gap_only", as_of=day, publish=False)
+    from .limit_pool_hot_view import _client
+    from .redis_day_view import expire_at
+    import time as clock
+
+    ttl = expire_at(day) - int(clock.time())
+    if ttl <= 0:
+        raise ValueError("redis_ttl_seconds_required:hot_plates_gaps")
+    key = f"core:cache:data:hot_plates_gaps:{day}:{event_id}"
+    client = _client()
+    if not client.set(key, json.dumps(gap, ensure_ascii=False, sort_keys=True), ex=ttl, nx=True):
+        raw = client.get(key)
+        if raw is None:
+            raise RuntimeError("hot_plates_gap_redis_write_failed")
+        return json.loads(raw)
+
     return gap
 
 
@@ -144,7 +155,7 @@ def reconcile_due_hot_plates_gaps(root: str | Path, trade_date: str, now: str,
     schedule = json.loads(path.read_text(encoding="utf-8"))
     current = _parse_time(now.replace("Z", "+00:00"), day)
     manifests = _snapshot_manifests(Path(root).expanduser(), day)
-    known_events = {row.get("event_id") for row in _existing_gap_rows(ArtifactCatalog(root), day)}
+    known_events = {row.get("event_id") for row in _existing_gap_rows(root, day)}
     gaps = []
     for event in schedule.get("events", []):
         if not isinstance(event, Mapping) or event.get("handler") != "kaipan_hot_capture":
@@ -169,7 +180,7 @@ def reconcile_due_hot_plates_gaps(root: str | Path, trade_date: str, now: str,
             for target_date in history_dates:
                 history_id = history_event_id(target_date)
                 if any(row.get("event_id") == history_id for row in
-                       _existing_gap_rows(ArtifactCatalog(root), target_date)):
+                       _existing_gap_rows(root, target_date)):
                     continue
                 if history_capture_exists(root, target_date):
                     continue

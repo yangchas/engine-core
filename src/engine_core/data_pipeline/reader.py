@@ -26,6 +26,17 @@ def load_dataset(name: str, trade_date: str | None = None, *, prefer: str = "red
                  artifact_root: str | Path | None = None, now: str | None = None) -> DatasetRead | None:
     if prefer not in {"redis", "file"}: raise ValueError("prefer must be redis or file")
     spec = get_dataset(name)
+    if name == "hot_plates_gaps":
+        if redis is None or trade_date is None:
+            return None
+        rows = []
+        for key in redis.scan_iter(match=f"core:cache:data:hot_plates_gaps:{trade_date}:*", count=100):
+            raw = redis.get(key)
+            if raw:
+                row = json.loads(raw)
+                if isinstance(row, dict) and row.get("trade_date") == trade_date:
+                    rows.append(row)
+        return DatasetRead(rows, {"dataset": name, "trade_date": trade_date}, "redis", "READY") if rows else None
     selected: dict[str, Any] | None = None
     discovered = "catalog"
     if name in {"plate_members", "plate_registry", "stock_static"} and os.environ.get("TD_CONFIG"):
