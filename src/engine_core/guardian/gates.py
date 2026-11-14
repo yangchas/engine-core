@@ -9,6 +9,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 LOG = logging.getLogger(__name__)
 _CACHE: dict[tuple[str, str, str], tuple[float, "GateResult"]] = {}
@@ -113,19 +114,37 @@ def _checkpoint_cutoff(event: Any, trade_date) -> datetime:
 
 
 def auction_snapshot_stats(now: datetime, tag: str, ctx: Any = None) -> dict[str, Any]:
-    td = ctx.get("td") if isinstance(ctx, dict) else None
-    if td is not None:
-        count = int(td.snapshot_count(_day(now), tag))
-    else:
-        upper = _timestamp(now.replace(tzinfo=None))
-        rows, _timeout = _query_bounded(f"SELECT symbol FROM market_data1.auction_snapshot_v2 WHERE trade_date='{_day(now)}' AND auction_tag='{tag}' AND ts <= '{upper}'")
-        count = len({str(row[0]) for row in rows})
+    source, degraded = "redis", False
+    try:
+        from ..data_pipeline.auction_redis_view import read_auction_view, redis_client
+        client = redis_client()
+        try:
+            rows = read_auction_view(client, now.date().isoformat(), tag)
+        finally:
+            close = getattr(client, "close", None)
+            if close:
+                close()
+        local_now = now if now.tzinfo is not None else now.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+        if any(row.get("tick_ts_ms", 0) > local_now.timestamp() * 1000 for row in rows):
+            raise ValueError("future_tick")
+        count = len(rows)
+    except Exception as exc:
+        LOG.info("guardian auction Redis unavailable reason=%s", type(exc).__name__)
+        source, degraded = "td", True
+        td = ctx.get("td") if isinstance(ctx, dict) else None
+        if td is not None:
+            count = int(td.snapshot_count(_day(now), tag))
+        else:
+            upper = _timestamp(now.replace(tzinfo=None))
+            rows, _timeout = _query_bounded(f"SELECT symbol FROM market_data1.auction_snapshot_v2 WHERE trade_date='{_day(now)}' AND auction_tag='{tag}' AND ts <= '{upper}'")
+            count = len({str(row[0]) for row in rows})
     universe = ctx.get("universe_count") if isinstance(ctx, dict) else None
     if not universe:
         universe = FALLBACK_UNIVERSE_COUNT
         LOG.info("guardian trusted universe unavailable; using fallback=%s trade_date=%s", FALLBACK_UNIVERSE_COUNT, now.date())
     return {"row_count": count, "universe_count": int(universe),
-            "coverage": count / int(universe) if universe else 0.0}
+            "coverage": count / int(universe) if universe else 0.0,
+            "source": source, "degraded": degraded}
 
 
 def auction_snapshot_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
@@ -141,11 +160,12 @@ def auction_snapshot_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
                               reason="coverage_threshold_met" if stats["coverage"] >= threshold else "coverage_below_threshold",
                               query_window={"trade_date": _day(now), "auction_tag": tag, "upper_ts": upper},
                               row_count=stats["row_count"], coverage=stats["coverage"],
+                              source=stats["source"], degraded=stats["degraded"],
                               threshold=threshold, elapsed_ms=round((time.monotonic() - started) * 1000))
         except Exception as exc:
             return GateResult(status="not_ready", reason="TD_QUERY_TIMEOUT" if isinstance(exc, TimeoutError) else "TD_QUERY_FAILED",
                               query_window={"trade_date": _day(now), "auction_tag": tag, "upper_ts": upper},
-                              threshold=threshold, exception_type=type(exc).__name__,
+                              threshold=threshold, exception_type=type(exc).__name__, source="td", degraded=True,
                               elapsed_ms=round((time.monotonic() - started) * 1000))
     threshold = AUCTION_COVERAGE_THRESHOLD if gate == "auction_coverage" else SNAPSHOT_COVERAGE_THRESHOLD
     return _cached(gate, event, now, f"{tag}:{threshold}", check)
