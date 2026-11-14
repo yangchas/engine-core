@@ -122,10 +122,13 @@ def publish_hot_snapshot(manifest: Mapping[str, Any], rows: list[dict[str, Any]]
                          ) -> dict[str, Any]:
     """Publish an immutable Core Redis view; never address legacy Q2 keys."""
     from ..registry import get_dataset
+    from ..redis_day_view import hot_view_expire_at, _now_timestamp
     from ..storage import canonical_json
 
     spec = get_dataset("limit_up_pool_today")
     day = date.fromisoformat(str(manifest["trade_date"])).isoformat()
+    deadline = hot_view_expire_at(day)
+    ttl_seconds = max(0, deadline - int(_now_timestamp()))
     as_of = str(manifest["as_of"])
     version = str(manifest["version"])
     namespace = f"core:cache:data:{spec.name}"
@@ -167,7 +170,7 @@ def publish_hot_snapshot(manifest: Mapping[str, Any], rows: list[dict[str, Any]]
 
         date_pointer = _json_at(date_key)
         if date_pointer and not _newer({"trade_date": day, "as_of": as_of}, date_pointer):
-            return {"status": "superseded", "key": date_key, "ttl_seconds": spec.redis_ttl_seconds}
+            return {"status": "superseded", "key": date_key, "ttl_seconds": ttl_seconds}
         date_json = canonical_json({"trade_date": day, "version": version,
                                     "manifest": manifest.get("manifest_uri"), "as_of": as_of}).decode("utf-8")
         plan = [(version_key, version_json), (date_key, date_json)]
@@ -183,13 +186,13 @@ def publish_hot_snapshot(manifest: Mapping[str, Any], rows: list[dict[str, Any]]
         if callable(pipe_factory):
             pipe = pipe_factory(transaction=True)
             for key, value in plan:
-                pipe.set(key, value, ex=spec.redis_ttl_seconds)
+                pipe.set(key, value, exat=deadline)
             pipe.execute()
         else:
             for key, value in plan:
-                client.set(key, value, ex=spec.redis_ttl_seconds)
+                client.set(key, value, exat=deadline)
         return {"status": "published", "keys": [key for key, _ in plan],
-                "ttl_seconds": spec.redis_ttl_seconds}
+                "ttl_seconds": ttl_seconds}
     except Exception as exc:  # noqa: BLE001 - callers keep artifact commit as the durable record
         raise SourceUnavailable("core_redis_publish_failed:" + type(exc).__name__) from None
     finally:

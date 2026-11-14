@@ -36,7 +36,7 @@ def test_registry_declares_tiered_storage_and_bounded_redis_views():
     for name, spec in DATASETS.items():
         if not spec.hot_view or name not in items:
             continue
-        if name in {"hot_plates", "limit_up_pool"}:
+        if name in {"hot_plates", "limit_up_pool", "limit_up_pool_today", "auction_points"}:
             assert items[name]["redis_ttl_trade_days"] == spec.redis_ttl_trade_days
             assert spec.redis_ttl_seconds is None
             view = next(location for location in items[name]["storage"] if location["kind"] == "redis_view")
@@ -47,15 +47,13 @@ def test_registry_declares_tiered_storage_and_bounded_redis_views():
         assert items[name].get("redis_ttl_seconds") == spec.redis_ttl_seconds
     for name, ttl_seconds in {
         "auction_baseline": 4 * 86400,
-        "auction_stock_facts": 4 * 86400,
-        "auction_points": 4 * 86400,
-        "auction_panorama": 4 * 86400,
         "plate_amount_baseline": 30 * 86400,
     }.items():
         assert items[name].get("redis_ttl_seconds") == ttl_seconds
     assert items["hot_plates_yesterday"]["redis_ttl_trade_days"] == 5
     today = items["limit_up_pool_today"]
-    assert today["redis_ttl_seconds"] == today["redis_hot_view"]["ttl_seconds"] == 4 * 86400
+    assert today["redis_ttl_trade_days"] == today["redis_hot_view"]["retention"]["count"] == 5
+    assert all(items[name]["redis_ttl_trade_days"] == 5 for name in ("auction_stock_facts", "auction_panorama", "auction_points"))
 
 
 def test_ths_hot_rank_provider_handles_empty_heat_and_403_circuit():

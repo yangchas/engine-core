@@ -879,7 +879,7 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
 
 
 def store_auction_panorama(product: Mapping[str, Any], *, artifact_root: str | Path | None = None,
-                           redis: Any = None, ttl: int = 3600) -> dict[str, Any]:
+                           redis: Any = None) -> dict[str, Any]:
     """Append immutable cold artifact and publish a bounded Core-only hot view."""
     root = Path(artifact_root or os.getenv("CORE_DATA_ROOT", str(Path.home() / "core-data")))
     catalog = ArtifactCatalog(root)
@@ -898,11 +898,12 @@ def store_auction_panorama(product: Mapping[str, Any], *, artifact_root: str | P
                      "capture_semantics": product.get("capture_semantics", "unspecified")}},
         source="auction_panorama")
     if redis is not None:
+        from .data_pipeline.redis_day_view import hot_view_expire_at
         hot = {"schema": SCHEMA, "version": manifest["version"], "trade_date": product["trade_date"],
                "asof": product["asof"], "available_at": available_at, "overview": product["overview"],
                "plate_ids": [row["plate_id"] for row in product["plates"]],
                "yesterday_symbols": [stock["symbol"] for layer in product["yesterday_ladder"]
                    for bucket in layer["buckets"] for stock in bucket["stocks"]]}
         redis.set(f"core:cache:data:auction_panorama:{product['trade_date']}",
-                  json.dumps(hot, ensure_ascii=False, separators=(",", ":")), ex=ttl)
+                  json.dumps(hot, ensure_ascii=False, separators=(",", ":")), exat=hot_view_expire_at(product["trade_date"]))
     return manifest

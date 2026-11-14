@@ -563,7 +563,7 @@
         "force": "recompute a new as_of version",
         "clear": "clear then rebuild"
       },
-      "notes": "C900: hot view uses Core Redis namespace core:cache:data:limit_up_pool_today:* with the registered TTL; catalog commits are transitional until readers migrate.",
+      "notes": "C900: hot view uses Core Redis namespace core:cache:data:limit_up_pool_today:* with the registered TTL; catalog commits are transitional until readers migrate. Redis expiry: fifth following trading day at 00:00 Asia/Shanghai; late backfills retain at least 24 hours.",
       "guardian_event": "limit_up_today_091600",
       "late_policy": {
         "mode": "fetch_now",
@@ -581,18 +581,29 @@
       },
       "redis_hot_view": {
         "namespace": "core:cache:data:limit_up_pool_today",
-        "ttl_seconds": 345600,
         "version_key": "{namespace}:{date}:{version}",
         "date_key": "{namespace}:{date}",
-        "latest_key": "{namespace}:latest"
+        "latest_key": "{namespace}:latest",
+        "retention": {
+          "kind": "trading_days",
+          "count": 5,
+          "anchor": "data_date",
+          "expire_time": "00:00:00",
+          "timezone": "Asia/Shanghai"
+        }
       },
-      "redis_ttl_seconds": 345600,
       "storage": [
         {
           "kind": "redis_view",
           "name": "core:cache:data:limit_up_pool_today",
           "role": "authority",
-          "ttl_seconds": 345600
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
         },
         {
           "kind": "catalog",
@@ -600,7 +611,8 @@
           "role": "legacy",
           "note": "transitional catalog commits retained until readers migrate to Redis"
         }
-      ]
+      ],
+      "redis_ttl_trade_days": 5
     },
     {
       "id": "limit_reasons",
@@ -1161,7 +1173,7 @@
         "force": "recompute",
         "clear": "clear then rebuild"
       },
-      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
+      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner. Redis expiry: fifth following trading day at 00:00 Asia/Shanghai; late backfills retain at least 24 hours.",
       "guardian_event": "auction_facts_0925",
       "late_policy": {
         "mode": "fetch_now",
@@ -1189,7 +1201,6 @@
         ],
         "timeout_seconds": 180
       },
-      "redis_ttl_seconds": 345600,
       "storage": [
         {
           "kind": "catalog",
@@ -1200,9 +1211,16 @@
           "kind": "redis_view",
           "name": "core:cache:data:auction_stock_facts",
           "role": "view",
-          "ttl_seconds": 345600
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
         }
-      ]
+      ],
+      "redis_ttl_trade_days": 5
     },
     {
       "id": "auction_points",
@@ -1231,7 +1249,7 @@
         "force": "recompute",
         "clear": "clear then rebuild"
       },
-      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
+      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner. Redis expiry: fifth following trading day at 00:00 Asia/Shanghai; late backfills retain at least 24 hours.",
       "guardian_event": "auction_facts_0925",
       "late_policy": {
         "mode": "fetch_now",
@@ -1259,7 +1277,6 @@
         ],
         "timeout_seconds": 180
       },
-      "redis_ttl_seconds": 345600,
       "storage": [
         {
           "kind": "catalog",
@@ -1270,9 +1287,16 @@
           "kind": "redis_view",
           "name": "core:cache:data:auction_points",
           "role": "view",
-          "ttl_seconds": 345600
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
         }
-      ]
+      ],
+      "redis_ttl_trade_days": 5
     },
     {
       "id": "auction_points_raw",
@@ -1339,7 +1363,7 @@
         "force": "recompute",
         "clear": "clear then rebuild"
       },
-      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
+      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner. Redis expiry: fifth following trading day at 00:00 Asia/Shanghai; late backfills retain at least 24 hours.",
       "guardian_event": "auction_facts_0925",
       "late_policy": {
         "mode": "fetch_now",
@@ -1367,7 +1391,6 @@
         ],
         "timeout_seconds": 180
       },
-      "redis_ttl_seconds": 345600,
       "storage": [
         {
           "kind": "catalog",
@@ -1378,9 +1401,16 @@
           "kind": "redis_view",
           "name": "core:cache:data:auction_panorama",
           "role": "view",
-          "ttl_seconds": 345600
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
         }
-      ]
+      ],
+      "redis_ttl_trade_days": 5
     },
     {
       "id": "ladder_daily",

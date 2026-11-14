@@ -59,7 +59,7 @@ def test_registry_and_contract_spec_register_pit_dataset():
     contract = load_spec("limit_up_pool_today")
     assert spec.key_fields == ("symbol", "date", "as_of")
     assert spec.source_preference == ("redis_q2", "wencai")
-    assert spec.redis_ttl_seconds == 4 * 86400                                # C609: per-dataset TTL, 4 days
+    assert spec.redis_ttl_trade_days == 5 and spec.redis_ttl_seconds is None
     assert contract["primary_key"] == ["symbol", "date", "as_of"]
     assert contract["columns"]["seal_amount"]["all_null_ok"] is True
 
