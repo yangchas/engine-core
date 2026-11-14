@@ -19,7 +19,7 @@ def gap_redis(monkeypatch):
 
     class Redis:
         def __init__(self):
-            self.values = {}
+            self.values, self.expires = {}, {}
         def scan_iter(self, match, count=100):
             return [key for key in self.values if fnmatch(key, match)]
         def get(self, key):
@@ -28,6 +28,7 @@ def gap_redis(monkeypatch):
             if nx and key in self.values:
                 return False
             self.values[key] = value
+            self.expires[key] = ex
             return True
     redis = Redis()
     monkeypatch.setattr(limit_pool_hot_view, '_client', lambda: redis)
@@ -64,6 +65,27 @@ def test_gap_only_records_missing_slot_and_references_previous_snapshot(tmp_path
         f"{day}T15:16:10+08:00", f"{day}T15:17:30+08:00",
         f"{day}T15:18:00+08:00", "provider_failed")
     assert repeated == gap
+
+
+def test_gap_backfill_uses_24_hour_floor_and_real_calendar_expiry(tmp_path, monkeypatch, gap_redis):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from engine_core.data_pipeline import hot_plates_gaps, redis_day_view
+    from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
+    assert TradeCalendarStore(Path.home() / "core-data").nth_trade_date("2026-11-10", 5).isoformat() == "2026-11-17"
+
+    now = datetime(2026, 11, 16, 6, 0, tzinfo=ZoneInfo("Asia/Shanghai")).timestamp()
+    short_deadline = int(now) + 58_911
+    monkeypatch.setattr(redis_day_view, "expire_at", lambda _day: short_deadline)
+    monkeypatch.setattr(redis_day_view, "_now_timestamp", lambda: now)
+    monkeypatch.setattr(redis_day_view.clock, "time", lambda: now)
+
+    record_hot_plates_gap(tmp_path, "2026-11-09", "backfill", "2026-11-09T09:16:10+08:00",
+                          "2026-11-09T09:17:30+08:00", "2026-11-16T06:00:00+08:00", "provider_failed")
+    key = "core:cache:data:hot_plates_gaps:2026-11-09:backfill"
+    assert gap_redis.values[key]
+    assert gap_redis.expires[key] == 86_400
+
 
 
 def test_gap_reconcile_does_not_record_its_own_non_capture_window(tmp_path):

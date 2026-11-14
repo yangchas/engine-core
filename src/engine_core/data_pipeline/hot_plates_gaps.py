@@ -120,10 +120,10 @@ def record_hot_plates_gap(root: str | Path, trade_date: str, event_id: str,
     if not persist:
         return gap
     from .limit_pool_hot_view import _client
-    from .redis_day_view import expire_at
+    from .redis_day_view import hot_view_expire_at
     import time as clock
 
-    ttl = expire_at(day) - int(clock.time())
+    ttl = hot_view_expire_at(day) - int(clock.time())
     if ttl <= 0:
         raise ValueError("redis_ttl_seconds_required:hot_plates_gaps")
     key = f"core:cache:data:hot_plates_gaps:{day}:{event_id}"
