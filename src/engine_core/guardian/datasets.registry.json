@@ -1883,17 +1883,17 @@
       "degrade": [],
       "lifecycle": {
         "init": "UNKNOWN",
-        "force": "append a new version",
+        "force": "replace the same trade-date and cutoff view",
         "clear": "not provided"
       },
       "notes": "Checkpoint output is temporary Redis-only; no TD persistence and no catalog temporary partition.",
       "guardian_event": "intraday_33",
       "storage": [
         {
-          "kind": "catalog",
-          "name": "intraday_checkpoint",
+          "kind": "redis_view",
+          "name": "core:view:intraday_checkpoint:{trade_date}:{cutoff}",
           "role": "authority",
-          "note": "registry artifact.catalog_dataset is null; checkpoint partitions live in catalog dataset intraday_checkpoint"
+          "retention": {"kind": "trading_days", "count": 5, "anchor": "data_date", "expire_time": "00:00:00", "timezone": "Asia/Shanghai"}
         }
       ]
     },

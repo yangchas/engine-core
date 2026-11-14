@@ -6,7 +6,7 @@ checkpoint (earlier = stale for the cutoff, later = a newer tick that overwrote 
 A missed window is reported as missed; nothing is back-filled or relabelled.
 
 Pure core (design/24 section 1): ``build_intraday_checkpoint(request) -> Partition``.  No environment, no I/O.
-``read_q2`` is the only function that touches Redis and uses read commands only (SMEMBERS, HGETALL).
+``read_q2`` reads the live feed; ``read_checkpoint`` reads a captured Redis view.
 
 Units (verified on the live feed, same as ``Q2FinalProvider``): ``px/pc/mx/mn`` milli-yuan (9790 = 9.79 yuan),
 ``amt`` yuan, ``vol`` hands (1 hand = 100 shares); ``ts`` epoch milliseconds.
@@ -203,16 +203,15 @@ def read_q2(redis: Any, trade_date: str) -> tuple[list[str], dict[str, dict[Any,
     return symbols, {s: (h or {}) for s, h in zip(symbols, pipe.execute())}
 
 
-def locate_checkpoint(catalog: Any, trade_date: str, cutoff: str):
-    """Manifest path of the newest committed version for one checkpoint time (versions of a day hold all of them)."""
+def checkpoint_key(trade_date: str, cutoff: str) -> str:
+    return f"core:view:intraday_checkpoint:{trade_date}:{cutoff}"
+
+
+def read_checkpoint(redis: Any, trade_date: str, cutoff: str) -> dict[str, Any]:
+    """Read the exact checkpoint, returning an explicit missing state."""
     import json
-    from pathlib import Path
-    versions = catalog.read().get("datasets", {}).get(DATASET, {}).get("dates", {}).get(trade_date, [])
-    for version in reversed(versions):
-        path = Path(version["manifest"])
-        try:
-            if json.loads(path.read_text(encoding="utf-8")).get("checkpoint") == cutoff:
-                return path
-        except (OSError, ValueError):
-            continue
-    return None
+    raw = redis.get(checkpoint_key(trade_date, cutoff))
+    if raw is None:
+        return {"status": "MISSING", "rows": [], "manifest": None}
+    data = json.loads(raw)
+    return {"status": "READY", **data}
