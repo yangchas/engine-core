@@ -459,3 +459,27 @@ def test_a_checked_run_can_override_the_environment(tmp_path):
     code, _ = release.run_checked([sys.executable, "-c", "import os, sys; sys.exit(0 if os.environ.get('X_C697') == '1' else 3)"],
                                   tmp_path, tmp_path / "o.log", env={"X_C697": "1"})
     assert code == 0
+
+
+def test_c1105_reexec_and_failure_diagnostics(tmp_path, monkeypatch, capsys):
+    target = '/home/exedev/services/engine-next/shared/venv/bin/python'
+    monkeypatch.setattr(release.sys, 'executable', '/usr/bin/python3')
+    monkeypatch.setattr(release.sys, 'argv', ['examples/release.py', 'plan'])
+    monkeypatch.delenv('RELEASE_NO_REEXEC', raising=False)
+    calls = []
+    def reexec(path, args):
+        calls.append((path, args))
+        raise RuntimeError('reexec')
+    monkeypatch.setattr(release.os, 'execv', reexec)
+    with pytest.raises(RuntimeError, match='reexec'):
+        release.main(['plan'])
+    assert calls == [(target, [target, 'examples/release.py', 'plan'])]
+    monkeypatch.setenv('RELEASE_NO_REEXEC', '1')
+    monkeypatch.setattr(release, 'cmd_plan', lambda args: 0)
+    assert release.main(['plan']) == 0
+    log = tmp_path / 'failure.log'
+    result, _ = release.run_checked([target, '-c', "import sys; print('E   first\\nE   second\\nE   third\\nE   fourth'); sys.exit(1)"], tmp_path, log)
+    output = capsys.readouterr().out
+    assert result == 1 and str(log) in output
+    assert all('E   ' + item in output for item in ('first', 'second', 'third'))
+    assert 'E   fourth' not in output
