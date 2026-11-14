@@ -2245,5 +2245,21 @@
   "journal_replay_command_c1034": "/bin/bash -lc 'set -o pipefail; endpoint=$(awk '\"'\"'$1==\"firstEp\" {print $2; exit}'\"' \\\"\"'$TD_CONFIG/taos.cfg\"); TDENGINE_HOST=\"${endpoint%:*}\" TDENGINE_PORT=\"${endpoint##*:}\" REDIS_LEGACY_AUCTION_PREFIX='\"'test:c1034:core:auction:full:' REDIS_CORE_AUCTION_FULL_PREFIX='test:c1034:core:auction:full:' REPLAY_SPEED=1000 ENABLE_FILE_LOG=0 ./build/t1_v2_c1034 --replay --start '2026-11-12 09:15:00' --end '2026-11-12 09:26:00' --q2frame /home/exedev/fw/evidence/C1034/fixed-q2.jsonl --auction-commands /home/exedev/fw/evidence/C1034/fixed-commands.jsonl 2>&1 | tee /home/exedev/fw/evidence/C1034/local-replay.log | tail -n 5\" in /home/exedev/repos/t1v2-wt-C1034",
   "journal_replay_command_source": "/home/exedev/fw/runs/C1034.log:2841",
   "journal_replay_command_source_sha256": "06fa8d6970e81e9b75d6ce702f4d700ac3ea8ba94e5f58c5937ead10b44bff2f"
+ },
+ "_c1098": {
+  "intraday_checkpoint_c1098_first.jsonl": {
+   "bytes": 212,
+   "command": "extract first original JSONL row from source_path",
+   "copied_at": "2026-11-14T14:39:16.711837+00:00",
+   "dataset": "intraday_checkpoint",
+   "kind": "core_artifact_rows_excerpt",
+   "row_count": 1,
+   "selection": "first original JSONL row",
+   "sha256": "74b95bcc6105468408c6d5603a5a5187de7c9c4916c242b1a5d73f82ea70ecf7",
+   "source": "redis_q2_checkpoint",
+   "source_path": "/home/exedev/core-data/intraday_checkpoint/trade_date=2026-11-13/source=redis_q2_checkpoint/sha256-9e77af022cfac39f/rows.jsonl.gz",
+   "trade_date": "2026-11-13",
+   "version": "sha256-9e77af022cfac39f"
+  }
  }
 }

@@ -8,7 +8,6 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from engine_core.data_pipeline import intraday_checkpoint as core
-from engine_core.data_pipeline.storage import ArtifactCatalog
 from engine_core.guardian import gates
 from engine_core.guardian import intraday_checkpoint_run as run
 from engine_core.guardian.scheduler import default_events
@@ -26,6 +25,14 @@ class FakeRedis:
     def __init__(self, hashes, day="20261019", writes=None):
         self.hashes, self.day = hashes, day
         self.commands = []
+        self.values = {}
+
+    def set(self, key, value, **kwargs):
+        self.values[key] = (value, kwargs)
+
+    def get(self, key):
+        value = self.values.get(key)
+        return value[0] if value else None
 
     def smembers(self, key):
         self.commands.append(("smembers", key))
@@ -204,20 +211,17 @@ def req(args=None, **over):
     return base
 
 
-def test_capture_commits_partition_readable_back(tmp_path):
-    code, reply = run.run_checkpoint(req(), tmp_path, redis=FakeRedis(market(4200, late=20)))
+def test_capture_commits_partition_readable_back(tmp_path, monkeypatch):
+    monkeypatch.setattr("engine_core.data_pipeline.redis_day_view.expire_at", lambda day: 2000000000)
+    fake = FakeRedis(market(4200, late=20))
+    code, reply = run.run_checkpoint(req(), tmp_path, redis=fake)
     assert code == 0 and reply["status"] == "ok" and reply["detail"]["row_count"] == 4180
-    catalog = ArtifactCatalog(tmp_path)
-    path = core.locate_checkpoint(catalog, DAY, "09:33:00")
-    rows = catalog.read_rows(path)
-    manifest = json.loads(path.read_text())
-    assert len(rows) == 4180 and manifest["source"] == "redis_q2_checkpoint"
-    assert "source=redis_q2_checkpoint" in str(path)
-    assert manifest["provider_attempts"][0]["provider"] == "redis_q2" and manifest["provider_attempts"][0]["result"] == "ok"
-    assert core.locate_checkpoint(catalog, DAY, "09:36:00") is None
-    # same input twice -> no new version (idempotent)
-    run.run_checkpoint(req(), tmp_path, redis=FakeRedis(market(4200, late=20)))
-    assert len(catalog.read()["datasets"][core.DATASET]["dates"][DAY]) == 1
+    result = core.read_checkpoint(fake, DAY, "09:33:00")
+    assert len(result["rows"]) == 4180 and result["manifest"]["source"] == "redis_q2_checkpoint"
+    assert result["manifest"]["provider_attempts"][0]["result"] == "ok"
+    assert core.read_checkpoint(fake, DAY, "09:36:00")["status"] == "MISSING"
+    assert fake.values[core.checkpoint_key(DAY, "09:33:00")][1] == {"exat": 2000000000}
+    assert not (tmp_path / core.DATASET).exists()
 
 
 def test_capture_missed_window_is_failure_not_a_relabeled_snapshot(tmp_path):
@@ -238,7 +242,9 @@ def test_capture_unreadable_redis_is_retryable_and_td_is_not_used_after_cutoff(t
     assert reply["detail"]["attempts"][1]["reason"].startswith("td_has_no_ticks_after")
 
 
-def test_capture_td_fallback_is_marked_degraded(tmp_path):
+def test_capture_td_fallback_is_marked_degraded(tmp_path, monkeypatch):
+    monkeypatch.setattr("engine_core.data_pipeline.redis_day_view.expire_at", lambda day: 2000000000)
+    output = FakeRedis({})
     class Broken:
         def smembers(self, key):
             raise TimeoutError("x")
@@ -253,9 +259,9 @@ def test_capture_td_fallback_is_marked_degraded(tmp_path):
         def cursor(self):
             return Cursor()
     args = {"checkpoint": dict(CFG, sources=["redis_q2", "td"], td_until="09:45:59")}
-    code, reply = run.run_checkpoint(req(args), tmp_path, redis=Broken(), td=Td())
+    code, reply = run.run_checkpoint(req(args), tmp_path, redis=Broken(), td=Td(), output_redis=output)
     assert code == 10 and reply["status"] == "degraded" and reply["detail"]["source"] == "td_stock_tick_v2_checkpoint"
-    manifest = json.loads(core.locate_checkpoint(ArtifactCatalog(tmp_path), DAY, "09:33:00").read_text())
+    manifest = core.read_checkpoint(output, DAY, "09:33:00")["manifest"]
     assert manifest["degraded"] is True and manifest["provider_attempts"][0]["result"] == "SOURCE_UNREADABLE"
 
 
@@ -351,3 +357,21 @@ def test_checkpoint_td_query_starts_with_symbol_shards():
     assert run._td_rows(cursor, DAY, datetime.fromisoformat('2026-10-19T09:33:00'), 3) == []
     assert len(cursor.queries) == 4
     assert "symbol < '2'" in cursor.queries[0]
+
+
+def test_capture_real_checkpoint_only_publishes_redis(tmp_path, monkeypatch):
+    from pathlib import Path
+    import hashlib
+    fixture = Path(__file__).parent / 'fixtures/real/intraday_checkpoint_c1098_first.jsonl'
+    meta = json.loads((fixture.parent / 'PROVENANCE.json').read_text())['_c1098'][fixture.name]
+    assert hashlib.sha256(fixture.read_bytes()).hexdigest() == meta['sha256']
+    row = json.loads(fixture.read_text())
+    fake = FakeRedis({'000001': {}})
+    monkeypatch.setattr("engine_core.data_pipeline.redis_day_view.expire_at", lambda day: 2000000000)
+    part = core.Partition([row], {'source': 'redis_q2_checkpoint', 'degraded': False,
+                                 'quality': {'coverage': 1.0}}, {'state': 'ready', 'counts': {}})
+    monkeypatch.setattr(core, 'build_intraday_checkpoint', lambda request: part)
+    code, result = run.run_checkpoint(req(), tmp_path, redis=fake)
+    assert code == 0
+    assert fake.values
+    assert not (tmp_path / 'intraday_checkpoint').exists()

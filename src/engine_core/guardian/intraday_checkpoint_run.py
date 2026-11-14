@@ -13,6 +13,7 @@ Exit codes of ``run_checkpoint``: 0 ok / 10 degraded (TD fallback) / 20 not appl
 from __future__ import annotations
 
 import os
+import json
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -91,9 +92,9 @@ def _td_rows(td: Any, trade_date: str, cut: datetime, tolerance: float) -> list[
 
 
 def run_checkpoint(request: Mapping[str, Any], root: Path, *, dry_run: bool = False,
-                   redis: Any = None, td: Any = None, now: datetime | None = None) -> tuple[int, dict]:
+                   redis: Any = None, td: Any = None, output_redis: Any = None, now: datetime | None = None) -> tuple[int, dict]:
     """Capture one checkpoint right now; ``request['args']['checkpoint']`` is the configuration."""
-    from ..data_pipeline.storage import ArtifactCatalog
+    from ..data_pipeline.redis_day_view import expire_at
     started = time.monotonic()
     args = request.get("args") if isinstance(request.get("args"), Mapping) else {}
     trade_date = str(request.get("data_date") or request.get("trade_date") or "")
@@ -153,14 +154,21 @@ def run_checkpoint(request: Mapping[str, Any], root: Path, *, dry_run: bool = Fa
                          "row_count": len(part.rows), "dropped": part.notes["counts"]})
         part.manifest["provider_attempts"] = list(attempts)
         if part.notes["state"] == "ready":
-            catalog = ArtifactCatalog(root)
-            result = catalog.commit(core.DATASET, trade_date, part.rows, part.manifest,
-                                    source=part.manifest["source"], authority="LIVE")
+            try:
+                deadline = expire_at(trade_date)
+                target = output_redis or redis or redis_client(cfg["redis_timeout_seconds"],
+                    {"REDIS_URL": os.environ.get("REDIS_URL") or os.environ.get("CORE_REDIS_URL", "")})
+                key = core.checkpoint_key(trade_date, cutoff)
+                payload = json.dumps({"rows": part.rows, "manifest": part.manifest}, ensure_ascii=False,
+                                     sort_keys=True, separators=(",", ":"))
+                target.set(key, payload, exat=deadline)
+            except Exception as exc:
+                return _reply(30, "failed", "CHECKPOINT_PUBLISH_FAILED", True, type(exc).__name__)
             degraded = bool(part.manifest["degraded"])
             return _reply(10 if degraded else 0, "degraded" if degraded else "ok", "", False, {
                 "checkpoint": cutoff, "source": part.manifest["source"], "row_count": len(part.rows),
-                "coverage": part.manifest["quality"]["coverage"], "version": result["version"],
-                "manifest": result["manifest_uri"], "dropped": part.notes["counts"],
+                "coverage": part.manifest["quality"]["coverage"], "redis_key": key,
+                "dropped": part.notes["counts"],
                 "elapsed_ms": round((time.monotonic() - started) * 1000)})
         last_error = (CheckpointError("CHECKPOINT_WINDOW_PASSED", str(part.notes["counts"]), exit_code=40)
                       if part.notes["state"] == "passed" else
