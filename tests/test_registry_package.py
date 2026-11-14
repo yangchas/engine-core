@@ -16,6 +16,8 @@ LEGACY_BASELINE = "078213f"
 # Fields deliberately changed after the baseline; everything else of a baseline dataset must stay identical.
 CHANGED_SINCE_BASELINE = {
     ("hot_plates", "key_fields"): "C583 (PIT keys: plate_code, date, captured_at)",
+    ("hot_plates", "primary_backend"): "C1096 (Redis-only hot view)",
+    ("hot_plates", "retention_policy"): "C1096 (five trading days)",
     ("limit_reasons", "source"): "C581 (getHisBans attribution)",
     ("limit_reasons", "key_fields"): "C581 (date, symbol)",
 }

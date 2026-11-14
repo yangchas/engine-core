@@ -78,6 +78,7 @@ class DatasetSpec:
     primary_backend: str = "artifact"
     hot_view: bool = True
     redis_ttl_seconds: int | None = None
+    redis_ttl_trade_days: int | None = None
     max_redis_payload_bytes: int = 65536
     retention_policy: str = "immutable_versions"
     dependencies: tuple[str, ...] = ()
@@ -98,7 +99,12 @@ class DatasetSpec:
     primary_providers: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.hot_view and (
+        if self.redis_ttl_trade_days is not None and (
+            type(self.redis_ttl_trade_days) is not int or self.redis_ttl_trade_days <= 0
+            or self.redis_ttl_seconds is not None
+        ):
+            raise ValueError(f"invalid_redis_ttl_trade_days:{self.name}")
+        if self.hot_view and self.redis_ttl_trade_days is None and (
             isinstance(self.redis_ttl_seconds, bool)
             or not isinstance(self.redis_ttl_seconds, int)
             or self.redis_ttl_seconds <= 0

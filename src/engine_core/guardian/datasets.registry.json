@@ -673,8 +673,8 @@
       "id": "hot_plates_yesterday",
       "owner": "kaipan_hot_capture",
       "artifact": {
-        "catalog_dataset": "hot_plates",
-        "date_basis": "D-1 历史接口取数；只供昨日热板报告消费，不代表盘中时点抓拍"
+        "date_basis": "D-1 历史接口取数；只供昨日热板报告消费，不代表盘中时点抓拍",
+        "redis_dataset": "hot_plates"
       },
       "phases": [
         "PRE_MARKET",
@@ -714,18 +714,19 @@
         "basis": "gap record only",
         "set_by": "C379/claude 2026-10-21"
       },
-      "redis_ttl_seconds": 345600,
+      "redis_ttl_trade_days": 5,
       "storage": [
-        {
-          "kind": "catalog",
-          "name": "hot_plates",
-          "role": "authority"
-        },
         {
           "kind": "redis_view",
           "name": "core:cache:data:hot_plates",
-          "role": "view",
-          "ttl_seconds": 345600
+          "role": "authority",
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
         }
       ]
     },
@@ -733,8 +734,8 @@
       "id": "hot_plates",
       "owner": "kaipan_hot_capture",
       "artifact": {
-        "catalog_dataset": "hot_plates",
-        "date_basis": "目标交易日 D + captured_at；历史接口仅有限回溯"
+        "date_basis": "目标交易日 D + captured_at；历史接口仅有限回溯",
+        "redis_dataset": "hot_plates"
       },
       "phases": [
         "AUCTION",
@@ -775,18 +776,19 @@
         "basis": "one bounded Kaipan snapshot; page interval >=1s",
         "set_by": "C583"
       },
-      "redis_ttl_seconds": 345600,
+      "redis_ttl_trade_days": 5,
       "storage": [
-        {
-          "kind": "catalog",
-          "name": "hot_plates",
-          "role": "authority"
-        },
         {
           "kind": "redis_view",
           "name": "core:cache:data:hot_plates",
-          "role": "view",
-          "ttl_seconds": 345600
+          "role": "authority",
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
         }
       ]
     },
@@ -1893,7 +1895,13 @@
           "kind": "redis_view",
           "name": "core:view:intraday_checkpoint:{trade_date}:{cutoff}",
           "role": "authority",
-          "retention": {"kind": "trading_days", "count": 5, "anchor": "data_date", "expire_time": "00:00:00", "timezone": "Asia/Shanghai"}
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
         }
       ]
     },

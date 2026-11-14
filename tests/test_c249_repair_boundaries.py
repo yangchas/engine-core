@@ -74,5 +74,5 @@ def test_legacy_hot_plate_fallback_is_explicit(monkeypatch,tmp_path):
   def get(self,key):return None
   def hgetall(self,key):return {'chip':json.dumps({'name':'芯片','strength':10})}
  result=SliceReader(SliceProviders(catalog=ArtifactCatalog(tmp_path),redis=Redis(),file_fallback=False).providers()).get('hot_plates_today',trade_date='2026-10-16',asof='2026-10-16T09:26:00+08:00',prior_trade_date='2026-10-15')
- assert result.meta['source']=='legacy_redis'
- assert result.meta['status']=='DEGRADED' and result.meta['legacy_dependency'] is True
+ assert result.meta['source']=='none'
+ assert result.meta['status']=='MISSING' and result.meta['reason']=='REDIS_VIEW_MISSING'
