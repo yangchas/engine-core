@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from engine_core.data_pipeline.hot_plates_builder import build_hot_plates
 from engine_core.data_pipeline.hot_plates_gaps import (
     reconcile_due_hot_plates_gaps, record_hot_plates_gap,
 )
@@ -13,36 +12,43 @@ from engine_core.data_pipeline.storage import ArtifactCatalog
 from engine_core.guardian.commands import validate_handler_postcondition
 
 
-FIXTURE = Path(__file__).parent / "fixtures" / "real" / "kaipan_hot_plates_2026-10-23_1441.json"
+def test_gap_only_records_missing_slot_and_references_previous_snapshot(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import limit_pool_hot_view
 
+    fixture_dir = Path(__file__).parent / "fixtures/real/c1094"
+    raw = (fixture_dir / "view.json").read_bytes()
+    view = json.loads(raw)
+    key = json.loads((fixture_dir / "PROVENANCE.json").read_text())["view.json"]["key"]
 
-def test_gap_only_records_missing_slot_and_references_previous_snapshot(tmp_path):
-    response = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    prior = build_hot_plates({
-        "trade_date": "2026-10-23", "captured_at": "2026-10-23T09:14:00+08:00",
-        "response": response, "page_size": 50,
-    })
-    catalog = ArtifactCatalog(tmp_path)
-    manifest = catalog.commit("hot_plates", "2026-10-23", prior.rows,
-        {**prior.manifest, "quality": {"status": "READY"}}, source="kaipan_getHisPlates")
+    class Redis:
+        def scan_iter(self, match, count):
+            assert match == f"core:cache:data:hot_plates:{view['trade_date']}:*"
+            return [key]
+
+        def get(self, requested):
+            assert requested == key
+            return raw
+
+    monkeypatch.setattr(limit_pool_hot_view, "_client", lambda: Redis())
+    day = view["trade_date"]
     declared = ["hot_plates", "kaipan_hot_091610"]
-    assert validate_handler_postcondition("kaipan_hot_capture", "2026-10-23",
+    assert validate_handler_postcondition("kaipan_hot_capture", day,
                                           tmp_path, declared) == (False, "hot_plates_event_missing")
 
-    gap = record_hot_plates_gap(tmp_path, "2026-10-23", "kaipan_hot_091610",
-        "2026-10-23T09:16:10+08:00", "2026-10-23T09:17:30+08:00",
-        "2026-10-23T09:17:31+08:00", "provider_failed")
+    gap = record_hot_plates_gap(tmp_path, day, "kaipan_hot_091610",
+        f"{day}T15:16:10+08:00", f"{day}T15:17:30+08:00",
+        f"{day}T15:17:31+08:00", "provider_failed")
 
     assert gap["status"] == "GAP"
     assert gap["late_policy"] == "gap_only"
     assert gap["fallback_status"] == "STALE"
-    assert gap["stale_version"] == manifest["version"]
-    assert gap["stale_captured_at"] == "2026-10-23T09:14:00+08:00"
-    assert validate_handler_postcondition("kaipan_hot_capture", "2026-10-23",
+    assert gap["stale_version"] == view["version"]
+    assert gap["stale_captured_at"] == view["captured_at"]
+    assert validate_handler_postcondition("kaipan_hot_capture", day,
                                           tmp_path, declared) == (True, "")
-    repeated = record_hot_plates_gap(tmp_path, "2026-10-23", "kaipan_hot_091610",
-        "2026-10-23T09:16:10+08:00", "2026-10-23T09:17:30+08:00",
-        "2026-10-23T09:18:00+08:00", "provider_failed")
+    repeated = record_hot_plates_gap(tmp_path, day, "kaipan_hot_091610",
+        f"{day}T15:16:10+08:00", f"{day}T15:17:30+08:00",
+        f"{day}T15:18:00+08:00", "provider_failed")
     assert repeated == gap
 
 
