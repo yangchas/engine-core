@@ -189,16 +189,15 @@ def validate_handler_postcondition(name: str, day: str, root: str | Path,
                 history_id = history_event_id(target_date)
                 if history_capture_exists(root, target_date):
                     continue
-                gaps = _existing_gap_rows(catalog, target_date)
+                gaps = _existing_gap_rows(root, target_date)
                 if any(row.get("event_id") == history_id and row.get("status") == "GAP"
                        for row in gaps):
                     continue
                 return False, "hot_plates_history_missing:" + target_date
             return True, ""
         if "hot_plates_gaps" in declared:
-            gap_path = catalog.locate("hot_plates_gaps", day)
-            gaps = catalog.read_rows(gap_path) if gap_path and gap_path.is_file() else []
-            from ..data_pipeline.hot_plates_gaps import _snapshot_manifests
+            from ..data_pipeline.hot_plates_gaps import _existing_gap_rows, _snapshot_manifests
+            gaps = _existing_gap_rows(root, day)
             if gaps or _snapshot_manifests(root, day):
                 return True, ""
             return False, "hot_plates_gap_reconcile_missing_output"
@@ -211,17 +210,11 @@ def validate_handler_postcondition(name: str, day: str, root: str | Path,
             if event_id is None or view.get("event_id") == event_id or any(
                     row.get("event_id") == event_id for row in view["rows"]):
                 return True, ""
-        gap_path = catalog.locate("hot_plates_gaps", day)
-        if gap_path is not None and gap_path.is_file():
-            try:
-                gaps = catalog.read_rows(gap_path)
-            except (OSError, ValueError, TypeError):
-                return False, "hot_plates_gaps_invalid"
-            accepted = any(row.get("status") == "GAP" and
-                           (event_id is None or row.get("event_id") == event_id)
-                           for row in gaps)
-            if accepted:
-                return True, ""
+        from ..data_pipeline.hot_plates_gaps import _existing_gap_rows
+        gaps = _existing_gap_rows(root, day)
+        if any(row.get("status") == "GAP" and
+               (event_id is None or row.get("event_id") == event_id) for row in gaps):
+            return True, ""
         return False, "hot_plates_event_missing" if event_id else "hot_plates_manifest_missing"
     else:
         datasets = ("daily_kline",)

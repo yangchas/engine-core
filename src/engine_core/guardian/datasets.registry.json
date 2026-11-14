@@ -797,8 +797,8 @@
       "id": "hot_plates_gaps",
       "owner": "kaipan_hot_capture",
       "artifact": {
-        "catalog_dataset": "hot_plates_gaps",
-        "date_basis": "scheduled event trade date"
+        "date_basis": "scheduled event trade date",
+        "redis_dataset": "hot_plates_gaps"
       },
       "phases": [
         "AUCTION",
@@ -842,11 +842,19 @@
       },
       "storage": [
         {
-          "kind": "catalog",
-          "name": "hot_plates_gaps",
-          "role": "authority"
+          "kind": "redis_view",
+          "name": "core:cache:data:hot_plates_gaps",
+          "role": "authority",
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
         }
-      ]
+      ],
+      "redis_ttl_trade_days": 5
     },
     {
       "id": "plate_members",

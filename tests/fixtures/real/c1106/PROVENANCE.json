@@ -1,0 +1,8 @@
+{
+  "row.jsonl": {
+    "source": "/home/exedev/core-data/hot_plates_gaps/trade_date=2026-11-11/source=guardian_gap_only/sha256-8d65bd0d1e53c3d9/rows.jsonl.gz",
+    "source_sha256": "9fe655b1622b27ea5a4fb47f8acd513cc0722b87d8ba4084bdd4de40865efa42",
+    "selection": "first JSONL row",
+    "sha256": "8d65bd0d1e53c3d9e38505f59851fae970de9ce106f99a126698d04d04bb96e7"
+  }
+}
