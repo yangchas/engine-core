@@ -100,19 +100,26 @@ def record_hot_plates_gap(root: str | Path, trade_date: str, event_id: str,
         if captured < scheduled:
             snapshots.append((captured, manifest))
     stale = max(snapshots, key=lambda item: item[0])[1] if snapshots else None
+    observed = _parse_time(observed_at, day).isoformat(timespec="seconds")
     gap = {
+        "schema_version": 1,
+        "dataset": "hot_plates_gaps",
+        "source": "guardian_gap_only",
+        "version": event_id,
+        "captured_at": observed,
+        "available_at": observed,
         "date": day,
         "trade_date": day,
         "event_id": event_id,
-        "scheduled_at": scheduled_at,
-        "deadline": deadline,
-        "observed_at": observed_at,
+        "scheduled_at": scheduled.isoformat(timespec="seconds"),
+        "deadline": _parse_time(deadline, day).isoformat(timespec="seconds"),
+        "observed_at": observed,
         "status": "GAP",
         "late_policy": "gap_only",
         "gap_reason": reason,
         "fallback_status": "STALE" if stale else "MISSING",
         "stale_version": stale.get("version") if stale else None,
-        "stale_captured_at": stale.get("captured_at") if stale else None,
+        "stale_captured_at": _parse_time(str(stale["captured_at"]), day).isoformat(timespec="seconds") if stale else None,
         "stale_manifest": stale.get("manifest_uri") if stale else None,
         "fallback_source": "none",
     }

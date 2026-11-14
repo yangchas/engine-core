@@ -1,0 +1,9 @@
+{
+  "gap.json": {
+    "key": "core:cache:data:hot_plates_gaps:2026-11-10:kaipan_history_20261110",
+    "source": "Redis GET via REDIS_URL",
+    "captured_at": "2026-11-15T07:53:00+08:00",
+    "sha256": "d56e339ca207aa139ae2669b07780d4237e3e5dacc43e59eeb1d79462b7d0285",
+    "bytes": 433
+  }
+}
