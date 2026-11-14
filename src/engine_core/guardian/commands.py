@@ -198,27 +198,19 @@ def validate_handler_postcondition(name: str, day: str, root: str | Path,
         if "hot_plates_gaps" in declared:
             gap_path = catalog.locate("hot_plates_gaps", day)
             gaps = catalog.read_rows(gap_path) if gap_path and gap_path.is_file() else []
-            manifest_path = catalog.locate("hot_plates", day)
-            if gaps or (manifest_path is not None and manifest_path.is_file()):
+            from ..data_pipeline.hot_plates_gaps import _snapshot_manifests
+            if gaps or _snapshot_manifests(root, day):
                 return True, ""
             return False, "hot_plates_gap_reconcile_missing_output"
         event_id = _arg(event_args or {}, "event_id")
         if not isinstance(event_id, str) or not event_id.startswith("kaipan_hot_"):
             event_id = next((value for value in declared
                              if isinstance(value, str) and value.startswith("kaipan_hot_")), None)
-        manifest_path = catalog.locate("hot_plates", day)
-        if manifest_path is not None and manifest_path.is_file():
-            if event_id is None:
+        from ..data_pipeline.hot_plates_gaps import _snapshot_manifests
+        for view in _snapshot_manifests(root, day):
+            if event_id is None or view.get("event_id") == event_id or any(
+                    row.get("event_id") == event_id for row in view["rows"]):
                 return True, ""
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                rows = catalog.read_rows(manifest_path)
-                captured = (manifest.get("event_id") == event_id or
-                            any(row.get("event_id") == event_id for row in rows))
-                if captured:
-                    return True, ""
-            except (OSError, ValueError, TypeError):
-                return False, "hot_plates_manifest_invalid"
         gap_path = catalog.locate("hot_plates_gaps", day)
         if gap_path is not None and gap_path.is_file():
             try:

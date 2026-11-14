@@ -519,6 +519,24 @@ class JobRunner:
                              "cache_publish": "SKIPPED", "td_publish": "SKIPPED_PARTIAL",
                              "error_code": "TIER_PARTIAL", "retryable": True})
             return JobResult(manifest, rows)
+        if name == "hot_plates":
+            if not publish or self.redis is None:
+                raise RuntimeError("redis_adapter_not_configured_or_publish_disabled")
+            payload = b"\n".join(canonical_json(row) for row in rows) + (b"\n" if rows else b"")
+            digest = hashlib.sha256(payload).hexdigest()
+            identity = {"payload_sha256": digest}
+            if manifest.get("inputs"):
+                identity["inputs"] = dict(manifest["inputs"])
+            version_digest = hashlib.sha256(canonical_json(identity)).hexdigest() if "inputs" in identity else digest
+            committed = dict(manifest, sha256=digest, version=f"sha256-{version_digest[:16]}",
+                             storage_backend="redis", storage_uri=None, manifest_uri=None, rows_uri=None,
+                             committed_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+            self._publish_redis(spec, trade_date, committed, rows, safe_source)
+            committed["cache_publish"] = "READY"
+            self.state.set_status(name, {"trade_date": trade_date, "available_at": committed["available_at"],
+                                         "version": committed["version"], "quality": quality,
+                                         "cache_publish": "READY"})
+            return JobResult(committed, rows)
         # Durable artifact publication is the commit point. Redis/TD are later, optional tiers.
         committed = self.catalog.commit(name, trade_date, rows, manifest, source=safe_source)
         committed["cache_publish"] = "SKIPPED"
@@ -552,6 +570,11 @@ class JobRunner:
     def _publish_redis(self, spec: DatasetSpec, trade_date: str, manifest: Mapping[str, Any],
                        rows: list[dict[str, Any]], source: str) -> None:
         ttl = spec.redis_ttl_seconds
+        if spec.redis_ttl_trade_days is not None:
+            from .trade_calendar import nth_trade_date
+            expiry_day = nth_trade_date(trade_date, spec.redis_ttl_trade_days)
+            expiry = datetime.combine(expiry_day, datetime.min.time(), ZoneInfo("Asia/Shanghai"))
+            ttl = int(expiry.timestamp() - time.time())
         if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl <= 0:
             raise ValueError(f"redis_ttl_seconds_required:{spec.name}")
         latest_key = f"core:cache:data:{spec.name}:latest"
@@ -564,6 +587,8 @@ class JobRunner:
         if spec.hot_view and is_latest_member_day and len(encoded_rows) <= spec.max_redis_payload_bytes:
             payload["rows"] = rows
         else:
+            if spec.name == "hot_plates":
+                raise ValueError("redis_payload_budget_exceeded")
             payload["rows"] = None
             payload["payload_omitted"] = "artifact_catalog"
         version_key = f"core:cache:data:{spec.name}:{trade_date}:{manifest['version']}"

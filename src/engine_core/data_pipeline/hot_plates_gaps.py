@@ -22,17 +22,22 @@ def _parse_time(value: str, day: str) -> datetime:
 
 
 def _snapshot_manifests(root: Path, trade_date: str) -> list[dict[str, Any]]:
-    paths = root.glob(f"hot_plates/trade_date={trade_date}/source=*/sha256-*/manifest.json")
-    result = []
-    for path in paths:
-        try:
-            item = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if isinstance(item, dict) and item.get("captured_at"):
-            item.setdefault("manifest_uri", str(path))
-            result.append(item)
-    return result
+    # Hot-plate snapshots are Redis views; old catalog files are no longer authoritative.
+    from .limit_pool_hot_view import _client
+    try:
+        client = _client()
+        result = []
+        for key in client.scan_iter(match=f"core:cache:data:hot_plates:{trade_date}:*", count=100):
+            raw = client.get(key)
+            item = json.loads(raw) if raw else None
+            if (isinstance(item, dict) and item.get("trade_date") == trade_date
+                    and item.get("dataset") == "hot_plates" and item.get("captured_at")
+                    and isinstance(item.get("rows"), list)
+                    and item.get("row_count") == len(item["rows"])):
+                result.append(item)
+        return result
+    except Exception:
+        return []
 
 
 def _existing_gap_rows(catalog: ArtifactCatalog, trade_date: str) -> list[dict[str, Any]]:
@@ -62,18 +67,10 @@ def history_event_id(trade_date: str) -> str:
 def history_capture_exists(root: str | Path, trade_date: str) -> bool:
     """Check all immutable versions for the history event; later snapshots do not hide it."""
     event_id = history_event_id(trade_date)
-    catalog = ArtifactCatalog(root)
     for manifest in _snapshot_manifests(Path(root).expanduser(), trade_date):
-        if manifest.get("event_id") == event_id:
+        if manifest.get("event_id") == event_id or any(
+                row.get("event_id") == event_id for row in manifest["rows"]):
             return True
-        manifest_path = manifest.get("manifest_uri")
-        if manifest_path:
-            try:
-                if any(row.get("event_id") == event_id
-                       for row in catalog.read_rows(Path(manifest_path))):
-                    return True
-            except (OSError, ValueError, TypeError):
-                continue
     return False
 
 

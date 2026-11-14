@@ -239,11 +239,47 @@ class SliceProviders:
         result = {name: [self._core, self._legacy, self._file] for name in names}
         result.update(self.market.providers())
         result["yest_limit_pool"] = [self._core]
+        result["hot_plates_today"] = [self._core]
+        result["hot_plates_yesterday"] = [self._core]
         return result
 
     def _core(self, reader: SliceReader, request: SliceRequest) -> SliceResult:
         dataset = self.DATASETS[request.slice_id]
         date = request.trade_date
+        if request.slice_id in {"hot_plates_today", "hot_plates_yesterday"}:
+            day = (str(request.params.get("source_date") or request.params.get("prior_trade_date") or "")
+                   if request.slice_id == "hot_plates_yesterday" else date)
+            lineage = [{"dataset": dataset, "used_date": day}]
+            if not day:
+                return _result(request, [], source="none", status="MISSING",
+                               reason="PREVIOUS_TRADE_DATE_MISSING", lineage=lineage)
+            candidates = []
+            cutoff = _parse_pit_timestamp(request.asof)
+            try:
+                keys = self.redis.scan_iter(match=f"core:cache:data:hot_plates:{day}:*", count=100) if self.redis else ()
+                for key in keys:
+                    raw = self.redis.get(key)
+                    view = json.loads(raw) if raw else None
+                    if not isinstance(view, dict):
+                        continue
+                    available = _parse_pit_timestamp(view.get("available_at"))
+                    rows = view.get("rows")
+                    if (view.get("dataset") == dataset and view.get("trade_date") == day
+                            and isinstance(rows, list) and view.get("row_count") == len(rows)
+                            and available is not None and cutoff is not None and available <= cutoff):
+                        candidates.append((available, str(view.get("version") or ""), view))
+            except (OSError, ValueError, TypeError, AttributeError):
+                candidates = []
+            if not candidates:
+                return _result(request, [], source="none", status="MISSING",
+                               reason="REDIS_VIEW_MISSING", lineage=lineage)
+            _, version, view = max(candidates, key=lambda item: item[:2])
+            rows = [dict(row, available_at=row.get("available_at") or view["available_at"])
+                    for row in view["rows"]]
+            partial = bool(view.get("quality", {}).get("partial")) or view.get("business_status") == "PARTIAL"
+            return _result(request, rows, source="core_redis", status="PARTIAL" if partial else "READY",
+                           version=version, available_at=view["available_at"], pit_date=day,
+                           quality=view.get("quality"), lineage=lineage)
         if request.slice_id == "yest_limit_pool":
             from ..data_pipeline.limit_pool_hot_view import read
             day = str(request.params.get("prior_trade_date") or request.params.get("source_date") or "")

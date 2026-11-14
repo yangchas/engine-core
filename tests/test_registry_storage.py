@@ -116,6 +116,30 @@ def test_every_dataset_a_postcondition_checks_is_stored_where_the_check_looks(tm
         locations = by_id[dataset]["storage"]
         if dataset in snapshots:
             continue
+        if dataset == "hot_plates":
+            authority = [loc for loc in locations if loc["role"] == "authority"]
+            assert len(authority) == 1 and authority[0]["kind"] == "redis_view"
+            from engine_core.data_pipeline import limit_pool_hot_view
+            fixture_dir = Path(__file__).parent / "fixtures/real/c1094"
+            raw = (fixture_dir / "view.json").read_bytes()
+            view = json.loads(raw)
+            key = json.loads((fixture_dir / "PROVENANCE.json").read_text())["view.json"]["key"]
+
+            class Redis:
+                def scan_iter(self, match, count):
+                    assert match == f"core:cache:data:hot_plates:{view['trade_date']}:*"
+                    return [key]
+
+                def get(self, requested):
+                    assert requested == key
+                    return raw
+
+            monkeypatch.setattr(limit_pool_hot_view, "_client", lambda: Redis())
+            declared = ["hot_plates", view["event_id"]]
+            assert commands.validate_handler_postcondition("kaipan_hot_capture", view["trade_date"],
+                                                          tmp_path, declared) == (True, "")
+            assert not (tmp_path / "catalog.json").exists()
+            continue
         if dataset == "limit_up_pool":
             authority = [loc for loc in locations if loc["role"] == "authority"]
             assert len(authority) == 1 and authority[0]["kind"] == "redis_view"

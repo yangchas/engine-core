@@ -20,9 +20,9 @@ def test_registry_declares_tiered_storage_and_bounded_redis_views():
     assert set(DATASETS) >= DATASET_NAMES
     assert get_dataset("daily_kline").primary_backend == "artifact"
     assert get_dataset("daily_kline").redis_ttl_seconds == 7 * 86400
-    assert get_dataset("hot_plates").redis_ttl_seconds == 4 * 86400
+    assert get_dataset("hot_plates").redis_ttl_trade_days == 5
     assert get_dataset("hot_rank").redis_ttl_seconds == 2 * 86400
-    assert get_dataset("limit_up_pool").redis_ttl_seconds == 4 * 86400
+    assert get_dataset("limit_up_pool").redis_ttl_trade_days == 5
     assert get_dataset("limit_reasons").redis_ttl_seconds == 4 * 86400
     assert get_dataset("plate_members").redis_ttl_seconds == 4 * 86400
     assert get_dataset("hot_rank").source == "ths_hot_rank"
@@ -36,10 +36,16 @@ def test_registry_declares_tiered_storage_and_bounded_redis_views():
     for name, spec in DATASETS.items():
         if not spec.hot_view or name not in items:
             continue
+        if name in {"hot_plates", "limit_up_pool"}:
+            assert items[name]["redis_ttl_trade_days"] == spec.redis_ttl_trade_days
+            assert spec.redis_ttl_seconds is None
+            view = next(location for location in items[name]["storage"] if location["kind"] == "redis_view")
+            assert view["retention"] == {"kind": "trading_days", "count": 5, "anchor": "data_date",
+                                         "expire_time": "00:00:00", "timezone": "Asia/Shanghai"}
+            continue
         assert isinstance(spec.redis_ttl_seconds, int) and spec.redis_ttl_seconds > 0
         assert items[name].get("redis_ttl_seconds") == spec.redis_ttl_seconds
     for name, ttl_seconds in {
-        "hot_plates_yesterday": 4 * 86400,
         "auction_baseline": 4 * 86400,
         "auction_stock_facts": 4 * 86400,
         "auction_points": 4 * 86400,
@@ -47,6 +53,7 @@ def test_registry_declares_tiered_storage_and_bounded_redis_views():
         "plate_amount_baseline": 30 * 86400,
     }.items():
         assert items[name].get("redis_ttl_seconds") == ttl_seconds
+    assert items["hot_plates_yesterday"]["redis_ttl_trade_days"] == 5
     today = items["limit_up_pool_today"]
     assert today["redis_ttl_seconds"] == today["redis_hot_view"]["ttl_seconds"] == 4 * 86400
 
@@ -116,6 +123,11 @@ def test_job_pipeline_persists_immutable_artifact_and_manifest(name, tmp_path):
     else:
         rows = [{"symbol": "1", "value": 3, "missing": None}]
     now = "2026-10-27T10:00:00Z" if name in {"limit_reasons", "hot_plates"} else "2026-10-16T10:00:00Z"
+    if name == "hot_plates":
+        with pytest.raises(RuntimeError, match="redis"):
+            runner.run(name, trade_date, fetch=lambda _: rows, now=now)
+        assert not (tmp_path / "catalog.json").exists()
+        return
     result = runner.run(name, trade_date, fetch=lambda _: rows, now=now)
     assert result.manifest["row_count"] == (50 if name == "hot_plates" else 1)
     assert result.manifest["storage_backend"] == "artifact"

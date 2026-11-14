@@ -1,0 +1,16 @@
+{
+  "pointer.json": {
+    "source": "Redis GET",
+    "key": "core:cache:data:hot_plates:2026-11-13",
+    "sha256": "47794510d65ae8391807f9b5c3185dfde7343b67bd97b03920ac17e82d39dee7",
+    "bytes": 197,
+    "captured_at": "2026-11-14T11:47:37.410957+00:00"
+  },
+  "view.json": {
+    "source": "Redis GET",
+    "key": "core:cache:data:hot_plates:2026-11-13:sha256-e075c3b5273a36b1",
+    "sha256": "e345cff2ea70cc78f76d9ce3a0fc1eb0c7c48ae835144e7c09b26cf9db4a4723",
+    "bytes": 136545,
+    "captured_at": "2026-11-14T11:47:37.411457+00:00"
+  }
+}
