@@ -153,3 +153,31 @@ def test_history_job_started_after_deadline_records_gaps_without_building_provid
         assert ArtifactCatalog(tmp_path).locate("hot_plates_gaps", day) is None
         assert any(row["event_id"] == f"kaipan_history_{day.replace('-', '')}"
                    for row in _existing_gap_rows(tmp_path, day))
+
+
+def test_real_legacy_gap_remains_readable_and_new_gap_uses_standard_envelope(tmp_path, monkeypatch, gap_redis):
+    import re
+    from engine_core.data_pipeline.hot_plates_gaps import _existing_gap_rows
+    from engine_core.data_pipeline.reader import load_dataset
+
+    fixture = Path(__file__).parent / 'fixtures/real/c1117'
+    raw = (fixture / 'gap.json').read_bytes()
+    old = json.loads(raw)
+    key = json.loads((fixture / 'PROVENANCE.json').read_text())['gap.json']['key']
+    gap_redis.values[key] = raw
+    assert _existing_gap_rows(tmp_path, old['trade_date']) == [old]
+    assert load_dataset('hot_plates_gaps', old['trade_date'], redis=gap_redis).rows == [old]
+    view = json.loads((Path(__file__).parent / 'fixtures/real/c1094/view.json').read_bytes())
+    from engine_core.data_pipeline import hot_plates_gaps
+    monkeypatch.setattr(hot_plates_gaps, '_snapshot_manifests', lambda *_: [view])
+    gap = record_hot_plates_gap(tmp_path, old['trade_date'], old['event_id'] + '_new',
+        old['observed_at'], old['observed_at'], old['observed_at'], old['gap_reason'])
+    assert gap['schema_version'] == 1
+    assert gap['dataset'] == 'hot_plates_gaps'
+    assert gap['source'] == 'guardian_gap_only'
+    assert gap['version'] == gap['event_id']
+    assert gap['captured_at'] == gap['available_at'] == gap['observed_at']
+    assert gap['trade_date'] == old['trade_date']
+    for field in ('scheduled_at', 'deadline', 'observed_at', 'stale_captured_at', 'captured_at', 'available_at'):
+        assert re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+08:00', gap[field])
+    assert json.loads(gap_redis.values[key.rsplit(':', 1)[0] + ':' + gap['event_id']]) == gap
