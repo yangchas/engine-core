@@ -245,7 +245,7 @@ def build_auction_stock_facts(trade_date: str, asof: str,
 
 
 def store_auction_stock_facts(facts: Mapping[str, Any], *, artifact_root: str | Path | None = None,
-                              redis: Any = None, ttl: int = 3600,
+                              redis: Any = None,
                               capture_semantics: str = "unspecified") -> dict[str, Any]:
     """Write immutable cold version and a bounded Core-only hot projection."""
     root = Path(artifact_root or os.getenv("CORE_DATA_ROOT", str(Path.home() / "core-data")))
@@ -270,6 +270,7 @@ def store_auction_stock_facts(facts: Mapping[str, Any], *, artifact_root: str | 
                                            "input_status": facts.get("input_status", "ok")}},
                               source="auction_stock_facts")
     if redis is not None:
+        from .data_pipeline.redis_day_view import hot_view_expire_at
         view = {"version": manifest["version"], "trade_date": day, "used_date": day,
                 "asof": facts["asof"], "available_at": available_at, "summary": summary,
                 "source_quality": facts.get("source_quality", {}),
@@ -277,5 +278,5 @@ def store_auction_stock_facts(facts: Mapping[str, Any], *, artifact_root: str | 
                 "top50": [row for row in rows if row["amount_top50"]],
                 "verified_seals": [row for row in rows if row["seal"]["status"] == "VERIFIED"]}
         redis.set(f"core:cache:data:auction_stock_facts:{day}",
-                  json.dumps(view, ensure_ascii=False, separators=(",", ":")), ex=ttl)
+                  json.dumps(view, ensure_ascii=False, separators=(",", ":")), exat=hot_view_expire_at(day))
     return manifest

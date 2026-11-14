@@ -155,8 +155,9 @@ def _publish_redis(trade_date: str, manifest: Mapping[str, Any], rows: Sequence[
         raise ValueError("auction_points_redis_payload_over_64MiB")
     try:
         import redis
+        from .data_pipeline.redis_day_view import hot_view_expire_at
         client = redis.Redis.from_url(redis_url, decode_responses=True)
-        client.set(f"core:cache:data:auction_points:{trade_date}", payload.decode("utf-8"), ex=604800)
+        client.set(f"core:cache:data:auction_points:{trade_date}", payload.decode("utf-8"), exat=hot_view_expire_at(trade_date))
     except ImportError as exc:
         raise RuntimeError("redis_package_required_for_publish") from exc
 
