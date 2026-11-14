@@ -6,6 +6,14 @@ import pytest
 from engine_core.guardian.gates import auction_snapshot_ready, checkpoint_ready, daily_kline_ready
 
 
+@pytest.fixture(autouse=True)
+def _offline_snapshot_redis(monkeypatch):
+    import engine_core.data_pipeline.auction_redis_view as view
+    def unavailable():
+        raise ConnectionError("offline")
+    monkeypatch.setattr(view, "redis_client", unavailable)
+
+
 def test_snapshot_gate_uses_universe_and_exact_threshold():
     event = type("Event", (), {"gate": "snapshot_0920_ready"})()
     now = datetime.fromisoformat("2026-10-19T09:20:00+08:00")
@@ -43,7 +51,8 @@ def test_snapshot_universe_query_failure_uses_logged_fallback(monkeypatch, caplo
     monkeypatch.setattr(gates, "_query", query)
     now = datetime.fromisoformat("2026-10-19T09:20:06+08:00")
     stats = gates.auction_snapshot_stats(now, "0920")
-    assert stats == {"row_count": 4000, "universe_count": 4500, "coverage": 4000 / 4500}
+    assert stats == {"row_count": 4000, "universe_count": 4500, "coverage": 4000 / 4500,
+                     "source": "td", "degraded": True}
     assert "trusted universe unavailable; using fallback=4500" in caplog.text
     assert len(calls) == 1
     assert "private backend detail" not in caplog.text
@@ -271,3 +280,54 @@ def test_checkpoint_shards_share_one_timeout_budget(monkeypatch):
     assert result['reason'] == 'TD_QUERY_TIMEOUT'
     assert 'CHECKPOINT_QUERY[gate]' in result['error_detail']
     assert time.monotonic() - start < 0.14
+
+
+def test_snapshot_redis_real_pair_and_invalid_metadata(monkeypatch):
+    import json
+    import engine_core.guardian.gates as gates
+    import engine_core.data_pipeline.auction_redis_view as view
+
+    fixture = Path(__file__).parent / 'fixtures' / 'gate_redis'
+    payload = (fixture / '0925.json').read_bytes()
+    meta = json.loads((fixture / '0925.meta.json').read_bytes())
+    class Redis:
+        def __init__(self, pair): self.pair = pair
+        def mget(self, keys):
+            assert keys == ['core:auction:full:2026-11-13:0925', 'core:auction:full:2026-11-13:0925:meta']
+            return self.pair
+    event = type('Event', (), {'gate': 'auction_coverage'})()
+    now = datetime.fromisoformat('2026-11-13T09:25:10+08:00')
+    for changed, source, count in [(meta, 'redis', 5211),
+                                   ({**meta, 'rows': meta['rows'] - 1}, 'td', 1),
+                                   ({**meta, 'sha256': '0' * 64}, 'td', 1),
+                                   ({**meta, 'status': 'INCOMPLETE'}, 'td', 1),
+                                   (None, 'td', 1)]:
+        monkeypatch.setattr(view, 'redis_client', lambda: Redis((payload, json.dumps(changed).encode() if changed else None)))
+        gates._CACHE.clear()
+        result = auction_snapshot_ready(event, now, {'td': FakeTD(1), 'universe_count': 5000})
+        assert (result['source'], result['degraded'], result['row_count']) == (source, source == 'td', count)
+
+
+def test_snapshot_redis_rejects_future_tick(monkeypatch):
+    import hashlib
+    import json
+    import engine_core.guardian.gates as gates
+    import engine_core.data_pipeline.auction_redis_view as view
+
+    fixture = Path(__file__).parent / 'fixtures' / 'gate_redis'
+    rows = json.loads((fixture / '0925.json').read_bytes())
+    meta = json.loads((fixture / '0925.meta.json').read_bytes())
+    now = datetime.fromisoformat('2026-11-13T09:25:10+08:00')
+    row = next(iter(rows.values()))
+    row['ask_amount_yuan'] = row['amount_yuan']
+    class Redis:
+        def mget(self, keys): return payload, json.dumps(meta).encode()
+    monkeypatch.setattr(view, 'redis_client', Redis)
+    event = type('Event', (), {'gate': 'auction_coverage'})()
+    for offset, source in [(0, 'redis'), (1, 'td')]:
+        row['tick_ts_ms'] = int(now.timestamp() * 1000) + offset
+        payload = json.dumps(rows, separators=(',', ':')).encode()
+        meta['sha256'] = hashlib.sha256(payload).hexdigest()
+        gates._CACHE.clear()
+        result = auction_snapshot_ready(event, now, {'td': FakeTD(1), 'universe_count': 5000})
+        assert (result['source'], result['degraded']) == (source, source == 'td')
