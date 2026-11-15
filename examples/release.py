@@ -44,7 +44,8 @@ QUIET_BEFORE, QUIET_AFTER = 30, 120        # seconds around "now" in which no ev
 SMOKE_MODULES = ("engine_core.guardian.startup", "engine_core.data_pipeline.jobs", "engine_core.errors")
 GLOBAL_INVARIANT_TESTS = ("tests/test_real_fixtures.py", "tests/test_trade_day_context.py",
                           "tests/test_registry_storage.py", "tests/test_guardian_contract_static.py",
-                          "tests/test_dataset_registry.py", "tests/test_baseline_window_declaration.py")
+                          "tests/test_dataset_registry.py", "tests/test_baseline_window_declaration.py",
+                          "tests/test_data_pipeline.py", "tests/test_registry_package.py")
 PYTEST_LOCK = Path("/tmp/engine_core_pytest.lock")
 
 
