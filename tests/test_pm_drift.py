@@ -40,12 +40,12 @@ def test_drift_deselects_head_live_from_base_and_refuses_unmarked(tmp_path, monk
     def checked_popen(command, **kwargs):
         if command[0] == pm.PYTHON:
             calls.append(command)
-            if len(calls) == 1:
+            if len(calls) > 1:
                 assert '--deselect=tests/test_td_sink_real.py::test_real_schema_matches_contract' in command
         return real_popen(command, **kwargs)
     monkeypatch.setattr(subprocess, 'Popen', checked_popen)
     assert pm.main(['drift', '--full', '--base', base, '--head', head, '--evidence-dir', str(evidence)]) == 0
-    assert f'DRIFT base={base}(失败1) head={head}(失败1) new=1 fixed=1' in capsys.readouterr().out
+    assert f'DRIFT base={base} head={head} head_failed=1 new=1 baseline=0' in capsys.readouterr().out
     assert 'tests/test_td_sink_real.py::test_real_schema_matches_contract' in (evidence / 'deselected.txt').read_text()
     calls.clear()
     assert pm.main(['drift', '--full', '--base', base, '--head', base, '--evidence-dir', str(evidence)]) == 2
@@ -74,8 +74,19 @@ def test_drift_compares_actual_failures_in_git_revisions(tmp_path, monkeypatch, 
     monkeypatch.setattr(pm, 'DRIFT_WORKTREE_ROOT', tmp_path)
     monkeypatch.setattr(pm, 'DRIFT_LOCK', tmp_path / 'lock')
     evidence = tmp_path / 'evidence'
+    calls = []
+    real_popen = subprocess.Popen
+    def record(command, **kwargs):
+        if command[0] == pm.PYTHON:
+            calls.append(command)
+        return real_popen(command, **kwargs)
+    monkeypatch.setattr(subprocess, 'Popen', record)
     assert pm.main(['drift', '--full', '--base', base, '--head', head, '--evidence-dir', str(evidence)]) == 0
-    assert f'DRIFT base={base}(失败2) head={head}(失败2) new=1 fixed=1' in capsys.readouterr().out
+    assert f'DRIFT base={base} head={head} head_failed=2 new=1 baseline=1' in capsys.readouterr().out
+    assert calls[0][-1] == 'tests/test_drift_sample.py'
+    assert all('tests/test_drift_sample.py' not in call for call in calls[1:])
+    assert any('tests/test_drift_sample.py::test_common' in call for call in calls[1:])
+    assert all('tests/test_drift_sample.py::test_fixed' not in call for call in calls[1:])
     report = next(evidence.glob('drift-*.txt')).read_text()
     assert 'test_drift_sample.py::test_new[with space]' in report
     assert 'assert False' in report
@@ -92,7 +103,7 @@ def test_drift_refuses_concurrent_pytest(tmp_path, monkeypatch, capsys):
     assert 'lock' in capsys.readouterr().out.lower()
 
 
-def test_drift_reports_incomplete_runs_and_attempts_both_revisions(tmp_path, monkeypatch, capsys):
+def test_drift_reports_incomplete_head_without_running_base(tmp_path, monkeypatch, capsys):
     repo = tmp_path / 'repo'
     repo.mkdir()
     def git(*args):
@@ -128,10 +139,14 @@ def test_drift_reports_incomplete_runs_and_attempts_both_revisions(tmp_path, mon
     monkeypatch.setattr(pm.os, 'killpg', lambda *_: None)
     evidence = tmp_path / 'evidence'
     assert pm.main(['drift', '--full', '--base', revision, '--head', revision, '--evidence-dir', str(evidence)]) == 2
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert 'comparison incomplete' in capsys.readouterr().out
     report = next(evidence.glob('drift-*.txt')).read_text()
     assert 'TIMEOUT' in report
+    assert 'tests/test_sample.py' in report
+    assert pm.main(['drift', '--full', '--base', revision, '--head', revision, '--evidence-dir', str(evidence)]) == 2
+    assert len(calls) == 2
+    report = next(evidence.glob('drift-*.txt')).read_text()
     assert 'tests/test_broken.py - collection failed' in report
 
 
@@ -162,4 +177,4 @@ def test_drift_selects_affected_tests_and_skips_live(tmp_path, monkeypatch, caps
     monkeypatch.setattr(pm, "DRIFT_WORKTREE_ROOT", tmp_path)
     monkeypatch.setattr(pm, "DRIFT_LOCK", tmp_path / "lock")
     assert pm.main(["drift", "--base", base, "--head", head, "--evidence-dir", str(tmp_path / "evidence")]) == 0
-    assert f"DRIFT base={base}(失败2) head={head}(失败2) new=1 fixed=1" in capsys.readouterr().out
+    assert f"DRIFT base={base} head={head} head_failed=2 new=1 baseline=1" in capsys.readouterr().out
