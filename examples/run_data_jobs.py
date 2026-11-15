@@ -421,7 +421,7 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
         pool = load_dataset("limit_up_pool", day, prefer="file",
                             catalog=catalog)
         pool_status = "READY"
-        if pool is None:
+        if not _dataset_read_ready(pool):
             from examples.fetch_registry_item import _load_pool_hot
             hot_pool = _load_pool_hot(day, datetime.now().astimezone().isoformat())
             if hot_pool is None:
@@ -510,7 +510,8 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
             day, pool_rows, kaipan_rows=reasons_result.get("rows", ()), wencai_rows=wencai_rows,
             plate_registry_rows=registry,
             plate_registry_loaded=bool(registry),
-            plate_member_rows=members.rows if members else (), plate_members_loaded=members is not None,
+            plate_member_rows=members.rows if _dataset_read_ready(members) else (),
+            plate_members_loaded=_dataset_read_ready(members),
             pool_source=pool_source)
         attempts.append({"provider": "historical_attribution",
                          "result": "DEGRADED" if built["historical_attribution_count"] else "NOT_NEEDED",
@@ -558,6 +559,11 @@ def _call_universe_fetch(fetch: Any, trade_date: str) -> Any:
     except (TypeError, ValueError):
         accepts_context = False
     return fetch(trade_date, None) if accepts_context else fetch(trade_date)
+
+
+def _dataset_read_ready(value: Any) -> bool:
+    """Treat explicit missing/unknown reads as unavailable, not as empty data."""
+    return value is not None and getattr(value, "status", "READY") == "READY"
 
 
 def _universe_payload_quality(payload: Any) -> bool:
