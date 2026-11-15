@@ -156,6 +156,18 @@ def _step(name: str, dataset: str, day: str | None, catalog: ArtifactCatalog,
 
 def _latest_step(name: str, dataset: str, before: str, catalog: ArtifactCatalog,
                  *, asof: str) -> dict[str, Any]:
+    if dataset == "hot_rank":
+        from .data_pipeline.reader import load_dataset
+        loaded = load_dataset(dataset, before)
+        manifest = loaded.manifest
+        status = loaded.status
+        available, cutoff = _pit_time(manifest.get("available_at")), _pit_time(asof)
+        if status == "READY" and (available is None or cutoff is None or available > cutoff):
+            status = "MISSING"
+        return {"step": name, "dataset": dataset, "trade_date": before if status == "READY" else None,
+                "status": status, "reason": manifest.get("reason") or ("NOT_AVAILABLE_ASOF" if loaded.status == "READY" and status != "READY" else None),
+                "row_count": len(loaded.rows) if status == "READY" else None,
+                "version": manifest.get("version"), "storage_source": loaded.discovered_by, "elapsed_ms": 0}
     indexed = catalog.read().get("datasets", {}).get(dataset, {}).get("dates", {})
     days = sorted(day for day in indexed if day <= before and _manifest(catalog, dataset, day, asof=asof))
     item = _step(name, dataset, days[-1] if days else None, catalog, asof=asof,
@@ -705,7 +717,7 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                     errors.append(job + ":COMMAND_FAILED")
                     error_codes.append(_declared_code(out))
                     error_steps.append({"step": job, "code": error_codes[-1]})
-        if not _latest_step("hot_rank", "hot_rank", trade_date, catalog, asof=asof)["trade_date"]:
+        if _latest_step("hot_rank", "hot_rank", trade_date, catalog, asof=asof)["status"] == "MISSING":
             started = time.monotonic()
             rc, out = _run(repo, "capture_ths_hot_rank.py", ["--execute", "--artifact-root", str(root)])
             timings["hot_rank"] = round((time.monotonic() - started) * 1000, 3)
