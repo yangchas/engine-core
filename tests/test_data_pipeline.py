@@ -21,7 +21,8 @@ def test_registry_declares_tiered_storage_and_bounded_redis_views():
     assert get_dataset("daily_kline").primary_backend == "artifact"
     assert get_dataset("daily_kline").redis_ttl_seconds == 7 * 86400
     assert get_dataset("hot_plates").redis_ttl_trade_days == 5
-    assert get_dataset("hot_rank").redis_ttl_seconds == 2 * 86400
+    assert get_dataset("hot_rank").primary_backend == "redis"
+    assert get_dataset("hot_rank").redis_ttl_trade_days == 5
     assert get_dataset("limit_up_pool").redis_ttl_trade_days == 5
     assert get_dataset("limit_reasons").redis_ttl_seconds == 4 * 86400
     assert get_dataset("plate_members").redis_ttl_seconds == 4 * 86400
@@ -36,7 +37,7 @@ def test_registry_declares_tiered_storage_and_bounded_redis_views():
     for name, spec in DATASETS.items():
         if not spec.hot_view or name not in items:
             continue
-        if name in {"hot_plates", "limit_up_pool", "limit_up_pool_today", "auction_points"}:
+        if name in {"hot_plates", "hot_rank", "limit_up_pool", "limit_up_pool_today", "auction_points"}:
             assert items[name]["redis_ttl_trade_days"] == spec.redis_ttl_trade_days
             assert spec.redis_ttl_seconds is None
             view = next(location for location in items[name]["storage"] if location["kind"] == "redis_view")
