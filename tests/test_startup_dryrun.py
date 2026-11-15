@@ -51,3 +51,49 @@ def test_data_root_guard_rejects_writes_and_records_violations(tmp_path):
     assert existing.read_text() == 'original'
     assert len(violations) == 2
     assert all(row['backend'] == 'filesystem' for row in violations)
+
+
+def test_rehearsal_plans_from_real_calendar_and_records_denied_writes():
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path.home() / 'core-data'
+    if not (root / 'trade_calendar' / 'calendar.json').is_file():
+        pytest.skip('real Core trade calendar not available')
+    result = subprocess.run(
+        [sys.executable, 'examples/startup_dryrun.py', '--date', '2026-11-13',
+         '--now', '08:00', '--root', str(root)],
+        capture_output=True, text=True, check=True,
+    )
+    report = json.loads(result.stdout)
+    assert list(report['boot']) == ['boot_trade_day', 'boot_data_health', 'boot_reconcile']
+    assert report['boot']['boot_trade_day']['detail']['is_trading_day'] is True
+    assert isinstance(report['plan'], list)
+    assert all('item' in row and 'action' in row and 'reason' in row for row in report['plan'])
+    assert any(row['backend'] == 'filesystem' for row in report['violations'])
+
+
+def test_installed_client_guards_stop_writes_before_delegation(monkeypatch):
+    import redis
+    from engine_core.data_pipeline import td_sink
+    from examples.startup_dryrun import guarded_clients
+
+    redis_client, td_cursor = RecordingClient(), RecordingClient()
+
+    class Connection:
+        def cursor(self):
+            return td_cursor
+
+    monkeypatch.setattr(redis.Redis, 'from_url', lambda *args, **kwargs: redis_client)
+    monkeypatch.setattr(td_sink, 'connect_td', lambda *args, **kwargs: Connection())
+    violations = []
+    with guarded_clients(violations):
+        with pytest.raises(PermissionError):
+            redis.Redis.from_url('unused').set('core:readonly', 'value')
+        with pytest.raises(PermissionError):
+            td_sink.connect_td().cursor().execute('INSERT INTO x VALUES (1)')
+    assert redis_client.calls == []
+    assert td_cursor.calls == []
+    assert [row['backend'] for row in violations] == ['redis', 'td']

@@ -1,11 +1,12 @@
-"""Read-only client guards for the unfinished guardian startup rehearsal.
-
-This module is not a startup rehearsal: the guards are not yet installed into
-all guardian subprocesses. Do not run a startup with these guards alone.
-"""
+"""Run the guardian boot planning chain with in-process read-only guards."""
 from __future__ import annotations
 
+import argparse
+import json
 import re
+import tempfile
+from datetime import datetime
+from unittest.mock import patch
 import os
 import sys
 from contextlib import contextmanager
@@ -87,6 +88,12 @@ class ReadOnlyRedis:
     def get(self, key):
         return self.execute_command("GET", key)
 
+    def ping(self):
+        return self.execute_command("PING")
+
+    def set(self, *args, **kwargs):
+        return self.execute_command("SET", *args, **kwargs)
+
     def close(self):
         return self._client.close()
 
@@ -114,5 +121,81 @@ class ReadOnlyTD:
         return self._cursor.close()
 
 
+class ReadOnlyConnection:
+    def __init__(self, connection, violations):
+        self._connection = connection
+        self._violations = violations
+
+    def cursor(self):
+        return ReadOnlyTD(self._connection.cursor(), self._violations)
+
+    def close(self):
+        return self._connection.close()
+
+
+@contextmanager
+def guarded_clients(violations):
+    import redis
+    from engine_core.data_pipeline import td_sink
+
+    redis_from_url = redis.Redis.from_url
+    connect_td = td_sink.connect_td
+    with patch.object(redis.Redis, "from_url", side_effect=lambda *a, **kw:
+                      ReadOnlyRedis(redis_from_url(*a, **kw), violations)), \
+         patch.object(td_sink, "connect_td", side_effect=lambda *a, **kw:
+                      ReadOnlyConnection(connect_td(*a, **kw), violations)):
+        yield
+
+
+def rehearse(root, trade_date, now, *, protected_root=None):
+    from engine_core.guardian import startup
+    from engine_core.guardian.scheduler import phase_at
+
+    violations = []
+    clock = datetime.fromisoformat(f"{trade_date}T{now}:00+08:00")
+    with guarded_clients(violations), protect_data_root(protected_root or root, violations), \
+         protect_data_root(root, violations):
+        trade = startup.boot_trade_day(trade_date, root)
+        detail = trade.get("detail") or {}
+        try:
+            health = startup.boot_data_health(trade_date, detail.get("prev"), root, now=clock)
+        except PermissionError as exc:
+            health = {"status": "failed", "error_code": str(exc),
+                      "detail": {"status": "failed"}}
+        phase = (phase_at(clock) if detail.get("is_trading_day") is True else
+                 "NON_TRADING" if detail.get("is_trading_day") is False else "UNKNOWN")
+        reconcile = startup.boot_reconcile(trade_date, phase, health.get("detail"), root, now=clock)
+    rows = (reconcile.get("detail") or {}).get("plan", [])
+    return {"boot": {"boot_trade_day": trade, "boot_data_health": health,
+                     "boot_reconcile": reconcile},
+            "plan": [{"item": row.get("id"), "action": row.get("action"),
+                      "reason": row.get("reason") or row.get("error")} for row in rows],
+            "violations": violations}
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--date", required=True)
+    parser.add_argument("--now", required=True, help="HH:MM in Asia/Shanghai")
+    parser.add_argument("--root", default=os.environ.get("CORE_DATA_ROOT", "~/core-data"))
+    parser.add_argument("--without-catalog", action="store_true")
+    parser.add_argument("--copy-dir", default=None, help="directory for the catalog-free root")
+    args = parser.parse_args()
+    root = Path(args.root).expanduser().resolve()
+    result = rehearse(root, args.date, args.now)
+    if args.without_catalog:
+        evidence = Path(args.copy_dir).expanduser() if args.copy_dir else Path(__file__).resolve().parents[1] / "fw" / "evidence"
+        evidence.mkdir(parents=True, exist_ok=True)
+        copy = Path(tempfile.mkdtemp(prefix="startup-no-catalog-", dir=evidence))
+        for child in root.iterdir():
+            if child.name != "catalog.json":
+                (copy / child.name).symlink_to(child, target_is_directory=child.is_dir())
+        other = rehearse(copy, args.date, args.now, protected_root=root)
+        result = {"with_catalog": result, "without_catalog": other,
+                  "plan_difference": {"with_catalog": result["plan"], "without_catalog": other["plan"]}}
+    print(json.dumps(result, ensure_ascii=False, default=str))
+
+
 if __name__ == "__main__":
-    raise SystemExit("startup_dryrun is incomplete: subprocess and filesystem guards are not installed")
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    main()
