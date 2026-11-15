@@ -307,3 +307,5 @@ def test_c879_reference_provenance_integrity():
     assert not list(root.rglob('*.py'))
     for name, digest in hashes.items():
         assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest
+
+
