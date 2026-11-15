@@ -86,7 +86,8 @@ def pytest_summary(log: Path, file_count: int, deep: bool, mode: str | None = No
 def git(repo: Path, *args: str) -> str:
     done = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
     if done.returncode:
-        raise SystemExit(f"git {' '.join(args)} failed in {repo}: {done.stderr.strip()}")
+        raise SystemExit(f"git {' '.join(args)} failed in {repo} (exit {done.returncode}): "
+                         f"stdout: {done.stdout.strip()} stderr: {done.stderr.strip()}")
     return done.stdout.strip()
 
 
@@ -383,7 +384,14 @@ def cmd_merge(args: argparse.Namespace) -> int:
             problems.append("the branch does not merge cleanly: " + (done.stdout + done.stderr).strip()[-300:])
         else:
             merged = True
-    if merged:
+            staged = subprocess.run(["git", "-C", str(ROOT), "diff", "--cached", "--quiet"],
+                                    capture_output=True, text=True)
+            if "Already up to date" in done.stdout + done.stderr or staged.returncode == 0:
+                problems.append(f"branch {args.branch} has no new commits over HEAD")
+            elif staged.returncode != 1:
+                problems.append(f"could not inspect staged changes (exit {staged.returncode}): "
+                                f"{(staged.stdout + staged.stderr).strip()}")
+    if merged and not problems:
         tests = []
         deep = getattr(args, "deep", False)
         mode = "deep" if deep else "depth1"

@@ -7,6 +7,44 @@ from examples.pm import TERMINAL, latest_state, main
 REAL_LINES = (Path(__file__).parent / 'fixtures/real/ledger_instance_state_20261106.jsonl').read_text().splitlines()
 
 
+def test_land_uses_card_worktree_head_when_branch_is_stale(tmp_path, monkeypatch, capsys):
+    import subprocess
+    from types import SimpleNamespace
+
+    repo = tmp_path / 'engine_core'
+    repo.mkdir()
+    def git(where, *args):
+        return subprocess.run(['git', '-C', str(where), *args], capture_output=True, text=True, check=True).stdout.strip()
+    git(repo, 'init', '-q', '-b', 'main')
+    git(repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '--allow-empty', '-qm', 'base')
+    git(repo, 'branch', 'C999')
+    worktree = tmp_path / 'engine_core-wt-C999'
+    git(repo, 'worktree', 'add', '-qb', 'candidate', str(worktree))
+    git(worktree, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '--allow-empty', '-qm', 'candidate')
+    candidate = git(worktree, 'rev-parse', 'HEAD')
+    cards = tmp_path / 'cards'
+    cards.mkdir()
+    (cards / 'C999.md').write_text('STATUS: PARTIAL\n')
+    (cards / 'C998.md').write_text('STATUS: PARTIAL\n')
+    git(repo, 'branch', 'C998')
+    monkeypatch.setattr(pm, 'ROOT', repo)
+    monkeypatch.setattr(pm, 'CARDS', cards)
+    real_run = subprocess.run
+    calls = []
+    def run(command, **kwargs):
+        if command[0] == pm.PYTHON:
+            calls.append(command)
+            return SimpleNamespace(returncode=1, stdout='REFUSED: test guard\n', stderr='')
+        return real_run(command, **kwargs)
+    monkeypatch.setattr(subprocess, 'run', run)
+    assert pm.land(SimpleNamespace(card='C999', max_tests_files=12)) == 1
+    assert calls[0][calls[0].index('--branch') + 1] == candidate
+    assert candidate in capsys.readouterr().out
+    assert pm.land(SimpleNamespace(card='C998', max_tests_files=12)) != 0
+    assert 'worktree' in capsys.readouterr().out.lower()
+    assert len(calls) == 1
+
+
 def test_latest_state():
     event = 'td_resource_check_0825'
     running = latest_state(REAL_LINES[:2], event)
