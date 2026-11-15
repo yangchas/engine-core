@@ -10,7 +10,11 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from engine_core.data_pipeline import limit_up_today as core
-from engine_core.data_pipeline.dataset_contract import check_partition, load_spec
+from engine_core.data_pipeline import cold_archive, dataset_contract
+from engine_core.data_pipeline.dataset_contract import load_spec
+from engine_core.data_pipeline.providers.limit_up_today_sources import publish_hot_snapshot
+from engine_core.data_pipeline.storage import canonical_json
+from tests.test_c1145_cold_archive import Redis
 from engine_core.data_pipeline.providers.limit_up_today_sources import SourceUnavailable
 from engine_core.data_pipeline.registry import get_dataset
 from engine_core.guardian import limit_up_today as runner
@@ -113,12 +117,33 @@ def test_wencai_real_dated_fields_and_three_source_close_crosscheck():
     assert "920896" not in {row["symbol"] for row in _rows(daily_path)}
 
 
-def test_runner_keeps_distinct_pit_versions_and_checks_contract(tmp_path):
+def test_runner_keeps_distinct_pit_versions_and_checks_contract(tmp_path, monkeypatch):
     _replay_catalog(tmp_path)
     snapshot = _raw("q2_limit_up_pool_today_2026-10-28_0702.json")
     clock = lambda: datetime.fromisoformat("2026-10-28T15:05:00+08:00")
+    class MemoryStore:
+        def __init__(self):
+            self.rows = {}
+
+        def read(self, dataset, day, version):
+            return list(self.rows.get((dataset, day, version), {}).values())
+
+        def write(self, dataset, day, version, rows, *, meta):
+            self.rows.setdefault((dataset, day, version), {}).update(
+                (row["chunk_no"], dict(row)) for row in rows)
+
+    from engine_core.data_pipeline import redis_day_view
+    monkeypatch.setattr(redis_day_view, "hot_view_expire_at", lambda day: 4070908800)
+    redis, store, calls = Redis(), MemoryStore(), []
+
+    def archive(dataset, day, version, raw, meta):
+        calls.append((dataset, day, version, raw, meta))
+        cold_archive.write_envelope(store, dataset, day, version, raw, meta)
+
+    monkeypatch.setattr(cold_archive, "archive", archive)
+    monkeypatch.setattr(cold_archive, "flush", lambda: True)
     deps = runner.TodayDeps(redis_snapshot=lambda _day: snapshot, clock=clock,
-                            publish_hot=lambda _manifest, _rows: {"status": "offline_replay"})
+                            publish_hot=lambda manifest, rows: publish_hot_snapshot(manifest, rows, client=redis))
     versions = []
     for as_of in ("2026-10-28T15:00:01+08:00", "2026-10-28T15:00:10+08:00"):
         code, response = runner.run({"data_date": DAY, "as_of": as_of,
@@ -127,14 +152,29 @@ def test_runner_keeps_distinct_pit_versions_and_checks_contract(tmp_path):
         assert code in (0, 10)
         versions.append(response["detail"]["version"])
     assert versions[0] != versions[1]
-    catalog = json.loads((tmp_path / "catalog.json").read_text(encoding="utf-8"))
-    stored = catalog["datasets"]["limit_up_pool_today"]["dates"][DAY]
-    assert len(stored) == 2
-    assert {item["as_of"] for item in stored} == {
-        "2026-10-28T15:00:01+08:00", "2026-10-28T15:00:10+08:00"}
-    report = check_partition(tmp_path, "limit_up_pool_today", DAY, version=versions[-1],
-                             spec=load_spec("limit_up_pool_today"))
-    assert report.passed, report.summary()
+    assert len(calls) == 2
+    assert {(name, day, version) for name, day, version, _, _ in calls} == {
+        ("limit_up_pool_today", DAY, version) for version in versions}
+    assert set(store.rows) == {("limit_up_pool_today", DAY, version) for version in versions}
+    as_ofs = set()
+    for name, day, version, raw, meta in calls:
+        key = f"core:cache:data:{name}:{day}:{version}"
+        assert redis.values[key].encode() == raw
+        assert cold_archive.read_envelope(name, day, version, store=store) == raw
+        view = json.loads(raw)
+        assert view == meta and view["version"] == version
+        as_ofs.add(view["as_of"])
+        rows = view["rows"]
+        assert rows
+        payload = b"\n".join(canonical_json(row) for row in rows) + b"\n"
+        spec = dataset_contract.apply_provider_overrides(load_spec(name), view["provider"])
+        report = dataset_contract.Report(name, day, tmp_path)
+        dataset_contract._check_manifest(report, name, day, view, view, rows, payload, spec)
+        dataset_contract._check_rows(report, day, view, rows, spec)
+        dataset_contract._check_coverage(report, None, day, view, rows, spec)
+        dataset_contract._check_idempotency(report, view, rows, payload, spec)
+        assert report.passed, report.summary()
+    assert as_ofs == {"2026-10-28T15:00:01+08:00", "2026-10-28T15:00:10+08:00"}
 
 
 def test_wencai_budget_is_one_request_and_redis_failure_does_not_poll(tmp_path):
