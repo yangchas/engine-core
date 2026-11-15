@@ -98,6 +98,7 @@ class DatasetSpec:
     source_preference: tuple[str, ...] = ()
     primary_providers: tuple[str, ...] = ()
     kind: str | None = None
+    source_kinds: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.redis_ttl_trade_days is not None and (
