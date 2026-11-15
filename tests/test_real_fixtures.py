@@ -340,7 +340,7 @@ def test_hot_rank_real_snapshot_two_layer(tmp_path, monkeypatch):
         now="2026-10-23T14:41:00+08:00", source="ths_hot_rank", publish=True)
     assert result.manifest["cache_publish"] == "READY"
     assert len(store.get("hot_rank", "2026-10-23").rows) == len(rows)
-    assert (tmp_path / "catalog.json").exists()
+    assert not (tmp_path / "catalog.json").exists()
     assert store.presence("hot_rank", "2026-10-23").status == "PRESENT_REDIS"
     assert len(archives) == 1 and archives[0][0] == "hot_rank"
     class ArchivedCold:
@@ -380,12 +380,13 @@ def test_hot_rank_real_snapshot_two_layer(tmp_path, monkeypatch):
             return super().set(key, value, **kwargs)
 
     failed_redis = FailingNewView()
-    failed = JobRunner(artifact_root=tmp_path / 'failure', redis=failed_redis, state=JobState()).run(
-        "hot_rank", "2026-10-23", fetch=lambda _: rows,
-        now="2026-10-23T14:41:00+08:00", source="ths_hot_rank", publish=True)
-    assert failed.manifest['cache_publish'] == 'READY'
-    assert (tmp_path / 'failure' / 'catalog.json').exists()
-    assert failed_redis.get('core:cache:data:hot_rank:2026-10-23') is not None
+    with pytest.raises(RuntimeError, match='new_view_failed'):
+        JobRunner(artifact_root=tmp_path / 'failure', redis=failed_redis, state=JobState()).run(
+            "hot_rank", "2026-10-23", fetch=lambda _: rows,
+            now="2026-10-23T14:41:00+08:00", source="ths_hot_rank", publish=True)
+    assert not (tmp_path / 'failure' / 'catalog.json').exists()
+    assert failed_redis.get('core:cache:data:hot_rank:2026-10-23') is None
+
 
 
 def test_hot_rank_readers_use_two_layer_real_snapshot(tmp_path, monkeypatch):
@@ -452,3 +453,26 @@ def test_hot_rank_legacy_fallback_marks_unknown_store(tmp_path, monkeypatch):
     assert result.meta['legacy_dependency'] is True
     assert result.meta['lineage'][0]['store_status'] == 'UNKNOWN'
     assert len(result.rows) == len(rows)
+
+
+def test_hot_rank_publish_does_not_create_catalog(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import cold_archive, hot_rank_view
+    from engine_core.data_pipeline.jobs import JobRunner, JobState
+
+    class RedisMemory:
+        def __init__(self): self.values = {}
+        def get(self, key): return self.values.get(key)
+        def set(self, key, value, **kwargs): self.values[key] = value; return True
+
+    monkeypatch.setattr(hot_rank_view, 'hot_view_expire_at', lambda day: 2000000000)
+    monkeypatch.setattr(cold_archive, 'archive', lambda *args: True)
+    monkeypatch.setattr(cold_archive, 'flush', lambda: None)
+    redis = RedisMemory()
+    rows = ThsHotRankProvider.normalize(load('ths_hot_rank_'))
+    result = JobRunner(artifact_root=tmp_path, redis=redis, state=JobState()).run(
+        'hot_rank', '2026-10-23', fetch=lambda _: rows,
+        now='2026-10-23T14:41:00+08:00', source='ths_hot_rank', publish=True)
+    assert result.manifest['cache_publish'] == 'READY'
+    assert redis.get('core:view:hot_rank:2026-10-23') is not None
+    assert not (tmp_path / 'catalog.json').exists()
+    assert not list(tmp_path.rglob('*.jsonl.gz'))

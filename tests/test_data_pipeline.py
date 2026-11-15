@@ -122,7 +122,7 @@ def test_job_pipeline_persists_immutable_artifact_and_manifest(name, tmp_path):
     else:
         rows = [{"symbol": "1", "value": 3, "missing": None}]
     now = "2026-10-27T10:00:00Z" if name in {"limit_reasons", "hot_plates"} else "2026-10-16T10:00:00Z"
-    if name == "hot_plates":
+    if name in {"hot_plates", "hot_rank"}:
         with pytest.raises(RuntimeError, match="redis"):
             runner.run(name, trade_date, fetch=lambda _: rows, now=now)
         assert not (tmp_path / "catalog.json").exists()

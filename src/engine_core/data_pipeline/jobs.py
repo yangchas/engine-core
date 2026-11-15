@@ -555,6 +555,24 @@ class JobRunner:
                                          "version": committed["version"], "quality": quality,
                                          "cache_publish": "READY"})
             return JobResult(committed, rows)
+        if name == "hot_rank":
+            if not publish or self.redis is None:
+                raise RuntimeError("redis_adapter_not_configured_or_publish_disabled")
+            payload = b"\n".join(canonical_json(row) for row in rows) + (b"\n" if rows else b"")
+            digest = hashlib.sha256(payload).hexdigest()
+            committed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            committed = dict(manifest, sha256=digest, version=f"sha256-{digest[:16]}",
+                             committed_at=committed_at, available_at=committed_at,
+                             storage_backend="redis", storage_uri=None, manifest_uri=None, rows_uri=None)
+            from .hot_rank_view import publish as publish_hot_rank
+            publish_hot_rank(self.redis, trade_date, rows, committed)
+            from .cold_archive import flush
+            flush()
+            committed["cache_publish"] = "READY"
+            self.state.set_status(name, {"trade_date": trade_date, "available_at": committed["available_at"],
+                                         "version": committed["version"], "quality": quality,
+                                         "cache_publish": "READY"})
+            return JobResult(committed, rows)
         # Durable artifact publication is the commit point. Redis/TD are later, optional tiers.
         committed = self.catalog.commit(name, trade_date, rows, manifest, source=safe_source)
         committed["cache_publish"] = "SKIPPED"
@@ -577,15 +595,6 @@ class JobRunner:
                 committed["cache_publish_warning"] = f"redis_publish_failed:{type(exc).__name__}"
             else:
                 committed["cache_publish"] = "READY"
-        if publish and name == "hot_rank":
-            try:
-                from .hot_rank_view import publish as publish_hot_rank
-                publish_hot_rank(self.redis, trade_date, rows, committed)
-                from .cold_archive import flush
-                flush()
-            except Exception:
-                import logging
-                logging.getLogger(__name__).warning("hot_rank_view dispatch_failed", exc_info=True)
         status = {"trade_date": trade_date,
             "available_at": committed["available_at"], "version": committed["version"],
             "quality": quality, "cache_publish": committed["cache_publish"]}
