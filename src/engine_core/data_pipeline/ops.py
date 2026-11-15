@@ -236,7 +236,7 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                     results.append({"job": name, "status": "SKIPPED_WAITING_DAILY_KLINE"})
                     continue
             dataset_day = trade_date if name == "symbol_universe" else job_trade_date
-            existing_path = runner.catalog.locate(name, dataset_day)
+            existing_path = None if name == "limit_up_pool" else runner.catalog.locate(name, dataset_day)
             if existing_path is not None and name != "hot_plates":
                 try:
                     existing_manifest = json.loads(existing_path.read_text(encoding="utf-8"))

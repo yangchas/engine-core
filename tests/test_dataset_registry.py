@@ -37,17 +37,26 @@ def test_real_catalog_freshness_smoke():
     assert all("status" in item and "id" in item for item in stale)
 
 
-def test_partition_freshness_states():
+def test_partition_freshness_states(monkeypatch):
+    from pathlib import Path
+    from engine_core.guardian.presence import resolve_presence
+    raw = (Path(__file__).parent / "fixtures/real/c1147/limit_up_pool_1112_formal.json").read_bytes()
+    class Redis:
+        def get(self, key):
+            return raw if key.endswith("2026-11-12") else None
+    monkeypatch.setattr("engine_core.guardian.presence.resolve_presence",
+                        lambda dataset, day: resolve_presence(dataset, day, redis_client=Redis())
+                        if dataset == "limit_up_pool" else "UNKNOWN")
     from datetime import timedelta
     tz = timezone(timedelta(hours=8))
     items = load_registry()
-    catalog = {"datasets": {"daily_kline": {"dates": {"2026-10-19": [{}]}},
-                            "limit_up_pool": {"dates": {"2026-10-19": [{}]}}}}
-    early = datetime(2026, 10, 20, 8, 0, tzinfo=tz)
-    late = datetime(2026, 10, 20, 19, 0, tzinfo=tz)
+    catalog = {"datasets": {"daily_kline": {"dates": {"2026-11-12": [{}]}},
+                            "limit_up_pool": {"dates": {"2026-11-12": [{}]}}}}
+    early = datetime(2026, 11, 13, 8, 0, tzinfo=tz)
+    late = datetime(2026, 11, 13, 19, 0, tzinfo=tz)
     by = lambda rows: {r["id"]: r["status"] for r in rows}
-    pending = by(stale_items(early, catalog, items, trade_date="2026-10-20", prev_trade_date="2026-10-19"))
-    overdue = by(stale_items(late, catalog, items, trade_date="2026-10-20", prev_trade_date="2026-10-19"))
+    pending = by(stale_items(early, catalog, items, trade_date="2026-11-13", prev_trade_date="2026-11-12"))
+    overdue = by(stale_items(late, catalog, items, trade_date="2026-11-13", prev_trade_date="2026-11-12"))
     assert pending["daily_kline"] == "PENDING" and overdue["daily_kline"] == "OVERDUE"
     assert pending["limit_up_pool"] == overdue["limit_up_pool"] == "OK"
 
