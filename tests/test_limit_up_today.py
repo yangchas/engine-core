@@ -13,11 +13,12 @@ def test_suspended_stale_only_does_not_degrade(tmp_path, monkeypatch):
     snapshot = {'active_symbols': symbols, 'hashes': {s: raw['hashes'][s] for s in symbols}}
     monkeypatch.setattr(runner, '_same_date_universe_names', lambda *_: {'000016': '深康佳A', '000554': '泰山石油'})
     now = datetime.fromisoformat('2026-10-28T15:10:00+08:00')
+    published = []
     deps = runner.TodayDeps(redis_snapshot=lambda _: snapshot, clock=lambda: now,
-                            publish_hot=lambda *_: {'status': 'offline_replay'})
+                            publish_hot=lambda manifest, rows: published.append(manifest) or {'status': 'offline_replay'})
     code, reply = runner.run({'data_date': '2026-10-28', 'as_of': now.isoformat()}, tmp_path, deps=deps)
     assert code == 0, reply
-    manifest = json.loads(Path(reply["artifacts"][0]).read_text())
+    manifest = published[0]
     assert manifest["quality_details"]["limit_pool"]["suspended_stale"] == 1
 
 
@@ -101,3 +102,22 @@ def test_handler_dry_run_never_connects_redis(monkeypatch, tmp_path):
     code, reply = guardian_handler._run({'event': 'limit_up_today_110000', 'trade_date': '2026-10-28'})
     assert code == 0 and not check_reply(code, reply)
     assert reply['detail'] == 'dry_run'
+
+
+def test_today_sample_publishes_without_catalog(tmp_path, monkeypatch):
+    raw = json.loads((Path(__file__).parent / 'fixtures/real/q2_limit_up_pool_today_2026-10-28_0702.json').read_text())
+    snapshot = {'active_symbols': ['000554'], 'hashes': raw['hashes']}
+    monkeypatch.setattr(runner, '_same_date_universe_names', lambda *_: {'000554': '泰山石油'})
+    now = datetime.fromisoformat('2026-10-28T15:10:00+08:00')
+    published = []
+    def publish(manifest, rows):
+        published.append((manifest, rows))
+        return {'status': 'published'}
+    code, reply = runner.run({'data_date': '2026-10-28', 'as_of': now.isoformat()}, tmp_path,
+                             deps=runner.TodayDeps(redis_snapshot=lambda _: snapshot, clock=lambda: now,
+                                                   publish_hot=publish))
+    assert code == 0, reply
+    assert published and published[0][0]['version']
+    assert reply['artifacts'] == []
+    assert not (tmp_path / 'catalog.json').exists()
+    assert not (tmp_path / 'limit_up_pool_today').exists()

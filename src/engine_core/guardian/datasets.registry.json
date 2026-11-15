@@ -576,7 +576,7 @@
         "force": "recompute a new as_of version",
         "clear": "clear then rebuild"
       },
-      "notes": "C900: hot view uses Core Redis namespace core:cache:data:limit_up_pool_today:* with the registered TTL; catalog commits are transitional until readers migrate. Redis expiry: fifth following trading day at 00:00 Asia/Shanghai; late backfills retain at least 24 hours.",
+      "notes": "C900: hot view uses Core Redis namespace core:cache:data:limit_up_pool_today:* with the registered TTL; Redis is authoritative; TD is a best-effort cold archive. Redis expiry: fifth following trading day at 00:00 Asia/Shanghai; late backfills retain at least 24 hours.",
       "guardian_event": "limit_up_today_091600",
       "late_policy": {
         "mode": "fetch_now",
@@ -617,12 +617,6 @@
             "expire_time": "00:00:00",
             "timezone": "Asia/Shanghai"
           }
-        },
-        {
-          "kind": "catalog",
-          "name": "limit_up_pool_today",
-          "role": "legacy",
-          "note": "transitional catalog commits retained until readers migrate to Redis"
         },
         {
           "kind": "td_snapshot",
