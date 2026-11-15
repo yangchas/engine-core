@@ -97,6 +97,7 @@ class DatasetSpec:
     min_coverage: float | None = None
     source_preference: tuple[str, ...] = ()
     primary_providers: tuple[str, ...] = ()
+    kind: str | None = None
 
     def __post_init__(self) -> None:
         if self.redis_ttl_trade_days is not None and (
