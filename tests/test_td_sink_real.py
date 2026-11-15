@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.live
+
 from td_sink_support import NROWS, commit_day, load_real
 
 DAY = "2026-10-23"

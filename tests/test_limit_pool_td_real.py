@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.live
+
 from engine_core.data_pipeline import limit_pool as lp
 from engine_core.data_pipeline.limit_pool_td import DATA_COLUMNS, LimitPoolTdSink, PoolTaosStore, map_rows
 from engine_core.data_pipeline.storage import ArtifactCatalog

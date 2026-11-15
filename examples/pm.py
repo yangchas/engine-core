@@ -1448,7 +1448,7 @@ def memory_add(name, text):
 
 
 def drift(args):
-    """Compare complete pytest failure sets from two isolated revisions."""
+    """Compare pytest failure sets from two isolated revisions."""
     def git(repo, *arguments):
         return subprocess.run(['git', '-C', str(repo), *arguments], check=True,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True).stdout.strip()
@@ -1462,6 +1462,11 @@ def drift(args):
                 return 2
             base = git(ROOT, 'rev-parse', '--verify', (args.base or git('/home/exedev/repos/engine_core-live', 'rev-parse', 'HEAD')) + '^{commit}')
             head = git(ROOT, 'rev-parse', '--verify', (args.head or git(ROOT, 'rev-parse', 'HEAD')) + '^{commit}')
+            changed = [p for p in git(ROOT, 'diff', '--name-only', base, head, '--', 'src/', 'examples/').splitlines() if p]
+            selected = []
+            if not args.full and changed:
+                selection = subprocess.run([PYTHON, str(ROOT / 'examples/affected_tests.py'), '--files', *changed, '--command', '--depth', '1'], cwd=ROOT, capture_output=True, text=True, check=True)
+                selected = sorted({word for word in selection.stdout.split() if word.startswith('tests/') and word.endswith('.py')})
             results = []
             incomplete = []
             for revision in (base, head):
@@ -1469,28 +1474,55 @@ def drift(args):
                     checkout = Path(parent) / 'checkout'
                     git(ROOT, 'worktree', 'add', '--detach', str(checkout), revision)
                     try:
-                        process = subprocess.Popen([PYTHON, '-m', 'pytest', '-q', '-p', 'no:cacheprovider', '--no-header'],
+                        # Historical revisions can predate the live marks; never run known hazardous nodes unmarked.
+                        import ast
+                        hazards = {'tests/test_td_ladder_sink.py': ['test_real_td_roundtrip_and_replace'],
+                                   'tests/test_td_sink_real.py': ['test_real_schema_matches_contract'],
+                                   'tests/test_limit_pool_td_real.py': ['test_real_schema_has_every_contract_column_with_the_declared_type'],
+                                   'tests/test_audit_card.py': ['test_fail_first'],
+                                   'tests/test_pm_drift.py': ['test_drift_compares_actual_failures_in_git_revisions']}
+                        unsafe = []
+                        for filename, names in hazards.items():
+                            path = checkout / filename
+                            if not path.exists() or (not args.full and filename not in selected):
+                                continue
+                            tree = ast.parse(path.read_text(encoding='utf-8'))
+                            module_live = any(isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'pytestmark' for t in node.targets) and 'pytest.mark.live' in ast.unparse(node.value) for node in tree.body)
+                            for node in tree.body:
+                                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names and not module_live and not any('pytest.mark.live' in ast.unparse(d) for d in node.decorator_list):
+                                    unsafe.append(filename + '::' + node.name)
+                        if unsafe:
+                            incomplete.append(f'UNMARKED_LIVE revision={revision} ' + ', '.join(unsafe))
+                            results.append(None)
+                            continue
+                        files = sorted(str(p.relative_to(checkout)) for p in (checkout / 'tests').glob('test_*.py')) if args.full else [name for name in selected if (checkout / name).is_file()]
+                        failures = {}
+                        failed_run = False
+                        for offset in range(0, len(files), 40):
+                            batch = files[offset:offset + 40]
+                            process = subprocess.Popen([PYTHON, '-m', 'pytest', '-q', '-p', 'no:cacheprovider', '--no-header', *batch],
                             cwd=checkout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             env={**os.environ, 'ENGINE_CORE_PYTEST_LOCK_HELD': '1'}, start_new_session=True)
-                        try:
-                            raw, _ = process.communicate(timeout=1200)
-                        except subprocess.TimeoutExpired:
-                            os.killpg(process.pid, signal.SIGKILL)
-                            process.communicate()
-                            incomplete.append(f'TIMEOUT revision={revision} limit=1200s')
-                            results.append(None)
-                            continue
-                        output = raw.decode(errors='replace')
-                        failures = {}
-                        for line in output.splitlines():
-                            match = re.match(r'^(?:FAILED|ERROR) (.+?)(?:\s+-\s+(.*))?$', line)
-                            if match:
-                                failures.setdefault(match.group(1), match.group(2) or line)
-                        if process.returncode not in (0, 1) or (process.returncode == 1 and not failures):
-                            incomplete.append(f'ERROR revision={revision} pytest_exit={process.returncode}; failure set incomplete' + ''.join(f'\n{name} - {error}' for name, error in sorted(failures.items())))
-                            results.append(None)
-                            continue
-                        results.append(failures)
+                            try:
+                                raw, _ = process.communicate(timeout=600)
+                            except subprocess.TimeoutExpired:
+                                os.killpg(process.pid, signal.SIGKILL)
+                                process.communicate()
+                                incomplete.append(f'TIMEOUT revision={revision} limit=600s')
+                                failed_run = True
+                                break
+                            output = raw.decode(errors='replace')
+                            batch_failures = {}
+                            for line in output.splitlines():
+                                match = re.match(r'^(?:FAILED|ERROR) (.+?)(?:\s+-\s+(.*))?$', line)
+                                if match:
+                                    batch_failures.setdefault(match.group(1), match.group(2) or line)
+                            failures.update(batch_failures)
+                            if process.returncode not in (0, 1, 5) or (process.returncode == 1 and not batch_failures):
+                                incomplete.append(f'ERROR revision={revision} pytest_exit={process.returncode}; failure set incomplete' + ''.join(f'\n{name} - {error}' for name, error in sorted(batch_failures.items())))
+                                failed_run = True
+                                break
+                        results.append(None if failed_run else failures)
                     finally:
                         git(ROOT, 'worktree', 'remove', '--force', str(checkout))
             if incomplete:
@@ -1518,6 +1550,7 @@ def main(argv=None):
     drift_parser = sub.add_parser('drift')
     drift_parser.add_argument('--base')
     drift_parser.add_argument('--head')
+    drift_parser.add_argument('--full', action='store_true')
     drift_parser.add_argument('--evidence-dir', type=Path, default=Path('/home/exedev/fw/evidence/C1131'))
     hire_parser = sub.add_parser('hire')
     hire_parser.add_argument('name')
