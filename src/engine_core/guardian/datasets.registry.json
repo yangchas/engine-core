@@ -1628,6 +1628,10 @@
         ],
         "timeout_seconds": 120
       },
+      "kind": "point_snapshot",
+      "source": "ths",
+      "hot_store": {"key": "core:view:hot_rank:{trade_date}"},
+      "cold_store": {"dataset": "hot_rank"},
       "redis_ttl_seconds": 172800,
       "storage": [
         {

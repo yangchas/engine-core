@@ -307,3 +307,60 @@ def test_c879_reference_provenance_integrity():
     assert not list(root.rglob('*.py'))
     for name, digest in hashes.items():
         assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest
+
+
+def test_hot_rank_real_snapshot_two_layer(tmp_path, monkeypatch):
+    from engine_core.data_pipeline.jobs import JobRunner, JobState
+    from engine_core.storage.two_layer import TwoLayerStore
+
+    class RedisMemory:
+        def __init__(self):
+            self.values = {}
+        def get(self, key):
+            return self.values.get(key)
+        def set(self, key, value, **kwargs):
+            self.values[key] = value
+            return True
+
+    class EmptyCold:
+        def latest_version(self, dataset, day):
+            return None
+
+    from engine_core.data_pipeline import cold_archive, hot_rank_view
+    monkeypatch.setattr(hot_rank_view, "hot_view_expire_at", lambda day: 2000000000)
+    archives = []
+    monkeypatch.setattr(cold_archive, 'archive', lambda *args: archives.append(args) or True)
+    redis = RedisMemory()
+    rows = ThsHotRankProvider.normalize(load("ths_hot_rank_"))
+    store = TwoLayerStore(redis, cold_store=EmptyCold())
+    assert store.get("hot_rank", "2026-10-23").status == "MISSING"
+    result = JobRunner(artifact_root=tmp_path, redis=redis, state=JobState()).run(
+        "hot_rank", "2026-10-23", fetch=lambda _: rows,
+        now="2026-10-23T14:41:00+08:00", source="ths_hot_rank", publish=True)
+    assert result.manifest["cache_publish"] == "READY"
+    assert len(store.get("hot_rank", "2026-10-23").rows) == len(rows)
+    assert (tmp_path / "catalog.json").exists()
+    assert store.presence("hot_rank", "2026-10-23").status == "PRESENT_REDIS"
+    assert len(archives) == 1 and archives[0][0] == "hot_rank"
+    value = store.get("hot_rank", "2026-10-23")
+    assert value.metadata['available_at'].endswith('+08:00')
+    assert store.get("hot_rank", "2026-10-23", asof="2026-10-23T14:40:00+08:00").status == "MISSING"
+    redis.values['core:view:hot_rank:2026-10-23'] = '{}'
+    assert store.presence("hot_rank", "2026-10-23").status == "CORRUPT"
+    direct = store.publish("hot_rank", "2026-10-23", rows, result.manifest)
+    assert direct.archive_status == 'QUEUED'
+    assert len(store.get("hot_rank", "2026-10-23").rows) == len(rows)
+
+    class FailingNewView(RedisMemory):
+        def set(self, key, value, **kwargs):
+            if key.startswith('core:view:hot_rank:'):
+                raise RuntimeError('new_view_failed')
+            return super().set(key, value, **kwargs)
+
+    failed_redis = FailingNewView()
+    failed = JobRunner(artifact_root=tmp_path / 'failure', redis=failed_redis, state=JobState()).run(
+        "hot_rank", "2026-10-23", fetch=lambda _: rows,
+        now="2026-10-23T14:41:00+08:00", source="ths_hot_rank", publish=True)
+    assert failed.manifest['cache_publish'] == 'READY'
+    assert (tmp_path / 'failure' / 'catalog.json').exists()
+    assert failed_redis.get('core:cache:data:hot_rank:2026-10-23') is not None

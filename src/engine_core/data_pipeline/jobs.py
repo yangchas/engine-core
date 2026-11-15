@@ -577,6 +577,15 @@ class JobRunner:
                 committed["cache_publish_warning"] = f"redis_publish_failed:{type(exc).__name__}"
             else:
                 committed["cache_publish"] = "READY"
+        if publish and name == "hot_rank":
+            try:
+                from .hot_rank_view import publish as publish_hot_rank
+                publish_hot_rank(self.redis, trade_date, rows, committed)
+                from .cold_archive import flush
+                flush()
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning("hot_rank_view dispatch_failed", exc_info=True)
         status = {"trade_date": trade_date,
             "available_at": committed["available_at"], "version": committed["version"],
             "quality": quality, "cache_publish": committed["cache_publish"]}
