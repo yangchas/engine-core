@@ -522,6 +522,19 @@ class JobRunner:
         if name == "hot_plates":
             if not publish or self.redis is None:
                 raise RuntimeError("redis_adapter_not_configured_or_publish_disabled")
+            from .hot_plates_gaps import _parse_time
+            def instant(value: Any) -> str:
+                return _parse_time(str(value), trade_date).isoformat(timespec="seconds")
+
+            rows = [dict(row) for row in rows]
+            for row in rows:
+                for field in ("captured_at", "available_at"):
+                    if row.get(field) not in (None, "", "UNKNOWN"):
+                        row[field] = instant(row[field])
+            for field in ("captured_at", "available_at", "fetched_at", "declared_available_at",
+                          "as_of", "source_event_at", "scheduled_at", "deadline"):
+                if manifest.get(field) not in (None, "", "UNKNOWN"):
+                    manifest[field] = instant(manifest[field])
             payload = b"\n".join(canonical_json(row) for row in rows) + (b"\n" if rows else b"")
             digest = hashlib.sha256(payload).hexdigest()
             identity = {"payload_sha256": digest}
@@ -530,7 +543,7 @@ class JobRunner:
             version_digest = hashlib.sha256(canonical_json(identity)).hexdigest() if "inputs" in identity else digest
             committed = dict(manifest, sha256=digest, version=f"sha256-{version_digest[:16]}",
                              storage_backend="redis", storage_uri=None, manifest_uri=None, rows_uri=None,
-                             committed_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+                             committed_at=instant(datetime.now(timezone.utc).isoformat()))
             self._publish_redis(spec, trade_date, committed, rows, safe_source)
             committed["cache_publish"] = "READY"
             self.state.set_status(name, {"trade_date": trade_date, "available_at": committed["available_at"],
