@@ -531,7 +531,14 @@
           "role": "mirror",
           "note": "best-effort asynchronous cold archive"
         }
-      ]
+      ],
+      "kind": "day_refetchable",
+      "hot_store": {
+        "key": "core:view:limit_up_pool:{data_date}"
+      },
+      "cold_store": {
+        "dataset": "limit_up_pool"
+      }
     },
     {
       "id": "limit_up_pool_today",
@@ -624,7 +631,14 @@
           "note": "best-effort asynchronous cold archive"
         }
       ],
-      "redis_ttl_trade_days": 5
+      "redis_ttl_trade_days": 5,
+      "kind": "point_snapshot",
+      "hot_store": {
+        "key": "core:cache:data:limit_up_pool_today:{trade_date}:{version}"
+      },
+      "cold_store": {
+        "dataset": "limit_up_pool_today"
+      }
     },
     {
       "id": "limit_reasons",
@@ -753,7 +767,14 @@
             "timezone": "Asia/Shanghai"
           }
         }
-      ]
+      ],
+      "kind": "point_snapshot",
+      "hot_store": {
+        "key": "core:cache:data:hot_plates:{trade_date}:{version}"
+      },
+      "cold_store": {
+        "dataset": "hot_plates"
+      }
     },
     {
       "id": "hot_plates",
@@ -821,7 +842,14 @@
           "role": "mirror",
           "note": "best-effort asynchronous cold archive"
         }
-      ]
+      ],
+      "kind": "point_snapshot",
+      "hot_store": {
+        "key": "core:cache:data:hot_plates:{trade_date}:{version}"
+      },
+      "cold_store": {
+        "dataset": "hot_plates"
+      }
     },
     {
       "id": "hot_plates_gaps",
@@ -884,7 +912,14 @@
           "note": "best-effort asynchronous cold archive"
         }
       ],
-      "redis_ttl_seconds": 432000
+      "redis_ttl_seconds": 432000,
+      "kind": "point_snapshot",
+      "hot_store": {
+        "key": "core:cache:data:hot_plates_gaps:{trade_date}:{event_id}"
+      },
+      "cold_store": {
+        "dataset": "hot_plates_gaps"
+      }
     },
     {
       "id": "plate_members",
@@ -1966,7 +2001,14 @@
           "role": "mirror",
           "note": "best-effort asynchronous cold archive"
         }
-      ]
+      ],
+      "kind": "point_snapshot",
+      "hot_store": {
+        "key": "core:view:intraday_checkpoint:{trade_date}:{cutoff}"
+      },
+      "cold_store": {
+        "dataset": "intraday_checkpoint"
+      }
     },
     {
       "id": "intraday_report",
