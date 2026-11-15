@@ -1,0 +1,17 @@
+{
+  "source": "Redis read-only raw GET",
+  "date": "2026-11-13",
+  "captured_at": "2026-11-15T10:29:40.044279+00:00",
+  "pointer_key": "core:cache:data:limit_up_pool_today:2026-11-13",
+  "version_key": "core:cache:data:limit_up_pool_today:2026-11-13:sha256-87d8216079cf7fac",
+  "sha256": {
+    "pointer.json": "7f597c3e1e580e8fcb55089de68522bbec98408706582682b9ad5c59568e7136",
+    "view.json": "ea71422db6393ba69d0993c4a32b0be420156dcf385835f8b7b9f5225e987912"
+  },
+  "stale_catalog": {
+    "source_path": "/home/exedev/core-data/catalog.json",
+    "source_sha256": "65ec918e624645a58e5f1a4af2dc4be5b2dc998535922a5a1dae30c0f83f4f69",
+    "selection": "datasets.limit_up_pool_today",
+    "sha256": "2b92183dce7d325c0dae6488e0957d49c5881e9dfc1b14324c0f3aa78fd92e4d"
+  }
+}

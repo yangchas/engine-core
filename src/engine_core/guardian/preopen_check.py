@@ -50,7 +50,14 @@ def check_catalog_dataset(catalog: Any, dataset: str, day: str, rule: Mapping[st
                           check_day: str) -> dict[str, Any]:
     """Pass when some version of ``dataset``/``day`` has an accepted status, enough rows and (if asked) was
     captured at or after ``captured_after`` on ``check_day``."""
-    manifests = _manifests(catalog, dataset, day)
+    if dataset == "limit_up_pool_today":
+        from ..data_pipeline.reader import load_dataset
+        loaded = load_dataset(dataset, day)
+        if loaded.status != "READY":
+            return {"id": dataset, "day": day, "status": loaded.status, "detail": "store_unavailable" if loaded.status == "UNKNOWN" else "no_version"}
+        manifests = [loaded.manifest]
+    else:
+        manifests = _manifests(catalog, dataset, day)
     if not manifests:
         return {"id": dataset, "day": day, "status": "MISSING", "detail": "no_version"}
     statuses = {str(item).upper() for item in rule.get("statuses", ())}

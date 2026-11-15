@@ -21,11 +21,96 @@ class DatasetRead:
     status: str
 
 
+def _read_today_pool(trade_date: str | None, client: Any = None, cold_store: Any = None) -> DatasetRead:
+    """Read a point snapshot from Redis or its verified cold copy, never catalog."""
+    import hashlib
+    from . import cold_archive
+    from .redis_day_view import hot_view_expire_at
+
+    name = "limit_up_pool_today"
+    owned_client = client is None
+    store = None
+    try:
+        if client is None:
+            from .limit_pool_hot_view import _client
+            client = _client()
+        key = f"core:cache:data:{name}:{trade_date or 'latest'}"
+        pointer_raw = client.get(key)
+        pointer = json.loads(pointer_raw) if pointer_raw is not None else None
+        if pointer is not None:
+            day, version = pointer['trade_date'], pointer['version']
+            if trade_date and day != trade_date:
+                raise ValueError('pointer_trade_date_mismatch')
+            raw = client.get(f"core:cache:data:{name}:{day}:{version}")
+            if raw is not None:
+                value = _validate_today_view(raw, day, version)
+                return DatasetRead(value['rows'], value, 'redis', 'READY')
+        if not trade_date:
+            return DatasetRead([], {}, 'none', 'UNKNOWN')
+        if cold_store is None:
+            if not cold_archive._enabled():
+                raise RuntimeError('cold_archive_disabled')
+            store = cold_archive.TdStore()
+        else:
+            store = cold_store
+        archive_version = store.latest_version(name, trade_date)
+        if archive_version is None:
+            return DatasetRead([], {}, 'none', 'MISSING')
+        raw = cold_archive.read_envelope(name, trade_date, archive_version, store=store)
+        value = _validate_today_view(raw, trade_date, None)
+        version = value['version']
+        if archive_version not in (version, version + ':' + hashlib.sha256(raw).hexdigest()[:16]):
+            raise ValueError('cold_archive_version_mismatch')
+        deadline = hot_view_expire_at(trade_date)
+        version_key = f"core:cache:data:{name}:{trade_date}:{version}"
+        if not client.set(version_key, raw, exat=deadline, nx=True):
+            existing = client.get(version_key)
+            existing_bytes = existing.encode('utf-8') if isinstance(existing, str) else existing
+            if existing_bytes != raw:
+                raise ValueError('redis_version_conflict')
+        restored_pointer = json.dumps({'trade_date': trade_date, 'version': version,
+                                       'as_of': value.get('as_of')})
+        if not client.set(key, restored_pointer, exat=deadline, nx=True):
+            current = json.loads(client.get(key))
+            current_raw = client.get(f"core:cache:data:{name}:{current['trade_date']}:{current['version']}")
+            if current_raw is None:
+                raise ValueError('current_version_missing')
+            value = _validate_today_view(current_raw, trade_date, current['version'])
+            return DatasetRead(value['rows'], value, 'redis', 'READY')
+        return DatasetRead(value['rows'], value, 'td', 'READY')
+    except Exception:
+        return DatasetRead([], {}, 'none', 'UNKNOWN')
+    finally:
+        if store is not None and cold_store is None:
+            try:
+                store.close()
+            except Exception:
+                pass
+        if owned_client and client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+
+def _validate_today_view(raw: Any, day: str, version: str | None) -> dict[str, Any]:
+    value = json.loads(raw)
+    if (not isinstance(value, dict) or value.get('dataset') != 'limit_up_pool_today'
+            or value.get('trade_date') != day or not value.get('version')
+            or (version is not None and value['version'] != version)
+            or not isinstance(value.get('rows'), list)
+            or value.get('row_count') != len(value['rows'])):
+        raise ValueError('invalid_today_pool_view')
+    return value
+
+
 def load_dataset(name: str, trade_date: str | None = None, *, prefer: str = "redis",
                  redis: Any = None, catalog: ArtifactCatalog | None = None,
                  artifact_root: str | Path | None = None, now: str | None = None) -> DatasetRead | None:
     if prefer not in {"redis", "file"}: raise ValueError("prefer must be redis or file")
     spec = get_dataset(name)
+    if name == "limit_up_pool_today":
+        return _read_today_pool(trade_date, redis)
     if name == "hot_plates_gaps":
         if redis is None or trade_date is None:
             return None

@@ -1215,7 +1215,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         version_source = None
         version = meta.get("version")
         alias = dataset_aliases.get(name, name)
-        entries = catalog_datasets.get(alias, {}).get("dates", {}) if isinstance(catalog_datasets, Mapping) else {}
+        entries = (catalog_datasets.get(alias, {}).get("dates", {})
+                   if alias != "limit_up_pool_today" and isinstance(catalog_datasets, Mapping) else {})
         matched = next((entry for versions in entries.values() for entry in versions
                         if entry.get("version") == version), None) if isinstance(entries, Mapping) else None
         if matched and matched.get("manifest"):
