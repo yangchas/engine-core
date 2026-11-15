@@ -243,6 +243,7 @@ def test_dispatch_workflow(tmp_path, monkeypatch, capsys):
     assert (tmp_path / 'runs/C1045.dispatch.out').exists()
     assert pm.field(card.read_text(), 'STATUS').startswith('dispatched(')
     assert (tmp_path / 'runs/C1045.dispatch.timestamp').exists()
+    card.write_text(pm.set_status(card.read_text(), 'STATUS: ready'))
     preflight.write_text('#!/bin/sh\necho preflight-failed\nexit 1\n')
     assert main(['dispatch', 'C1045']) == 2
     assert 'preflight-failed' in capsys.readouterr().out
@@ -948,7 +949,10 @@ def test_ship_real_history(tmp_path, monkeypatch, capsys, case):
         path.mkdir()
         monkeypatch.setenv('PM_' + name.upper() + '_DIR', str(path))
     monkeypatch.setenv('PM_STAFF_PEOPLE_DIR', str(tmp_path / 'staff'))
-    (tmp_path / 'cards' / (card + '.md')).write_bytes((fixtures / (card + '-card.txt')).read_bytes())
+    card_file = tmp_path / 'cards' / (card + '.md')
+    card_file.write_bytes((fixtures / (card + '-card.txt')).read_bytes())
+    from examples.pm import set_status
+    card_file.write_text(set_status(card_file.read_text(), 'STATUS: ready'))
     report = fixtures / (card + '-report.txt' if case in ('red', 'missing') else 'C001-report.txt')
     (tmp_path / 'reports' / (card + '.md')).write_bytes(report.read_bytes())
     (tmp_path / 'evidence' / card).mkdir()
@@ -998,6 +1002,8 @@ def test_c1105_historical_report_verdict(tmp_path, monkeypatch, capsys):
     historical = '**PARTIAL：未复现合并门失败，尚无法确认根因或修复。**'
     for first, expected in [(historical, 'report PARTIAL'), ('VERDICT: DONELESS', 'report VERDICT missing'), ('**BLOCKED**:', 'report BLOCKED')]:
         report.write_text(first + '\n')
+        card_file = tmp_path / 'cards' / (card + '.md')
+        card_file.write_text(pm.set_status(card_file.read_text(), 'STATUS: ready'))
         assert main(['ship', card]) == 2
         output = capsys.readouterr().out
         assert expected in output

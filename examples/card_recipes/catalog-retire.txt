@@ -1,0 +1,1 @@
+仅处理函数 {function}：写入只使用 Redis，采用 redis_day_view.hot_view_expire_at 设置 5交易日 TTL；读者 Redis-only，缺失返回 MISSING，确保登记一致。以真实夹具先写 fail-first 测试；运行 {tests}。

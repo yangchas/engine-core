@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """PM workflow commands."""
 import argparse
+import io
 import ast
 import contextlib
 from collections import Counter
@@ -563,6 +564,13 @@ def newcard(args):
     values = vars(args).copy()
     if args.goal_file:
         values['goal'] = Path(args.goal_file).read_text(encoding='utf-8').strip()
+    if args.template:
+        if not args.function or not args.tests:
+            print('template requires --function and --tests')
+            return 2
+        template = recipe_path.with_name(args.template + '.txt').read_text(encoding='utf-8').strip()
+        generated = template.format(function=args.function, tests=' '.join(args.tests))
+        values['goal'] = generated + ('\n' + values['goal'] if values.get('goal') else '')
     for item in args.param:
         if '=' not in item:
             print('invalid --param: expected k=v')
@@ -629,6 +637,14 @@ def newcard(args):
         return 0
     with os.fdopen(fd, 'w', encoding='utf-8') as output:
         output.write(card)
+    findings = lint_module().lint_card(card, repo)
+    if re.search(r'\bCARD\b|<[^<>\n]+>', values['goal']):
+        findings.insert(0, 'FAIL placeholder: GOAL contains a placeholder')
+    if any(f.startswith('FAIL ') for f in findings):
+        path.unlink()
+        for finding in findings:
+            print(finding)
+        return 2
     if fixed['ROLE'] == 'builder' and scope and not (args.no_worktree or os.environ.get('PM_NO_WORKTREE') == '1'):
         result = subprocess.run(['git', '-C', str(repo), 'worktree', 'add', '-b', ident,
                                  str(worktree), os.environ.get('PM_BASE', 'HEAD')], capture_output=True, text=True)
@@ -636,9 +652,16 @@ def newcard(args):
             print(f'{ident} {path}\nworktree failed: {result.stderr.strip()}')
             return 2
     if not args.no_pack:
-        try_pack(ident)
+        if args.run:
+            with contextlib.redirect_stdout(io.StringIO()):
+                try_pack(ident)
+        else:
+            try_pack(ident)
         card = path.read_text(encoding='utf-8')
     findings = lint_module().lint_card(card, worktree if worktree.is_dir() else repo)
+    if args.run:
+        print(f'CARD {ident}', flush=True)
+        return ship(argparse.Namespace(command='run', card=ident, to=None))
     print(f'{ident} {path}')
     for finding in findings:
         print(finding)
@@ -684,6 +707,10 @@ def card_command(args):
         print('after: STATUS: ' + args.text)
         return 0
     if args.command == 'dispatch':
+        status = field(path.read_text(encoding='utf-8'), 'STATUS')
+        if status != 'ready':
+            print(f'REFUSED {args.card} status is {status}, not ready; not touched')
+            return 2
         if not args.no_pack:
             try_pack(args.card)
         try:
@@ -889,6 +916,13 @@ def gate(args):
 
 
 def ship(args):
+    path = card_path(args.card)
+    if path is None:
+        return 2
+    status = field(path.read_text(encoding='utf-8'), 'STATUS')
+    if status != 'ready':
+        print(f'REFUSED {args.card} status is {status}, not ready; not touched')
+        return 2
     evidence = location('PM_EVIDENCE_DIR', '/home/exedev/fw/evidence') / args.card
     if not re.fullmatch(r'C[0-9]+', args.card):
         print('NOT MERGED invalid card')
@@ -1457,6 +1491,10 @@ def main(argv=None):
     goals = new.add_mutually_exclusive_group()
     goals.add_argument('--goal')
     goals.add_argument('--goal-file')
+    new.add_argument('--template', choices=('field-unify', 'catalog-retire'))
+    new.add_argument('--function')
+    new.add_argument('--tests', nargs='+')
+    new.add_argument('--run', action='store_true')
     new.add_argument('--param', action='append', default=[])
     new.add_argument('--dry-run', action='store_true')
     new.add_argument('--no-worktree', action='store_true')
