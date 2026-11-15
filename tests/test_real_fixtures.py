@@ -196,6 +196,15 @@ def test_kaipan_dde_builder_uses_echoed_dates_and_preserves_missing_as_null():
         build_daily_dde(raw, symbol="000001", target_date="2026-10-29", history_trading_days=250)
 
 
+def test_run_data_jobs_does_not_treat_missing_real_read_as_ready():
+    from examples.run_data_jobs import _dataset_read_ready
+    from engine_core.data_pipeline.reader import DatasetRead
+
+    load("kaipan_pool_")
+    missing = DatasetRead(rows=[], manifest={}, discovered_by="none", status="MISSING")
+    assert _dataset_read_ready(missing) is False
+
+
 @pytest.mark.live
 def test_live_source_contracts_match_captured_schemas(tmp_path):
     redis_url, td_config = os.environ.get("REDIS_URL"), os.environ.get("TD_CONFIG")
