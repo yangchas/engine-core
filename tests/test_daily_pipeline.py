@@ -530,13 +530,6 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
     catalog.commit("limit_reasons", prior_date, [
         {"symbol": "002815", "Date": prior_date, "ZSCode": ["801001"],
          "Reason": "通信", **common}], common, source="test")
-    for day in (trade_date, prior_date):
-        catalog.commit("hot_plates", day, [
-            {"code": "801001", "name": "通信", "strength": 1, "change_pct": 1,
-             "amount_yuan": 100000, "sampled_at": f"{day}T09:20:00+08:00",
-             "available_at": f"{day}T09:20:00+08:00"}],
-            {"available_at": f"{day}T09:20:00+08:00",
-             "captured_at": f"{day}T09:20:00+08:00"}, source="test")      # hot_plates need a capture instant (PIT)
     catalog.commit("hot_rank", trade_date, [
         {"symbol": "002815", "rank": 1, **common}], common, source="test")
     catalog.commit("trade_calendar", trade_date, [
@@ -594,11 +587,14 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
         report = json.loads(report_path.read_text(encoding="utf-8"))
         manifest = json.loads((result["out_dir"] / "manifest.json").read_text(encoding="utf-8"))
         assert {row["status"] for name, row in manifest["slices"].items()
-                if name != "stock_theme_assignment"} <= {"READY", "PARTIAL"}, {
+                if name not in {"stock_theme_assignment", "hot_plates_today", "hot_plates_yesterday"}} <= {"READY", "PARTIAL"}, {
             name: row for name, row in manifest["slices"].items()
             if name != "stock_theme_assignment" and row["status"] == "MISSING"}
         assert all(row["source"].startswith("core_data") for name, row in manifest["slices"].items()
-                   if name not in {"stock_theme_assignment", "yest_limit_pool"})
+                   if name not in {"stock_theme_assignment", "yest_limit_pool", "hot_plates_today", "hot_plates_yesterday"})
+        for name in ("hot_plates_today", "hot_plates_yesterday"):
+            assert manifest["slices"][name]["status"] == "MISSING"
+            assert manifest["slices"][name]["reason"] == "REDIS_VIEW_MISSING"
         pool_slice = manifest["slices"]["yest_limit_pool"]
         assert pool_slice["source"] == "redis" and pool_slice["version"] == captured_pool["version"]
         assert pool_slice["available_at"] == captured_pool["available_at"]

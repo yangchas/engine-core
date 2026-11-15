@@ -86,3 +86,28 @@ def test_hot_plates_requires_redis_and_does_not_write_catalog(tmp_path, monkeypa
     assert len(json.loads(redis.values[version_key])['rows']) == 243
     assert not (tmp_path / 'catalog.json').exists()
     assert not (tmp_path / 'hot_plates').exists()
+
+
+def test_hot_plates_redis_connection_failure_returns_missing(tmp_path):
+    from redis.exceptions import ConnectionError
+
+    provenance = json.loads((FIXTURE / 'PROVENANCE.json').read_bytes())
+    view = json.loads((FIXTURE / 'view.json').read_bytes())
+
+    class Redis:
+        def scan_iter(self, match, count=100):
+            yield provenance['view.json']['key'].encode()
+        def get(self, key):
+            raise ConnectionError('connection lost while reading captured view')
+
+    class Catalog:
+        root = tmp_path
+        def __getattr__(self, name):
+            raise AssertionError('catalog must not be read')
+
+    reader = SliceReader(SliceProviders(catalog=Catalog(), redis=Redis()).providers())
+    result = reader.get('hot_plates_today', trade_date=view['trade_date'],
+                        asof=view['available_at'])
+    assert result.rows == []
+    assert result.meta['status'] == 'MISSING'
+    assert result.meta['reason'] == 'REDIS_VIEW_MISSING'
