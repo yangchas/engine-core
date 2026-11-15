@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import math
 import os
@@ -559,7 +560,11 @@ def boot_reconcile(trade_date: str, phase: str, health: dict[str, Any] | None,
     window_limit = _resolve_load_defer_window_limit(daily_kline_load_defer_window_limit)
     try:
         from .reconcile_plan import reconcile_plan
-        catalog = json.loads((root / "catalog.json").read_text(encoding="utf-8"))
+        try:
+            catalog = json.loads((root / "catalog.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            logging.getLogger(__name__).warning("catalog_unreadable; using empty catalog")
+            catalog = {"datasets": {}}
         try:
             _, calendar = _calendar(root, trade_date)
             previous = calendar["prev"]
@@ -579,21 +584,22 @@ def boot_reconcile(trade_date: str, phase: str, health: dict[str, Any] | None,
         coverage = daily_kline_coverage(root, daily_kline_candidates, catalog, clock)
         from .daily_kline_coverage import note_td_readability
         td_alert = note_td_readability(root, coverage, clock)
+        pool_presence = None
         if previous:
-            from ..data_pipeline.limit_pool_hot_view import read as read_pool
-            _, pool_meta = read_pool(previous, clock.isoformat())
-            dates = catalog.setdefault("datasets", {}).setdefault("limit_up_pool", {}).setdefault("dates", {})
-            if pool_meta.get("storage_source") == "redis" and pool_meta.get("status") != "MISSING":
-                dates[previous] = [pool_meta]
-            else:
-                dates.pop(previous, None)
+            from .presence import resolve_presence
+            pool_presence = resolve_presence("limit_up_pool", previous)
+            if pool_presence == "UNKNOWN":
+                logging.getLogger(__name__).warning("limit_up_pool presence unknown for %s", previous)
+                gaps.append({"id": "limit_up_pool", "status": "UNKNOWN", "partition": previous,
+                             "explanation": "presence could not be determined"})
         plan = reconcile_plan(clock, catalog, trade_date=trade_date, prev_trade_date=previous,
                               phase=phase, load5=load5, load_threshold=load_threshold,
                               upgrade_attempts=upgrade_attempts,
                               daily_kline_candidates=daily_kline_candidates,
                               daily_kline_coverage=coverage.days,
                               daily_kline_coverage_origin=coverage.origin,
-                              daily_kline_gap_fill_plan=coverage.gap_fill_plan)
+                              daily_kline_gap_fill_plan=coverage.gap_fill_plan,
+                              pool_presence=pool_presence)
     except Exception as exc:  # the plan is advisory; never fail the boot check for it
         plan = [{"id": "*", "action": "PLAN_ERROR", "error": type(exc).__name__}]
     load_defer_alert = None

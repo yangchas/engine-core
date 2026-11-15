@@ -122,6 +122,13 @@ class TDColdClient:
             values.append('(' + ','.join(fields) + ')')
         self._execute(f"INSERT INTO {table} VALUES " + ' '.join(values))
 
+    def latest_version(self, dataset, day):
+        _table(dataset, day, '')  # validate the interpolated identifiers and date
+        stable = f'{self.database}.cold_{dataset}_archive'
+        rows = self._execute(f"SELECT version FROM {stable} WHERE trade_date={_quote(day)} "
+                             "AND chunk_no=-1 ORDER BY available_at DESC, ts DESC LIMIT 1", fetch=True)
+        return str(rows[0][0]) if rows else None
+
     def read(self, dataset, day, version):
         table = f'{self.database}.{_table(dataset, day, version)}'
         rows = self._execute(f'SELECT chunk_no,chunk_count,sha256,payload FROM {table}', fetch=True)

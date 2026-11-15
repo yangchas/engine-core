@@ -151,7 +151,8 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
                    daily_kline_candidates: list[str] | None = None,
                    daily_kline_coverage: Mapping[str, Any] | None = None,
                    daily_kline_coverage_origin: str = "unknown",
-                   daily_kline_gap_fill_plan: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+                   daily_kline_gap_fill_plan: list[dict[str, Any]] | None = None,
+                   pool_presence: str | None = None) -> list[dict[str, Any]]:
     """Ordered actions for late items on a trading day (dependencies first).
 
     FETCH_NOW  late and cheap enough to run now; ``lane`` is ``parallel`` (light) or ``serial``;
@@ -246,6 +247,10 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
                     due[item["id"]] = (target, policy)
                     upgrade_versions[item["id"]] = version
                 continue
+        if dataset == "limit_up_pool" and target == prev_trade_date and pool_presence is not None:
+            if pool_presence == "MISSING":
+                due[item["id"]] = (target, policy)
+            continue
         state = (daily_kline_day_state(catalog, dataset, target, now, daily_kline_coverage)
                  if item["id"] == "daily_kline" else None)
         if ((not state["present"] if state is not None
