@@ -1467,6 +1467,25 @@ def drift(args):
             if not args.full and changed:
                 selection = subprocess.run([PYTHON, str(ROOT / 'examples/affected_tests.py'), '--files', *changed, '--command', '--depth', '1'], cwd=ROOT, capture_output=True, text=True, check=True)
                 selected = sorted({word for word in selection.stdout.split() if word.startswith('tests/') and word.endswith('.py')})
+            import ast
+            head_live = set()
+            head_files = git(ROOT, 'ls-tree', '-r', '--name-only', head, '--', 'tests/').splitlines()
+            for filename in head_files:
+                if not re.fullmatch(r'tests/test_[^/]+\.py', filename) or (not args.full and filename not in selected):
+                    continue
+                tree = ast.parse(git(ROOT, 'show', f'{head}:{filename}'))
+                def marked(node):
+                    return any('pytest.mark.live' in ast.unparse(d) for d in node.decorator_list)
+                module_live = any(isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'pytestmark' for t in node.targets) and 'pytest.mark.live' in ast.unparse(node.value) for node in tree.body)
+                for node in tree.body:
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith('test_') and (module_live or marked(node)):
+                        head_live.add(filename + '::' + node.name)
+                    elif isinstance(node, ast.ClassDef) and node.name.startswith('Test'):
+                        for method in node.body:
+                            if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)) and method.name.startswith('test_') and (module_live or marked(node) or marked(method)):
+                                head_live.add(filename + '::' + node.name + '::' + method.name)
+            args.evidence_dir.mkdir(parents=True, exist_ok=True)
+            (args.evidence_dir / 'deselected.txt').write_text(''.join(node + '\n' for node in sorted(head_live)), encoding='utf-8')
             results = []
             incomplete = []
             for revision in (base, head):
@@ -1475,7 +1494,6 @@ def drift(args):
                     git(ROOT, 'worktree', 'add', '--detach', str(checkout), revision)
                     try:
                         # Historical revisions can predate the live marks; never run known hazardous nodes unmarked.
-                        import ast
                         hazards = {'tests/test_td_ladder_sink.py': ['test_real_td_roundtrip_and_replace'],
                                    'tests/test_td_sink_real.py': ['test_real_schema_matches_contract'],
                                    'tests/test_limit_pool_td_real.py': ['test_real_schema_has_every_contract_column_with_the_declared_type'],
@@ -1489,7 +1507,7 @@ def drift(args):
                             tree = ast.parse(path.read_text(encoding='utf-8'))
                             module_live = any(isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'pytestmark' for t in node.targets) and 'pytest.mark.live' in ast.unparse(node.value) for node in tree.body)
                             for node in tree.body:
-                                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names and not module_live and not any('pytest.mark.live' in ast.unparse(d) for d in node.decorator_list):
+                                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names and not module_live and not any('pytest.mark.live' in ast.unparse(d) for d in node.decorator_list) and not (revision == base and filename + '::' + node.name in head_live):
                                     unsafe.append(filename + '::' + node.name)
                         if unsafe:
                             incomplete.append(f'UNMARKED_LIVE revision={revision} ' + ', '.join(unsafe))
@@ -1500,7 +1518,8 @@ def drift(args):
                         failed_run = False
                         for offset in range(0, len(files), 40):
                             batch = files[offset:offset + 40]
-                            process = subprocess.Popen([PYTHON, '-m', 'pytest', '-q', '-p', 'no:cacheprovider', '--no-header', *batch],
+                            deselect = [f'--deselect={node}' for node in sorted(head_live) if revision == base and node.split('::', 1)[0] in batch]
+                            process = subprocess.Popen([PYTHON, '-m', 'pytest', '-q', '-p', 'no:cacheprovider', '--no-header', *deselect, *batch],
                             cwd=checkout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             env={**os.environ, 'ENGINE_CORE_PYTEST_LOCK_HELD': '1'}, start_new_session=True)
                             try:

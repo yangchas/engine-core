@@ -1,3 +1,4 @@
+import ast
 import fcntl
 import shutil
 import pytest
@@ -5,6 +6,51 @@ import subprocess
 from pathlib import Path
 
 from examples import pm
+
+
+@pytest.mark.live
+def test_drift_deselects_head_live_from_base_and_refuses_unmarked(tmp_path, monkeypatch, capsys):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    def git(*args):
+        return subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
+    git('init', '-q')
+    (repo / 'tests').mkdir()
+    (repo / 'tests/conftest.py').write_text("import pytest\ndef pytest_collection_modifyitems(items):\n    for item in items:\n        if 'live' in item.keywords: item.add_marker(pytest.mark.skip(reason='live'))\n")
+    # Verbatim function from the real baseline: its fixture is deliberately absent,
+    # so an accidental execution cannot connect to TD.
+    source = subprocess.run(['git', '-C', str(Path(pm.__file__).resolve().parent.parent), 'show', '495c05d:tests/test_td_sink_real.py'], check=True, capture_output=True, text=True).stdout
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == 'test_real_schema_matches_contract')
+    excerpt = ''.join(source.splitlines(keepends=True)[node.lineno - 1:node.end_lineno])
+    path = repo / 'tests/test_td_sink_real.py'
+    path.write_text(excerpt + '\ndef test_fixed(): assert False\n')
+    git('add', '.')
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
+    base = git('rev-parse', 'HEAD')
+    path.write_text('import pytest\n@pytest.mark.live\n' + excerpt + '\ndef test_new(): assert False\n')
+    git('add', '.')
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'head')
+    head = git('rev-parse', 'HEAD')
+    monkeypatch.setattr(pm, 'ROOT', repo)
+    monkeypatch.setattr(pm, 'DRIFT_WORKTREE_ROOT', tmp_path)
+    monkeypatch.setattr(pm, 'DRIFT_LOCK', tmp_path / 'lock')
+    evidence = tmp_path / 'evidence'
+    calls = []
+    real_popen = subprocess.Popen
+    def checked_popen(command, **kwargs):
+        if command[0] == pm.PYTHON:
+            calls.append(command)
+            if len(calls) == 1:
+                assert '--deselect=tests/test_td_sink_real.py::test_real_schema_matches_contract' in command
+        return real_popen(command, **kwargs)
+    monkeypatch.setattr(subprocess, 'Popen', checked_popen)
+    assert pm.main(['drift', '--full', '--base', base, '--head', head, '--evidence-dir', str(evidence)]) == 0
+    assert f'DRIFT base={base}(失败1) head={head}(失败1) new=1 fixed=1' in capsys.readouterr().out
+    assert 'tests/test_td_sink_real.py::test_real_schema_matches_contract' in (evidence / 'deselected.txt').read_text()
+    calls.clear()
+    assert pm.main(['drift', '--full', '--base', base, '--head', base, '--evidence-dir', str(evidence)]) == 2
+    assert 'UNMARKED_LIVE' in capsys.readouterr().out
+    assert not calls
 
 
 @pytest.mark.live
