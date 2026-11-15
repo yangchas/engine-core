@@ -386,3 +386,60 @@ def test_prep_successful_members_fill_uses_completion_cutoff(tmp_path, monkeypat
     member = next(item for item in failed['steps'] if item['step'] == 'plate_members')
     assert member['status'] == 'MISSING'
     assert member['refetched'] is True
+
+
+def test_prep_previous_hot_rank_uses_real_snapshot_and_continues_on_failure(tmp_path, monkeypatch):
+    import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline import cold_archive, hot_rank_view
+    from engine_core.data_pipeline.providers.ths_hot_rank import ThsHotRankProvider
+    from engine_core.storage.two_layer import TwoLayerStore
+    import engine_core.storage.two_layer as two_layer
+
+    _seed_c325(tmp_path)
+    fixture = Path(__file__).parent / 'fixtures/real/ths_hot_rank_2026-10-23_1441.json'
+    provenance = json.loads((fixture.parent / 'PROVENANCE.json').read_text())[fixture.name]
+    import hashlib
+    assert hashlib.sha256(fixture.read_bytes()).hexdigest() == provenance['sha256']
+    rows = ThsHotRankProvider.normalize(json.loads(fixture.read_text()))
+    class Memory:
+        def __init__(self): self.values = {}
+        def get(self, key): return self.values.get(key)
+        def set(self, key, value, **kwargs): self.values[key] = value; return True
+    class Cold:
+        def latest_version(self, dataset, day): return None
+    memory = Memory()
+    monkeypatch.setattr(cold_archive, 'archive', lambda *args: True)
+    monkeypatch.setattr(hot_rank_view, 'hot_view_expire_at', lambda day: 2000000000)
+    hot_rank_view.publish(memory, '2026-10-16', rows,
+                          {'version': 'fixture', 'available_at': '2026-10-16T14:41:00+08:00'})
+    raw = memory.values.pop('core:view:hot_rank:2026-10-16')
+    calls = []
+    monkeypatch.setattr(prep, '_run', lambda repo, script, args: (calls.append((script, list(args))) or
+                        ((1, '') if script == 'capture_wencai_hot_rank.py' else (0, ''))))
+    monkeypatch.setattr(prep, '_prepare_theme_snapshot_cache', lambda *args, **kwargs: True)
+    monkeypatch.delenv('CORE_REDIS_URL', raising=False)
+    monkeypatch.delenv('REDIS_URL', raising=False)
+    class ArchivedCold:
+        def latest_version(self, dataset, day): return 'fixture'
+    class UnavailableCold:
+        def latest_version(self, dataset, day): raise RuntimeError('unavailable')
+    monkeypatch.setattr(cold_archive, 'read_envelope', lambda *args, **kwargs: raw)
+    for state in ('missing', 'present', 'restored', 'unknown', 'corrupt'):
+        calls.clear()
+        memory.values.clear()
+        if state == 'present': memory.values['core:view:hot_rank:2026-10-16'] = raw
+        if state == 'corrupt': memory.values['core:view:hot_rank:2026-10-16'] = '{}'
+        cold = ArchivedCold() if state == 'restored' else UnavailableCold() if state == 'unknown' else Cold()
+        monkeypatch.setattr(two_layer, 'TwoLayerStore', lambda client: TwoLayerStore(memory, cold_store=cold))
+        report = prep.build_prep_report(tmp_path, '2026-10-19', write=True,
+                                        asof='2026-10-19T08:00:00+08:00')
+        captures = [args for script, args in calls if script == 'capture_wencai_hot_rank.py']
+        assert captures == ([['--trade-date', '2026-10-16', '--execute', '--artifact-root', str(tmp_path)]] if state == 'missing' else [])
+        assert any(script == 'build_auction_baseline.py' for script, _ in calls)
+        timing = next(x for x in report['step_timings'] if x['step'] == 'hot_rank_prev')
+        if state == 'missing':
+            assert 'hot_rank_prev:COMMAND_FAILED' in report['errors']
+            assert {'step': 'hot_rank_prev', 'code': None} in report['error_steps']
+            assert timing['fill_exit'] == 1 and timing['fill_script'] == 'capture_wencai_hot_rank.py'
+        if state in ('unknown', 'corrupt'):
+            assert timing['status'] == state.upper() and timing['reason']

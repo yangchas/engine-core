@@ -525,6 +525,8 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
         started = time.monotonic()
         item = original_latest(name, dataset, day, *args, **kwargs)
         record.update(status=item["status"], trade_date=item["trade_date"])
+        if name == "hot_rank_prev":
+            record["reason"] = item.get("reason")
         record["check_ms"] += round((time.monotonic() - started) * 1000, 3)
         publish(name, "completed")
         return item
@@ -534,9 +536,11 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
         name = {"symbol_universe": "symbol_universe", "daily_kline": "previous_daily_kline",
                 "limit_up_pool": "yesterday_limit_pool", "limit_reasons": "limit_reasons",
                 "hot_plates": "hot_plates", "plate_members": "plate_members"}.get(job)
-        name = name or {"capture_ths_hot_rank.py": "hot_rank", "build_auction_baseline.py": "auction_baseline",
+        name = name or {"capture_ths_hot_rank.py": "hot_rank", "capture_wencai_hot_rank.py": "hot_rank_prev",
+                        "build_auction_baseline.py": "auction_baseline",
                         "build_plate_amount_baseline.py": "plate_amount_baseline"}.get(script, "theme_snapshot")
-        record = begin(name, name, trade_date)
+        record = begin(name, "hot_rank" if name == "hot_rank_prev" else name,
+                       previous if name == "hot_rank_prev" else trade_date)
         record.update(filled=True, fill_script=script, fill_exit=None)
         publish(name, "filling")
         started = time.monotonic()
@@ -721,6 +725,15 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                 errors.append("hot_rank:COMMAND_FAILED")
                 error_codes.append(_declared_code(out))
                 error_steps.append({"step": "hot_rank", "code": error_codes[-1]})
+        if _latest_step("hot_rank_prev", "hot_rank", previous, catalog, asof=asof, redis=client)["status"] == "MISSING":
+            started = time.monotonic()
+            rc, out = _run(repo, "capture_wencai_hot_rank.py", ["--trade-date", previous, "--execute",
+                "--artifact-root", str(root)])
+            timings["hot_rank_prev"] = round((time.monotonic() - started) * 1000, 3)
+            if rc:
+                errors.append("hot_rank_prev:COMMAND_FAILED")
+                error_codes.append(_declared_code(out))
+                error_steps.append({"step": "hot_rank_prev", "code": error_codes[-1]})
         started = time.monotonic()
         rc, out = _run(repo, "build_auction_baseline.py", ["--date", trade_date, "--write",
             "--artifact-root", str(root)])
