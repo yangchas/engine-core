@@ -6,6 +6,9 @@ import ast
 import contextlib
 from collections import Counter
 import difflib
+import fcntl
+import signal
+import tempfile
 from datetime import datetime, timedelta
 import json
 import os
@@ -27,6 +30,8 @@ ROOT = Path('/home/exedev/repos/engine_core')
 CARDS = Path('/home/exedev/fw/cards')
 PYTHON = '/home/exedev/services/engine-next/shared/venv/bin/python'
 CALLBACK = '/home/exedev/fw/bin/card_callback'
+DRIFT_LOCK = Path('/tmp/engine_core_pytest.lock')
+DRIFT_WORKTREE_ROOT = Path('/home/exedev/validation')
 
 
 def worktree_from_card(text):
@@ -1442,9 +1447,78 @@ def memory_add(name, text):
     return 0
 
 
+def drift(args):
+    """Compare complete pytest failure sets from two isolated revisions."""
+    def git(repo, *arguments):
+        return subprocess.run(['git', '-C', str(repo), *arguments], check=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True).stdout.strip()
+
+    try:
+        with DRIFT_LOCK.open('a') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print('DRIFT lock busy')
+                return 2
+            base = git(ROOT, 'rev-parse', '--verify', (args.base or git('/home/exedev/repos/engine_core-live', 'rev-parse', 'HEAD')) + '^{commit}')
+            head = git(ROOT, 'rev-parse', '--verify', (args.head or git(ROOT, 'rev-parse', 'HEAD')) + '^{commit}')
+            results = []
+            incomplete = []
+            for revision in (base, head):
+                with tempfile.TemporaryDirectory(prefix='c1131-drift-', dir=DRIFT_WORKTREE_ROOT) as parent:
+                    checkout = Path(parent) / 'checkout'
+                    git(ROOT, 'worktree', 'add', '--detach', str(checkout), revision)
+                    try:
+                        process = subprocess.Popen([PYTHON, '-m', 'pytest', '-q', '-p', 'no:cacheprovider', '--no-header'],
+                            cwd=checkout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            env={**os.environ, 'ENGINE_CORE_PYTEST_LOCK_HELD': '1'}, start_new_session=True)
+                        try:
+                            raw, _ = process.communicate(timeout=1200)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(process.pid, signal.SIGKILL)
+                            process.communicate()
+                            incomplete.append(f'TIMEOUT revision={revision} limit=1200s')
+                            results.append(None)
+                            continue
+                        output = raw.decode(errors='replace')
+                        failures = {}
+                        for line in output.splitlines():
+                            match = re.match(r'^(?:FAILED|ERROR) (.+?)(?:\s+-\s+(.*))?$', line)
+                            if match:
+                                failures.setdefault(match.group(1), match.group(2) or line)
+                        if process.returncode not in (0, 1) or (process.returncode == 1 and not failures):
+                            incomplete.append(f'ERROR revision={revision} pytest_exit={process.returncode}; failure set incomplete' + ''.join(f'\n{name} - {error}' for name, error in sorted(failures.items())))
+                            results.append(None)
+                            continue
+                        results.append(failures)
+                    finally:
+                        git(ROOT, 'worktree', 'remove', '--force', str(checkout))
+            if incomplete:
+                message = '; '.join(incomplete)
+                args.evidence_dir.mkdir(parents=True, exist_ok=True)
+                (args.evidence_dir / f"drift-{datetime.now(ZoneInfo('Asia/Shanghai')).date()}.txt").write_text(message + '\n', encoding='utf-8')
+                print(f"DRIFT {message.replace(chr(10), '; ')}; comparison incomplete")
+                return 2
+            old, new = results
+            added = sorted(new.keys() - old.keys())
+            fixed = old.keys() - new.keys()
+            args.evidence_dir.mkdir(parents=True, exist_ok=True)
+            report = args.evidence_dir / f"drift-{datetime.now(ZoneInfo('Asia/Shanghai')).date()}.txt"
+            report.write_text(''.join(f'{name} - {new[name]}\n' for name in added), encoding='utf-8')
+            print(f'DRIFT base={base}(失败{len(old)}) head={head}(失败{len(new)}) new={len(added)} fixed={len(fixed)}')
+            return 0
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f'DRIFT ERROR {type(exc).__name__}: {exc}')
+        return 2
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest='command', required=True)
+    drift_parser = sub.add_parser('drift')
+    drift_parser.add_argument('--base')
+    drift_parser.add_argument('--head')
+    drift_parser.add_argument('--evidence-dir', type=Path, default=Path('/home/exedev/fw/evidence/C1131'))
     hire_parser = sub.add_parser('hire')
     hire_parser.add_argument('name')
     hire_parser.add_argument('--role', required=True, choices=('builder', 'runner', 'auditor', 'observer'))
@@ -1542,6 +1616,8 @@ def main(argv=None):
             command.add_argument('--timeout', type=float, default=1700)
             command.add_argument('--interval', type=float, default=20)
     args = parser.parse_args(argv)
+    if args.command == 'drift':
+        return drift(args)
     if args.command == 'land':
         return land(args)
     if args.command == 'gate':
