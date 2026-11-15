@@ -576,7 +576,11 @@ def newcard(args):
     cards = location('PM_CARDS_DIR', str(CARDS))
     repo = Path(__file__).resolve().parents[1]
     numbers = [int(p.stem[1:]) for p in cards.glob('C*.md') if re.fullmatch(r'C[0-9]+', p.stem)]
-    number = max(numbers, default=0) + 1
+    requested = getattr(args, 'card_id', None)
+    if requested and not re.fullmatch(r'C[0-9]+', requested):
+        print('invalid card ID')
+        return 2
+    number = int(requested[1:]) if requested else max(numbers, default=0) + 1
     while True:
         ident = f'C{number}'
         path = cards / (ident + '.md')
@@ -586,6 +590,9 @@ def newcard(args):
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
             break
         except FileExistsError:
+            if requested:
+                print(f'{requested} already exists')
+                return 2
             number += 1
     worktree = repo.parent / ('engine_core-wt-' + ident)
     scope = [x.strip() for x in (values.get('scope') or '').split(',') if x.strip()]
@@ -795,6 +802,72 @@ def card_command(args):
             print('TIMEOUT')
             return 2
         time.sleep(min(args.interval, remaining))
+
+
+def land(args):
+    if not re.fullmatch(r'C[0-9]+', args.card) or args.max_tests_files < 1:
+        print(f'LAND {args.card} failed: invalid card or cap')
+        return 2
+    path = card_path(args.card)
+    if path is None or not re.search(r'^STATUS:', path.read_text(encoding='utf-8'), re.M):
+        print(f'LAND {args.card} failed: card or STATUS missing')
+        return 2
+    command = [PYTHON, str(ROOT / 'examples/release.py'), 'merge', '--branch', args.card,
+               '--card', args.card, '--max-tests-files', str(args.max_tests_files)]
+    try:
+        done = subprocess.run(command, capture_output=True, text=True)
+    except OSError as exc:
+        print(redact(f'LAND {args.card} failed: {exc}'))
+        return 2
+    output = done.stdout + '\n' + done.stderr
+    sha = re.search(r'\bmerged\s+' + re.escape(args.card) + r'\s+as\s+([0-9a-fA-F]{7,40})\b', output)
+    summary = re.search(r'选中 (\d+) 个测试文件、共 (\d+|UNKNOWN) 个测试', output)
+    if done.returncode or not sha:
+        failed = re.search(r'FAILED\s+(tests/\S+)', output)
+        error = re.search(r'^E\s+(.+)$', output, re.M)
+        log = re.search(r'^test log:\s*(.+)$', output, re.M)
+        reason = re.search(r'^REFUSED:\s*(.+)$', output, re.M)
+        print(redact(f"LAND {args.card} failed {failed.group(1) if failed else 'UNKNOWN'}: "
+                     f"{error.group(1) if error else reason.group(1) if reason else 'unknown error'} "
+                     f"log={log.group(1) if log else 'unavailable'}"))
+        return 1
+    with open(os.devnull, 'w') as sink, contextlib.redirect_stdout(sink):
+        status = card_command(argparse.Namespace(command='setstatus', card=args.card, text=f'DONE(已合并 {sha.group(1)})'))
+    if status:
+        print(f'LAND {args.card} merged {sha.group(1)} status failed')
+        return status
+    print(f"LAND {args.card} merged {sha.group(1)} tests={summary.group(1) if summary else '?'}文件/{summary.group(2) if summary else '?'}个")
+    return 0
+
+
+def gate(args):
+    if not re.fullmatch(r'C[0-9]+', args.card) or not re.fullmatch(r'[0-9a-fA-F]{7,40}', args.sha):
+        print(f'{args.card} invalid card or SHA')
+        return 2
+    goal = (f'在 /home/exedev/repos/engine_core 主干验证 SHA {args.sha}，确认 HEAD 与该 SHA 一致。'
+            '使用 /home/exedev/services/engine-next/shared/venv/bin/python；先 export CORE_STATE_CACHE=off '
+            '与 GATE_REPO=/home/exedev/repos/engine_core；运行 /home/exedev/fw/bin/real_gate '
+            '--date 2026-11-13 --prev-date 2026-11-12 --skip-pytest。不要发 Redis TIME 命令；只读。'
+            '报告首行 VERDICT:PASS/FAIL，记录 real_gate 摘要行。' + ('\n' + args.extra if args.extra else ''))
+    command = ['newcard', '--recipe', 'runner-realgate', '--card-id', args.card, '--title', args.title,
+               '--serves', 'real_gate 验收 ' + args.sha, '--plan', 'P0 流程工具修复',
+               '--approval', '调用方指定验收', '--goal', goal, '--real-data', '真实 Redis 与 TD',
+               '--oracle', 'real_gate PASS', '--accept-by', 'real-run', '--question', '真实闸门是否通过']
+    with open(os.devnull, 'w') as sink, contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+        created = main(command)
+        if not created:
+            created = card_command(argparse.Namespace(command='dispatch', card=args.card, to=None, no_lint=False, no_pack=True))
+        if not created:
+            created = card_command(argparse.Namespace(command='wait-card', card=args.card, timeout=1700, interval=20))
+    if created:
+        print(f'{args.card} gate failed: create, dispatch or wait')
+        return created
+    report = location('PM_REPORTS_DIR', '/home/exedev/fw/reports') / (args.card + '.md')
+    text = report.read_text(encoding='utf-8') if report.is_file() else ''
+    verdict = re.match(r'^VERDICT:\s*(PASS|FAIL)\b', text, re.I)
+    summary = re.search(r'^.*?GATE (?:PASS|FAIL)[^\n]*', text, re.M)
+    print(redact(f"{args.card} {summary.group(0).strip() if summary else 'GATE summary missing'} VERDICT:{verdict.group(1).upper() if verdict else 'UNKNOWN'}"))
+    return 0 if verdict and verdict.group(1).upper() == 'PASS' and summary else 1
 
 
 def ship(args):
@@ -1358,6 +1431,7 @@ def main(argv=None):
     group.add_argument('--card')
     new = sub.add_parser('newcard')
     new.add_argument('--recipe', required=True)
+    new.add_argument('--card-id')
     new.add_argument('--tier', choices=('easy', 'normal', 'hard', 'review'))
     new.add_argument('--question')
     for option in ('title', 'serves', 'plan', 'approval', 'scope', 'real-data', 'oracle', 'accept-by', 'epic', 'depends'):
@@ -1386,6 +1460,14 @@ def main(argv=None):
     cards = sub.add_parser('cards')
     cards.add_argument('--open', action='store_true')
     cards.add_argument('--limit', type=int, default=20)
+    land_parser = sub.add_parser('land')
+    land_parser.add_argument('card')
+    land_parser.add_argument('--max-tests-files', type=int, default=12)
+    gate_parser = sub.add_parser('gate')
+    gate_parser.add_argument('card')
+    gate_parser.add_argument('--sha', required=True)
+    gate_parser.add_argument('--title', required=True)
+    gate_parser.add_argument('--extra', default='')
     for name in ('ship', 'run'):
         command = sub.add_parser(name)
         command.add_argument('card')
@@ -1404,6 +1486,10 @@ def main(argv=None):
             command.add_argument('--timeout', type=float, default=1700)
             command.add_argument('--interval', type=float, default=20)
     args = parser.parse_args(argv)
+    if args.command == 'land':
+        return land(args)
+    if args.command == 'gate':
+        return gate(args)
     if args.command in ('ship', 'run'):
         return ship(args)
     if args.command == 'daycheck':
