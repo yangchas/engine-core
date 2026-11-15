@@ -1,0 +1,15 @@
+Traceback (most recent call last):
+  File "/home/exedev/repos/engine_core/src/engine_core/data_pipeline/job_contract.py", line 121, in inner
+    return main(argv, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/exedev/repos/engine_core/examples/run_daily_reports.py", line 18, in main
+    return _main(args, sources=sources)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/exedev/repos/engine_core/src/engine_core/daily_pipeline.py", line 2768, in main
+    result = run_daily_pipeline(stage=args.stage, trade_date=args.trade_date, asof=args.asof,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/exedev/repos/engine_core/src/engine_core/daily_pipeline.py", line 1138, in run_daily_pipeline
+    from .slices import SliceProviders, SliceReader
+  File "/home/exedev/repos/engine_core/src/engine_core/slices/__init__.py", line 14, in <module>
+    from redis.exceptions import RedisError
+ModuleNotFoundError: No module named 'redis.exceptions'; 'redis' is not a package
