@@ -9,10 +9,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 from typing import Any, Protocol
 
 from ..data_pipeline import cold_archive, limit_pool_hot_view
 from ..guardian.presence import resolve_presence
+
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -134,6 +137,13 @@ class TwoLayerStore:
                 raise ValueError('cold_archive_version_mismatch')
             if asof is not None and datetime.fromisoformat(hot_rank_view._instant(value['available_at'])) > datetime.fromisoformat(hot_rank_view._instant(asof)):
                 return StoreResult(status='MISSING', reason='late_visible')
+            if status == 'RESTORED_FROM_TD':
+                try:
+                    if not self.redis.set(f'core:view:hot_rank:{partition}', raw,
+                                          exat=hot_rank_view.hot_view_expire_at(partition), nx=True):
+                        _LOG.warning('hot_rank_restore_not_written trade_date=%s', partition)
+                except Exception:
+                    _LOG.warning('hot_rank_restore_failed trade_date=%s', partition, exc_info=True)
             return StoreResult(status=status, rows=value['rows'], metadata=value, version=value['version'])
         except (ValueError, KeyError, TypeError, cold_archive.CorruptArchive) as exc:
             return StoreResult(status='CORRUPT', reason=str(exc))

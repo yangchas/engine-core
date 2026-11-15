@@ -320,6 +320,7 @@ def test_hot_rank_real_snapshot_two_layer(tmp_path, monkeypatch):
             return self.values.get(key)
         def set(self, key, value, **kwargs):
             self.values[key] = value
+            self.last_set = (key, kwargs)
             return True
 
     class EmptyCold:
@@ -342,6 +343,27 @@ def test_hot_rank_real_snapshot_two_layer(tmp_path, monkeypatch):
     assert (tmp_path / "catalog.json").exists()
     assert store.presence("hot_rank", "2026-10-23").status == "PRESENT_REDIS"
     assert len(archives) == 1 and archives[0][0] == "hot_rank"
+    class ArchivedCold:
+        def latest_version(self, dataset, day):
+            return archives[0][2]
+
+    monkeypatch.setattr(cold_archive, "read_envelope", lambda *args, **kwargs: archives[0][3])
+    store.cold = ArchivedCold()
+    key = "core:view:hot_rank:2026-10-23"
+    del redis.values[key]
+    restored = store.get("hot_rank", "2026-10-23")
+    assert restored.status == "RESTORED_FROM_TD" and len(restored.rows) == len(rows)
+    assert hot_rank_view.validate(redis.get(key), "2026-10-23")["rows"] == restored.rows
+    assert redis.last_set == (key, {"exat": 2000000000, "nx": True})
+    del redis.values[key]
+    assert store.presence("hot_rank", "2026-10-23").status == "RESTORED_FROM_TD"
+    assert redis.get(key) is not None
+    del redis.values[key]
+    original_set = redis.set
+    monkeypatch.setattr(redis, "set", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("restore_failed")))
+    assert store.get("hot_rank", "2026-10-23").status == "RESTORED_FROM_TD"
+    monkeypatch.setattr(redis, "set", original_set)
+    redis.set(key, archives[0][3])
     value = store.get("hot_rank", "2026-10-23")
     assert value.metadata['available_at'].endswith('+08:00')
     assert store.get("hot_rank", "2026-10-23", asof="2026-10-23T14:40:00+08:00").status == "MISSING"

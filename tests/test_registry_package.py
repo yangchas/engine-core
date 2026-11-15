@@ -15,6 +15,7 @@ from engine_core.data_pipeline.registry import DATASETS, get_dataset
 LEGACY_BASELINE = "078213f"
 # Fields deliberately changed after the baseline; everything else of a baseline dataset must stay identical.
 CHANGED_SINCE_BASELINE = {
+    ("hot_rank", "source"): "C1208 (THS source declaration)",
     ("hot_plates", "key_fields"): "C583 (PIT keys: plate_code, date, captured_at)",
     ("hot_plates", "primary_backend"): "C1096 (Redis-only hot view)",
     ("hot_plates", "retention_policy"): "C1096 (five trading days)",
@@ -54,6 +55,7 @@ def test_registry_package_discovers_datasets_and_preserves_legacy_specs():
     assert list(DATASETS) == sorted(DATASETS)
     # datasets added after the baseline are allowed; every baseline dataset must still be registered
     assert (set(legacy) | {"quote_slice"}) <= set(DATASETS)
+    assert (DATASETS["hot_rank"].kind, DATASETS["hot_rank"].source) == ("point_snapshot", "ths")
     for name, old_spec in legacy.items():
         current = DATASETS[name]
         for field in dataclasses.fields(old_spec):

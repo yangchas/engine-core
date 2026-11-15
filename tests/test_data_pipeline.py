@@ -25,7 +25,8 @@ def test_registry_declares_tiered_storage_and_bounded_redis_views():
     assert get_dataset("limit_up_pool").redis_ttl_trade_days == 5
     assert get_dataset("limit_reasons").redis_ttl_seconds == 4 * 86400
     assert get_dataset("plate_members").redis_ttl_seconds == 4 * 86400
-    assert get_dataset("hot_rank").source == "ths_hot_rank"
+    assert get_dataset("hot_rank").source == "ths"
+    assert get_dataset("hot_rank").kind == "point_snapshot"
     assert get_dataset("plate_members").max_redis_payload_bytes == 64 * 1024
     with pytest.raises(ValueError, match="redis_ttl_seconds_required_for_hot_view"):
         DatasetSpec("missing_ttl", "source", "schedule")
