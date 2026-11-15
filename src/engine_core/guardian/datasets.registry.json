@@ -858,6 +858,12 @@
           "name": "core:cache:data:hot_plates_gaps",
           "role": "authority",
           "ttl_seconds": 432000
+        },
+        {
+          "kind": "td_snapshot",
+          "name": "cold_hot_plates_gaps_<identity>",
+          "role": "mirror",
+          "note": "best-effort asynchronous cold archive"
         }
       ],
       "redis_ttl_seconds": 432000

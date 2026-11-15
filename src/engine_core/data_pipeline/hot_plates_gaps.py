@@ -88,6 +88,15 @@ def record_hot_plates_gap(root: str | Path, trade_date: str, event_id: str,
     rows = _existing_gap_rows(root_path, day)
     previous = next((row for row in rows if row.get("event_id") == event_id), None)
     if previous is not None:
+        if persist:
+            from .limit_pool_hot_view import _client
+            key = f"core:cache:data:hot_plates_gaps:{day}:{event_id}"
+            try:
+                raw = _client().get(key)
+                if raw is not None:
+                    _archive_gap(raw, previous)
+            except Exception:
+                pass
         return previous
 
     scheduled = _parse_time(scheduled_at, day)
@@ -135,14 +144,29 @@ def record_hot_plates_gap(root: str | Path, trade_date: str, event_id: str,
         raise ValueError("redis_ttl_seconds_required:hot_plates_gaps")
     key = f"core:cache:data:hot_plates_gaps:{day}:{event_id}"
     client = _client()
-    if not client.set(key, json.dumps(gap, ensure_ascii=False, sort_keys=True), ex=ttl, nx=True):
+    encoded = json.dumps(gap, ensure_ascii=False, sort_keys=True)
+    if not client.set(key, encoded, ex=ttl, nx=True):
         raw = client.get(key)
         if raw is None:
             raise RuntimeError("hot_plates_gap_redis_write_failed")
-        return json.loads(raw)
+        existing = json.loads(raw)
+        _archive_gap(raw, existing)
+        return existing
 
+    _archive_gap(encoded, gap)
     return gap
 
+
+
+def _archive_gap(raw: str | bytes, gap: Mapping[str, Any]) -> None:
+    try:
+        from .cold_archive import archive
+        archive("hot_plates_gaps", str(gap["trade_date"]), str(gap["version"]),
+                raw.encode("utf-8") if isinstance(raw, str) else raw, gap)
+    except Exception:
+        # Cold storage must never change the result of the Redis publish.
+        import logging
+        logging.getLogger(__name__).warning("cold_archive_gap dispatch_failed", exc_info=True)
 
 def _event_datetimes(trade_date: str, event: Mapping[str, Any]) -> tuple[datetime, datetime] | None:
     at, deadline = event.get("at"), event.get("deadline")

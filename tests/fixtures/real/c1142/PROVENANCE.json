@@ -1,0 +1,8 @@
+{
+  "envelope.json": {
+    "sha256": "14df6c65fab9545d1f36c97134efd51c0c25e8b1730b398a77f1b6043e55040f",
+    "source": "/home/exedev/fw/evidence/C1118/new.json",
+    "extraction": "UTF-8 bytes of value field for core:cache:data:hot_plates_gaps:2026-11-10:kaipan_history_20261110",
+    "source_sha256": "72dff95907f6419dabf671647e0f4666375258a0905cab13e4b8a4d2dce75c14"
+  }
+}
