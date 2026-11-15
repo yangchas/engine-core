@@ -150,15 +150,17 @@ def guarded_clients(violations):
 def rehearse(root, trade_date, now, *, protected_root=None):
     from engine_core.guardian import startup
     from engine_core.guardian.scheduler import phase_at
+    from engine_core.guardian import daily_kline_coverage
 
     violations = []
     clock = datetime.fromisoformat(f"{trade_date}T{now}:00+08:00")
-    with guarded_clients(violations), protect_data_root(protected_root or root, violations), \
+    with patch.object(daily_kline_coverage, "note_td_readability", return_value=None), \
+         guarded_clients(violations), protect_data_root(protected_root or root, violations), \
          protect_data_root(root, violations):
         trade = startup.boot_trade_day(trade_date, root)
         detail = trade.get("detail") or {}
         try:
-            health = startup.boot_data_health(trade_date, detail.get("prev"), root, now=clock)
+            health = startup.boot_data_health(trade_date, detail.get("prev"), root, now=clock, dry_run=True)
         except PermissionError as exc:
             health = {"status": "failed", "error_code": str(exc),
                       "detail": {"status": "failed"}}

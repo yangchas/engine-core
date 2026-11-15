@@ -50,7 +50,7 @@ def check_catalog_dataset(catalog: Any, dataset: str, day: str, rule: Mapping[st
                           check_day: str) -> dict[str, Any]:
     """Pass when some version of ``dataset``/``day`` has an accepted status, enough rows and (if asked) was
     captured at or after ``captured_after`` on ``check_day``."""
-    if dataset == "limit_up_pool_today":
+    if dataset in {"limit_up_pool_today", "hot_rank"}:
         from ..data_pipeline.reader import load_dataset
         loaded = load_dataset(dataset, day)
         if loaded.status != "READY":

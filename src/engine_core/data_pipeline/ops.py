@@ -236,7 +236,7 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                     results.append({"job": name, "status": "SKIPPED_WAITING_DAILY_KLINE"})
                     continue
             dataset_day = trade_date if name == "symbol_universe" else job_trade_date
-            existing_path = None if name == "limit_up_pool" else runner.catalog.locate(name, dataset_day)
+            existing_path = None if name in {"limit_up_pool", "hot_rank"} else runner.catalog.locate(name, dataset_day)
             if existing_path is not None and name != "hot_plates":
                 try:
                     existing_manifest = json.loads(existing_path.read_text(encoding="utf-8"))
@@ -534,6 +534,16 @@ def dataset_health(root: str | Path, *, redis: Any = None,
     datasets = {}
     overall = "GREEN"
     for name, spec in DATASETS.items():
+        if name == "hot_rank":
+            from ..guardian.presence import resolve_presence
+            day = dates[-1] if dates else current.date().isoformat()
+            presence = resolve_presence(name, day, redis_client=redis)
+            status = "GREEN" if presence in {"PRESENT_REDIS", "RESTORED_FROM_TD"} else (
+                "RED" if presence in {"MISSING", "CORRUPT"} else "YELLOW")
+            datasets[name] = {"status": status, "presence": str(presence), "trade_date": day}
+            if status == "RED": overall = "RED"
+            elif status == "YELLOW" and overall == "GREEN": overall = "YELLOW"
+            continue
         manifest_path = catalog.locate(name)
         manifest = None
         if manifest_path and manifest_path.is_file():

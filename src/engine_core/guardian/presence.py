@@ -27,6 +27,20 @@ def _validate_pool(raw, trade_date, pool):
 
 
 def resolve_presence(dataset, trade_date, *, redis_client=None, cold_store=None):
+    if dataset == 'hot_rank':
+        from ..data_pipeline.limit_pool_hot_view import _client
+        from ..storage.two_layer import TwoLayerStore, _ReadOnlyRedis
+        client = redis_client
+        try:
+            if client is None:
+                client = _client()
+            result = TwoLayerStore(_ReadOnlyRedis(client), cold_store=cold_store).presence(dataset, trade_date)
+            return Presence(result.status, result.reason)
+        except Exception:
+            return Presence('UNKNOWN', 'read_failed')
+        finally:
+            if redis_client is None and client is not None:
+                client.close()
     if dataset == 'limit_up_pool_today':
         from ..data_pipeline.reader import _read_today_pool
         result = _read_today_pool(trade_date, client=redis_client, cold_store=cold_store)

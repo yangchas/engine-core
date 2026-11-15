@@ -1574,7 +1574,7 @@
       "id": "hot_rank",
       "owner": "premarket_data",
       "artifact": {
-        "catalog_dataset": "hot_rank",
+        "catalog_dataset": null,
         "date_basis": "capture trade_date/time"
       },
       "phases": [
@@ -1602,13 +1602,13 @@
         "force": "recompute",
         "clear": "clear then rebuild"
       },
-      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
+      "notes": "Presence is resolved from Redis and TD; historical point snapshots cannot be backfilled.",
       "guardian_event": "premarket_slice_0850",
       "late_policy": {
-        "mode": "fetch_now",
+        "mode": "gap_only",
         "valid_until": "15:05",
         "depends_on": [],
-        "set_by": "C370: live snapshot, late start captures now with honest captured_at (never backdated)",
+        "set_by": "C1214: missing point snapshots cannot be backfilled",
         "trigger_event": "premarket_slice_0850"
       },
       "cost": {
@@ -1635,13 +1635,13 @@
       "redis_ttl_seconds": 172800,
       "storage": [
         {
-          "kind": "catalog",
+          "kind": "td_stable",
           "name": "hot_rank",
           "role": "authority"
         },
         {
           "kind": "redis_view",
-          "name": "core:cache:data:hot_rank",
+          "name": "core:view:hot_rank:{trade_date}",
           "role": "view",
           "ttl_seconds": 172800
         }
