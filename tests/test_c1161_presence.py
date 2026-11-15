@@ -11,6 +11,16 @@ RAW = (Path(__file__).parent / 'fixtures/real/c1147/limit_up_pool_1112_formal.js
 DAY = '2026-11-12'
 
 
+def test_previous_pool_without_catalog_is_planned_from_storage():
+    assert json.loads(RAW)['trade_date'] == DAY
+    item = next(item for item in load_registry() if item['id'] == 'limit_up_pool')
+    now = datetime(2026, 11, 13, 10, tzinfo=ZoneInfo('Asia/Shanghai'))
+    rows = reconcile_plan(now, {'datasets': {}}, trade_date='2026-11-13',
+                          prev_trade_date=DAY, registry=[item], pool_presence='MISSING')
+    assert [(row['id'], row['partition'], row['action']) for row in rows] == [
+        ('limit_up_pool', DAY, 'FETCH_NOW')]
+
+
 class MemoryRedis:
     def __init__(self):
         self.values = {}
