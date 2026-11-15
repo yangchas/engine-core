@@ -159,6 +159,10 @@ def _latest_step(name: str, dataset: str, before: str, catalog: ArtifactCatalog,
     if dataset == "hot_rank":
         from .data_pipeline.reader import load_dataset
         loaded = load_dataset(dataset, before)
+        if loaded is None:
+            return {"step": name, "dataset": dataset, "trade_date": None,
+                    "status": "MISSING", "reason": "no_available_capture_on_or_before_previous_trade_date",
+                    "row_count": None, "version": None, "elapsed_ms": 0}
         manifest = loaded.manifest
         status = loaded.status
         available, cutoff = _pit_time(manifest.get("available_at")), _pit_time(asof)
