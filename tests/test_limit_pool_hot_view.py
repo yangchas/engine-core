@@ -114,7 +114,11 @@ def test_pool_degraded_hit_and_dry_run(source, wanted, scenario, tmp_path, monke
     elif scenario.startswith('dry_'):
         assert code in (0, 20) and not calls and (redis.writes, redis.deadlines) == before
     else:
-        assert code == 20 and body['error_code'] == 'ALREADY_SATISFIED' and not calls
+        # Degraded and partial views must attempt a refresh; a failed source
+        # preserves the existing Redis bytes instead of treating them as a hit.
+        assert calls == ['td_bars' if wanted == 'td' else wanted]
+        assert code == (40 if scenario == 'partial' else 10)
+        assert body['error_code'] == 'DETERMINISTIC_FAILURE'
         assert (redis.writes, redis.deadlines) == before
         rows, meta = hot.read(day, clock().isoformat(), redis_client=redis)
         assert rows == part.rows and meta['status'] == ('PARTIAL' if scenario == 'partial' else 'DEGRADED')
@@ -182,11 +186,17 @@ def test_pool_producer_publishes_hot_view(day, tmp_path, monkeypatch):
     assert rows == value['rows'] and meta['status'] == 'READY' and meta['storage_source'] == 'redis'
     assert {'kp_02', 'kp_20', 'reason_plates_text', 'price'} <= set(rows[0])
 
-    # Existing verified cold partition heals a missing view, without a refetch or new source timestamp.
+    # A restored TD partition is degraded and triggers a source refresh. If
+    # refresh fails, the recovered view remains available with its timestamp.
+    from engine_core.data_pipeline.limit_pool import PoolSourceError
     redis.writes.clear()
-    deps.kaipan = lambda *_: pytest.fail('already satisfied must not refetch')
+    refresh_calls = []
+    def unavailable(*_):
+        refresh_calls.append('kaipan')
+        raise PoolSourceError('TIER_NO_DATA', 'unavailable', exit_code=40)
+    deps.kaipan = unavailable
     code, body = run_pool_tier(request, tmp_path, deps=deps)
-    assert code == 20 and body['detail']['hot_write']['status'] == 'published', body
+    assert code == 10 and body['error_code'] == 'TIER_NO_DATA' and refresh_calls == ['kaipan'], body
     assert json.loads(redis.writes[key])['available_at'] == value['available_at']
     restored_rows, restored_meta = hot.read(day, '2026-10-27T09:25:00+08:00', redis_client=redis, td_store=store)
     assert restored_rows == value['rows'] and restored_meta['status'] == 'DEGRADED'

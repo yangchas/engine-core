@@ -105,3 +105,25 @@ def test_checkpoint_archive_exact_bytes_and_failure(tmp_path, monkeypatch):
     redis2 = FakeRedis({'000001': {}})
     assert checkpoint.run_checkpoint(req(), tmp_path, redis=redis2)[0] == 0
     assert redis2.values == redis.values
+
+
+def test_formal_pool_publication_archives_once(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    value = load_fixture('c1147', 'limit_up_pool_1112_formal.json')
+    assert value['business_status'] == 'FORMAL' and value['quality']['status'] == 'READY'
+    assert value['degraded'] is False and len(value['rows']) == 37
+    now = datetime.fromisoformat(value['available_at'].replace('Z', '+00:00'))
+    redis = RedisSpy()
+    monkeypatch.setattr(hot, 'deadline_for', lambda *args: int(now.timestamp()) + 10000)
+    monkeypatch.setattr(hot, '_td_value', lambda *args: (_ for _ in ()).throw(ValueError('missing')))
+    monkeypatch.setattr(limit_pool_d1, '_build', lambda *args: (SimpleNamespace(rows=value['rows'], manifest=value), {}))
+    calls = []
+    monkeypatch.setattr(cold_archive, 'archive', lambda *args: calls.append(args))
+    monkeypatch.setattr(cold_archive, 'flush', lambda *args, **kwargs: True)
+    class NoStore:
+        def close(self): pass
+    deps = limit_pool_d1.PoolDeps(redis_client=redis, now_utc=lambda: now, td_store=NoStore)
+    code, body = limit_pool_d1.run_pool_tier({'data_date': value['trade_date'], 'args': {'source': 'kaipan'}}, tmp_path, deps=deps)
+    assert code == 0, body
+    assert len(calls) == 1
+    assert calls[0][3] == redis.writes['core:view:limit_up_pool:' + value['trade_date']].encode()

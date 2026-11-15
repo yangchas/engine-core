@@ -8,5 +8,10 @@
     "source": "Redis GET core:view:limit_up_pool:2026-11-12",
     "sha256": "ba07029b9a6576e814d8e4846fe50875924fe98b5e473904bdd84ab764f2decb",
     "captured": "2026-11-15"
+  },
+  "limit_up_pool_1112_formal.json": {
+    "source": "Redis GET core:view:limit_up_pool:2026-11-12",
+    "sha256": "ba07029b9a6576e814d8e4846fe50875924fe98b5e473904bdd84ab764f2decb",
+    "captured_at": "2026-11-15T07:24:18.548424+00:00"
   }
 }

@@ -86,6 +86,14 @@ def _real_kaipan_module():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_td_environment(monkeypatch, request):
+    """Only explicitly enabled live tests inherit real TD connection settings."""
+    if not (request.config.getoption("--live") and request.node.get_closest_marker("live")):
+        for name in ("TD_CONFIG", "TD_HOST", "TD_PORT", "TD_USER", "TD_PASSWORD", "TD_DATABASE", "CORE_TD_DATABASE"):
+            monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_slice_root(tmp_path, monkeypatch, request):
     """Per-test slice/state cache root so past-dated fake TD states never leak between tests or into ~/core-data."""
     monkeypatch.setenv("CORE_SLICE_ROOT", str(tmp_path / "slices"))
