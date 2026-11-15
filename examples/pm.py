@@ -9,6 +9,7 @@ import difflib
 import fcntl
 import signal
 import tempfile
+import time
 from datetime import datetime, timedelta
 import json
 import os
@@ -1486,14 +1487,16 @@ def drift(args):
                                 head_live.add(filename + '::' + node.name + '::' + method.name)
             args.evidence_dir.mkdir(parents=True, exist_ok=True)
             (args.evidence_dir / 'deselected.txt').write_text(''.join(node + '\n' for node in sorted(head_live)), encoding='utf-8')
-            results = []
             incomplete = []
-            for revision in (base, head):
+            results = {}
+            for stage, revision in (('head', head), ('base', base)):
+                if stage == 'base' and not results.get('head'):
+                    break
                 with tempfile.TemporaryDirectory(prefix='c1131-drift-', dir=DRIFT_WORKTREE_ROOT) as parent:
                     checkout = Path(parent) / 'checkout'
                     git(ROOT, 'worktree', 'add', '--detach', str(checkout), revision)
                     try:
-                        # Historical revisions can predate the live marks; never run known hazardous nodes unmarked.
+                        targets = (sorted(str(p.relative_to(checkout)) for p in (checkout / 'tests').glob('test_*.py')) if args.full else [name for name in selected if (checkout / name).is_file()]) if stage == 'head' else sorted(results['head'])
                         hazards = {'tests/test_td_ladder_sink.py': ['test_real_td_roundtrip_and_replace'],
                                    'tests/test_td_sink_real.py': ['test_real_schema_matches_contract'],
                                    'tests/test_limit_pool_td_real.py': ['test_real_schema_has_every_contract_column_with_the_declared_type'],
@@ -1502,34 +1505,36 @@ def drift(args):
                         unsafe = []
                         for filename, names in hazards.items():
                             path = checkout / filename
-                            if not path.exists() or (not args.full and filename not in selected):
+                            applicable = [name for name in names if (filename in targets if stage == 'head' else any(target == filename or target.startswith(filename + '::' + name) for target in targets))]
+                            if not path.exists() or not applicable:
                                 continue
                             tree = ast.parse(path.read_text(encoding='utf-8'))
                             module_live = any(isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'pytestmark' for t in node.targets) and 'pytest.mark.live' in ast.unparse(node.value) for node in tree.body)
                             for node in tree.body:
-                                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names and not module_live and not any('pytest.mark.live' in ast.unparse(d) for d in node.decorator_list) and not (revision == base and filename + '::' + node.name in head_live):
+                                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in applicable and not module_live and not any('pytest.mark.live' in ast.unparse(d) for d in node.decorator_list) and not (stage == 'base' and filename + '::' + node.name in head_live):
                                     unsafe.append(filename + '::' + node.name)
                         if unsafe:
                             incomplete.append(f'UNMARKED_LIVE revision={revision} ' + ', '.join(unsafe))
-                            results.append(None)
-                            continue
-                        files = sorted(str(p.relative_to(checkout)) for p in (checkout / 'tests').glob('test_*.py')) if args.full else [name for name in selected if (checkout / name).is_file()]
+                            break
                         failures = {}
-                        failed_run = False
-                        for offset in range(0, len(files), 40):
-                            batch = files[offset:offset + 40]
-                            deselect = [f'--deselect={node}' for node in sorted(head_live) if revision == base and node.split('::', 1)[0] in batch]
+                        # Separate baseline nodes so a missing node cannot prevent other nodes from running.
+                        size = 40 if stage == 'head' else 1
+                        batches = [targets[i:i + size] for i in range(0, len(targets), size)]
+                        for index, batch in enumerate(batches, 1):
+                            if stage == 'base' and not (checkout / batch[0].split('::', 1)[0]).is_file():
+                                continue
+                            deselect = [f'--deselect={node}' for node in sorted(head_live) if stage == 'base' and node.split('::', 1)[0] == batch[0].split('::', 1)[0]]
+                            started = time.monotonic()
                             process = subprocess.Popen([PYTHON, '-m', 'pytest', '-q', '-p', 'no:cacheprovider', '--no-header', *deselect, *batch],
-                            cwd=checkout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            env={**os.environ, 'ENGINE_CORE_PYTEST_LOCK_HELD': '1'}, start_new_session=True)
+                                cwd=checkout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                env={**os.environ, 'ENGINE_CORE_PYTEST_LOCK_HELD': '1'}, start_new_session=True)
+                            timed_out = False
                             try:
                                 raw, _ = process.communicate(timeout=600)
                             except subprocess.TimeoutExpired:
                                 os.killpg(process.pid, signal.SIGKILL)
-                                process.communicate()
-                                incomplete.append(f'TIMEOUT revision={revision} limit=600s')
-                                failed_run = True
-                                break
+                                raw, _ = process.communicate()
+                                timed_out = True
                             output = raw.decode(errors='replace')
                             batch_failures = {}
                             for line in output.splitlines():
@@ -1537,26 +1542,32 @@ def drift(args):
                                 if match:
                                     batch_failures.setdefault(match.group(1), match.group(2) or line)
                             failures.update(batch_failures)
-                            if process.returncode not in (0, 1, 5) or (process.returncode == 1 and not batch_failures):
+                            if stage == 'head':
+                                status = 'TIMEOUT' if timed_out else str(len(batch_failures))
+                                print(f'batch {index}/{len(batches)} files={len(batch)} failed={status} seconds={time.monotonic() - started:.2f}' + (f" TIMEOUT files={','.join(batch)}" if timed_out else ''), flush=True)
+                            missing = not timed_out and stage == 'base' and process.returncode == 4 and ('not found:' in output or 'file or directory not found:' in output)
+                            if timed_out:
+                                incomplete.append(f"TIMEOUT revision={revision} limit=600s files={','.join(batch)}")
+                            elif not missing and (process.returncode not in (0, 1, 5) or (process.returncode == 1 and not batch_failures)):
                                 incomplete.append(f'ERROR revision={revision} pytest_exit={process.returncode}; failure set incomplete' + ''.join(f'\n{name} - {error}' for name, error in sorted(batch_failures.items())))
-                                failed_run = True
+                            if incomplete:
                                 break
-                        results.append(None if failed_run else failures)
+                        results['head' if stage == 'head' else 'base'] = failures
                     finally:
                         git(ROOT, 'worktree', 'remove', '--force', str(checkout))
+                if incomplete:
+                    break
+            report = args.evidence_dir / f"drift-{datetime.now(ZoneInfo('Asia/Shanghai')).date()}.txt"
             if incomplete:
                 message = '; '.join(incomplete)
-                args.evidence_dir.mkdir(parents=True, exist_ok=True)
-                (args.evidence_dir / f"drift-{datetime.now(ZoneInfo('Asia/Shanghai')).date()}.txt").write_text(message + '\n', encoding='utf-8')
+                report.write_text(message + '\n', encoding='utf-8')
                 print(f"DRIFT {message.replace(chr(10), '; ')}; comparison incomplete")
                 return 2
-            old, new = results
+            new = results.get('head', {})
+            old = results.get('base', {})
             added = sorted(new.keys() - old.keys())
-            fixed = old.keys() - new.keys()
-            args.evidence_dir.mkdir(parents=True, exist_ok=True)
-            report = args.evidence_dir / f"drift-{datetime.now(ZoneInfo('Asia/Shanghai')).date()}.txt"
             report.write_text(''.join(f'{name} - {new[name]}\n' for name in added), encoding='utf-8')
-            print(f'DRIFT base={base}(失败{len(old)}) head={head}(失败{len(new)}) new={len(added)} fixed={len(fixed)}')
+            print(f'DRIFT base={base} head={head} head_failed={len(new)} new={len(added)} baseline={len(new) - len(added)}')
             return 0
     except (OSError, subprocess.SubprocessError) as exc:
         print(f'DRIFT ERROR {type(exc).__name__}: {exc}')
