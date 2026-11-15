@@ -610,6 +610,12 @@
           "name": "limit_up_pool_today",
           "role": "legacy",
           "note": "transitional catalog commits retained until readers migrate to Redis"
+        },
+        {
+          "kind": "td_snapshot",
+          "name": "cold_limit_up_pool_today_<identity>",
+          "role": "mirror",
+          "note": "best-effort asynchronous cold archive"
         }
       ],
       "redis_ttl_trade_days": 5
@@ -802,6 +808,12 @@
             "expire_time": "00:00:00",
             "timezone": "Asia/Shanghai"
           }
+        },
+        {
+          "kind": "td_snapshot",
+          "name": "cold_hot_plates_<identity>",
+          "role": "mirror",
+          "note": "best-effort asynchronous cold archive"
         }
       ]
     },

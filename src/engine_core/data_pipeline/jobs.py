@@ -675,6 +675,15 @@ class JobRunner:
                     restore_ttl = prior_ttl if isinstance(prior_ttl, int) and prior_ttl > 0 else ttl
                     _redis_set(self.redis, key, previous, restore_ttl)
             raise
+        if spec.name == "hot_plates":
+            try:
+                from .cold_archive import archive, flush
+                archive(spec.name, trade_date, str(manifest["version"]),
+                        version_json.encode("utf-8"), payload)
+                flush()
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning("cold_archive dispatch_failed", exc_info=True)
 
 
 def _redis_set(client: Any, key: str, value: str, ttl: int) -> None:
