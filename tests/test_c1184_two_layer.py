@@ -27,7 +27,8 @@ def test_get_restores_real_envelope_and_rejects_corruption(monkeypatch):
     assert store.get('limit_up_pool', DAY).status == 'PRESENT_REDIS'
     bad = Cold()
     bad.rows[0]['payload'] += b'x'
-    assert TwoLayerStore(Redis(), bad).get('limit_up_pool', DAY).status == 'UNKNOWN'
+    result = TwoLayerStore(Redis(), bad).get('limit_up_pool', DAY)
+    assert result.status == 'CORRUPT' and result.reason == 'cold_archive_chunk_hash'
 
 
 def test_publish_delegates_and_reports_queued_archive(monkeypatch):
@@ -48,3 +49,21 @@ def test_publish_delegates_and_reports_queued_archive(monkeypatch):
         store.advance('daily_kline', DAY, value['version'])
     with pytest.raises(NotImplementedError):
         store.list_versions('limit_up_pool', (DAY, DAY))
+
+
+def test_corrupt_real_envelope_reports_reason_and_plans_fetch(monkeypatch):
+    from engine_core.storage.two_layer import TwoLayerStore
+    from engine_core.guardian import startup
+    redis = Redis()
+    redis.values['core:view:limit_up_pool:' + DAY] = RAW[:-10]
+    result = TwoLayerStore(redis, Cold()).presence('limit_up_pool', DAY)
+    assert result.status == 'CORRUPT' and result.reason
+    assert TwoLayerStore(redis, Cold()).get('limit_up_pool', DAY).rows == []
+    monkeypatch.setattr(startup, '_calendar', lambda *_: (None, {'prev': DAY}))
+    monkeypatch.setattr('engine_core.guardian.presence.resolve_presence', lambda *_: 'CORRUPT')
+    import tempfile
+    with tempfile.TemporaryDirectory() as root:
+        result = startup.boot_reconcile('2026-11-13', 'PRE_MARKET', {'items': []}, root,
+                                        now='2026-11-13T08:30:00+08:00')
+    assert any(row['id'] == 'limit_up_pool' and row['action'] == 'FETCH_NOW'
+               and 'corrupt' in row.get('reason', '') for row in result['detail']['plan'])

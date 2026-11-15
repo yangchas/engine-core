@@ -15,6 +15,10 @@ from typing import Any, Mapping
 
 _LOG = logging.getLogger(__name__)
 _CHUNK = 6000
+class CorruptArchive(ValueError):
+    """An existing archive failed its integrity checks."""
+
+
 _DATASET = re.compile(r'^[a-z][a-z0-9_]{0,40}$')
 
 
@@ -62,20 +66,23 @@ def read_envelope(dataset: str, trade_date: str, version: str, *, store: Any = N
             raise RuntimeError('cold_archive_disabled')
         store = TdStore()
     rows = store.read(dataset, trade_date, version)
-    markers = [r for r in rows if r['chunk_no'] == -1]
-    if len(markers) != 1:
-        raise ValueError('cold_archive_incomplete')
-    marker = markers[0]
-    chunks = [r for r in rows if r['chunk_no'] >= 0]
-    chunks.sort(key=lambda r: r['chunk_no'])
-    if len(chunks) != marker['chunk_count'] or [r['chunk_no'] for r in chunks] != list(range(len(chunks))):
-        raise ValueError('cold_archive_incomplete')
-    if any(r['chunk_count'] != len(chunks) or hashlib.sha256(r['payload']).hexdigest() != r['sha256'] for r in chunks):
-        raise ValueError('cold_archive_chunk_hash')
-    raw = b''.join(r['payload'] for r in chunks)
-    if hashlib.sha256(raw).hexdigest() != marker['sha256']:
-        raise ValueError('cold_archive_hash')
-    return raw
+    try:
+        markers = [r for r in rows if r['chunk_no'] == -1]
+        if len(markers) != 1:
+            raise ValueError('cold_archive_incomplete')
+        marker = markers[0]
+        chunks = [r for r in rows if r['chunk_no'] >= 0]
+        chunks.sort(key=lambda r: r['chunk_no'])
+        if len(chunks) != marker['chunk_count'] or [r['chunk_no'] for r in chunks] != list(range(len(chunks))):
+            raise ValueError('cold_archive_incomplete')
+        if any(r['chunk_count'] != len(chunks) or hashlib.sha256(r['payload']).hexdigest() != r['sha256'] for r in chunks):
+            raise ValueError('cold_archive_chunk_hash')
+        raw = b''.join(r['payload'] for r in chunks)
+        if hashlib.sha256(raw).hexdigest() != marker['sha256']:
+            raise ValueError('cold_archive_hash')
+        return raw
+    except (ValueError, KeyError, TypeError, IndexError) as exc:
+        raise CorruptArchive(str(exc) or type(exc).__name__) from exc
 
 
 def _quote(value: Any) -> str:

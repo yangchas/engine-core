@@ -346,7 +346,9 @@ def stale_items(now: datetime, catalog: str | Path | Mapping[str, Any],
             presence = resolve_presence(item["id"], partition) if partition else "UNKNOWN"
             status = "OK" if presence in {"PRESENT_REDIS", "RESTORED_FROM_TD"} else presence
             result.append({"id": item["id"], "dataset": item["id"], "status": status,
-                           "partition": partition})
+                           "partition": partition,
+                           **({"reason": getattr(presence, "reason", None) or "corrupt_presence"}
+                              if presence == "CORRUPT" else {})})
             continue
         if not dataset:
             result.append({"id": item["id"], "status": "UNKNOWN", "reason": "no catalog dataset"})

@@ -256,7 +256,7 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
             if pool_presence is None:
                 from .presence import resolve_presence
                 pool_presence = resolve_presence(item["id"], target)
-            if pool_presence == "MISSING":
+            if pool_presence in {"MISSING", "CORRUPT"}:
                 due[item["id"]] = (target, policy)
             continue
         state = (daily_kline_day_state(catalog, dataset, target, now, daily_kline_coverage)
@@ -306,6 +306,8 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
                  "depends_on": same_partition if item_id in derive_reasons else list(policy.get("depends_on", []))}
         if item_id == "daily_kline" and daily_kline_gap_fill_plan is not None:
             entry["gap_fill_symbol_count"] = len(daily_kline_gap_fill_plan)
+        if item_id == "limit_up_pool" and pool_presence == "CORRUPT":
+            entry["reason"] = "corrupt_presence"
         if item_id in derive_reasons:
             entry["reason"] = "derive:" + derive_reasons[item_id]
         if item_id in upgrade_versions:
