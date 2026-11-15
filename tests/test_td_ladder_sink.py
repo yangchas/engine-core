@@ -114,6 +114,7 @@ def td():
     store.close()
 
 
+@pytest.mark.live
 def test_real_td_roundtrip_and_replace(tmp_path, td):
     td.drop_database()
     td.ensure_schema()

@@ -2,6 +2,8 @@
 import subprocess
 import sys
 
+import pytest
+
 from examples.audit_card import check_scope, count_new_tests, fail_first, verdict
 
 
@@ -13,6 +15,7 @@ def test_count_new_tests():
     assert count_new_tests({'tests/a.py': 'def test_old(): pass\n'}, {'tests/a.py': 'def test_old(): pass\ndef test_new(): pass\n', 'src/a.py': 'def test_no(): pass\n'}) == 1
 
 
+@pytest.mark.live
 def test_fail_first(tmp_path):
     repo = tmp_path / 'repo'
     repo.mkdir()
