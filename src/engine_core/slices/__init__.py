@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 from redis.exceptions import RedisError
 from engine_core.data_pipeline.storage import available_at_trust
 
-STATUSES = {"READY", "PARTIAL", "MISSING", "STALE", "DEGRADED", "UNKNOWN", "CORRUPT"}
+STATUSES = {"READY", "PARTIAL", "MISSING", "STALE", "DEGRADED", "UNKNOWN"}
 
 
 @dataclass(frozen=True)
@@ -240,7 +240,7 @@ class SliceProviders:
         result = {name: [self._core, self._legacy, self._file] for name in names}
         result.update(self.market.providers())
         for name, dataset in self.DATASETS.items():
-            if dataset in {"limit_up_pool_today", "hot_rank"}:
+            if dataset == "limit_up_pool_today":
                 result[name] = [self._core]
         result["yest_limit_pool"] = [self._core]
         result["hot_plates_today"] = [self._core]
@@ -250,16 +250,12 @@ class SliceProviders:
     def _core(self, reader: SliceReader, request: SliceRequest) -> SliceResult:
         dataset = self.DATASETS[request.slice_id]
         date = request.trade_date
-        if dataset in {"limit_up_pool_today", "hot_rank"}:
+        if dataset == "limit_up_pool_today":
             from ..data_pipeline.reader import load_dataset
             loaded = load_dataset(dataset, date, redis=self.redis)
-            if loaded is None:
-                return _result(request, [], source="none", status="MISSING",
-                               reason="DATASET_NOT_FOUND", lineage=[{"dataset": dataset, "source": "none"}])
             if loaded.status != "READY":
                 return _result(request, [], source="none", status=loaded.status,
-                               reason=loaded.manifest.get("reason") or ("STORE_UNAVAILABLE" if loaded.status == "UNKNOWN" else "DATASET_NOT_FOUND"),
-                               lineage=[{"dataset": dataset, "source": loaded.discovered_by}])
+                               reason="STORE_UNAVAILABLE" if loaded.status == "UNKNOWN" else "DATASET_NOT_FOUND")
             available = _parse_pit_timestamp(loaded.manifest.get("available_at"))
             cutoff = _parse_pit_timestamp(request.asof)
             if available is None or cutoff is None or available > cutoff:
@@ -823,6 +819,7 @@ class SliceProviders:
             "yest_limit_pool": f"cache:yest_limit_pool:{date}",
             "hot_plates_today": f"cache:hot_plates:{date}",
             "hot_plates_yesterday": f"cache:hot_plates:{date}",
+            "hot_rank": f"cache:hot_rank:{date}",
         }
         key = keys.get(sid)
         if not key:

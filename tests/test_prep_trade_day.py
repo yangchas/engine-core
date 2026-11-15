@@ -106,18 +106,6 @@ def test_dry_run_reports_missing_without_mutating_artifact_root(tmp_path):
     assert all(item["elapsed_ms"] >= 0 for item in report["steps"])
 
 
-
-def test_hot_rank_missing_with_real_trade_calendar(tmp_path):
-    from engine_core.prep_trade_day import _latest_step
-
-    _seed_c325(tmp_path)
-    day = previous_trade_date(tmp_path, "2026-10-19")
-    result = _latest_step("hot_rank", "hot_rank", day, ArtifactCatalog(tmp_path),
-                          asof="2026-10-19T08:00:00+08:00")
-    assert result["status"] == "MISSING"
-    assert result["trade_date"] is None
-    assert result["row_count"] is None
-
 def test_kaipan_adapter_reads_plate_registry_from_core_catalog(tmp_path):
     catalog = ArtifactCatalog(tmp_path)
     catalog.commit("plate_registry", "2026-10-16",

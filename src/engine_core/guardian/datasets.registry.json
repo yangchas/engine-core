@@ -1628,7 +1628,7 @@
         ],
         "timeout_seconds": 120
       },
-      "redis_ttl_trade_days": 5,
+      "redis_ttl_seconds": 172800,
       "storage": [
         {
           "kind": "catalog",
@@ -1639,13 +1639,7 @@
           "kind": "redis_view",
           "name": "core:cache:data:hot_rank",
           "role": "view",
-          "retention": {
-            "kind": "trading_days",
-            "count": 5,
-            "anchor": "data_date",
-            "expire_time": "00:00:00",
-            "timezone": "Asia/Shanghai"
-          }
+          "ttl_seconds": 172800
         }
       ]
     },
