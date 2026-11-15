@@ -71,7 +71,13 @@ def test_before_trigger_nothing_is_fetched_after_trigger_it_is():
 
 
 def test_time_point_capture_is_gap_never_backfilled():
-    assert _plan(9, 36)["hot_plates"]["action"] == "GAP"
+    from engine_core.guardian.registry import load_registry
+
+    item = next(item for item in load_registry() if item["id"] == "hot_plates")
+    assert item["artifact"]["redis_dataset"] == "hot_plates"
+    assert "catalog_dataset" not in item["artifact"]
+    assert item["late_policy"]["mode"] == "gap_only"
+    assert "hot_plates" not in _plan(9, 36)
     assert "hot_plates" not in _plan(9, 10)
 
 

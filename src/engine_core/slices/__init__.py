@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
+from redis.exceptions import RedisError
 from engine_core.data_pipeline.storage import available_at_trust
 
 STATUSES = {"READY", "PARTIAL", "MISSING", "STALE", "DEGRADED"}
@@ -268,7 +269,7 @@ class SliceProviders:
                             and isinstance(rows, list) and view.get("row_count") == len(rows)
                             and available is not None and cutoff is not None and available <= cutoff):
                         candidates.append((available, str(view.get("version") or ""), view))
-            except (OSError, ValueError, TypeError, AttributeError):
+            except (OSError, ValueError, TypeError, AttributeError, RedisError):
                 candidates = []
             if not candidates:
                 return _result(request, [], source="none", status="MISSING",
