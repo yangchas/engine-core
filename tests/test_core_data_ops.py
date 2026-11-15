@@ -228,12 +228,14 @@ def test_premarket_jobs_use_previous_trading_date_for_kaipan_products(tmp_path):
         called.append(day)
         return [{"date": day, "symbol": "000001"}]
 
-    run_daily_phase("premarket", "2026-10-16", root=tmp_path,
+    result = run_daily_phase("premarket", "2026-10-16", root=tmp_path,
         adapters={name: fetch for name in ("plate_members", "limit_up_pool",
                                            "limit_reasons", "hot_plates")},
         trading_dates=None, write=False,
         now="2026-10-16T08:50:00+08:00", lock=False)
-    assert called == ["2026-10-15"] * 4
+    assert called == ["2026-10-15"] * 3
+    assert any(error["job"] == "limit_up_pool" and error["error"] == "limit_up_pool_use_guardian"
+               for error in result["errors"])
 
 
 def _c549_seed_daily_inputs(root):

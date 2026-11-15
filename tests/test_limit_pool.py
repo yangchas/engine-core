@@ -279,11 +279,13 @@ def request(source, day=DAY, now="2026-10-27T01:00:00+08:00", **extra):
     return {"data_date": day, "args": args, "now": now, "tier": source}
 
 
-def test_degraded_kaipan_copy_is_refreshed_and_recovery_remains_readable(tmp_path):
+def test_degraded_kaipan_copy_is_refreshed_and_recovery_remains_readable(tmp_path, monkeypatch):
     from engine_core.data_pipeline import limit_pool_hot_view as hot
+    from engine_core.data_pipeline import redis_day_view
     from engine_core.data_pipeline.storage import canonical_json, sha256
 
     deps = make_deps()
+    monkeypatch.setattr(redis_day_view, '_now_timestamp', lambda: deps.now_utc().timestamp())
     part = lp.build_kaipan(DAY, kaipan_pages())
     digest = sha256(b"\n".join(canonical_json(dict(row)) for row in part.rows) + b"\n")
     manifest = {**part.manifest, "version": "sha256-" + digest[:16], "sha256": digest,
