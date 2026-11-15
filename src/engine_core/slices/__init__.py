@@ -256,6 +256,15 @@ class SliceProviders:
             result = TwoLayerStore(self.redis).get(dataset, date, asof=request.asof)
             status = {"PRESENT_REDIS": "READY", "RESTORED_FROM_TD": "READY",
                       "CORRUPT": "DEGRADED"}.get(result.status, result.status)
+            if result.status in {"MISSING", "UNKNOWN"}:
+                legacy = self._legacy(reader, request)
+                if legacy.rows:
+                    legacy.meta["lineage"] = [{"dataset": dataset, "store_status": result.status,
+                                               "reason": result.reason}]
+                    if result.status == "UNKNOWN":
+                        legacy.meta["status"] = "UNKNOWN"
+                        legacy.meta["reason"] = result.reason or "STORE_UNAVAILABLE"
+                    return legacy
             available = result.metadata.get("available_at")
             rows = [dict(row, available_at=row.get("available_at") or available) for row in result.rows]
             return _result(request, rows, source="two_layer", status=status,

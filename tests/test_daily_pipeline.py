@@ -587,11 +587,13 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
         report = json.loads(report_path.read_text(encoding="utf-8"))
         manifest = json.loads((result["out_dir"] / "manifest.json").read_text(encoding="utf-8"))
         assert {row["status"] for name, row in manifest["slices"].items()
-                if name not in {"stock_theme_assignment", "hot_plates_today", "hot_plates_yesterday"}} <= {"READY", "PARTIAL"}, {
+                if name not in {"stock_theme_assignment", "hot_plates_today", "hot_plates_yesterday", "hot_rank"}} <= {"READY", "PARTIAL"}, {
             name: row for name, row in manifest["slices"].items()
             if name != "stock_theme_assignment" and row["status"] == "MISSING"}
         assert all(row["source"].startswith("core_data") for name, row in manifest["slices"].items()
-                   if name not in {"stock_theme_assignment", "yest_limit_pool", "hot_plates_today", "hot_plates_yesterday"})
+                   if name not in {"stock_theme_assignment", "yest_limit_pool", "hot_plates_today", "hot_plates_yesterday", "hot_rank"})
+        assert manifest["slices"]["hot_rank"]["status"] == "UNKNOWN"
+        assert manifest["slices"]["hot_rank"]["source"] == "ths_hot_rank"
         for name in ("hot_plates_today", "hot_plates_yesterday"):
             assert manifest["slices"][name]["status"] == "MISSING"
             assert manifest["slices"][name]["reason"] == "REDIS_VIEW_MISSING"

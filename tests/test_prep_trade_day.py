@@ -99,7 +99,8 @@ def test_previous_trade_date_uses_calendar_and_never_guesses_from_supplied_dates
 def test_dry_run_reports_missing_without_mutating_artifact_root(tmp_path):
     report = build_prep_report(tmp_path, "2026-10-19", write=False)
     assert report["mode"] == "DRY_RUN"
-    assert {item["status"] for item in report["steps"]} <= {
+    assert next(item for item in report["steps"] if item["step"] == "hot_rank")["status"] == "UNKNOWN"
+    assert {item["status"] for item in report["steps"] if item["step"] != "hot_rank"} <= {
         "READY", "PARTIAL", "MISSING", "SKIPPED_REASON"
     }
     assert not (tmp_path / "catalog.json").exists()
