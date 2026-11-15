@@ -52,11 +52,16 @@ class TwoLayerStore:
 
     @staticmethod
     def _dataset(dataset):
-        if dataset != 'limit_up_pool':
+        if dataset not in ('limit_up_pool', 'hot_rank'):
             raise NotImplementedError('only limit_up_pool is supported')
 
     def publish(self, dataset, partition, rows, metadata):
         self._dataset(dataset)
+        if dataset == 'hot_rank':
+            from ..data_pipeline import hot_rank_view
+            value, queued = hot_rank_view.publish(self.redis, partition, rows, metadata)
+            return StoreResult(status='published', version=value['version'], metadata=value,
+                               archive_status='QUEUED' if queued else 'NOT_QUEUED')
         archive_status = 'NOT_SUBMITTED'
 
         def archive(raw, value):
@@ -78,6 +83,8 @@ class TwoLayerStore:
         self._dataset(dataset)
         if version is not None:
             raise NotImplementedError('exact version selection is not implemented')
+        if dataset == 'hot_rank':
+            return self._hot_rank_get(partition, asof=asof)
         status = resolve_presence(dataset, partition, redis_client=self.redis, cold_store=self.cold)
         if status not in ('PRESENT_REDIS', 'RESTORED_FROM_TD'):
             return StoreResult(status=status, reason=getattr(status, 'reason', None) or ('resolver did not expose cause' if status == 'UNKNOWN' else None))
@@ -98,8 +105,43 @@ class TwoLayerStore:
         self._dataset(dataset)
         if asof is not None or requirements is not None:
             raise NotImplementedError('presence asof and requirements are not implemented')
+        if dataset == 'hot_rank':
+            result = self._hot_rank_get(partition)
+            return StoreResult(status=result.status, reason=result.reason)
         status = resolve_presence(dataset, partition, redis_client=_ReadOnlyRedis(self.redis), cold_store=self.cold)
         return StoreResult(status=status, reason=getattr(status, 'reason', None) or ('resolver did not expose cause' if status == 'UNKNOWN' else None))
+
+    def _hot_rank_get(self, partition, asof=None):
+        from ..data_pipeline import hot_rank_view
+        store = None
+        try:
+            raw = self.redis.get(f'core:view:hot_rank:{partition}')
+            status = 'PRESENT_REDIS'
+            if raw is None:
+                if self.cold is None:
+                    if not cold_archive._enabled():
+                        return StoreResult(status='UNKNOWN', reason='cold_archive_disabled')
+                    store = cold_archive.TdStore()
+                else:
+                    store = self.cold
+                version = store.latest_version('hot_rank', partition)
+                if version is None:
+                    return StoreResult(status='MISSING')
+                raw = cold_archive.read_envelope('hot_rank', partition, version, store=store)
+                status = 'RESTORED_FROM_TD'
+            value = hot_rank_view.validate(raw, partition)
+            if status == 'RESTORED_FROM_TD' and value['version'] != version:
+                raise ValueError('cold_archive_version_mismatch')
+            if asof is not None and datetime.fromisoformat(hot_rank_view._instant(value['available_at'])) > datetime.fromisoformat(hot_rank_view._instant(asof)):
+                return StoreResult(status='MISSING', reason='late_visible')
+            return StoreResult(status=status, rows=value['rows'], metadata=value, version=value['version'])
+        except (ValueError, KeyError, TypeError, cold_archive.CorruptArchive) as exc:
+            return StoreResult(status='CORRUPT', reason=str(exc))
+        except Exception:
+            return StoreResult(status='UNKNOWN', reason='read_failed')
+        finally:
+            if store is not None and self.cold is None:
+                store.close()
 
     def list_versions(self, dataset, partition_range, *, asof=None):
         raise NotImplementedError('version enumeration needs dataset-specific support')
