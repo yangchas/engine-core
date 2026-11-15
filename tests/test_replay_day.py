@@ -16,6 +16,30 @@ import replay_day  # noqa: E402
 import replay_handler  # noqa: E402
 
 
+def test_replay_redis_exceptions_allow_report_slice_fallback(tmp_path):
+    traceback = (ROOT / 'tests/fixtures/real/c1140/traceback.txt').read_text()
+    assert 'from .slices import SliceProviders, SliceReader' in traceback
+    assert 'from redis.exceptions import RedisError' in traceback
+    code = '''
+import replay_handler
+replay_handler.install()
+import redis.exceptions
+from redis.exceptions import RedisError, ConnectionError, TimeoutError
+assert redis.exceptions.RedisError is RedisError
+assert ConnectionError.__bases__ == (RedisError,)
+assert TimeoutError.__bases__ == (RedisError,)
+from engine_core.slices import SliceProviders, SliceReader
+reader = SliceReader(SliceProviders(redis=redis.Redis()).providers())
+result = reader.get('hot_plates_today', trade_date='2026-11-12', asof='2026-11-12T09:26:00+08:00')
+assert result.meta['status'] == 'MISSING'
+assert result.meta['reason'] == 'REDIS_VIEW_MISSING'
+'''
+    env = dict(os.environ, CORE_REPLAY_DIR=str(tmp_path), PYTHONPATH=os.pathsep.join(
+        [str(ROOT / 'examples'), str(ROOT / 'src'), str(ROOT)]))
+    result = subprocess.run([sys.executable, '-c', code], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.fixture
 def replay_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(replay_handler, "REPLAY_DIR", tmp_path / "replay")
@@ -126,7 +150,7 @@ def test_deferred_dependents_of_a_failed_upstream_are_reported_not_called_stuck(
 
 
 def test_redis_and_td_stand_ins_record_gaps_and_fail_like_unreachable_servers(replay_dir):
-    with pytest.raises(ConnectionError, match="UNRECORDED_REQUEST:redis.smembers"):
+    with pytest.raises(replay_handler.RedisConnectionError, match="UNRECORDED_REQUEST:redis.smembers"):
         replay_handler._GapRedis.from_url("redis://replay.invalid:6379/0").smembers("q2:active:20261023")
     with pytest.raises(replay_handler.UnrecordedRequest, match="UNRECORDED_REQUEST:td.connect"):
         replay_handler._gap_taos_connect(database="market_data1")
