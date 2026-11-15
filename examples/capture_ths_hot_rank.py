@@ -1,4 +1,4 @@
-"""Capture the public THS hot rank into Core immutable storage and cache."""
+"""Capture the public THS hot rank into the Redis day view and cold archive."""
 from __future__ import annotations
 
 import argparse
@@ -21,7 +21,7 @@ def main(argv=None) -> int:
     parser.add_argument("--trade-date", help="actual capture date; defaults to Shanghai calendar date")
     parser.add_argument("--artifact-root", type=Path,
                         default=Path(os.environ.get("CORE_DATA_ROOT", Path.home() / "core-data")))
-    parser.add_argument("--execute", action="store_true", help="persist immutable version and Redis hot view")
+    parser.add_argument("--execute", action="store_true", help="publish Redis day view and queue cold archive")
     args = parser.parse_args(argv)
     captured_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="microseconds")
     trade_date = args.trade_date or captured_at[:10]
