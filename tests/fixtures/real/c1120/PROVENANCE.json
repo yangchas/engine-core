@@ -1,0 +1,14 @@
+{
+  "pointer.json": {
+    "key": "core:cache:data:limit_up_pool_today:2026-11-13",
+    "sha256": "7f597c3e1e580e8fcb55089de68522bbec98408706582682b9ad5c59568e7136",
+    "bytes": 235
+  },
+  "version.json": {
+    "key": "core:cache:data:limit_up_pool_today:2026-11-13:sha256-87d8216079cf7fac",
+    "sha256": "ea71422db6393ba69d0993c4a32b0be420156dcf385835f8b7b9f5225e987912",
+    "bytes": 16977
+  },
+  "captured_at": "2026-11-15T00:11:44+00:00",
+  "method": "Redis GET, unmodified values"
+}

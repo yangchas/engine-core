@@ -131,7 +131,7 @@ def test_runner_keeps_distinct_pit_versions_and_checks_contract(tmp_path):
     stored = catalog["datasets"]["limit_up_pool_today"]["dates"][DAY]
     assert len(stored) == 2
     assert {item["as_of"] for item in stored} == {
-        "2026-10-28T15:00:01.000+08:00", "2026-10-28T15:00:10.000+08:00"}
+        "2026-10-28T15:00:01+08:00", "2026-10-28T15:00:10+08:00"}
     report = check_partition(tmp_path, "limit_up_pool_today", DAY, version=versions[-1],
                              spec=load_spec("limit_up_pool_today"))
     assert report.passed, report.summary()
