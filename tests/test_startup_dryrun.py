@@ -53,15 +53,18 @@ def test_data_root_guard_rejects_writes_and_records_violations(tmp_path):
     assert all(row['backend'] == 'filesystem' for row in violations)
 
 
-def test_rehearsal_plans_from_real_calendar_and_records_denied_writes():
+def test_rehearsal_plans_from_real_calendar_and_records_denied_writes(tmp_path):
     import json
     import subprocess
     import sys
     from pathlib import Path
 
-    root = Path.home() / 'core-data'
-    if not (root / 'trade_calendar' / 'calendar.json').is_file():
-        pytest.skip('real Core trade calendar not available')
+    root = tmp_path / 'core-data'
+    (root / 'trade_calendar').mkdir(parents=True)
+    fixture_dir = Path(__file__).parent / 'fixtures' / 'startup_dryrun_c1217'
+    (root / 'trade_calendar' / 'calendar.json').write_bytes(
+        (fixture_dir / 'calendar.json').read_bytes())
+    (root / 'catalog.json').write_text('{"datasets": {}}')
     result = subprocess.run(
         [sys.executable, 'examples/startup_dryrun.py', '--date', '2026-11-13',
          '--now', '08:00', '--root', str(root)],
@@ -72,7 +75,7 @@ def test_rehearsal_plans_from_real_calendar_and_records_denied_writes():
     assert report['boot']['boot_trade_day']['detail']['is_trading_day'] is True
     assert isinstance(report['plan'], list)
     assert all('item' in row and 'action' in row and 'reason' in row for row in report['plan'])
-    assert any(row['backend'] == 'filesystem' for row in report['violations'])
+    assert report['violations'] == []
 
 
 def test_installed_client_guards_stop_writes_before_delegation(monkeypatch):
