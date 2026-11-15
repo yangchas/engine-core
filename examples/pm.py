@@ -812,7 +812,25 @@ def land(args):
     if path is None or not re.search(r'^STATUS:', path.read_text(encoding='utf-8'), re.M):
         print(f'LAND {args.card} failed: card or STATUS missing')
         return 2
-    command = [PYTHON, str(ROOT / 'examples/release.py'), 'merge', '--branch', args.card,
+    branch = args.card
+    refs = []
+    for ref in (args.card, 'HEAD'):
+        result = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', '--verify', ref + '^{commit}'],
+                                capture_output=True, text=True)
+        if result.returncode:
+            print(f'LAND {args.card} failed: cannot resolve {ref}')
+            return 1
+        refs.append(result.stdout.strip())
+    if refs[0] == refs[1]:
+        worktree = ROOT.parent / ('engine_core-wt-' + args.card)
+        result = subprocess.run(['git', '-C', str(worktree), 'rev-parse', '--verify', 'HEAD^{commit}'],
+                                capture_output=True, text=True)
+        if result.returncode or not re.fullmatch(r'[0-9a-fA-F]{40,64}', result.stdout.strip()):
+            print(f'LAND {args.card} failed: cannot resolve candidate from worktree {worktree}')
+            return 1
+        branch = result.stdout.strip()
+        print(f'LAND {args.card} using worktree commit {branch}')
+    command = [PYTHON, str(ROOT / 'examples/release.py'), 'merge', '--branch', branch,
                '--card', args.card, '--max-tests-files', str(args.max_tests_files)]
     try:
         done = subprocess.run(command, capture_output=True, text=True)
@@ -820,7 +838,7 @@ def land(args):
         print(redact(f'LAND {args.card} failed: {exc}'))
         return 2
     output = done.stdout + '\n' + done.stderr
-    sha = re.search(r'\bmerged\s+' + re.escape(args.card) + r'\s+as\s+([0-9a-fA-F]{7,40})\b', output)
+    sha = re.search(r'\bmerged\s+' + re.escape(branch) + r'\s+as\s+([0-9a-fA-F]{7,40})\b', output)
     summary = re.search(r'选中 (\d+) 个测试文件、共 (\d+|UNKNOWN) 个测试', output)
     if done.returncode or not sha:
         failed = re.search(r'FAILED\s+(tests/\S+)', output)

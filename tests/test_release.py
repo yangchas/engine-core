@@ -232,6 +232,30 @@ def _add_examples_code_change(origin, lines=6):
     _git(origin, "checkout", "-q", "main")
 
 
+def test_merge_refuses_branch_at_head_without_commit(mergeable, monkeypatch, capsys):
+    origin, evidence, cards = mergeable
+    (cards / "C900.md").write_text("ID: C900\nROLE: builder\n")
+    before = _git(origin, "rev-parse", "HEAD")
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: pytest.fail("must not run tests"))
+    assert release.cmd_merge(_merge_args(origin, evidence, cards, branch="main")) == 1
+    assert "REFUSED: branch main has no new commits over HEAD" in capsys.readouterr().out
+    assert _git(origin, "rev-parse", "HEAD") == before
+
+
+def test_git_failure_reports_both_streams_and_return_code(repos):
+    origin = repos[0]
+    _git(origin, "config", "user.name", "t")
+    _git(origin, "config", "user.email", "t@t")
+    hook = origin / ".git/hooks/pre-commit"
+    hook.write_text("#!/bin/sh\necho hook-stdout\necho hook-stderr >&2\nexit 7\n")
+    hook.chmod(0o755)
+    (origin / "a.py").write_text("changed\n")
+    _git(origin, "add", "a.py")
+    with pytest.raises(SystemExit) as error:
+        release.git(origin, "commit", "-q", "-m", "test")
+    assert all(s in str(error.value) for s in ("hook-stdout", "hook-stderr", "exit 1"))
+
+
 def test_merge_selector_depth(mergeable, monkeypatch):
     origin, evidence, cards = mergeable
     (cards / "C900.md").write_text("ID: C900\n")
