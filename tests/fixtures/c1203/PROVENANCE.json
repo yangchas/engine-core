@@ -3,5 +3,5 @@
   "source_commit": "9085ee6",
   "source_sha256": "e9e38c7e3f393aaceb13ea71c1ff92e1a18a48846ede5314b80cffc7ebb91292",
   "excerpt_sha256": "970f4bc4412ae9c74900793065014a8f31d673dd8ea2a664d4aab60a480142a6",
-  "selection": "items with id hot_rank or limit_up_pool_today"
+  "selection": "items with id hot_rank or limit_up_pool_today; survey-results.json preserves the C1202 registry/grep survey decisions and reader/writer lists"
 }

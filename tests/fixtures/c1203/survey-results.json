@@ -1,0 +1,32 @@
+{
+  "source": "C1202 real migration survey grep output",
+  "command": "grep -rln survey tests; grep -rn real_survey tests",
+  "results": {
+    "hot_rank": {
+      "kind": "unknown",
+      "writers": [
+        "examples/capture_ths_hot_rank.py"
+      ],
+      "readers": [
+        "src/engine_core/data_pipeline/hot_rank_view.py",
+        "src/engine_core/dataset_refresh.py",
+        "src/engine_core/live_inputs.py"
+      ]
+    },
+    "limit_up_pool_today": {
+      "kind": "point_snapshot",
+      "writers": [
+        "examples/capture_real_fixture.py"
+      ],
+      "readers": [
+        "src/engine_core/daily_pipeline.py",
+        "src/engine_core/data_pipeline/access.py",
+        "src/engine_core/data_pipeline/providers/limit_up_today_sources.py",
+        "src/engine_core/data_pipeline/reader.py",
+        "src/engine_core/data_pipeline/storage.py",
+        "src/engine_core/guardian/preopen_check.py",
+        "src/engine_core/guardian/presence.py"
+      ]
+    }
+  }
+}
