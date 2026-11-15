@@ -14,6 +14,7 @@ TAGS = ('0920', '0924', '0925')
                                      'invalid_structure', 'invalid_field', 'empty_view', 'redis_error',
                                      'fallback_failure', 'missing_price', 'missing_final', 'after_cutoff', 'early_empty'])
 def test_auction_redis_consumer(monkeypatch, tmp_path, scenario):
+    monkeypatch.setenv('CORE_DATA_ROOT', '/home/exedev/core-data')
     from examples import fetch_auction_item as fetch
     from engine_core import auction_stock_facts as facts_module
     from engine_core.data_pipeline import td_sink
@@ -106,7 +107,7 @@ def test_auction_redis_consumer(monkeypatch, tmp_path, scenario):
     monkeypatch.setattr(facts_module, 'ArtifactCatalog', FactsCatalog)
     original_store = facts_module.store_auction_stock_facts
     class HotStore:
-        def set(self, key, value, ex):
+        def set(self, key, value, exat):
             captured['hot'] = json.loads(value)
     def store_facts(facts, **kwargs):
         captured['facts'] = facts
@@ -137,6 +138,8 @@ def test_auction_redis_consumer(monkeypatch, tmp_path, scenario):
         row = next(row for row in captured['facts']['rows'] if row['src'] == 'missing')
         assert row['price'] is None and row['pct_change'] is None
     if scenario in ('normal', 'missing_key'):
+        from engine_core.data_pipeline import limit_pool_hot_view
+        monkeypatch.setattr(limit_pool_hot_view, 'read', lambda *a, **kw: ([], {'status': 'MISSING'}))
         class Catalog:
             def __init__(self, root): pass
             def read(self): return {}

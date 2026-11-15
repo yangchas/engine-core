@@ -56,13 +56,19 @@ def test_future_quote_stays_degraded(tmp_path, monkeypatch):
 def test_registered_hot_publisher_verifies_and_rolls_back(tmp_path, monkeypatch):
     import pytest
     from engine_core.data_pipeline.providers.limit_up_today_sources import publish_hot_snapshot, SourceUnavailable
-    from engine_core.data_pipeline.registry import get_dataset
+    from engine_core.data_pipeline import redis_day_view
+
+    monkeypatch.setenv('CORE_DATA_ROOT', '/home/exedev/core-data')
+    clock = datetime.fromisoformat('2026-10-28T15:10:00+08:00').timestamp()
+    monkeypatch.setattr(redis_day_view, '_now_timestamp', lambda: clock)
 
     class Redis:
         def __init__(self): self.values, self.ttls, self.bad = {}, {}, False
         def get(self, k): return self.values.get(k)
         def ttl(self, k): return -1 if self.bad and k.endswith(':latest') else self.ttls.get(k, -2)
-        def set(self, k, v, ex=None): self.values[k] = v; self.ttls[k] = ex or -1
+        def set(self, k, v, ex=None, exat=None):
+            self.values[k] = v
+            self.ttls[k] = ex if ex is not None else int(exat - clock) if exat is not None else -1
         def delete(self, k): self.values.pop(k, None); self.ttls.pop(k, None)
 
     raw = json.loads((Path(__file__).parent / 'fixtures/real/q2_limit_up_pool_today_2026-10-28_0702.json').read_text())
@@ -72,7 +78,7 @@ def test_registered_hot_publisher_verifies_and_rolls_back(tmp_path, monkeypatch)
     manifest['version'] = 'test'
     client = Redis()
     result = publish_hot_snapshot(manifest, built['rows'], client=runner._VerifiedRedis(client))
-    assert result['ttl_seconds'] == get_dataset('limit_up_pool_today').redis_ttl_seconds
+    assert result['ttl_seconds'] == redis_day_view.hot_view_expire_at('2026-10-28') - int(clock)
     assert set(result['keys']) == {'core:cache:data:limit_up_pool_today:2026-10-28:test', 'core:cache:data:limit_up_pool_today:2026-10-28', 'core:cache:data:limit_up_pool_today:latest'}
     assert all(client.ttl(k) == result['ttl_seconds'] for k in result['keys'])
     previous = dict(client.values)
