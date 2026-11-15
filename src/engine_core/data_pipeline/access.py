@@ -156,6 +156,26 @@ def get(dataset: str, *, trade_date: str, tag: str | None = None,
     if view not in {"raw", "canonical"}:
         raise ValueError("view must be raw or canonical")
     spec = get_dataset(dataset)
+    if dataset == "limit_up_pool_today":
+        from .reader import load_dataset
+        loaded = load_dataset(dataset, trade_date)
+        meta = _empty_meta([])
+        meta['status'] = loaded.status
+        if loaded.status != 'READY':
+            meta['reasons'] = ['store_unavailable' if loaded.status == 'UNKNOWN' else 'not_found']
+            return DataSet([], meta)
+        manifest = loaded.manifest
+        cutoff = _datetime(as_of)
+        available = _datetime(manifest.get('available_at'))
+        if ((cutoff is not None and (available is None or available > cutoff))
+                or (source is not None and source != manifest.get('source'))
+                or (tag is not None and tag != manifest.get('tag'))):
+            return DataSet([], meta | {'status': 'MISSING', 'reasons': ['no_readable_candidate']})
+        meta.update(status='OK', version=manifest.get('version'), source=manifest.get('source'),
+                    business_status=manifest.get('business_status'), available_at=manifest.get('available_at'),
+                    gate_status=(manifest.get('gate') or {}).get('gate_status', 'UNKNOWN'),
+                    rows_total=len(loaded.rows), reasons=[])
+        return DataSet(loaded.rows, meta)
     base = root if root is not None else (catalog.root if catalog is not None else
                                           os.environ.get("CORE_DATA_ROOT", "~/core-data"))
     root_path = Path(base).expanduser()

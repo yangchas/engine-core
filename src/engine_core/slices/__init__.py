@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 from redis.exceptions import RedisError
 from engine_core.data_pipeline.storage import available_at_trust
 
-STATUSES = {"READY", "PARTIAL", "MISSING", "STALE", "DEGRADED"}
+STATUSES = {"READY", "PARTIAL", "MISSING", "STALE", "DEGRADED", "UNKNOWN"}
 
 
 @dataclass(frozen=True)
@@ -239,6 +239,9 @@ class SliceProviders:
         names = list(self.DATASETS)
         result = {name: [self._core, self._legacy, self._file] for name in names}
         result.update(self.market.providers())
+        for name, dataset in self.DATASETS.items():
+            if dataset == "limit_up_pool_today":
+                result[name] = [self._core]
         result["yest_limit_pool"] = [self._core]
         result["hot_plates_today"] = [self._core]
         result["hot_plates_yesterday"] = [self._core]
@@ -247,6 +250,21 @@ class SliceProviders:
     def _core(self, reader: SliceReader, request: SliceRequest) -> SliceResult:
         dataset = self.DATASETS[request.slice_id]
         date = request.trade_date
+        if dataset == "limit_up_pool_today":
+            from ..data_pipeline.reader import load_dataset
+            loaded = load_dataset(dataset, date, redis=self.redis)
+            if loaded.status != "READY":
+                return _result(request, [], source="none", status=loaded.status,
+                               reason="STORE_UNAVAILABLE" if loaded.status == "UNKNOWN" else "DATASET_NOT_FOUND")
+            available = _parse_pit_timestamp(loaded.manifest.get("available_at"))
+            cutoff = _parse_pit_timestamp(request.asof)
+            if available is None or cutoff is None or available > cutoff:
+                return _result(request, [], source="none", status="MISSING", reason="NOT_AVAILABLE_ASOF")
+            rows = [dict(row, available_at=row.get("available_at") or loaded.manifest.get("available_at"))
+                    for row in loaded.rows]
+            return _result(request, rows, source=loaded.discovered_by, status="READY",
+                           version=loaded.manifest.get("version"),
+                           available_at=loaded.manifest.get("available_at"), pit_date=date)
         if request.slice_id in {"hot_plates_today", "hot_plates_yesterday"}:
             day = (str(request.params.get("source_date") or request.params.get("prior_trade_date") or "")
                    if request.slice_id == "hot_plates_yesterday" else date)

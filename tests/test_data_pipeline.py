@@ -654,3 +654,84 @@ def test_baostock_stalled_call_triggers_relogin_and_retry_before_the_pull_is_aba
                                    sleep_fn=lambda _: None).fetch("2026-10-21")
     assert len(result["rows"]) == 2 and result["partial"] is False
     assert events[:5] == ["login", "q000001", "logout", "login", "q000001"]
+
+
+def test_today_pool_real_view_never_reads_catalog_even_with_file_preference(tmp_path):
+    from pathlib import Path
+    from engine_core.data_pipeline.reader import load_dataset
+
+    fixture = Path(__file__).parent / 'fixtures' / 'real' / 'c1165'
+    pointer = (fixture / 'pointer.json').read_bytes()
+    view = (fixture / 'view.json').read_bytes()
+
+    class Redis:
+        def get(self, key):
+            return view if key.count(':') == 5 else pointer
+
+    class Catalog:
+        def locate(self, *args):
+            raise AssertionError('today pool must never read catalog')
+
+    result = load_dataset('limit_up_pool_today', '2026-11-13', prefer='file',
+                          redis=Redis(), catalog=Catalog())
+    assert result.status == 'READY'
+    assert len(result.rows) == 37
+
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    expected = result.rows
+    for case in ('missing', 'empty', 'stale'):
+        root = tmp_path / case
+        root.mkdir()
+        if case == 'empty':
+            (root / 'catalog.json').write_text('{}')
+        elif case == 'stale':
+            (root / 'catalog.json').write_bytes((fixture / 'stale_catalog.json').read_bytes())
+        loaded = load_dataset('limit_up_pool_today', '2026-11-13', prefer='file',
+                              redis=Redis(), catalog=ArtifactCatalog(root))
+        assert loaded.status == 'READY' and loaded.rows == expected
+
+
+def test_today_pool_real_view_cold_restore_missing_and_unknown(monkeypatch):
+    import json
+    from pathlib import Path
+    from engine_core.data_pipeline import cold_archive, reader, redis_day_view
+
+    raw = (Path(__file__).parent / 'fixtures' / 'real' / 'c1165' / 'view.json').read_bytes()
+    version = json.loads(raw)['version']
+
+    class Redis:
+        def __init__(self):
+            self.data = {}
+        def get(self, key):
+            return self.data.get(key)
+        def set(self, key, value, **kwargs):
+            if kwargs.get('nx') and key in self.data:
+                return False
+            self.data[key] = value
+            return True
+
+    class Store:
+        def latest_version(self, dataset, day):
+            return version
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cold_archive, '_enabled', lambda: True)
+    monkeypatch.setattr(cold_archive, 'TdStore', Store)
+    monkeypatch.setattr(cold_archive, 'read_envelope', lambda *args, **kwargs: raw)
+    monkeypatch.setattr(redis_day_view, 'hot_view_expire_at', lambda day: 2000000000)
+    redis = Redis()
+    result = reader.load_dataset('limit_up_pool_today', '2026-11-13', redis=redis)
+    assert result.status == 'READY' and result.discovered_by == 'td'
+    assert result.rows == json.loads(raw)['rows']
+    assert reader.load_dataset('limit_up_pool_today', '2026-11-13', redis=redis).discovered_by == 'redis'
+    monkeypatch.setattr(Store, 'latest_version', lambda *args: None)
+    assert reader.load_dataset('limit_up_pool_today', '2026-11-13', redis=Redis()).status == 'MISSING'
+    def unavailable(*args):
+        raise OSError('unavailable')
+    monkeypatch.setattr(Store, 'latest_version', unavailable)
+    assert reader.load_dataset('limit_up_pool_today', '2026-11-13', redis=Redis()).status == 'UNKNOWN'
+    from engine_core.guardian.presence import resolve_presence
+    monkeypatch.setattr(Store, 'latest_version', lambda *args: version)
+    assert resolve_presence('limit_up_pool_today', '2026-11-13', redis_client=Redis(),
+                            cold_store=Store()) == 'RESTORED_FROM_TD'

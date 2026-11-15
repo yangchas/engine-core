@@ -340,6 +340,13 @@ def stale_items(now: datetime, catalog: str | Path | Mapping[str, Any],
             result.append({"id": item["id"], "status": "RETIRED", "dataset": dataset,
                            "reason": str(item["retired"].get("reason", ""))[:120]})
             continue
+        if item["id"] == "limit_up_pool_today":
+            from .presence import resolve_presence
+            presence = resolve_presence(item["id"], day)
+            status = "OK" if presence in {"PRESENT_REDIS", "RESTORED_FROM_TD"} else presence
+            result.append({"id": item["id"], "dataset": item["id"], "status": status,
+                           "partition": day})
+            continue
         if not dataset:
             result.append({"id": item["id"], "status": "UNKNOWN", "reason": "no catalog dataset"})
             continue

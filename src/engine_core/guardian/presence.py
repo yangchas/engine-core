@@ -10,6 +10,12 @@ _LOG = logging.getLogger(__name__)
 
 
 def resolve_presence(dataset, trade_date, *, redis_client=None, cold_store=None):
+    if dataset == 'limit_up_pool_today':
+        from ..data_pipeline.reader import _read_today_pool
+        result = _read_today_pool(trade_date, client=redis_client, cold_store=cold_store)
+        if result.status == 'READY':
+            return 'RESTORED_FROM_TD' if result.discovered_by == 'td' else 'PRESENT_REDIS'
+        return result.status
     if dataset != 'limit_up_pool':
         raise ValueError('unsupported_presence_dataset')
     from .registry import load_registry
