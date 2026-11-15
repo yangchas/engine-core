@@ -1,6 +1,7 @@
 """Best-effort, bounded cold copy of a Redis view; Redis remains authoritative."""
 from __future__ import annotations
 
+import atexit
 import hashlib
 import logging
 import os
@@ -8,7 +9,8 @@ import queue
 import re
 import sys
 import threading
-from datetime import date, datetime, timedelta, timezone
+import time
+from datetime import date, datetime, timezone
 from typing import Any, Mapping
 
 _LOG = logging.getLogger(__name__)
@@ -82,14 +84,14 @@ def _quote(value: Any) -> str:
     return "'" + str(value).replace('\\', '\\\\').replace("'", "\\'") + "'"
 
 
-class TdStore:
+class TDColdClient:
     """TD SQL adapter; one table per identity isolates timestamp keys."""
-    def __init__(self):
-        self.database = os.environ.get('CORE_TD_DATABASE', 'core_data')
+    def __init__(self, database=None, *, connect=None):
+        self.database = database or os.environ.get('CORE_TD_DATABASE', 'core_data')
         if not re.fullmatch(r'[a-zA-Z][a-zA-Z0-9_]*', self.database):
             raise ValueError('invalid_archive_database')
         from .td_sink import connect_td
-        self.conn = connect_td(self.database)
+        self.conn = connect() if connect else connect_td(self.database)
 
     def _execute(self, sql: str, fetch: bool = False):
         cursor = self.conn.cursor()
@@ -100,14 +102,15 @@ class TdStore:
             cursor.close()
 
     def ensure(self, dataset, day, version):
-        # Refuse silently expired backfills instead of reporting a false success.
-        if date.fromisoformat(day) < datetime.now(timezone.utc).date() - timedelta(days=3649):
-            raise ValueError('cold_archive_trade_date_outside_retention')
         table = f'{self.database}.{_table(dataset, day, version)}'
-        self._execute(f'CREATE TABLE IF NOT EXISTS {table} (ts TIMESTAMP, trade_date VARCHAR(10), '
+        stable = f'{self.database}.cold_{dataset}_archive'
+        self._execute(f'CREATE STABLE IF NOT EXISTS {stable} (ts TIMESTAMP, trade_date VARCHAR(10), '
                       'version VARCHAR(64), event_id VARCHAR(128), cutoff VARCHAR(32), available_at VARCHAR(40), '
                       'provider VARCHAR(64), status VARCHAR(32), chunk_no INT, chunk_count INT, '
-                      'sha256 VARCHAR(64), payload VARBINARY(8192))')
+                      'sha256 VARCHAR(64), payload VARBINARY(8192)) TAGS (identity VARCHAR(32))')
+        identity = _table(dataset, day, version).rsplit('_', 1)[-1]
+        self._execute(f"CREATE TABLE IF NOT EXISTS {table} USING {stable} TAGS('{identity}')")
+
     def write(self, dataset, day, version, rows, *, meta):
         table = f'{self.database}.{_table(dataset, day, version)}'
         values = []
@@ -126,6 +129,9 @@ class TdStore:
 
     def close(self):
         self.conn.close()
+
+
+TdStore = TDColdClient
 
 
 class Archiver:
@@ -149,6 +155,17 @@ class Archiver:
             self._gap('queue_full', item)
             return False
 
+    def flush(self, timeout=5.0):
+        deadline = time.monotonic() + max(0, timeout)
+        with self.queue.all_tasks_done:
+            while self.queue.unfinished_tasks:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    _LOG.warning('cold_archive_flush_timeout')
+                    return False
+                self.queue.all_tasks_done.wait(remaining)
+        return True
+
     def _run(self):
         while True:
             item = self.queue.get()
@@ -170,8 +187,10 @@ class Archiver:
             if task.is_alive():
                 self._gap('timeout', item)
                 # Do not accumulate abandoned I/O threads. Drain later submissions as gaps.
+                self.queue.task_done()
                 while True:
                     self._gap('worker_unavailable', self.queue.get())
+                    self.queue.task_done()
             if errors:
                 self._gap(errors[0], item)
             self.queue.task_done()
@@ -198,3 +217,30 @@ def archive(dataset, trade_date, version, envelope_bytes, meta):
         _LOG.warning('cold_archive_gap reason=%s dataset=%s trade_date=%s version=%s',
                      type(exc).__name__, dataset, trade_date, version)
         return False
+
+
+def flush(timeout=5.0):
+    worker = _worker
+    if worker is None:
+        return True
+    try:
+        return worker.flush(timeout)
+    except Exception:
+        _LOG.warning('cold_archive_flush_failed', exc_info=True)
+        return False
+
+
+# Thread shutdown begins before ordinary atexit handlers; flush while the
+# worker can still start its bounded I/O thread, with atexit as a fallback.
+_exit_flushed = False
+
+
+def _flush_at_exit():
+    global _exit_flushed
+    if not _exit_flushed:
+        _exit_flushed = True
+        flush()
+
+
+threading._register_atexit(_flush_at_exit)
+atexit.register(_flush_at_exit)

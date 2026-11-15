@@ -160,9 +160,10 @@ def record_hot_plates_gap(root: str | Path, trade_date: str, event_id: str,
 
 def _archive_gap(raw: str | bytes, gap: Mapping[str, Any]) -> None:
     try:
-        from .cold_archive import archive
+        from .cold_archive import archive, flush
         archive("hot_plates_gaps", str(gap["trade_date"]), str(gap["version"]),
                 raw.encode("utf-8") if isinstance(raw, str) else raw, gap)
+        flush()
     except Exception:
         # Cold storage must never change the result of the Redis publish.
         import logging
