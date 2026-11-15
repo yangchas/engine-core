@@ -139,6 +139,22 @@ class LiveInputReader:
         key = self.key_for(name, trade_date=trade_date, previous_trade_date=previous_trade_date)
         if name == "anchor_archive":
             return self._read_json(name, key)
+        if name == "hot_rank":
+            from .storage.two_layer import TwoLayerStore
+            result = TwoLayerStore(self._client).get(name, trade_date)
+            if result.status in {"PRESENT_REDIS", "RESTORED_FROM_TD"}:
+                rows = tuple((str(row["symbol"]), json.dumps(row, ensure_ascii=False, sort_keys=True))
+                             for row in result.rows)
+                digest = hashlib.sha256()
+                for field, raw in rows:
+                    digest.update(field.encode() + b"\0" + raw.encode() + b"\n")
+                return LiveInputRead(name, key, "hash", "hash", rows, None, True, None,
+                                     digest.hexdigest(), self._now_ms(), len(rows), len(rows),
+                                     meta={"store_status": result.status})
+            if result.status != "MISSING":
+                return LiveInputRead(name, key, "hash", "none", (), None, False, None,
+                                     hashlib.sha256(b"").hexdigest(), self._now_ms(),
+                                     meta={"store_status": result.status, "reason": result.reason})
         meta_key = None
         if name in _META_KEYS:
             meta_key = _META_KEYS[name].format(date=trade_date, previous_date=previous_trade_date)
@@ -214,6 +230,11 @@ class LiveInputCache:
     def refresh(self, read: LiveInputRead) -> LiveInputState:
         now = read.observed_at_ms
         identity = (read.name, read.key)
+        store_status = read.meta.get("store_status") if isinstance(read.meta, dict) else None
+        if store_status in {"CORRUPT", "UNKNOWN"}:
+            previous = self._good.get(identity)
+            return LiveInputState(read.name, store_status, previous[0] if previous else None,
+                                  read.meta.get("reason"), previous[1] if previous else None, now)
         if read.usable:
             self._good[identity] = (read, now)
             return LiveInputState(read.name, FRESH, read, None, now, now)

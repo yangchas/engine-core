@@ -242,6 +242,7 @@ class SliceProviders:
         for name, dataset in self.DATASETS.items():
             if dataset == "limit_up_pool_today":
                 result[name] = [self._core]
+        result["hot_rank"] = [self._core]
         result["yest_limit_pool"] = [self._core]
         result["hot_plates_today"] = [self._core]
         result["hot_plates_yesterday"] = [self._core]
@@ -250,6 +251,17 @@ class SliceProviders:
     def _core(self, reader: SliceReader, request: SliceRequest) -> SliceResult:
         dataset = self.DATASETS[request.slice_id]
         date = request.trade_date
+        if dataset == "hot_rank":
+            from ..storage.two_layer import TwoLayerStore
+            result = TwoLayerStore(self.redis).get(dataset, date, asof=request.asof)
+            status = {"PRESENT_REDIS": "READY", "RESTORED_FROM_TD": "READY",
+                      "CORRUPT": "DEGRADED"}.get(result.status, result.status)
+            available = result.metadata.get("available_at")
+            rows = [dict(row, available_at=row.get("available_at") or available) for row in result.rows]
+            return _result(request, rows, source="two_layer", status=status,
+                           reason=(f"CORRUPT: {result.reason}" if result.status == "CORRUPT" else result.reason),
+                           version=result.version, available_at=available,
+                           lineage=[{"dataset": dataset, "store_status": result.status}])
         if dataset == "limit_up_pool_today":
             from ..data_pipeline.reader import load_dataset
             loaded = load_dataset(dataset, date, redis=self.redis)

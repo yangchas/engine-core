@@ -386,3 +386,52 @@ def test_hot_rank_real_snapshot_two_layer(tmp_path, monkeypatch):
     assert failed.manifest['cache_publish'] == 'READY'
     assert (tmp_path / 'failure' / 'catalog.json').exists()
     assert failed_redis.get('core:cache:data:hot_rank:2026-10-23') is not None
+
+
+def test_hot_rank_readers_use_two_layer_real_snapshot(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import cold_archive, hot_rank_view
+    from engine_core.data_pipeline.jobs import JobRunner, JobState
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.live_inputs import LiveInputReader, LiveInputCache
+    from engine_core.prep_trade_day import _latest_step
+    from engine_core.slices import SliceProviders, SliceReader
+
+    class RedisMemory:
+        def __init__(self): self.values = {}
+        def get(self, key): return self.values.get(key)
+        def set(self, key, value, **kwargs): self.values[key] = value; return True
+        def type(self, key): return 'none'
+    class EmptyCold:
+        def latest_version(self, dataset, day): return None
+        def close(self): pass
+
+    monkeypatch.setattr(cold_archive, '_enabled', lambda: True)
+    monkeypatch.setattr(cold_archive, 'TdStore', EmptyCold)
+    monkeypatch.setattr(cold_archive, 'archive', lambda *args: True)
+    monkeypatch.setattr(hot_rank_view, 'hot_view_expire_at', lambda day: 2000000000)
+    redis = RedisMemory()
+    catalog = ArtifactCatalog(tmp_path)
+    day, asof = '2026-10-23', '2099-10-23T15:00:00+08:00'
+    rows = ThsHotRankProvider.normalize(load('ths_hot_rank_'))
+    JobRunner(artifact_root=tmp_path, redis=redis, state=JobState()).run(
+        'hot_rank', day, fetch=lambda _: rows, now='2026-10-23T14:41:00+08:00',
+        source='ths_hot_rank', publish=True)
+    def check():
+        sliced = SliceReader(SliceProviders(catalog=catalog, redis=redis).providers()).get('hot_rank', trade_date=day, asof=asof)
+        prep = _latest_step('hot_rank', 'hot_rank', day, catalog, asof=asof, redis=redis)
+        live = LiveInputReader(redis, now_ms=lambda: 0).read('hot_rank', trade_date=day)
+        return sliced, prep, live
+    sliced, prep, live = check()
+    assert len(sliced.rows) == prep['row_count'] == len(live.rows) == len(rows)
+    redis.values.pop('core:view:hot_rank:' + day)
+    sliced, prep, live = check()
+    assert sliced.meta['status'] == prep['status'] == LiveInputCache().refresh(live).status == 'MISSING'
+    assert sliced.rows == [] and prep['trade_date'] is None and live.is_empty
+    redis.values['core:view:hot_rank:' + day] = '{}'
+    sliced, prep, live = check()
+    assert sliced.meta['status'] == 'DEGRADED' and sliced.meta['reason'].startswith('CORRUPT:')
+    assert prep['status'] == LiveInputCache().refresh(live).status == 'CORRUPT'
+    redis.values.pop('core:view:hot_rank:' + day)
+    monkeypatch.setattr(cold_archive, '_enabled', lambda: False)
+    sliced, prep, live = check()
+    assert sliced.meta['status'] == prep['status'] == LiveInputCache().refresh(live).status == 'UNKNOWN'

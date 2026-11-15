@@ -118,7 +118,7 @@ class TwoLayerStore:
         from ..data_pipeline import hot_rank_view
         store = None
         try:
-            raw = self.redis.get(f'core:view:hot_rank:{partition}')
+            raw = self.redis.get(f'core:view:hot_rank:{partition}') if self.redis is not None else None
             status = 'PRESENT_REDIS'
             if raw is None:
                 if self.cold is None:
