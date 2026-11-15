@@ -21,6 +21,14 @@ class DatasetRead:
     status: str
 
 
+def _checked_pool_value(func, *args):
+    from .cold_archive import CorruptArchive
+    try:
+        return func(*args)
+    except (ValueError, TypeError, KeyError, IndexError) as exc:
+        raise CorruptArchive(str(exc) or type(exc).__name__) from exc
+
+
 def _read_today_pool(trade_date: str | None, client: Any = None, cold_store: Any = None) -> DatasetRead:
     """Read a point snapshot from Redis or its verified cold copy, never catalog."""
     import hashlib
@@ -36,14 +44,14 @@ def _read_today_pool(trade_date: str | None, client: Any = None, cold_store: Any
             client = _client()
         key = f"core:cache:data:{name}:{trade_date or 'latest'}"
         pointer_raw = client.get(key)
-        pointer = json.loads(pointer_raw) if pointer_raw is not None else None
+        pointer = _checked_pool_value(json.loads, pointer_raw) if pointer_raw is not None else None
         if pointer is not None:
-            day, version = pointer['trade_date'], pointer['version']
+            day, version = _checked_pool_value(lambda p: (p['trade_date'], p['version']), pointer)
             if trade_date and day != trade_date:
-                raise ValueError('pointer_trade_date_mismatch')
+                raise cold_archive.CorruptArchive('pointer_trade_date_mismatch')
             raw = client.get(f"core:cache:data:{name}:{day}:{version}")
             if raw is not None:
-                value = _validate_today_view(raw, day, version)
+                value = _checked_pool_value(_validate_today_view, raw, day, version)
                 return DatasetRead(value['rows'], value, 'redis', 'READY')
         if not trade_date:
             return DatasetRead([], {}, 'none', 'UNKNOWN')
@@ -57,27 +65,33 @@ def _read_today_pool(trade_date: str | None, client: Any = None, cold_store: Any
         if archive_version is None:
             return DatasetRead([], {}, 'none', 'MISSING')
         raw = cold_archive.read_envelope(name, trade_date, archive_version, store=store)
-        value = _validate_today_view(raw, trade_date, None)
+        value = _checked_pool_value(_validate_today_view, raw, trade_date, None)
         version = value['version']
         if archive_version not in (version, version + ':' + hashlib.sha256(raw).hexdigest()[:16]):
-            raise ValueError('cold_archive_version_mismatch')
+            raise cold_archive.CorruptArchive('cold_archive_version_mismatch')
         deadline = hot_view_expire_at(trade_date)
         version_key = f"core:cache:data:{name}:{trade_date}:{version}"
         if not client.set(version_key, raw, exat=deadline, nx=True):
             existing = client.get(version_key)
             existing_bytes = existing.encode('utf-8') if isinstance(existing, str) else existing
             if existing_bytes != raw:
-                raise ValueError('redis_version_conflict')
+                raise cold_archive.CorruptArchive('redis_version_conflict')
         restored_pointer = json.dumps({'trade_date': trade_date, 'version': version,
                                        'as_of': value.get('as_of')})
         if not client.set(key, restored_pointer, exat=deadline, nx=True):
-            current = json.loads(client.get(key))
-            current_raw = client.get(f"core:cache:data:{name}:{current['trade_date']}:{current['version']}")
+            current = _checked_pool_value(json.loads, client.get(key))
+            current_day, current_version = _checked_pool_value(lambda p: (p['trade_date'], p['version']), current)
+            current_raw = client.get(f"core:cache:data:{name}:{current_day}:{current_version}")
             if current_raw is None:
-                raise ValueError('current_version_missing')
-            value = _validate_today_view(current_raw, trade_date, current['version'])
+                raise cold_archive.CorruptArchive('current_version_missing')
+            value = _checked_pool_value(_validate_today_view, current_raw, trade_date, current_version)
             return DatasetRead(value['rows'], value, 'redis', 'READY')
         return DatasetRead(value['rows'], value, 'td', 'READY')
+    except cold_archive.CorruptArchive as exc:
+        import logging
+        reason = str(exc) or type(exc).__name__
+        logging.getLogger(__name__).warning('presence_corrupt dataset=%s trade_date=%s reason=%s', name, trade_date, reason)
+        return DatasetRead([], {'reason': reason}, 'none', 'CORRUPT')
     except Exception:
         return DatasetRead([], {}, 'none', 'UNKNOWN')
     finally:

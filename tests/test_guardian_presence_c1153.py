@@ -53,7 +53,7 @@ def test_presence_real_envelope_and_dangerous_controls(case, monkeypatch):
     if case == 'corrupt':
         cold.rows[0]['payload'] += b'x'
     expected = {'restore': 'RESTORED_FROM_TD', 'missing': 'MISSING',
-                'redis_down': 'UNKNOWN', 'corrupt': 'UNKNOWN'}[case]
+                'redis_down': 'UNKNOWN', 'corrupt': 'CORRUPT'}[case]
     assert resolve_presence('limit_up_pool', DAY, redis_client=redis, cold_store=cold) == expected
     if case == 'restore':
         assert redis.values['core:view:limit_up_pool:' + DAY] == RAW
@@ -89,7 +89,7 @@ def test_unreadable_catalog_does_not_break_plan(tmp_path, monkeypatch, caplog):
 
 @pytest.mark.parametrize('version,expected', [
     ('sha256-382ebc1cd7502951:ba07029b9a6576e8', 'RESTORED_FROM_TD'),
-    ('sha256-382ebc1cd7502951:ba07029b9a6576e9', 'UNKNOWN'),
+    ('sha256-382ebc1cd7502951:ba07029b9a6576e9', 'CORRUPT'),
 ])
 def test_presence_production_archive_version(version, expected, monkeypatch):
     import hashlib

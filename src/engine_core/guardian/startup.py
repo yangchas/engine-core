@@ -448,6 +448,8 @@ def _pool_health(items: list[dict[str, Any]], previous: str | None, clock: datet
         if state.get("id") != "limit_up_pool":
             continue
         state["pool_source"] = meta
+        if state.get("status") == "CORRUPT":
+            continue
         if meta.get("status") == "READY":
             state["status"] = "OK"
         elif state.get("status") != "PENDING":
@@ -486,9 +488,9 @@ def boot_data_health(trade_date: str, prev_trade_date: str | None, root: str | P
     detail = {"trade_date": trade_date, "calendar": {**calendar, "status": calendar_status},
               "probes": probe_results, "items": item_results,
               "summary": {status: sum(x.get("status") == status for x in item_results)
-                          for status in ("OK", "PENDING", "UNKNOWN", "MISSING", "OVERDUE", "STALE")}}
+                          for status in ("OK", "PENDING", "UNKNOWN", "MISSING", "CORRUPT", "OVERDUE", "STALE")}}
     failed = any(x.get("status") == "failed" for x in probe_results.values()) or calendar_status != "ok"
-    bad_items = any(x.get("status") in {"OVERDUE", "MISSING", "STALE"} for x in item_results)
+    bad_items = any(x.get("status") in {"OVERDUE", "MISSING", "CORRUPT", "STALE"} for x in item_results)
     status = "degraded" if failed or bad_items else "ok"
     detail["status"] = status
     if not dry_run:
@@ -535,7 +537,7 @@ def boot_reconcile(trade_date: str, phase: str, health: dict[str, Any] | None,
     gaps = []
     for state in items:
         spec = by_id.get(state.get("id"))
-        if spec is None or spec["id"] not in expected_ids or state.get("status") not in {"OVERDUE", "MISSING", "STALE"}:
+        if spec is None or spec["id"] not in expected_ids or state.get("status") not in {"OVERDUE", "MISSING", "CORRUPT", "STALE"}:
             continue
         freshness = spec.get("freshness")
         if (state.get("status") == "MISSING" and isinstance(freshness, dict)
@@ -588,6 +590,8 @@ def boot_reconcile(trade_date: str, phase: str, health: dict[str, Any] | None,
         if previous:
             from .presence import resolve_presence
             pool_presence = resolve_presence("limit_up_pool", previous)
+            if pool_presence == "CORRUPT":
+                logging.getLogger(__name__).warning("limit_up_pool presence corrupt for %s", previous)
             if pool_presence == "UNKNOWN":
                 logging.getLogger(__name__).warning("limit_up_pool presence unknown for %s", previous)
                 gaps.append({"id": "limit_up_pool", "status": "UNKNOWN", "partition": previous,

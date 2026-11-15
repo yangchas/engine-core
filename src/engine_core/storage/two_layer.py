@@ -80,14 +80,17 @@ class TwoLayerStore:
             raise NotImplementedError('exact version selection is not implemented')
         status = resolve_presence(dataset, partition, redis_client=self.redis, cold_store=self.cold)
         if status not in ('PRESENT_REDIS', 'RESTORED_FROM_TD'):
-            return StoreResult(status=status, reason='resolver did not expose cause' if status == 'UNKNOWN' else None)
+            return StoreResult(status=status, reason=getattr(status, 'reason', None) or ('resolver did not expose cause' if status == 'UNKNOWN' else None))
         try:
             raw = self.redis.get(limit_pool_hot_view._key(partition, 'core:view:limit_up_pool'))
-            value = limit_pool_hot_view._validate(json.loads(raw), partition)
+            from ..guardian.presence import _validate_pool
+            value = _validate_pool(raw, partition, limit_pool_hot_view)
             cutoff = asof or datetime.now(timezone.utc).isoformat()
             rows, meta = limit_pool_hot_view._result(value, 'td' if status == 'RESTORED_FROM_TD' else 'redis',
                                                       None, cutoff, False, None)
             return StoreResult(status=status, rows=rows, metadata=meta, version=value['version'])
+        except cold_archive.CorruptArchive as exc:
+            return StoreResult(status='CORRUPT', reason=str(exc) or type(exc).__name__)
         except Exception:
             return StoreResult(status='UNKNOWN', reason='read, validation or asof failed')
 
@@ -96,7 +99,7 @@ class TwoLayerStore:
         if asof is not None or requirements is not None:
             raise NotImplementedError('presence asof and requirements are not implemented')
         status = resolve_presence(dataset, partition, redis_client=_ReadOnlyRedis(self.redis), cold_store=self.cold)
-        return StoreResult(status=status, reason='resolver did not expose cause' if status == 'UNKNOWN' else None)
+        return StoreResult(status=status, reason=getattr(status, 'reason', None) or ('resolver did not expose cause' if status == 'UNKNOWN' else None))
 
     def list_versions(self, dataset, partition_range, *, asof=None):
         raise NotImplementedError('version enumeration needs dataset-specific support')
