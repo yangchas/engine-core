@@ -256,8 +256,14 @@ def test_registry_retry_and_degrade_claims_match_schedule_events_and_profiles():
     assert today["artifact"]["catalog_dataset"] is None
     assert checkpoint["artifact"]["catalog_dataset"] is None
     assert "Redis" in checkpoint["rule"]
-    assert "不落地到 TD" in checkpoint["rule"]
-    assert "no TD persistence" in checkpoint["notes"]
+    assert "尽力归档至 TD" in checkpoint["rule"]
+    assert "best-effort TD cold archive" in checkpoint["notes"]
+    assert any(
+        storage["kind"] == "td_snapshot"
+        and storage["role"] == "mirror"
+        and storage["name"] == "cold_intraday_checkpoint_<identity>"
+        for storage in checkpoint["storage"]
+    )
     assert "no catalog temporary partition" in checkpoint["notes"]
 
 
