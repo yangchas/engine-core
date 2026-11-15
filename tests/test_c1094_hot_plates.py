@@ -131,3 +131,68 @@ def test_hot_plates_redis_connection_failure_returns_missing(tmp_path):
     assert result.rows == []
     assert result.meta['status'] == 'MISSING'
     assert result.meta['reason'] == 'REDIS_VIEW_MISSING'
+
+
+def test_hot_plate_postcondition_reports_missing_when_redis_read_fails(tmp_path, monkeypatch):
+    from redis.exceptions import ConnectionError
+    from engine_core.data_pipeline import limit_pool_hot_view
+    from engine_core.guardian.commands import validate_handler_postcondition
+
+    view = json.loads((FIXTURE / 'view.json').read_bytes())
+    class Redis:
+        def scan_iter(self, match, count=100):
+            raise ConnectionError('captured view unavailable')
+    monkeypatch.setattr(limit_pool_hot_view, '_client', lambda: Redis())
+    assert validate_handler_postcondition('kaipan_hot_capture', view['trade_date'], tmp_path,
+                                          ['hot_plates'], event_args={'event_id': view['event_id']}) == (
+        False, 'hot_plates_redis_unavailable')
+
+
+def test_history_execute_publishes_real_view_without_gap(tmp_path, monkeypatch):
+    import sys
+    from fnmatch import fnmatch
+    from types import SimpleNamespace
+    from engine_core.data_pipeline import limit_pool_hot_view
+    from engine_core.data_pipeline.hot_plates_gaps import _existing_gap_rows, history_capture_exists, history_event_id
+    from engine_core.guardian.commands import validate_handler_postcondition
+    from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
+    from examples import run_data_jobs
+
+    body = (FIXTURE / 'view.json').read_bytes()
+    provenance = json.loads((FIXTURE / 'PROVENANCE.json').read_bytes())
+    assert hashlib.sha256(body).hexdigest() == provenance['view.json']['sha256']
+    view = json.loads(body)
+    history_event = history_event_id(view["trade_date"])
+    view["event_id"] = history_event
+    view["rows"] = [dict(row, event_id=history_event) for row in view["rows"]]
+    class Redis:
+        def __init__(self):
+            self.values = {}
+        def get(self, key):
+            return self.values.get(key)
+        def set(self, key, value, ex=None, nx=False):
+            self.values[key] = value
+            return True
+        def delete(self, key):
+            self.values.pop(key, None)
+        def scan_iter(self, match, count=100):
+            return (key for key in self.values if fnmatch(key, match))
+    redis = Redis()
+    monkeypatch.setenv('REDIS_URL', 'redis://fixture')
+    monkeypatch.setenv('CORE_DATA_ROOT', str(Path.home() / 'core-data'))
+    monkeypatch.setitem(sys.modules, 'redis', SimpleNamespace(
+        Redis=SimpleNamespace(from_url=lambda *args, **kwargs: redis)))
+    monkeypatch.setattr(limit_pool_hot_view, '_client', lambda: redis)
+    monkeypatch.setattr(TradeCalendarStore, 'all_trading_dates', lambda self: [view['trade_date']])
+    monkeypatch.setattr(run_data_jobs, '_default_adapters', lambda *args, **kwargs: {
+        'hot_plates': lambda day: {**view, 'expected_count': len(view['rows'])}})
+    assert run_data_jobs.main(['--job', 'hot_plates', '--date', '2026-11-16',
+        '--hot-plates-history-days', '1', '--artifact-root', str(tmp_path), '--execute']) == 0
+    pointer = json.loads(redis.get(f"core:cache:data:hot_plates:{view['trade_date']}"))
+    saved = json.loads(redis.get(f"core:cache:data:hot_plates:{view['trade_date']}:{pointer['version']}"))
+    assert saved['rows'] == view['rows']
+    assert _existing_gap_rows(tmp_path, view['trade_date']) == []
+    assert history_capture_exists(tmp_path, view['trade_date'])
+    assert validate_handler_postcondition("kaipan_hot_capture", "2026-11-16", tmp_path,
+        ["hot_plates_history", "hot_plates_history_days=1"]) == (True, "")
+    assert not (tmp_path / 'catalog.json').exists()

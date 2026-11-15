@@ -535,6 +535,9 @@ class JobRunner:
                           "as_of", "source_event_at", "scheduled_at", "deadline"):
                 if manifest.get(field) not in (None, "", "UNKNOWN"):
                     manifest[field] = instant(manifest[field])
+            for field in ("captured_at", "available_at"):
+                if field in manifest["field_units"]:
+                    manifest["field_units"][field] = "RFC3339 seconds with +08:00"
             payload = b"\n".join(canonical_json(row) for row in rows) + (b"\n" if rows else b"")
             digest = hashlib.sha256(payload).hexdigest()
             identity = {"payload_sha256": digest}
