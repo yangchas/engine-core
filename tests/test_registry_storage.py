@@ -19,6 +19,11 @@ def storage_of(item):
     return item["storage"]
 
 
+def test_hot_rank_source_kinds():
+    item = next(item for item in REGISTRY if item["id"] == "hot_rank")
+    assert item["source_kinds"] == {"ths": "point_snapshot", "wencai": "day_refetchable"}
+
+
 def test_every_registry_item_declares_where_it_is_stored():
     missing = [item["id"] for item in REGISTRY if "storage" not in item]
     assert missing == []

@@ -56,6 +56,7 @@ def test_registry_package_discovers_datasets_and_preserves_legacy_specs():
     # datasets added after the baseline are allowed; every baseline dataset must still be registered
     assert (set(legacy) | {"quote_slice"}) <= set(DATASETS)
     assert (DATASETS["hot_rank"].kind, DATASETS["hot_rank"].source) == ("point_snapshot", "ths")
+    assert DATASETS["hot_rank"].source_kinds == {"ths": "point_snapshot", "wencai": "day_refetchable"}
     for name, old_spec in legacy.items():
         current = DATASETS[name]
         for field in dataclasses.fields(old_spec):

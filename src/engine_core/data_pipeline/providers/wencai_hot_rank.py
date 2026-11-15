@@ -2,6 +2,8 @@
 from datetime import date
 from typing import Any, Mapping
 
+from .wencai_daily_adapter import DEFAULT_COOKIE_FILE
+
 
 def normalize(payload: Mapping[str, Any], trade_date: str) -> list[dict[str, Any]]:
     day = date.fromisoformat(trade_date).isoformat()
@@ -34,3 +36,22 @@ def normalize(payload: Mapping[str, Any], trade_date: str) -> list[dict[str, Any
     if len(result) != 100 or sorted(r['rank'] for r in result) != list(range(1, 101)):
         raise ValueError('wencai_hot_rank_incomplete')
     return sorted(result, key=lambda row: row['rank'])
+
+
+def fetch(trade_date: str, *, cookie_file=DEFAULT_COOKIE_FILE, query_fn=None):
+    """Fetch one dated top-100 response through the shared WenCai client."""
+    import time
+    from .wencai_daily_adapter import _Run, _read_cookie
+
+    day = date.fromisoformat(trade_date).isoformat()
+    if query_fn is None:
+        from pywencai.wencai import get_robot_data
+        query_fn = get_robot_data
+    question = f"{day}个股热度排名前100"
+    cookie = _read_cookie(cookie_file)
+    run = _Run(query_fn=query_fn, context=None, page_size=100, cookie=cookie,
+               cooldown_seconds=60, cooldown_factor=2, cooldown_max_seconds=300,
+               max_cooldowns=0, max_requests=1, sleep_fn=time.sleep, clock_fn=time.monotonic,
+               wall_budget_seconds=None, checkpoint_path=None, trade_date=day, question=question)
+    result = run.call(question, 1)
+    return normalize(result.get("payload", result), day)

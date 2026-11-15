@@ -561,7 +561,8 @@ class JobRunner:
             payload = b"\n".join(canonical_json(row) for row in rows) + (b"\n" if rows else b"")
             digest = hashlib.sha256(payload).hexdigest()
             committed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-            committed = dict(manifest, sha256=digest, version=f"sha256-{digest[:16]}",
+            version = f"wencai-sha256-{digest[:16]}" if safe_source == "wencai_hot_rank" else f"sha256-{digest[:16]}"
+            committed = dict(manifest, sha256=digest, version=version,
                              committed_at=committed_at, available_at=committed_at,
                              storage_backend="redis", storage_uri=None, manifest_uri=None, rows_uri=None)
             from .hot_rank_view import publish as publish_hot_rank
