@@ -52,6 +52,7 @@ EMPTY = {"datasets": {name: {"dates": {}} for name in NAMES}}
 
 
 def _plan(hour, minute, catalog=EMPTY, **kw):
+    kw.setdefault("pool_presence", "MISSING")  # presence is supplied by storage, not the catalog fixture
     if "daily_kline_coverage" not in kw:
         from engine_core.guardian.daily_kline_coverage import DayCoverage, MISSING
         kw["daily_kline_coverage"] = {

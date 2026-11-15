@@ -12,13 +12,16 @@ _LOG = logging.getLogger(__name__)
 def resolve_presence(dataset, trade_date, *, redis_client=None, cold_store=None):
     if dataset != 'limit_up_pool':
         raise ValueError('unsupported_presence_dataset')
+    from .registry import load_registry
+    item = next(item for item in load_registry() if item['id'] == dataset)
+    cold_dataset = item['cold_store']['dataset']
     from ..data_pipeline import cold_archive, limit_pool_hot_view as pool
     from ..data_pipeline.redis_day_view import hot_view_expire_at
 
     store = None
     try:
         client = redis_client if redis_client is not None else pool._client()
-        key = pool._key(trade_date, 'core:view:limit_up_pool')
+        key = item['hot_store']['key'].format(data_date=trade_date, trade_date=trade_date)
         raw = client.get(key)
         if raw is not None:
             value = pool._validate(json.loads(raw), trade_date)
@@ -30,10 +33,10 @@ def resolve_presence(dataset, trade_date, *, redis_client=None, cold_store=None)
             store = cold_archive.TdStore()
         else:
             store = cold_store
-        version = store.latest_version(dataset, trade_date)
+        version = store.latest_version(cold_dataset, trade_date)
         if version is None:
             return 'MISSING'
-        raw = cold_archive.read_envelope(dataset, trade_date, version, store=store)
+        raw = cold_archive.read_envelope(cold_dataset, trade_date, version, store=store)
         value = pool._validate(json.loads(raw), trade_date)
         payload_version = value['version']
         hashed_version = payload_version + ':' + hashlib.sha256(raw).hexdigest()[:16]

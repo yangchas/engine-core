@@ -253,6 +253,15 @@ def validate_registry(items: Any) -> int:
                 raise ValueError(f"item {item['id']} field {field} must be explicit")
         if "storage" in item:
             _validate_storage(item["id"], item["storage"])
+        if any(key in item for key in ("kind", "hot_store", "cold_store")):
+            if (item.get("kind") not in {"point_snapshot", "day_refetchable"}
+                    or not isinstance(item.get("hot_store"), dict)
+                    or not isinstance(item["hot_store"].get("key"), str)
+                    or not item["hot_store"]["key"]
+                    or not isinstance(item.get("cold_store"), dict)
+                    or not isinstance(item["cold_store"].get("dataset"), str)
+                    or not item["cold_store"]["dataset"]):
+                raise ValueError(f"item {item['id']} invalid presence storage declaration")
     return _count_unknown(items)
 
 

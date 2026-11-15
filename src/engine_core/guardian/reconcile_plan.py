@@ -164,7 +164,10 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
     items = load_registry() if registry is None else registry
     if not isinstance(catalog, Mapping):
         from pathlib import Path
-        catalog = json.loads(Path(catalog).read_text(encoding="utf-8"))
+        try:
+            catalog = json.loads(Path(catalog).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            catalog = {"datasets": {}}
     rules = _rules()
     quiet = set(rules.get("quiet_phases_for_heavy", []))
     from .scheduler import _schedule_source
@@ -175,6 +178,8 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
     upgrade_versions: dict[str, str] = {}
     derive_reasons: dict[str, str] = {}
     for item in items:
+        if item.get("kind") == "point_snapshot":
+            continue
         dataset = item["artifact"].get("catalog_dataset")
         policy = item.get("late_policy")
         if not dataset or item.get("retired"):
@@ -247,7 +252,10 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
                     due[item["id"]] = (target, policy)
                     upgrade_versions[item["id"]] = version
                 continue
-        if dataset == "limit_up_pool" and target == prev_trade_date and pool_presence is not None:
+        if item.get("kind") == "day_refetchable":
+            if pool_presence is None:
+                from .presence import resolve_presence
+                pool_presence = resolve_presence(item["id"], target)
             if pool_presence == "MISSING":
                 due[item["id"]] = (target, policy)
             continue
