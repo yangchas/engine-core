@@ -109,6 +109,12 @@ def load_dataset(name: str, trade_date: str | None = None, *, prefer: str = "red
                  artifact_root: str | Path | None = None, now: str | None = None) -> DatasetRead | None:
     if prefer not in {"redis", "file"}: raise ValueError("prefer must be redis or file")
     spec = get_dataset(name)
+    if name == "limit_up_pool":
+        from .limit_pool_hot_view import read
+        if trade_date is None:
+            return DatasetRead([], {}, 'none', 'MISSING')
+        rows, meta = read(trade_date, now or datetime.now(timezone.utc).isoformat(), redis_client=redis)
+        return DatasetRead(rows, meta, meta.get('storage_source', 'none'), meta['status'])
     if name == "limit_up_pool_today":
         return _read_today_pool(trade_date, redis)
     if name == "hot_plates_gaps":

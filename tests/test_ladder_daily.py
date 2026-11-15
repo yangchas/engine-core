@@ -89,13 +89,13 @@ def test_loader_reads_pool_hot_view_and_preserves_metadata(tmp_path, monkeypatch
 
     def no_redis():
         redis_calls.append(True)
-        raise AssertionError("catalog must take precedence")
+        raise ConnectionError("redis unavailable")
 
     monkeypatch.setattr(hot, "_client", no_redis)
     old = Loader(Catalog(), {}, when=clock)
     old.preload_kaipan_cross(day)
-    assert old.days[day]["kaipan"]["rows"] == pool["rows"]
-    assert not redis_calls
+    assert "kaipan" not in old.days[day]
+    assert redis_calls
 
 
 # ----------------------------------------------------------------------------------------------- the C574 incident

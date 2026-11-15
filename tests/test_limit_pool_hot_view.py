@@ -265,3 +265,18 @@ def test_pool_producer_publishes_hot_view(day, tmp_path, monkeypatch):
     redis.fail = True
     code, body = run_pool_tier(request, tmp_path, deps=deps)
     assert code == 30 and body['error_code'] == 'HOT_PUBLISH_FAILED'
+
+
+def test_real_pool_ignores_catalog_for_dynamic_reader(tmp_path, monkeypatch):
+    from engine_core.data_pipeline.reader import load_dataset
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+
+    raw = (Path(__file__).parent / 'fixtures/real/c1147/limit_up_pool_1112.json').read_bytes()
+    value = json.loads(raw)
+    redis = RedisSpy()
+    redis.writes['core:view:limit_up_pool:2026-11-12'] = raw
+    result = load_dataset('limit_up_pool', '2026-11-12', redis=redis,
+                          catalog=ArtifactCatalog(tmp_path), now='2026-11-15T12:00:00+00:00')
+    assert result is not None
+    assert result.rows == value['rows']
+    assert result.discovered_by == 'redis'

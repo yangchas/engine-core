@@ -156,12 +156,12 @@ def get(dataset: str, *, trade_date: str, tag: str | None = None,
     if view not in {"raw", "canonical"}:
         raise ValueError("view must be raw or canonical")
     spec = get_dataset(dataset)
-    if dataset == "limit_up_pool_today":
+    if dataset in {"limit_up_pool", "limit_up_pool_today"}:
         from .reader import load_dataset
         loaded = load_dataset(dataset, trade_date)
         meta = _empty_meta([])
         meta['status'] = loaded.status
-        if loaded.status != 'READY':
+        if loaded.status not in {'READY', 'DEGRADED', 'PARTIAL'}:
             meta['reasons'] = ['store_unavailable' if loaded.status == 'UNKNOWN' else 'not_found']
             return DataSet([], meta)
         manifest = loaded.manifest

@@ -145,11 +145,6 @@ class Loader:
             slot["kaipan"] = stored
 
     def _stored_kaipan(self, day: str) -> dict[str, Any] | None:
-        path, manifest = _best_manifest(self.snapshot, "limit_up_pool", day)
-        if manifest is not None:
-            return {"status": "ok", "version": manifest.get("version"),
-                    "business_status": manifest.get("business_status"), "source": manifest.get("source"),
-                    "available_at": manifest.get("available_at"), "rows": self.catalog.read_rows(path)}
         rows, meta = limit_pool_hot_view.read(day, self.when.isoformat())
         if meta.get("status") == "MISSING":
             return None
