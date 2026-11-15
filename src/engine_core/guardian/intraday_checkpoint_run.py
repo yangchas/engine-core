@@ -161,9 +161,20 @@ def run_checkpoint(request: Mapping[str, Any], root: Path, *, dry_run: bool = Fa
                 key = core.checkpoint_key(trade_date, cutoff)
                 payload = json.dumps({"rows": part.rows, "manifest": part.manifest}, ensure_ascii=False,
                                      sort_keys=True, separators=(",", ":"))
-                target.set(key, payload, exat=deadline)
+                if target.set(key, payload, exat=deadline) is False:
+                    raise RuntimeError("checkpoint_set_failed")
             except Exception as exc:
                 return _reply(30, "failed", "CHECKPOINT_PUBLISH_FAILED", True, type(exc).__name__)
+            try:
+                import hashlib
+                from ..data_pipeline.cold_archive import archive, flush
+                raw = payload.encode("utf-8")
+                version = cutoff + ":sha256-" + hashlib.sha256(raw).hexdigest()[:48]
+                archive("intraday_checkpoint", trade_date, version, raw, {**part.manifest, "cutoff": cutoff})
+                flush(timeout=5.0)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning("cold_archive dispatch_failed", exc_info=True)
             degraded = bool(part.manifest["degraded"])
             return _reply(10 if degraded else 0, "degraded" if degraded else "ok", "", False, {
                 "checkpoint": cutoff, "source": part.manifest["source"], "row_count": len(part.rows),
