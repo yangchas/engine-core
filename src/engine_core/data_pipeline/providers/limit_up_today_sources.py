@@ -211,6 +211,13 @@ def publish_hot_snapshot(manifest: Mapping[str, Any], rows: list[dict[str, Any]]
         else:
             for key, value in plan:
                 client.set(key, value, exat=deadline)
+        try:
+            from ..cold_archive import archive, flush
+            archive("limit_up_pool_today", day, version, version_json.encode("utf-8"), payload)
+            flush()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning("cold_archive dispatch_failed", exc_info=True)
         return {"status": "published", "keys": [key for key, _ in plan],
                 "ttl_seconds": ttl_seconds}
     except Exception as exc:  # noqa: BLE001 - callers keep artifact commit as the durable record
