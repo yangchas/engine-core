@@ -1,9 +1,13 @@
+import json
 from pathlib import Path
 
 from examples.pm import main
 
 
 def test_real_migration_survey_refuses_hot_rank_and_accepts_override(tmp_path, monkeypatch, capsys):
+    fixture = json.loads((Path(__file__).resolve().parents[1] / 'tests/fixtures/c1203/survey-results.json').read_text())
+    monkeypatch.setattr('examples.pm.migration_survey', lambda repo, name: tuple(
+        fixture['results'][name][key] for key in ('kind', 'writers', 'readers')))
     cards = tmp_path / 'cards'
     cards.mkdir()
     monkeypatch.setenv('PM_CARDS_DIR', str(cards))
@@ -24,6 +28,9 @@ def test_real_migration_survey_refuses_hot_rank_and_accepts_override(tmp_path, m
 
 
 def test_real_limit_up_pool_today_survey_passes(tmp_path, monkeypatch, capsys):
+    fixture = json.loads((Path(__file__).resolve().parents[1] / 'tests/fixtures/c1203/survey-results.json').read_text())
+    monkeypatch.setattr('examples.pm.migration_survey', lambda repo, name: tuple(
+        fixture['results'][name][key] for key in ('kind', 'writers', 'readers')))
     cards = tmp_path / 'cards'
     cards.mkdir()
     monkeypatch.setenv('PM_CARDS_DIR', str(cards))
