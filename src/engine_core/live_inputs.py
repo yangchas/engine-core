@@ -1,11 +1,11 @@
 """Read-only live input layer for the legacy Redis caches.
 
 One place for the Redis shapes that the real probes used to re-implement:
-hash caches (``cache:hot_plates``, ``cache:limit_truth``,
+hash caches (``cache:hot_plates``, ``cache:hot_rank``, ``cache:limit_truth``,
 ``cache:yest_limit_pool``, ``market:stock_plate``, ``config:plate_mapping:s2p``)
 and the JSON anchor archive (``market:auction:anchor``).  The reader calls only
-``type``/``hlen``/``hscan_iter``/``get``/``ttl`` for legacy inputs. Hot rank
-uses the two-tier reader, which may restore a verified cold copy to Redis.
+``type``/``hlen``/``hscan_iter``/``get``/``ttl`` on an injected client and never
+writes, repairs or interprets rows; row semantics stay in the data functions.
 
 ``LiveInputCache.refresh`` keeps the last non-empty read when a later read is
 empty or the scan was inconsistent: an empty response is "no information", not
@@ -42,12 +42,14 @@ DEFAULT_MAX_AGE_MS: Mapping[str, int] = {
 
 _META_KEYS = {
     "hot_plates": "cache:hot_plates_meta:{date}",
+    "hot_rank": "cache:hot_rank_meta:{date}",
     "limit_truth": "cache:limit_truth_meta:{date}",
     "yest_limit_pool": "cache:yest_limit_pool_meta:{previous_date}",
 }
 
 _HASH_INPUTS = {
     "hot_plates": "cache:hot_plates:{date}",
+    "hot_rank": "cache:hot_rank:{date}",
     "limit_truth": "cache:limit_truth:{date}",
     "yest_limit_pool": "cache:yest_limit_pool:{previous_date}",
     "stock_plate": "market:stock_plate",
@@ -77,7 +79,6 @@ class LiveInputRead:
     hlen_after: Optional[int] = None
     meta_key: Optional[str] = None
     meta: Any = None  # parsed JSON, {"valid_json": False} when undecodable, None when absent
-    storage_status: Optional[str] = None
 
     @property
     def is_empty(self) -> bool:
@@ -124,8 +125,6 @@ class LiveInputReader:
         self._now_ms = now_ms
 
     def key_for(self, name: str, *, trade_date: str, previous_trade_date: Optional[str] = None) -> str:
-        if name == "hot_rank":
-            return "core:cache:data:hot_rank:" + trade_date
         if name == "anchor_archive":
             return "market:auction:anchor:" + trade_date.replace("-", "")
         try:
@@ -138,21 +137,6 @@ class LiveInputReader:
 
     def read(self, name: str, *, trade_date: str, previous_trade_date: Optional[str] = None) -> LiveInputRead:
         key = self.key_for(name, trade_date=trade_date, previous_trade_date=previous_trade_date)
-        if name == "hot_rank":
-            from .data_pipeline.reader import load_dataset
-            loaded = load_dataset(name, trade_date, redis=self._client)
-            if loaded is None:
-                return LiveInputRead(name, key, "hash", "none", (), None, True, None,
-                                     hashlib.sha256(b"").hexdigest(), self._now_ms(),
-                                     meta={}, storage_status="MISSING")
-            rows = tuple((str(row.get("symbol", "")), json.dumps(row, ensure_ascii=False, sort_keys=True))
-                         for row in loaded.rows)
-            digest = hashlib.sha256()
-            for field, raw in rows:
-                digest.update(field.encode() + b"\0" + raw.encode() + b"\n")
-            return LiveInputRead(name, key, "hash", loaded.discovered_by, rows, None, True, None,
-                                 digest.hexdigest(), self._now_ms(), len(rows), len(rows),
-                                 meta=loaded.manifest, storage_status=loaded.status)
         if name == "anchor_archive":
             return self._read_json(name, key)
         meta_key = None
@@ -233,8 +217,6 @@ class LiveInputCache:
         if read.usable:
             self._good[identity] = (read, now)
             return LiveInputState(read.name, FRESH, read, None, now, now)
-        if read.storage_status in {"CORRUPT", "UNKNOWN"}:
-            return LiveInputState(read.name, read.storage_status, None, read.storage_status, None, now)
         reason = "scan_inconsistent" if (not read.scan_consistent and not read.is_empty) else (
             "invalid_json" if (read.kind == "json" and not read.scan_consistent) else "empty_response"
         )

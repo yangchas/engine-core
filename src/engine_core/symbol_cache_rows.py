@@ -1,7 +1,7 @@
 """Pure normalizers for the per-symbol daily Redis caches.
 
-THS attention rank and ``cache:limit_truth:{date}`` (final limit-up truth)
-are already-read rows. This module only
+``cache:hot_rank:{date}`` (THS attention rank) and ``cache:limit_truth:{date}``
+(final limit-up truth) are hashes of symbol -> JSON row.  This module only
 validates and shapes already-read rows; it performs no I/O.  A row that cannot
 be trusted is counted and skipped, a missing optional field stays ``None``
 (never zero), and duplicate symbols are reported rather than merged.

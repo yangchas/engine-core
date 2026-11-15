@@ -334,7 +334,7 @@ def _quality_banner(manifest: Mapping[str, Any], report: Mapping[str, Any]) -> t
         reason = value.get("reason")
         if key == "hot_rank" and reason == "NO_ASOF":
             detail = "无时点，仅参考" + (f"；{detail}" if detail else "")
-        if reason and state in {"UNKNOWN", "MISSING", "PARTIAL", "DEGRADED", "CORRUPT"}:
+        if reason and state in {"UNKNOWN", "MISSING", "PARTIAL", "DEGRADED"}:
             if not (key == "hot_rank" and reason == "NO_ASOF"):
                 detail = f"{detail}（{reason}）" if detail else f"（{reason}）"
         source = value.get("version_source") or value.get("source")

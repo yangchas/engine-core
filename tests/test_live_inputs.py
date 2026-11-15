@@ -54,37 +54,13 @@ def _reader(client, t=1000):
     return LiveInputReader(client, now_ms=lambda: t)
 
 
-def _hot_rank_client(day, rows=None):
-    version = "v-test"
-    rows = rows or [{"symbol": "a", "rank": 1}]
-    payload = json.dumps({"dataset": "hot_rank", "trade_date": day, "version": version,
-                          "rows": rows})
-    return StrictClient(strings={
-        f"core:cache:data:hot_rank:{day}": json.dumps({"trade_date": day, "version": version}),
-        f"core:cache:data:hot_rank:{day}:{version}": payload,
-    })
-
-
 def test_hash_read_keys_and_only_read_ops():
-    from engine_core.data_pipeline.providers.ths_hot_rank import ThsHotRankProvider
-    from pathlib import Path
-
-    fixture = Path(__file__).parent / "fixtures" / "real" / "ths_hot_rank_2026-10-23_1441.json"
-    rows = ThsHotRankProvider.normalize(json.loads(fixture.read_text(encoding="utf-8")))
-    version = "v-real"
-    payload = json.dumps({"dataset": "hot_rank", "trade_date": "2026-10-13",
-                          "version": version, "available_at": "2026-10-13T14:41:00+08:00",
-                          "rows": rows}, ensure_ascii=False)
-    client = StrictClient(strings={
-        "core:cache:data:hot_rank:2026-10-13": json.dumps({"trade_date": "2026-10-13", "version": version}),
-        "core:cache:data:hot_rank:2026-10-13:v-real": payload,
-    })
+    client = StrictClient(hashes={"cache:hot_rank:2026-10-13": {b"600000": b'{"rank":1}'}})
     read = _reader(client).read("hot_rank", trade_date="2026-10-13")
-    assert read.key == "core:cache:data:hot_rank:2026-10-13"
-    assert len(read.rows) == len(rows)
-    assert json.loads(read.rows[0][1]) == rows[0]
+    assert read.key == "cache:hot_rank:2026-10-13"
+    assert read.rows == (("600000", '{"rank":1}'),)
     assert read.usable
-    assert client.calls == ["get", "get"]
+    assert set(client.calls) <= {"type", "hlen", "hscan_iter", "get"}
 
 
 def test_pool_uses_previous_trade_date_and_requires_it():
@@ -132,9 +108,11 @@ def test_empty_response_preserves_last_good_and_never_zero_fills():
 
 def test_last_good_is_scoped_to_input_name_and_redis_key():
     cache = LiveInputCache()
-    first = cache.refresh(_reader(_hot_rank_client("2026-10-12"), 1).read(
+    key_a = "cache:hot_rank:2026-10-12"
+    key_b = "cache:hot_rank:2026-10-13"
+    first = cache.refresh(_reader(StrictClient(hashes={key_a: {b"a": b"1"}}), 1).read(
         "hot_rank", trade_date="2026-10-12"))
-    second = cache.refresh(_reader(StrictClient(), 2).read(
+    second = cache.refresh(_reader(StrictClient(hashes={}), 2).read(
         "hot_rank", trade_date="2026-10-13"))
     assert first.status == FRESH
     assert second.status == MISSING and second.read is None
@@ -147,17 +125,19 @@ def test_missing_without_prior_is_missing_not_empty_data():
 
 
 def test_inconsistent_scan_does_not_replace_good_data():
+    key = "cache:hot_rank:2026-10-13"
     cache = LiveInputCache()
-    cache.refresh(_reader(_hot_rank_client("2026-10-13"), 1).read("hot_rank", trade_date="2026-10-13"))
-    flapping = StrictClient()
+    cache.refresh(_reader(StrictClient(hashes={key: {b"a": b"1"}}), 1).read("hot_rank", trade_date="2026-10-13"))
+    flapping = StrictClient(hashes={key: {b"a": b"1", b"b": b"2"}}, flap=True)
     state = cache.refresh(_reader(flapping, 2).read("hot_rank", trade_date="2026-10-13"))
-    assert state.status == PRESERVED_PREVIOUS and state.reason == "empty_response"
+    assert state.status == PRESERVED_PREVIOUS and state.reason == "scan_inconsistent"
     assert len(state.read.rows) == 1
 
 
 def test_preserved_read_expires_after_max_age():
+    key = "cache:hot_rank:2026-10-13"
     cache = LiveInputCache(max_age_ms={"hot_rank": 1000})
-    cache.refresh(_reader(_hot_rank_client("2026-10-13"), 0).read("hot_rank", trade_date="2026-10-13"))
+    cache.refresh(_reader(StrictClient(hashes={key: {b"a": b"1"}}), 0).read("hot_rank", trade_date="2026-10-13"))
     soon = cache.refresh(_reader(StrictClient(), 900).read("hot_rank", trade_date="2026-10-13"))
     late = cache.refresh(_reader(StrictClient(), 1500).read("hot_rank", trade_date="2026-10-13"))
     assert soon.status == PRESERVED_PREVIOUS

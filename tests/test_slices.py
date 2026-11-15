@@ -99,12 +99,13 @@ def test_hot_rank_slice_selects_latest_core_capture_not_after_asof(tmp_path):
             {"available_at": captured, "point_in_time_date": "2026-10-17"}, source="ths_hot_rank")
 
     class Redis:
-        def get(self, key): return None
+        def hgetall(self, key): return {"000099": '{"rank":1}'}
 
     reader = SliceReader(SliceProviders(catalog=catalog, redis=Redis(), file_fallback=False).providers())
     result = reader.get("hot_rank", trade_date="2026-10-17", asof="2026-10-17T10:30:00+08:00")
-    assert result.meta["status"] == "MISSING"
-    assert result.rows == []
+    assert result.meta["source"] == "core_data"
+    assert result.meta["status"] == "READY"
+    assert [row["symbol"] for row in result.rows] == ["000001"]
     no_redis = SliceReader(SliceProviders(catalog=catalog, redis=None,
                                          file_fallback=False).providers())
     next_day = no_redis.get("hot_rank", trade_date="2026-10-18",
