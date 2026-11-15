@@ -1612,13 +1612,13 @@ def drift(args):
 def catalog_audit():
     try:
         try:
-            from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
+            from engine_core.trade_day_context import load_context
         except ModuleNotFoundError:
             sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-            from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
+            from engine_core.trade_day_context import load_context
         today = datetime.now(ZoneInfo('Asia/Shanghai')).date()
-        calendar = TradeCalendarStore(Path('/home/exedev/core-data'))
-        recent = today.isoformat() if calendar.is_trading_day(today) else calendar.previous_trade_date(today).isoformat()
+        context = load_context(Path('/home/exedev/core-data'), today)
+        recent = context['today'] if context['today_is_trading_day'] else context['prev_trade_date']
         datasets = json.loads(Path('/home/exedev/core-data/catalog.json').read_text(encoding='utf-8'))['datasets']
         rows = []
         for name, data in sorted(datasets.items()):
