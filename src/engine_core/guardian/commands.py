@@ -138,6 +138,17 @@ def _snapshot_problem(dataset: str, day: str) -> str:
     return ""
 
 
+def _hot_plate_gap_rows(root, day):
+    """Keep an unavailable ledger distinct from a confirmed empty ledger."""
+    from redis.exceptions import RedisError
+    from ..data_pipeline.hot_plates_gaps import _existing_gap_rows
+
+    try:
+        return _existing_gap_rows(root, day)
+    except (RedisError, OSError, ValueError):
+        return None
+
+
 def validate_handler_postcondition(name: str, day: str, root: str | Path,
                                    datasets: Any = None,
                                    event_args: Any = None) -> tuple[bool, str]:
@@ -169,7 +180,7 @@ def validate_handler_postcondition(name: str, day: str, root: str | Path,
         declared = tuple(datasets) if datasets else ()
         if "hot_plates_history" in declared:
             from ..data_pipeline.hot_plates_gaps import (
-                _existing_gap_rows, history_capture_exists, history_event_id,
+                history_capture_exists, history_event_id,
                 prior_hot_plate_dates,
             )
             count = _arg(event_args or {}, "hot_plates_history_days")
@@ -189,15 +200,19 @@ def validate_handler_postcondition(name: str, day: str, root: str | Path,
                 history_id = history_event_id(target_date)
                 if history_capture_exists(root, target_date):
                     continue
-                gaps = _existing_gap_rows(root, target_date)
+                gaps = _hot_plate_gap_rows(root, target_date)
+                if gaps is None:
+                    return False, "hot_plates_redis_unavailable"
                 if any(row.get("event_id") == history_id and row.get("status") == "GAP"
                        for row in gaps):
                     continue
                 return False, "hot_plates_history_missing:" + target_date
             return True, ""
         if "hot_plates_gaps" in declared:
-            from ..data_pipeline.hot_plates_gaps import _existing_gap_rows, _snapshot_manifests
-            gaps = _existing_gap_rows(root, day)
+            from ..data_pipeline.hot_plates_gaps import _snapshot_manifests
+            gaps = _hot_plate_gap_rows(root, day)
+            if gaps is None:
+                return False, "hot_plates_redis_unavailable"
             if gaps or _snapshot_manifests(root, day):
                 return True, ""
             return False, "hot_plates_gap_reconcile_missing_output"
@@ -210,8 +225,9 @@ def validate_handler_postcondition(name: str, day: str, root: str | Path,
             if event_id is None or view.get("event_id") == event_id or any(
                     row.get("event_id") == event_id for row in view["rows"]):
                 return True, ""
-        from ..data_pipeline.hot_plates_gaps import _existing_gap_rows
-        gaps = _existing_gap_rows(root, day)
+        gaps = _hot_plate_gap_rows(root, day)
+        if gaps is None:
+            return False, "hot_plates_redis_unavailable"
         if any(row.get("status") == "GAP" and
                (event_id is None or row.get("event_id") == event_id) for row in gaps):
             return True, ""

@@ -131,3 +131,18 @@ def test_hot_plates_redis_connection_failure_returns_missing(tmp_path):
     assert result.rows == []
     assert result.meta['status'] == 'MISSING'
     assert result.meta['reason'] == 'REDIS_VIEW_MISSING'
+
+
+def test_hot_plate_postcondition_reports_missing_when_redis_read_fails(tmp_path, monkeypatch):
+    from redis.exceptions import ConnectionError
+    from engine_core.data_pipeline import limit_pool_hot_view
+    from engine_core.guardian.commands import validate_handler_postcondition
+
+    view = json.loads((FIXTURE / 'view.json').read_bytes())
+    class Redis:
+        def scan_iter(self, match, count=100):
+            raise ConnectionError('captured view unavailable')
+    monkeypatch.setattr(limit_pool_hot_view, '_client', lambda: Redis())
+    assert validate_handler_postcondition('kaipan_hot_capture', view['trade_date'], tmp_path,
+                                          ['hot_plates'], event_args={'event_id': view['event_id']}) == (
+        False, 'hot_plates_redis_unavailable')
