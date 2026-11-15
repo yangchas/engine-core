@@ -556,6 +556,35 @@ def try_pack(card):
         print(f'warning: pack failed: {exc}')
 
 
+def migration_survey(repo, name):
+    """Find direct dataset references near writer and reader operations."""
+    registry = json.loads((repo / 'src/engine_core/guardian/datasets.registry.json').read_text(encoding='utf-8'))
+    matches = [item for item in registry['items'] if item.get('id') == name]
+    kind = matches[0].get('kind') if len(matches) == 1 else None
+    kind = kind if kind in ('day_refetchable', 'point_snapshot') else 'unknown'
+    writers, readers = set(), set()
+    writer = re.compile(r'JobRunner|\b(?:publish|write_catalog|capture\w*)\b', re.I)
+    reader = re.compile(r'\b(?:read|load|get|locate|fetch|query|slice)\w*\b', re.I)
+    for directory in ('src', 'examples'):
+        for path in (repo / directory).rglob('*.py'):
+            if path == Path(__file__).resolve():
+                continue
+            lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
+            hits = [i for i, line in enumerate(lines) if name in line]
+            if not hits:
+                continue
+            relative = str(path.relative_to(repo))
+            if path.name.startswith('capture_') and name in path.name:
+                writers.add(relative)
+            for i in hits:
+                nearby = '\n'.join(lines[max(0, i - 2):i + 3])
+                if writer.search(nearby):
+                    writers.add(relative)
+                if reader.search(nearby):
+                    readers.add(relative)
+    return kind, sorted(writers), sorted(readers)
+
+
 def newcard(args):
     recipe_path = Path(__file__).with_name('card_recipes') / (args.recipe + '.json')
     if not re.fullmatch(r'[a-z0-9-]+', args.recipe) or not recipe_path.is_file():
@@ -589,6 +618,29 @@ def newcard(args):
         return 2
     cards = location('PM_CARDS_DIR', str(CARDS))
     repo = Path(__file__).resolve().parents[1]
+    survey_summary = None
+    if args.template or args.function:
+        if not args.function or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', args.function):
+            print('survey requires a valid --function')
+            return 2
+        try:
+            kind, writers, readers = migration_survey(repo, args.function)
+            survey_summary = (f'勘查 {args.function}: kind={kind}, 写入口文件数={len(writers)}, '
+                              f'读者文件数={len(readers)}')
+            print(survey_summary)
+            print('写入口: ' + (', '.join(writers) or '无'))
+            print('读者: ' + (', '.join(readers) or '无'))
+            if args.survey:
+                report = Path(args.survey)
+                if not report.is_file() or 'SURVEY' not in report.read_text(encoding='utf-8').splitlines()[0]:
+                    print('REFUSED: invalid survey report')
+                    return 2
+            elif kind == 'unknown' or len(writers) > 2 or len(readers) > 6:
+                print('REFUSED: survey report required')
+                return 2
+        except (OSError, ValueError, KeyError, IndexError) as exc:
+            print(f'REFUSED: survey failed: {exc}')
+            return 2
     numbers = [int(p.stem[1:]) for p in cards.glob('C*.md') if re.fullmatch(r'C[0-9]+', p.stem)]
     requested = getattr(args, 'card_id', None)
     if requested and not re.fullmatch(r'C[0-9]+', requested):
@@ -660,6 +712,8 @@ def newcard(args):
         goal = '【PM 明确豁免】测试超过150个先停不适用；只跑 TEST_BUDGET 与点名文件，不做依赖扩展。\n' + goal
     if fixed.get('GOAL_SUFFIX'):
         goal += '\n' + fixed['GOAL_SUFFIX']
+    if survey_summary:
+        goal = survey_summary + '\n' + goal
     entries += [('GOAL', goal)] + [(k, fixed[k]) for k in ('NOT_DO', 'REPORT', 'ACCEPT')]
     card = '\n'.join(f'{k}: {v}' for k, v in entries) + '\n'
     if args.dry_run:
@@ -923,6 +977,7 @@ def land(args):
         print(f'LAND {args.card} merged {sha.group(1)} status failed')
         return status
     print(f"LAND {args.card} merged {sha.group(1)} tests={summary.group(1) if summary else '?'}文件/{summary.group(2) if summary else '?'}个")
+    print('下一步: pm drift')
     return 0
 
 
@@ -1695,6 +1750,7 @@ def main(argv=None):
     new.add_argument('--authorize')
     new.add_argument('--template', choices=('field-unify', 'catalog-retire'))
     new.add_argument('--function')
+    new.add_argument('--survey')
     new.add_argument('--tests', nargs='+')
     new.add_argument('--run', action='store_true')
     new.add_argument('--param', action='append', default=[])

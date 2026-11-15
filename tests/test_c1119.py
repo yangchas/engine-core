@@ -38,7 +38,8 @@ def test_land_success_and_failed_merge_preserves_status(tmp_path, monkeypatch, c
     monkeypatch.setattr(subprocess, 'run', run)
     assert pm.main(['land', 'C1119']) == 0
     assert capsys.readouterr().out.strip() == (f'LAND C1119 using worktree commit {candidate}\n'
-                                               'LAND C1119 merged abcdef123456 tests=8文件/99个')
+                                               'LAND C1119 merged abcdef123456 tests=8文件/99个\n'
+                                               '下一步: pm drift')
     assert calls[0] == [pm.PYTHON, str(pm.ROOT / 'examples/release.py'), 'merge', '--branch', candidate, '--card', 'C1119', '--max-tests-files', '12']
     assert 'STATUS: DONE' in card.read_text()
     card.write_text('STATUS: PARTIAL\n')
