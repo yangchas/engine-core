@@ -524,6 +524,12 @@
             "expire_time": "00:00:00",
             "timezone": "Asia/Shanghai"
           }
+        },
+        {
+          "kind": "td_snapshot",
+          "name": "cold_limit_up_pool_<identity>",
+          "role": "mirror",
+          "note": "best-effort asynchronous cold archive"
         }
       ]
     },
@@ -1929,8 +1935,8 @@
         "INTRADAY_PM",
         "CLOSE_AUCTION"
       ],
-      "cadence": "3-minute schedule checkpoints; input source is Redis q2 (primary, whole session) with TD stock_tick as check/fallback through 09:45:59; checkpoint output is temporary Redis-only and is not persisted to TD or catalog.",
-      "rule": "盘中检查点仅为临时 Redis 输出；不落地到 TD，也不写 catalog 临时分区。",
+      "cadence": "3-minute schedule checkpoints; input source is Redis q2 (primary, whole session) with TD stock_tick as check/fallback through 09:45:59; checkpoint output is published to Redis and archived to TD on a best-effort basis; no catalog partition.",
+      "rule": "盘中检查点以 Redis 为权威，尽力归档至 TD，不写 catalog 临时分区。",
       "freshness": "UNKNOWN",
       "retry": "per guardian_event (until_late/backoff, see C350)",
       "degrade": [],
@@ -1939,7 +1945,7 @@
         "force": "replace the same trade-date and cutoff view",
         "clear": "not provided"
       },
-      "notes": "Checkpoint output is temporary Redis-only; no TD persistence and no catalog temporary partition.",
+      "notes": "Checkpoint output is authoritative in Redis with a best-effort TD cold archive; no catalog temporary partition.",
       "guardian_event": "intraday_33",
       "storage": [
         {
@@ -1953,6 +1959,12 @@
             "expire_time": "00:00:00",
             "timezone": "Asia/Shanghai"
           }
+        },
+        {
+          "kind": "td_snapshot",
+          "name": "cold_intraday_checkpoint_<identity>",
+          "role": "mirror",
+          "note": "best-effort asynchronous cold archive"
         }
       ]
     },

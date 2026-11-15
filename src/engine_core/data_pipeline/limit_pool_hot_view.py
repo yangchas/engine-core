@@ -134,13 +134,13 @@ def expiry_matches(client, key, deadline, now):
 
 
 def publish(day, rows, manifest, *, redis_client=None, prefix='core:view:limit_up_pool',
-            calendar_root=None, clock=None, lock_root=None, lock_held=False, fresh=False):
+            calendar_root=None, clock=None, lock_root=None, lock_held=False, fresh=False, on_write=None):
     """Publish one SET EXAT while serializing pool writers on the local data root."""
     if not lock_held:
         root = lock_root or calendar_root or os.environ.get('CORE_DATA_ROOT') or '~/core-data'
         with pool_lock(root):
             return publish(day, rows, manifest, redis_client=redis_client, prefix=prefix,
-                           calendar_root=calendar_root, clock=clock, lock_held=True, fresh=fresh)
+                           calendar_root=calendar_root, clock=clock, lock_held=True, fresh=fresh, on_write=on_write)
     client = redis_client if redis_client is not None else _client()
     key = _key(day, prefix)
     deadline = deadline_for(day, calendar_root)
@@ -166,6 +166,8 @@ def publish(day, rows, manifest, *, redis_client=None, prefix='core:view:limit_u
                 if not expiry_matches(client, key, deadline, now):
                     if not client.set(key, raw, exat=deadline):
                         raise RuntimeError('pool_set_failed')
+                    if on_write is not None:
+                        on_write(raw, old)
                     repaired = True
                 else:
                     repaired = False
@@ -174,6 +176,8 @@ def publish(day, rows, manifest, *, redis_client=None, prefix='core:view:limit_u
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
     if not client.set(key, encoded, exat=deadline):
         raise RuntimeError('pool_set_failed')
+    if on_write is not None:
+        on_write(encoded, value)
     return {'status': 'published', 'version': value['version'], 'expire_at': deadline}
 
 

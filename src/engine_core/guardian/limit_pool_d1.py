@@ -212,6 +212,19 @@ def run_ladder_once(day: str, root: str | Path, *, schedule_path: str | Path | N
                                                        "reason": "every configured rung failed; pool MISSING"})
 
 
+def _archive_pool(raw, value):
+    try:
+        import hashlib
+        from ..data_pipeline.cold_archive import archive, flush
+        raw = raw if isinstance(raw, bytes) else raw.encode("utf-8")
+        version = value["version"] + ":" + hashlib.sha256(raw).hexdigest()[:16]
+        archive("limit_up_pool", value["trade_date"], version, raw, value)
+        flush(timeout=5.0)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("cold_archive dispatch_failed", exc_info=True)
+
+
 def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool = False,
                   deps: PoolDeps | None = None) -> tuple[int, dict]:
     from ..data_pipeline import limit_pool_hot_view as hot
@@ -251,7 +264,7 @@ def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool
                        {"status": "unchanged", "version": current['version'], "expire_at": deadline}
                        if hot.expiry_matches(client, key, deadline, now) else
                        hot.publish(day, current['rows'], current, redis_client=client,
-                                   calendar_root=deps.calendar_root, clock=deps.now_utc, lock_root=root))
+                                   calendar_root=deps.calendar_root, clock=deps.now_utc, lock_root=root, on_write=_archive_pool))
             return reply(20, "not_applicable", "ALREADY_SATISFIED", False,
                          {"partition": day, "existing_rank": core.PROVIDER_RANK[current['provider']],
                           "wanted_rank": wanted, "source": source, "version": current['version'],
@@ -302,7 +315,7 @@ def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool
                     raise ValueError('td_source_digest_mismatch')
                 recovered['degraded'] = True
                 hot.publish(day, rows, recovered, redis_client=client,
-                            calendar_root=deps.calendar_root, clock=deps.now_utc, lock_root=root)
+                            calendar_root=deps.calendar_root, clock=deps.now_utc, lock_root=root, on_write=_archive_pool)
         except Exception:
             pass  # Recovery is optional; the requested upstream is still tried.
         finally:
@@ -335,7 +348,7 @@ def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool
                 "provider_details": {**partition.manifest.get("provider_details", {}), **extra}}
     try:
         outcome = hot.publish(day, partition.rows, manifest, redis_client=client,
-                              calendar_root=deps.calendar_root, clock=deps.now_utc, lock_root=root, fresh=True)
+                              calendar_root=deps.calendar_root, clock=deps.now_utc, lock_root=root, fresh=True, on_write=_archive_pool)
     except Exception as exc:
         return reply(30, "failed", "HOT_PUBLISH_FAILED", True,
                      {"partition": day, "source": provider, "hot_write": {"status": "error",
