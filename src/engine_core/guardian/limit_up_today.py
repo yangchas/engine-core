@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -208,17 +209,21 @@ def _manifest(day: str, sample_time: datetime, rows: list[dict[str, Any]], *, pr
 
 def _commit(root: Path, day: str, rows: list[dict[str, Any]], manifest: dict[str, Any],
             *, provider: str, clock: Callable[[], datetime]) -> dict[str, Any]:
-    # Transitional catalog commit retained until readers migrate to Redis.
-    committed = ArtifactCatalog(root).commit(core.DATASET, day, rows, manifest, source=provider,
-                                               clock=clock, context={"sample_as_of": manifest["as_of"]})
-    return committed
+    # Preserve the catalog's content identity without writing an artifact.
+    from ..data_pipeline.storage import canonical_json
+    payload = b"\n".join(canonical_json(dict(row)) for row in rows) + (b"\n" if rows else b"")
+    digest = hashlib.sha256(payload).hexdigest()
+    identity = {"payload_sha256": digest, "inputs": dict(manifest["inputs"])}
+    version = "sha256-" + hashlib.sha256(canonical_json(identity)).hexdigest()[:16]
+    return {**manifest, "version": version, "sha256": digest, "row_count": len(rows),
+            "storage_backend": "redis"}
 
 
 def _publish_hot(deps: TodayDeps, manifest: Mapping[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
     try:
         result = (deps.publish_hot or _default_publish_hot)(manifest, rows)
         return dict(result) if isinstance(result, Mapping) else {"status": "unknown"}
-    except Exception as exc:  # noqa: BLE001 - artifact catalog remains the durable commit point
+    except Exception as exc:  # noqa: BLE001 - report publication failure to the caller
         return {"status": "failed", "error": type(exc).__name__}
 
 
@@ -278,9 +283,11 @@ def _redis_sample(day: str, root: Path, deps: TodayDeps, *, as_of: Any = None,
                                   "seal_amount": "UNAVAILABLE_REDIS_FIELD", "limit_pool": quality})
     committed = _commit(root, day, built["rows"], manifest, provider="redis_q2", clock=deps.clock)
     hot = _publish_hot(deps, committed, built["rows"])
+    if hot.get("status") == "failed":
+        return 75, {"contract": 1, "status": "failed", "error_code": "HOT_PUBLISH_FAILED", "retryable": True, "artifacts": [], "detail": hot}
     return (10 if status == "DEGRADED" else 0), {"contract": 1,
             "status": "degraded" if status == "DEGRADED" else "ok", "error_code": "",
-            "retryable": False, "artifacts": [committed["manifest_uri"]],
+            "retryable": False, "artifacts": [],
             "detail": {"version": committed["version"], "as_of": committed["as_of"],
                        "row_count": len(built["rows"]), "business_status": status,
                        "redis_terminal": built["redis_terminal"], "fallback": fallback_policy,
@@ -347,10 +354,12 @@ def _close_confirmation(day: str, root: Path, deps: TodayDeps, args: Mapping[str
                 committed = _commit(root, day, failed_query_redis["rows"], manifest,
                                     provider="redis_q2", clock=deps.clock)
                 hot = _publish_hot(deps, committed, failed_query_redis["rows"])
+                if hot.get("status") == "failed":
+                    return 75, {"contract": 1, "status": "failed", "error_code": "HOT_PUBLISH_FAILED", "retryable": True, "artifacts": [], "detail": hot}
                 cold = _publish_td(deps, committed, failed_query_redis["rows"])
                 return (0 if status == "FORMAL" else 10), {"contract": 1,
                         "status": "ok" if status == "FORMAL" else "degraded", "error_code": "",
-                        "retryable": False, "artifacts": [committed["manifest_uri"]],
+                        "retryable": False, "artifacts": [],
                         "detail": {"version": committed["version"], "as_of": committed["as_of"],
                                    "row_count": len(failed_query_redis["rows"]), "business_status": status,
                                    "redis_terminal": True, "wencai_error": type(exc).__name__,
@@ -426,9 +435,11 @@ def _close_confirmation(day: str, root: Path, deps: TodayDeps, args: Mapping[str
                                   "throttle": throttle, "redis_error": redis_error})
     committed = _commit(root, day, published_rows, manifest, provider=provider, clock=deps.clock)
     hot = _publish_hot(deps, committed, published_rows)
+    if hot.get("status") == "failed":
+        return 75, {"contract": 1, "status": "failed", "error_code": "HOT_PUBLISH_FAILED", "retryable": True, "artifacts": [], "detail": hot}
     cold = _publish_td(deps, committed, published_rows)
     return (0 if formal else 10), {"contract": 1, "status": "ok" if formal else "degraded",
-            "error_code": "", "retryable": False, "artifacts": [committed["manifest_uri"]],
+            "error_code": "", "retryable": False, "artifacts": [],
             "detail": {"version": committed["version"], "as_of": committed["as_of"],
                        "row_count": row_count, "business_status": status,
                        "redis_only": merged["redis_only"], "wencai_only": merged["wencai_only"],
