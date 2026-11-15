@@ -1,6 +1,7 @@
 """Resolve a restorable hot view without confusing unavailable stores with absence."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from datetime import datetime, timezone
@@ -34,7 +35,9 @@ def resolve_presence(dataset, trade_date, *, redis_client=None, cold_store=None)
             return 'MISSING'
         raw = cold_archive.read_envelope(dataset, trade_date, version, store=store)
         value = pool._validate(json.loads(raw), trade_date)
-        if value['version'] != version:
+        payload_version = value['version']
+        hashed_version = payload_version + ':' + hashlib.sha256(raw).hexdigest()[:16]
+        if version not in (payload_version, hashed_version):
             raise ValueError('cold_archive_version_mismatch')
         pool._result(value, 'redis', None, datetime.now(timezone.utc).isoformat(), False, None)
         if not client.set(key, raw, exat=hot_view_expire_at(trade_date), nx=True):

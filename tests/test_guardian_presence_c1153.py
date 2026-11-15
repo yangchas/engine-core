@@ -85,3 +85,22 @@ def test_unreadable_catalog_does_not_break_plan(tmp_path, monkeypatch, caplog):
                                     now="2026-11-13T08:30:00+08:00")
     assert not any(row["action"] == "PLAN_ERROR" for row in result["detail"]["plan"])
     assert any("catalog" in record.message.lower() for record in caplog.records)
+
+
+@pytest.mark.parametrize('version,expected', [
+    ('sha256-382ebc1cd7502951:ba07029b9a6576e8', 'RESTORED_FROM_TD'),
+    ('sha256-382ebc1cd7502951:ba07029b9a6576e9', 'UNKNOWN'),
+])
+def test_presence_production_archive_version(version, expected, monkeypatch):
+    import hashlib
+    from engine_core.guardian.presence import resolve_presence
+
+    assert hashlib.sha256(RAW).hexdigest() == 'ba07029b9a6576e814d8e4846fe50875924fe98b5e473904bdd84ab764f2decb'
+    monkeypatch.setattr('engine_core.data_pipeline.redis_day_view.hot_view_expire_at', lambda _: 2000000000)
+    redis, cold = Redis(), Cold()
+    cold.latest_version = lambda *_: version
+    assert resolve_presence('limit_up_pool', DAY, redis_client=redis, cold_store=cold) == expected
+    if expected == 'RESTORED_FROM_TD':
+        assert redis.values['core:view:limit_up_pool:' + DAY] == RAW
+    else:
+        assert redis.writes == 0
