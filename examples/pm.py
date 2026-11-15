@@ -614,6 +614,30 @@ def newcard(args):
     selected = lint_module().exact_test_list(files, repo)
     context = {**values, 'id': ident, 'test_files': ' '.join(selected)}
     fixed = {k: v.format_map(context) for k, v in recipe['fixed'].items()}
+    if args.authorize:
+        if fixed['ROLE'] != 'runner':
+            print('--authorize requires a runner recipe')
+            if not args.dry_run:
+                os.close(fd)
+                path.unlink()
+            return 2
+        for key in ('AUTHORIZATION', 'NOT_DO'):
+            value = fixed[key]
+            redis_allowed = 'Redis' in args.authorize
+            td_allowed = 'TD' in args.authorize
+            if redis_allowed or td_allowed:
+                remaining = '不写 TD' if redis_allowed and not td_allowed else '不写 Redis' if td_allowed and not redis_allowed else ''
+                value = value.replace('不写 Redis/TD', remaining).replace('不写 Redis、TD', remaining)
+                value = value.replace('只读验收', '验收')
+                if redis_allowed:
+                    value = value.replace('Redis(守卫代理,只读)', 'Redis(守卫代理)')
+                if td_allowed:
+                    value = value.replace('TD(TD_CONFIG,SELECT/SHOW/DESCRIBE)', 'TD(TD_CONFIG)')
+                value = value.replace('不修改代码、配置、数据', '不修改代码、配置')
+            for keyword, restriction in (('联网', '不联网'), ('删键', '不删键'), ('事件', '不触发事件')):
+                if keyword in args.authorize:
+                    value = value.replace(restriction, '')
+            fixed[key] = value + ' 【PM 明确允许】' + args.authorize
     expanded = [str(worktree / x) if not Path(x).is_absolute() else x for x in scope]
     for extra in (location('PM_REPORTS_DIR', '/home/exedev/fw/reports') / (ident + '.md'),
                   location('PM_EVIDENCE_DIR', '/home/exedev/fw/evidence') / ident):
@@ -845,6 +869,17 @@ def land(args):
     if path is None or not re.search(r'^STATUS:', path.read_text(encoding='utf-8'), re.M):
         print(f'LAND {args.card} failed: card or STATUS missing')
         return 2
+    report = location('PM_REPORTS_DIR', '/home/exedev/fw/reports') / (args.card + '.md')
+    lines = report.read_text(encoding='utf-8').splitlines()[:20] if report.is_file() else []
+    opening = '\n'.join(lines)
+    incomplete = (lines and re.search(r'PARTIAL|BLOCKED', lines[0], re.I)
+                  and re.search(r'读取侧尚未收口|尚未完成|未完成|不能合并或发布', opening)
+                  and re.search(r'剩余工作|仍需', opening))
+    if incomplete and not getattr(args, 'force', False):
+        print(f'LAND {args.card} REFUSED: report says work remains')
+        return 1
+    if getattr(args, 'force', False):
+        print(f'LAND {args.card} forced')
     branch = args.card
     refs = []
     for ref in (args.card, 'HEAD'):
@@ -1574,6 +1609,35 @@ def drift(args):
         return 2
 
 
+def catalog_audit():
+    try:
+        try:
+            from engine_core.trade_day_context import load_context
+        except ModuleNotFoundError:
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+            from engine_core.trade_day_context import load_context
+        today = datetime.now(ZoneInfo('Asia/Shanghai')).date()
+        context = load_context(Path('/home/exedev/core-data'), today)
+        recent = context['today'] if context['today_is_trading_day'] else context['prev_trade_date']
+        datasets = json.loads(Path('/home/exedev/core-data/catalog.json').read_text(encoding='utf-8'))['datasets']
+        rows = []
+        for name, data in sorted(datasets.items()):
+            dates = data['dates']
+            latest = max(dates) if dates else None
+            versions = dates[latest] if latest else []
+            as_of = (versions[-1].get('as_of') or 'UNKNOWN') if versions else 'UNKNOWN'
+            count = sum(len(v) for v in dates.values())
+            active = bool(latest and latest >= recent)
+            rows.append((name, count, latest or 'UNKNOWN', as_of, active))
+        for name, count, latest, as_of, active in rows:
+            print(f"{name} {count} {latest} {as_of} {'ACTIVE_WRITE' if active else 'STALE'}")
+        print(f'ACTIVE {sum(row[4] for row in rows)}')
+        return 0
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        print(f'catalog-audit ERROR: {exc}')
+        return 1
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest='command', required=True)
@@ -1628,6 +1692,7 @@ def main(argv=None):
     goals = new.add_mutually_exclusive_group()
     goals.add_argument('--goal')
     goals.add_argument('--goal-file')
+    new.add_argument('--authorize')
     new.add_argument('--template', choices=('field-unify', 'catalog-retire'))
     new.add_argument('--function')
     new.add_argument('--tests', nargs='+')
@@ -1654,7 +1719,9 @@ def main(argv=None):
     cards.add_argument('--open', action='store_true')
     cards.add_argument('--limit', type=int, default=20)
     land_parser = sub.add_parser('land')
+    sub.add_parser('catalog-audit')
     land_parser.add_argument('card')
+    land_parser.add_argument('--force', action='store_true')
     land_parser.add_argument('--max-tests-files', type=int, default=12)
     gate_parser = sub.add_parser('gate')
     gate_parser.add_argument('card')
@@ -1679,6 +1746,8 @@ def main(argv=None):
             command.add_argument('--timeout', type=float, default=1700)
             command.add_argument('--interval', type=float, default=20)
     args = parser.parse_args(argv)
+    if args.command == 'catalog-audit':
+        return catalog_audit()
     if args.command == 'drift':
         return drift(args)
     if args.command == 'land':
