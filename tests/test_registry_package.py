@@ -18,6 +18,10 @@ CHANGED_SINCE_BASELINE = {
     ("hot_plates", "key_fields"): "C583 (PIT keys: plate_code, date, captured_at)",
     ("hot_plates", "primary_backend"): "C1096 (Redis-only hot view)",
     ("hot_plates", "retention_policy"): "C1096 (five trading days)",
+    ("hot_rank", "primary_backend"): "C1188 (Redis-only hot view)",
+    ("hot_rank", "redis_ttl_seconds"): "C1188 (five trading days)",
+    ("hot_rank", "redis_ttl_trade_days"): "C1188 (five trading days)",
+    ("hot_rank", "retention_policy"): "C1188 (five trading days)",
     ("limit_reasons", "source"): "C581 (getHisBans attribution)",
     ("limit_reasons", "key_fields"): "C581 (date, symbol)",
 }
