@@ -129,6 +129,24 @@ def load_dataset(name: str, trade_date: str | None = None, *, prefer: str = "red
             return DatasetRead([], {}, 'none', 'MISSING')
         rows, meta = read(trade_date, now or datetime.now(timezone.utc).isoformat(), redis_client=redis)
         return DatasetRead(rows, meta, meta.get('storage_source', 'none'), meta['status'])
+    if name == "hot_rank":
+        if trade_date is None:
+            return DatasetRead([], {}, 'none', 'UNKNOWN')
+        from .limit_pool_hot_view import _client
+        from ..storage.two_layer import TwoLayerStore
+        client = redis
+        try:
+            if client is None:
+                client = _client()
+            result = TwoLayerStore(client).get(name, trade_date, asof=now)
+            source = {'PRESENT_REDIS': 'redis', 'RESTORED_FROM_TD': 'td'}.get(result.status, 'none')
+            status = 'READY' if source != 'none' else result.status
+            return DatasetRead(result.rows, result.metadata, source, status)
+        except Exception:
+            return DatasetRead([], {}, 'none', 'UNKNOWN')
+        finally:
+            if redis is None and client is not None:
+                client.close()
     if name == "limit_up_pool_today":
         return _read_today_pool(trade_date, redis)
     if name == "hot_plates_gaps":

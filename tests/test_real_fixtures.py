@@ -476,3 +476,54 @@ def test_hot_rank_publish_does_not_create_catalog(tmp_path, monkeypatch):
     assert redis.get('core:view:hot_rank:2026-10-23') is not None
     assert not (tmp_path / 'catalog.json').exists()
     assert not list(tmp_path.rglob('*.jsonl.gz'))
+
+
+def test_hot_rank_guardian_presence_ignores_catalog_real_snapshot(tmp_path, monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from engine_core.data_pipeline import cold_archive, hot_rank_view
+    from engine_core.data_pipeline.jobs import JobRunner, JobState
+    from engine_core.guardian import presence
+    from engine_core.guardian.registry import load_registry, stale_items
+    from engine_core.guardian.reconcile_plan import reconcile_plan
+
+    class RedisMemory:
+        def __init__(self): self.values = {}
+        def get(self, key): return self.values.get(key)
+        def set(self, key, value, **kwargs): self.values[key] = value; return True
+    class EmptyCold:
+        def latest_version(self, dataset, day): return None
+    redis, cold = RedisMemory(), EmptyCold()
+    archives = []
+    monkeypatch.setattr(cold_archive, 'archive', lambda *args: archives.append(args) or True)
+    monkeypatch.setattr(hot_rank_view, 'hot_view_expire_at', lambda day: 2000000000)
+    day = '2026-10-23'
+    rows = ThsHotRankProvider.normalize(load('ths_hot_rank_'))
+    JobRunner(artifact_root=tmp_path, redis=redis, state=JobState()).run(
+        'hot_rank', day, fetch=lambda _: rows, now=day + 'T14:41:00+08:00',
+        source='ths_hot_rank', publish=True)
+    resolve = presence.resolve_presence
+    monkeypatch.setattr(presence, 'resolve_presence', lambda dataset, date, **kwargs:
+                        resolve(dataset, date, redis_client=redis, cold_store=cold))
+    item = next(item for item in load_registry() if item['id'] == 'hot_rank')
+    now = datetime(2026, 10, 23, 15, tzinfo=ZoneInfo('Asia/Shanghai'))
+    empty = {'datasets': {}}
+    assert resolve('hot_rank', day, redis_client=redis, cold_store=cold) == 'PRESENT_REDIS'
+    from engine_core.data_pipeline.reader import load_dataset
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    loaded = load_dataset('hot_rank', day, redis=redis, catalog=ArtifactCatalog(tmp_path))
+    assert loaded.status == 'READY' and len(loaded.rows) == len(rows)
+    raw = redis.values.pop('core:view:hot_rank:' + day)
+    class ArchivedCold:
+        def latest_version(self, dataset, date): return archives[0][2]
+    monkeypatch.setattr(cold_archive, 'read_envelope', lambda *args, **kwargs: archives[0][3])
+    assert resolve('hot_rank', day, redis_client=redis, cold_store=ArchivedCold()) == 'RESTORED_FROM_TD'
+    assert not redis.values
+    redis.values['core:view:hot_rank:' + day] = raw
+    assert stale_items(now, empty, [item], trade_date=day)[0]['status'] == 'OK'
+    assert reconcile_plan(now, empty, trade_date=day, prev_trade_date='2026-10-22',
+                          phase='INTRADAY_PM', registry=[item]) == []
+    redis.values.clear()
+    assert stale_items(now, empty, [item], trade_date=day)[0]['status'] == 'OVERDUE'
+    assert not any(row['action'] == 'FETCH_NOW' for row in reconcile_plan(
+        now, empty, trade_date=day, prev_trade_date='2026-10-22', phase='INTRADAY_PM', registry=[item]))

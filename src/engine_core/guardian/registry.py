@@ -340,11 +340,14 @@ def stale_items(now: datetime, catalog: str | Path | Mapping[str, Any],
             result.append({"id": item["id"], "status": "RETIRED", "dataset": dataset,
                            "reason": str(item["retired"].get("reason", ""))[:120]})
             continue
-        if item["id"] in {"limit_up_pool", "limit_up_pool_today"}:
+        if item["id"] in {"limit_up_pool", "limit_up_pool_today", "hot_rank"}:
             from .presence import resolve_presence
             partition = prev_trade_date if item["id"] == "limit_up_pool" else day
             presence = resolve_presence(item["id"], partition) if partition else "UNKNOWN"
             status = "OK" if presence in {"PRESENT_REDIS", "RESTORED_FROM_TD"} else presence
+            if item["id"] == "hot_rank" and status == "MISSING":
+                hh, mm = (int(part) for part in rule["expected_by"].split(":"))
+                status = "OVERDUE" if (now.hour, now.minute) >= (hh, mm) else "PENDING"
             result.append({"id": item["id"], "dataset": item["id"], "status": status,
                            "partition": partition,
                            **({"reason": getattr(presence, "reason", None) or "corrupt_presence"}
