@@ -70,7 +70,8 @@ def test_hot_plates_requires_redis_and_does_not_write_catalog(tmp_path, monkeypa
     runner = JobRunner(artifact_root=tmp_path, state=JobState(), redis=redis)
     result = runner.run('hot_plates', view['trade_date'],
                         fetch=lambda _day: {**view, 'expected_count': len(view['rows'])},
-                        now=view['captured_at'], source=view['source'], publish=True)
+                        now=view['captured_at'], available_at=view['committed_at'],
+                        source=view['source'], publish=True)
     spec = get_dataset('hot_plates')
     assert spec.primary_backend == 'redis' and spec.redis_ttl_trade_days == 5
     registry = json.loads((Path(__file__).parents[1] / 'src/engine_core/guardian/datasets.registry.json').read_text())
@@ -83,7 +84,26 @@ def test_hot_plates_requires_redis_and_does_not_write_catalog(tmp_path, monkeypa
     assert result.manifest['cache_publish'] == 'READY'
     version_key = f"core:cache:data:hot_plates:{view['trade_date']}:{result.manifest['version']}"
     assert abs(time.time() + redis.expiries[version_key] - expire_at(view['trade_date'])) < 3
-    assert len(json.loads(redis.values[version_key])['rows']) == 243
+    written = json.loads(redis.values[version_key])
+    assert len(written['rows']) == 243
+    from datetime import datetime
+    def standardized(value):
+        parsed = datetime.fromisoformat(value)
+        assert value == parsed.isoformat(timespec='seconds')
+        assert value.endswith('+08:00')
+    for field in ('captured_at', 'available_at', 'fetched_at', 'declared_available_at', 'committed_at'):
+        if written.get(field) is not None:
+            standardized(written[field])
+    from zoneinfo import ZoneInfo
+    assert written['declared_available_at'] == datetime.fromisoformat(view['committed_at']).astimezone(
+        ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds')
+    for row in written['rows']:
+        for field in ('captured_at', 'available_at'):
+            standardized(row[field])
+    assert {'schema_version', 'dataset', 'trade_date', 'source', 'version', 'captured_at',
+            'available_at', 'row_count', 'rows'} <= written.keys()
+    assert json.loads(redis.values[f"core:cache:data:hot_plates:{view['trade_date']}"]) == {
+        'manifest': None, 'trade_date': view['trade_date'], 'version': written['version']}
     assert not (tmp_path / 'catalog.json').exists()
     assert not (tmp_path / 'hot_plates').exists()
 
