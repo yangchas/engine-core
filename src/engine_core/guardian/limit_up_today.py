@@ -46,16 +46,16 @@ class _VerifiedPipeline:
     def __init__(self, client):
         self.client, self.plan = client, []
 
-    def set(self, key, value, ex):
-        self.plan.append((key, value, ex))
+    def set(self, key, value, exat):
+        self.plan.append((key, value, exat))
         return self
 
     def execute(self):
         originals = {key: (self.client.get(key), self.client.ttl(key)) for key, _, _ in self.plan}
         written = []
         try:
-            for key, value, ttl in self.plan:
-                self.client.set(key, value, ex=ttl)
+            for key, value, deadline in self.plan:
+                self.client.set(key, value, exat=deadline)
                 written.append((key, value))
             for key, value, _ in self.plan:
                 actual = self.client.get(key)
