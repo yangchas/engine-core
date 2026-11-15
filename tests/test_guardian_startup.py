@@ -172,9 +172,12 @@ def test_historical_hot_plates_is_reconciled_separately_from_daily_capture():
                           trade_date="2026-10-21", prev_trade_date="2026-10-20",
                           phase="MIDDAY_BREAK", registry=items)
     prior = [item for item in plan if item["id"] == "hot_plates_yesterday"]
-    assert len(prior) == 1
-    # Kaipan history cannot return a past day's plates (see Client below), so D-1 is a recorded gap, never a fetch.
-    assert prior[0]["action"] == "GAP" and prior[0]["partition"] == "2026-10-20"
+    # Redis-backed history is handled by the scheduled history capture, not catalog reconciliation.
+    assert prior == []
+    history = next(item for item in items if item["id"] == "hot_plates_yesterday")
+    assert history["artifact"]["redis_dataset"] == "hot_plates"
+    assert history["guardian_event"] == "hot_plates_history_0815"
+    assert history["late_policy"]["mode"] == "gap_only"
 
     class Client:
         def get_his_plates(self, *_args):

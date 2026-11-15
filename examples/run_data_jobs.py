@@ -794,7 +794,7 @@ def main(argv: list[str] | None = None, *, now_fn=None) -> int:
     setup_started = time.monotonic()
     try:
         redis = None
-        if args.write:
+        if args.write or (args.execute and "hot_plates" in names):
             import redis as redis_package
             redis = redis_package.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
         td_adapter = adapters.get("td_writer") if args.td_write else None
@@ -885,7 +885,7 @@ def main(argv: list[str] | None = None, *, now_fn=None) -> int:
             for target_date in hot_history_dates:
                 job_started = time.monotonic()
                 try:
-                    result = runner.run(name, target_date, fetch=adapters[name], publish=False,
+                    result = runner.run(name, target_date, fetch=adapters[name], publish=bool(args.write or args.execute),
                         td_write=False, source=get_dataset(name).source,
                         dry_run=not (args.write or args.execute))
                 except Exception as exc:

@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 from engine_core.data_pipeline.hot_plates_builder import build_hot_plates
-from engine_core.data_pipeline.dataset_contract import check_partition
+from engine_core.data_pipeline import dataset_contract as contract
+from engine_core.data_pipeline.storage import ArtifactCatalog, canonical_json
 from engine_core.data_pipeline.jobs import JobRunner
 
 
@@ -65,24 +66,52 @@ def test_builder_requires_matching_response_day_evidence(day):
         build_hot_plates(_request(response))
 
 
-def test_hot_plates_partition_passes_dataset_contract(tmp_path):
+class _Redis:
+    def __init__(self):
+        self.values = {}
+    def get(self, key):
+        return self.values.get(key)
+    def set(self, key, value, ex=None):
+        self.values[key] = value
+    def delete(self, key):
+        self.values.pop(key, None)
+
+
+@pytest.fixture
+def redis_runner(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import jobs
+    monkeypatch.setenv("CORE_DATA_ROOT", str(Path.home() / "core-data"))
+    monkeypatch.setattr(jobs.time, "time", lambda: 1792764000.0)
+    redis = _Redis()
+    return JobRunner(artifact_root=tmp_path, redis=redis), redis
+
+
+def test_hot_plates_partition_passes_dataset_contract(tmp_path, redis_runner):
     response = json.loads(FIXTURE.read_text(encoding="utf-8"))
     built = build_hot_plates(_request(response))
-    runner = JobRunner(artifact_root=tmp_path)
+    runner, redis = redis_runner
     result = runner.run("hot_plates", "2026-10-23",
         fetch=lambda _day: {**built.manifest, "rows": built.rows, "request_count": 1},
         now="2026-10-23T14:41:16+08:00", as_of="2026-10-23",
-        source="kaipan_getHisPlates")
-
-    report = check_partition(tmp_path, "hot_plates", "2026-10-23")
+        source="kaipan_getHisPlates", publish=True)
+    view = json.loads(redis.values[f"core:cache:data:hot_plates:2026-10-23:{result.manifest['version']}"])
+    rows = view["rows"]
+    raw = b"\n".join(canonical_json(row) for row in rows) + b"\n"
+    report = contract.Report("hot_plates", "2026-10-23", tmp_path)
+    spec = contract.apply_provider_overrides(contract.load_spec("hot_plates"), view.get("provider"))
+    contract._check_manifest(report, "hot_plates", "2026-10-23", view, view, rows, raw, spec)
+    contract._check_rows(report, "2026-10-23", view, rows, spec)
+    contract._check_coverage(report, ArtifactCatalog(tmp_path), "2026-10-23", view, rows, spec)
+    contract._check_idempotency(report, view, rows, raw, spec)
     assert report.passed, report.summary()
     assert report.stats["response_total_coverage"]["denominator"] == 240
-    assert result.manifest["available_at"] == result.manifest["captured_at"]
+    assert view["available_at"] == view["captured_at"]
+    assert not (tmp_path / "catalog.json").exists()
 
 
-def test_each_capture_appends_a_distinct_same_day_version(tmp_path):
+def test_each_capture_appends_a_distinct_same_day_version(tmp_path, redis_runner):
     response = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    runner = JobRunner(artifact_root=tmp_path)
+    runner, redis = redis_runner
     versions = []
     for captured_at, event_id in (
         ("2026-10-23T09:16:15+08:00", "kaipan_hot_091610"),
@@ -93,12 +122,10 @@ def test_each_capture_appends_a_distinct_same_day_version(tmp_path):
         result = runner.run("hot_plates", "2026-10-23",
             fetch=lambda _day, _ctx=None, built=built: {**built.manifest, "rows": built.rows,
                                                          "request_count": 1},
-            now=captured_at, as_of="2026-10-23", source="kaipan_getHisPlates")
+            now=captured_at, as_of="2026-10-23", source="kaipan_getHisPlates", publish=True)
         versions.append(result.manifest["version"])
-
-    catalog = json.loads((tmp_path / "catalog.json").read_text(encoding="utf-8"))
-    entries = catalog["datasets"]["hot_plates"]["dates"]["2026-10-23"]
-    assert len(entries) == 2
+    prefix = "core:cache:data:hot_plates:2026-10-23"
     assert versions[0] != versions[1]
-    assert [entry["version"] for entry in entries] == versions
-    assert catalog["datasets"]["hot_plates"]["latest"]["version"] == versions[-1]
+    assert all(json.loads(redis.values[f"{prefix}:{version}"])["version"] == version for version in versions)
+    assert json.loads(redis.values[prefix])["version"] == versions[-1]
+    assert not (tmp_path / "catalog.json").exists()
