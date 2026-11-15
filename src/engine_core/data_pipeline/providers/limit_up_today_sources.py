@@ -124,18 +124,35 @@ def publish_hot_snapshot(manifest: Mapping[str, Any], rows: list[dict[str, Any]]
     from ..registry import get_dataset
     from ..redis_day_view import hot_view_expire_at, _now_timestamp
     from ..storage import canonical_json
+    from ..hot_plates_gaps import _parse_time
 
     spec = get_dataset("limit_up_pool_today")
     day = date.fromisoformat(str(manifest["trade_date"])).isoformat()
     deadline = hot_view_expire_at(day)
     ttl_seconds = max(0, deadline - int(_now_timestamp()))
-    as_of = str(manifest["as_of"])
+    def instant(value: Any) -> str:
+        return _parse_time(str(value), day).isoformat(timespec="seconds")
+
+    as_of = instant(manifest["as_of"])
     version = str(manifest["version"])
     namespace = f"core:cache:data:{spec.name}"
     version_key = f"{namespace}:{day}:{version}"
     date_key = f"{namespace}:{day}"
     latest_key = f"{namespace}:latest"
-    payload = {**dict(manifest), "rows": rows}
+    payload = {**dict(manifest), "rows": [dict(row) for row in rows]}
+    for field in ("captured_at", "available_at", "fetched_at", "declared_available_at",
+                  "as_of", "source_asof", "committed_at"):
+        if payload.get(field) not in (None, "", "UNKNOWN"):
+            payload[field] = instant(payload[field])
+    if isinstance(payload.get("inputs"), Mapping):
+        payload["inputs"] = dict(payload["inputs"])
+        if payload["inputs"].get("sample_as_of"):
+            payload["inputs"]["sample_as_of"] = instant(payload["inputs"]["sample_as_of"])
+    for row in payload["rows"]:
+        for field in ("as_of", "source_ts"):
+            if row.get(field):
+                row[field] = instant(row[field])
+    payload["row_count"] = len(payload["rows"])
     version_json = canonical_json(payload).decode("utf-8")
     if len(version_json.encode("utf-8")) > spec.max_redis_payload_bytes:
         raise ValueError("redis_payload_budget_exceeded")
@@ -166,17 +183,20 @@ def publish_hot_snapshot(manifest: Mapping[str, Any], rows: list[dict[str, Any]]
             current_day = str(current.get("trade_date") or "")
             if candidate_day != current_day:
                 return candidate_day > current_day
-            return str(candidate.get("as_of") or "") >= str(current.get("as_of") or "")
+            candidate_time, current_time = candidate.get("as_of"), current.get("as_of")
+            if not candidate_time or not current_time:
+                return str(candidate_time or "") >= str(current_time or "")
+            return instant(candidate_time) >= instant(current_time)
 
         date_pointer = _json_at(date_key)
-        if date_pointer and not _newer({"trade_date": day, "as_of": as_of}, date_pointer):
+        if date_pointer and not _newer({"trade_date": day, "as_of": manifest["as_of"]}, date_pointer):
             return {"status": "superseded", "key": date_key, "ttl_seconds": ttl_seconds}
         date_json = canonical_json({"trade_date": day, "version": version,
                                     "manifest": manifest.get("manifest_uri"), "as_of": as_of}).decode("utf-8")
         plan = [(version_key, version_json), (date_key, date_json)]
         if str(manifest.get("business_status")) == "FORMAL":
             latest = _json_at(latest_key)
-            candidate = {"trade_date": day, "as_of": as_of}
+            candidate = {"trade_date": day, "as_of": manifest["as_of"]}
             if not latest or _newer(candidate, latest):
                 latest_json = canonical_json({"trade_date": day, "version": version,
                                               "manifest": manifest.get("manifest_uri"),

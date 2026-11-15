@@ -61,7 +61,7 @@ def _source_time(raw_ms: Any) -> tuple[int, str] | None:
         return None
     millis = int(value)
     try:
-        stamp = datetime.fromtimestamp(millis / 1000, tz=SHANGHAI).isoformat(timespec="milliseconds")
+        stamp = datetime.fromtimestamp(millis / 1000, tz=SHANGHAI).isoformat(timespec="seconds")
     except (OverflowError, OSError, ValueError):
         return None
     return millis, stamp
@@ -139,7 +139,7 @@ def build_redis_pool(trade_date: str, as_of: str | datetime,
         rows.append({
             "symbol": symbol,
             "date": day,
-            "as_of": cutoff.isoformat(timespec="milliseconds"),
+            "as_of": cutoff.isoformat(timespec="seconds"),
             "pct": float(pct),
             "limit_up": True,
             "limit_price": float(limit_price),
@@ -159,7 +159,7 @@ def build_redis_pool(trade_date: str, as_of: str | datetime,
     if counters["valid_quote"] == 0:
         raise ValueError("q2_snapshot_has_no_point_in_time_quotes")
     return {"rows": sorted(rows, key=lambda row: row["symbol"]), "quality": counters,
-            "redis_terminal": terminal, "as_of": cutoff.isoformat(timespec="milliseconds")}
+            "redis_terminal": terminal, "as_of": cutoff.isoformat(timespec="seconds")}
 
 
 def _record_symbol(record: Mapping[str, Any]) -> str | None:
@@ -253,7 +253,7 @@ def merge_confirmations(redis_rows: Sequence[Mapping[str, Any]] | None,
                         wencai_rows: Sequence[Mapping[str, Any]], trade_date: str,
                         as_of: str | datetime) -> dict[str, Any]:
     """Join the low-frequency WenCai confirmation to the Redis snapshot; preserve one-sided members."""
-    cutoff = _local_datetime(as_of).isoformat(timespec="milliseconds")
+    cutoff = _local_datetime(as_of).isoformat(timespec="seconds")
     redis_by_symbol = {str(row["symbol"]): dict(row) for row in (redis_rows or [])}
     wencai_by_symbol = {str(row["symbol"]): dict(row) for row in wencai_rows}
     output: list[dict[str, Any]] = []
