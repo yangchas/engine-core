@@ -147,7 +147,9 @@ class TwoLayerStore:
             return StoreResult(status=status, rows=value['rows'], metadata=value, version=value['version'])
         except (ValueError, KeyError, TypeError, cold_archive.CorruptArchive) as exc:
             return StoreResult(status='CORRUPT', reason=str(exc))
-        except Exception:
+        except Exception as exc:
+            if cold_archive.is_missing_table_error(exc):
+                return StoreResult(status='MISSING')
             return StoreResult(status='UNKNOWN', reason='read_failed')
         finally:
             if store is not None and self.cold is None:

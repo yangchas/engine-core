@@ -11,6 +11,22 @@ RAW = (Path(__file__).parent / 'fixtures/real/c1147/limit_up_pool_1112_formal.js
 DAY = '2026-11-12'
 
 
+def test_hot_rank_missing_td_table_is_missing(monkeypatch):
+    from engine_core.guardian.presence import resolve_presence
+
+    error = json.loads((Path(__file__).parent / 'fixtures/real/td/errors/table_does_not_exist.json').read_text())
+
+    class Redis:
+        def get(self, key):
+            return None
+
+    class Cold:
+        def latest_version(self, dataset, day):
+            raise RuntimeError(error['message'])
+
+    assert resolve_presence('hot_rank', DAY, redis_client=Redis(), cold_store=Cold()) == 'MISSING'
+
+
 def test_previous_pool_without_catalog_is_planned_from_storage():
     assert json.loads(RAW)['trade_date'] == DAY
     item = next(item for item in load_registry() if item['id'] == 'limit_up_pool')

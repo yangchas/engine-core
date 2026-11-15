@@ -22,6 +22,13 @@ class CorruptArchive(ValueError):
 _DATASET = re.compile(r'^[a-z][a-z0-9_]{0,40}$')
 
 
+def is_missing_table_error(exc: BaseException) -> bool:
+    """Return true only for TD's explicit missing-table errors."""
+    text = str(exc).lower()
+    return ('0x2603' in text or 'table does not exist' in text or
+            'fail to get table info' in text)
+
+
 def _table(dataset: str, day: str, version: str) -> str:
     if not _DATASET.fullmatch(dataset):
         raise ValueError('invalid_archive_dataset')
