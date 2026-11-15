@@ -155,7 +155,15 @@ def _step(name: str, dataset: str, day: str | None, catalog: ArtifactCatalog,
 
 
 def _latest_step(name: str, dataset: str, before: str, catalog: ArtifactCatalog,
-                 *, asof: str) -> dict[str, Any]:
+                 *, asof: str, redis: Any = None) -> dict[str, Any]:
+    if dataset == "hot_rank":
+        from .storage.two_layer import TwoLayerStore
+        result = TwoLayerStore(redis).get(dataset, before, asof=asof)
+        ready = result.status in {"PRESENT_REDIS", "RESTORED_FROM_TD"}
+        return {"step": name, "dataset": dataset, "trade_date": before if ready else None,
+                "status": "READY" if ready else result.status, "reason": result.reason,
+                "row_count": len(result.rows) if ready else None, "version": result.version,
+                "elapsed_ms": 0}
     indexed = catalog.read().get("datasets", {}).get(dataset, {}).get("dates", {})
     days = sorted(day for day in indexed if day <= before and _manifest(catalog, dataset, day, asof=asof))
     item = _step(name, dataset, days[-1] if days else None, catalog, asof=asof,
@@ -567,7 +575,7 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
               reason="previous_trade_date_unavailable" if previous is None else None),
         _step("hot_plates", "hot_plates", previous, catalog, asof=asof,
               reason="previous_trade_date_unavailable" if previous is None else None),
-        _latest_step("hot_rank", "hot_rank", trade_date, catalog, asof=asof),
+        _latest_step("hot_rank", "hot_rank", trade_date, catalog, asof=asof, redis=client),
         _step("plate_members", "plate_members", previous, catalog, asof=asof,
               reason="previous_trade_date_unavailable" if previous is None else None),
         _step("auction_baseline", "auction_baseline", trade_date, catalog, asof=asof,
@@ -705,7 +713,7 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                     errors.append(job + ":COMMAND_FAILED")
                     error_codes.append(_declared_code(out))
                     error_steps.append({"step": job, "code": error_codes[-1]})
-        if not _latest_step("hot_rank", "hot_rank", trade_date, catalog, asof=asof)["trade_date"]:
+        if _latest_step("hot_rank", "hot_rank", trade_date, catalog, asof=asof, redis=client)["status"] == "MISSING":
             started = time.monotonic()
             rc, out = _run(repo, "capture_ths_hot_rank.py", ["--execute", "--artifact-root", str(root)])
             timings["hot_rank"] = round((time.monotonic() - started) * 1000, 3)
@@ -788,7 +796,7 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
             if item["status"] == "SKIPPED_REASON":
                 continue
             if item["step"] == "hot_rank":
-                revised = _latest_step("hot_rank", "hot_rank", trade_date, fresh, asof=asof)
+                revised = _latest_step("hot_rank", "hot_rank", trade_date, fresh, asof=asof, redis=client)
             else:
                 cutoff = (max((asof, members_fill_cutoff), key=_pit_time)
                           if dataset == "plate_members" and members_fill_cutoff else asof)

@@ -103,14 +103,15 @@ def test_hot_rank_slice_selects_latest_core_capture_not_after_asof(tmp_path):
 
     reader = SliceReader(SliceProviders(catalog=catalog, redis=Redis(), file_fallback=False).providers())
     result = reader.get("hot_rank", trade_date="2026-10-17", asof="2026-10-17T10:30:00+08:00")
-    assert result.meta["source"] == "core_data"
-    assert result.meta["status"] == "READY"
-    assert [row["symbol"] for row in result.rows] == ["000001"]
+    assert result.meta["source"] == "ths_hot_rank"
+    assert result.meta["status"] == "UNKNOWN"
+    assert result.meta["lineage"][0]["store_status"] == "UNKNOWN"
+    assert [row["symbol"] for row in result.rows] == ["000099"]
     no_redis = SliceReader(SliceProviders(catalog=catalog, redis=None,
                                          file_fallback=False).providers())
     next_day = no_redis.get("hot_rank", trade_date="2026-10-18",
                             asof="2026-10-18T09:00:00+08:00")
-    assert next_day.meta["status"] == "MISSING"
+    assert next_day.meta["status"] == "UNKNOWN"
     assert next_day.rows == []
 
 

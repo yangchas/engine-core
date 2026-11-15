@@ -386,3 +386,69 @@ def test_hot_rank_real_snapshot_two_layer(tmp_path, monkeypatch):
     assert failed.manifest['cache_publish'] == 'READY'
     assert (tmp_path / 'failure' / 'catalog.json').exists()
     assert failed_redis.get('core:cache:data:hot_rank:2026-10-23') is not None
+
+
+def test_hot_rank_readers_use_two_layer_real_snapshot(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import cold_archive, hot_rank_view
+    from engine_core.data_pipeline.jobs import JobRunner, JobState
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.prep_trade_day import _latest_step
+    from engine_core.slices import SliceProviders, SliceReader
+
+    class RedisMemory:
+        def __init__(self): self.values = {}
+        def get(self, key): return self.values.get(key)
+        def set(self, key, value, **kwargs): self.values[key] = value; return True
+        def type(self, key): return 'none'
+    class EmptyCold:
+        def latest_version(self, dataset, day): return None
+        def close(self): pass
+
+    monkeypatch.setattr(cold_archive, '_enabled', lambda: True)
+    monkeypatch.setattr(cold_archive, 'TdStore', EmptyCold)
+    monkeypatch.setattr(cold_archive, 'archive', lambda *args: True)
+    monkeypatch.setattr(hot_rank_view, 'hot_view_expire_at', lambda day: 2000000000)
+    redis = RedisMemory()
+    catalog = ArtifactCatalog(tmp_path)
+    day, asof = '2026-10-23', '2099-10-23T15:00:00+08:00'
+    rows = ThsHotRankProvider.normalize(load('ths_hot_rank_'))
+    JobRunner(artifact_root=tmp_path, redis=redis, state=JobState()).run(
+        'hot_rank', day, fetch=lambda _: rows, now='2026-10-23T14:41:00+08:00',
+        source='ths_hot_rank', publish=True)
+    def check():
+        sliced = SliceReader(SliceProviders(catalog=catalog, redis=redis).providers()).get('hot_rank', trade_date=day, asof=asof)
+        prep = _latest_step('hot_rank', 'hot_rank', day, catalog, asof=asof, redis=redis)
+        return sliced, prep
+    sliced, prep = check()
+    assert len(sliced.rows) == prep['row_count'] == len(rows)
+    redis.values.pop('core:view:hot_rank:' + day)
+    sliced, prep = check()
+    assert sliced.meta['status'] == prep['status'] == 'MISSING'
+    assert sliced.rows == [] and prep['trade_date'] is None
+    redis.values['core:view:hot_rank:' + day] = '{}'
+    sliced, prep = check()
+    assert sliced.meta['status'] == 'DEGRADED' and sliced.meta['reason'].startswith('CORRUPT:')
+    assert prep['status'] == 'CORRUPT'
+    redis.values.pop('core:view:hot_rank:' + day)
+    monkeypatch.setattr(cold_archive, '_enabled', lambda: False)
+    sliced, prep = check()
+    assert sliced.meta['status'] == prep['status'] == 'UNKNOWN'
+
+
+def test_hot_rank_legacy_fallback_marks_unknown_store(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import cold_archive
+    from engine_core.slices import SliceProviders, SliceReader
+
+    rows = ThsHotRankProvider.normalize(load('ths_hot_rank_'))
+    class RedisMemory:
+        def get(self, key): return None
+        def hgetall(self, key):
+            return {row['symbol']: json.dumps(row) for row in rows} if key == 'cache:hot_rank:2026-10-23' else {}
+    monkeypatch.setattr(cold_archive, '_enabled', lambda: False)
+    result = SliceReader(SliceProviders(artifact_root=tmp_path, redis=RedisMemory()).providers()).get(
+        'hot_rank', trade_date='2026-10-23', asof='2099-10-23T15:00:00+08:00')
+    assert result.meta['status'] == 'UNKNOWN'
+    assert result.meta['source'] == 'ths_hot_rank'
+    assert result.meta['legacy_dependency'] is True
+    assert result.meta['lineage'][0]['store_status'] == 'UNKNOWN'
+    assert len(result.rows) == len(rows)
