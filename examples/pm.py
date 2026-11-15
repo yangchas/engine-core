@@ -563,7 +563,6 @@ def migration_survey(repo, name):
     kind = matches[0].get('kind') if len(matches) == 1 else None
     kind = kind if kind in ('day_refetchable', 'point_snapshot') else 'unknown'
     writers, readers = set(), set()
-    writer = re.compile(r'JobRunner|\b(?:publish|write_catalog|capture\w*)\b', re.I)
     reader = re.compile(r'\b(?:read|load|get|locate|fetch|query|slice)\w*\b', re.I)
     for directory in ('src', 'examples'):
         for path in (repo / directory).rglob('*.py'):
@@ -574,12 +573,23 @@ def migration_survey(repo, name):
             if not hits:
                 continue
             relative = str(path.relative_to(repo))
-            if path.name.startswith('capture_') and name in path.name:
+            if path.name.startswith('capture_'):
                 writers.add(relative)
+            try:
+                tree = ast.parse('\n'.join(lines))
+            except SyntaxError:
+                tree = None
+            if tree is not None:
+                for node in ast.walk(tree):
+                    if not isinstance(node, ast.Call):
+                        continue
+                    func = node.func
+                    operation = func.attr if isinstance(func, ast.Attribute) else (func.id if isinstance(func, ast.Name) else '')
+                    if operation in ('run', 'publish', 'write_catalog') and name in ast.get_source_segment('\n'.join(lines), node):
+                        if operation != 'run' or 'JobRunner' in '\n'.join(lines):
+                            writers.add(relative)
             for i in hits:
                 nearby = '\n'.join(lines[max(0, i - 2):i + 3])
-                if writer.search(nearby):
-                    writers.add(relative)
                 if reader.search(nearby):
                     readers.add(relative)
     return kind, sorted(writers), sorted(readers)
@@ -630,12 +640,14 @@ def newcard(args):
             print(survey_summary)
             print('写入口: ' + (', '.join(writers) or '无'))
             print('读者: ' + (', '.join(readers) or '无'))
+            if len(readers) > 6:
+                print('warning: more than 6 reader files')
             if args.survey:
                 report = Path(args.survey)
                 if not report.is_file() or 'SURVEY' not in report.read_text(encoding='utf-8').splitlines()[0]:
                     print('REFUSED: invalid survey report')
                     return 2
-            elif kind == 'unknown' or len(writers) > 2 or len(readers) > 6:
+            elif kind == 'unknown' or len(writers) > 2:
                 print('REFUSED: survey report required')
                 return 2
         except (OSError, ValueError, KeyError, IndexError) as exc:

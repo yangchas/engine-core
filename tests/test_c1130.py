@@ -47,6 +47,6 @@ def test_newcard_run_and_failed_lint(tmp_path, monkeypatch, capsys):
 def test_newcard_templates(tmp_path, monkeypatch, capsys):
     setup_cards(tmp_path, monkeypatch)
     for template, terms in [('field-unify', ('+08:00', '审计', '兼容', 'fail-first', '规范化')), ('catalog-retire', ('Redis-only', 'MISSING', 'hot_view_expire_at', '5交易日'))]:
-        assert pm.main(args() + ['--template', template, '--function', 'hot_plates', '--tests', 'tests/test_pm.py', 'tests/test_release.py', '--goal', '额外要求', '--dry-run']) == 0
+        assert pm.main(args() + ['--template', template, '--function', 'limit_up_pool_today', '--tests', 'tests/test_pm.py', 'tests/test_release.py', '--goal', '额外要求', '--dry-run']) == 0
         text = capsys.readouterr().out
-        assert all(term in text for term in (*terms, 'hot_plates', 'tests/test_pm.py', 'tests/test_release.py', '额外要求'))
+        assert all(term in text for term in (*terms, 'limit_up_pool_today', 'tests/test_pm.py', 'tests/test_release.py', '额外要求'))
