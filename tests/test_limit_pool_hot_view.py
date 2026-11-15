@@ -65,6 +65,7 @@ def test_pool_degraded_hit_and_dry_run(source, wanted, scenario, tmp_path, monke
 
     day = '2026-10-26'
     clock = lambda: datetime(2026, 10, 29, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr('engine_core.data_pipeline.redis_day_view._now_timestamp', lambda: clock().timestamp())
     fixture_root = Path(__file__).parent / 'fixtures'
     if source == 'wencai':
         doc = json.loads((fixture_root / 'real/wencai_limit_up_pool_2026-10-26_0539.json').read_text())
@@ -127,6 +128,8 @@ def test_pool_degraded_hit_and_dry_run(source, wanted, scenario, tmp_path, monke
 
 @pytest.mark.parametrize('day', ['2026-10-26'])
 def test_pool_producer_publishes_hot_view(day, tmp_path, monkeypatch):
+    monkeypatch.setattr('engine_core.data_pipeline.redis_day_view._now_timestamp',
+                        lambda: datetime(2026, 10, 27, 1, tzinfo=timezone.utc).timestamp())
     from engine_core.guardian.registry import _validate_storage, load_registry
     view = {'kind': 'redis_view', 'role': 'view', 'name': 'core:view:limit_up_pool:{date}'}
     retention = {'kind': 'trading_days', 'count': 5, 'anchor': 'data_date',
@@ -265,3 +268,47 @@ def test_pool_producer_publishes_hot_view(day, tmp_path, monkeypatch):
     redis.fail = True
     code, body = run_pool_tier(request, tmp_path, deps=deps)
     assert code == 30 and body['error_code'] == 'HOT_PUBLISH_FAILED'
+
+
+def test_real_pool_ignores_catalog_for_dynamic_reader(tmp_path, monkeypatch):
+    from engine_core.data_pipeline.reader import load_dataset
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+
+    raw = (Path(__file__).parent / 'fixtures/real/c1147/limit_up_pool_1112.json').read_bytes()
+    value = json.loads(raw)
+    redis = RedisSpy()
+    redis.writes['core:view:limit_up_pool:2026-11-12'] = raw
+    result = load_dataset('limit_up_pool', '2026-11-12', redis=redis,
+                          catalog=ArtifactCatalog(tmp_path), now='2026-11-15T12:00:00+00:00')
+    assert result is not None
+    assert result.rows == value['rows']
+    assert result.discovered_by == 'redis'
+
+
+def test_late_real_pool_uses_hot_view_retention(tmp_path, monkeypatch):
+    import hashlib
+    from engine_core.data_pipeline import redis_day_view
+    folder = Path(__file__).parent / 'fixtures/real/c1147'
+    raw = (folder / 'limit_up_pool_1112_formal.json').read_bytes()
+    provenance = json.loads((folder / 'PROVENANCE.json').read_text())
+    assert hashlib.sha256(raw).hexdigest() == provenance['limit_up_pool_1112_formal.json']['sha256']
+    value = json.loads(raw)
+    now = datetime(2026, 11, 25, tzinfo=timezone.utc)
+    monkeypatch.setattr(redis_day_view, '_now_timestamp', lambda: now.timestamp())
+    monkeypatch.setattr(redis_day_view, 'expire_at', lambda _: int(datetime(2026, 11, 19, tzinfo=timezone.utc).timestamp()))
+    monkeypatch.setattr(hot, 'nth_trade_date', lambda *args, **kwargs: datetime(2026, 11, 19).date())
+    redis = RedisSpy()
+    result = hot.publish(value['trade_date'], value['rows'], value, redis_client=redis,
+                         clock=lambda: now, lock_root=tmp_path)
+    assert result['expire_at'] == redis_day_view.hot_view_expire_at(value['trade_date'])
+    assert result['expire_at'] >= int(now.timestamp()) + 86400
+
+
+def test_generic_runner_cannot_catalog_real_pool(tmp_path):
+    from engine_core.data_pipeline.jobs import JobRunner, JobState
+    raw = (Path(__file__).parent / 'fixtures/real/c1147/limit_up_pool_1112_formal.json').read_bytes()
+    value = json.loads(raw)
+    runner = JobRunner(artifact_root=tmp_path, state=JobState())
+    with pytest.raises(RuntimeError, match='limit_up_pool_use_guardian'):
+        runner.run('limit_up_pool', value['trade_date'], fetch=lambda _: {'rows': value['rows']})
+    assert not (tmp_path / 'catalog.json').exists()

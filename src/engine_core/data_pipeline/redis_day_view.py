@@ -19,8 +19,8 @@ def meta_key(family, trade_date):
     return view_key(family, trade_date) + ":meta"
 
 
-def expire_at(trade_date):
-    day = nth_trade_date(trade_date, 5)
+def expire_at(trade_date, *, root=None):
+    day = nth_trade_date(trade_date, 5, root=root)
     return int(datetime.combine(day, time.min, ZoneInfo("Asia/Shanghai")).timestamp())
 
 
@@ -29,9 +29,10 @@ MIN_BACKFILL_RETENTION_SECONDS = 24 * 60 * 60
 def _now_timestamp():
     return clock.time()
 
-def hot_view_expire_at(trade_date):
+def hot_view_expire_at(trade_date, *, root=None):
     """Five trading days, with at least 24 hours for late backfills."""
-    return max(expire_at(trade_date), ceil(_now_timestamp()) + MIN_BACKFILL_RETENTION_SECONDS)
+    return max(expire_at(trade_date, root=root) if root is not None else expire_at(trade_date),
+               ceil(_now_timestamp()) + MIN_BACKFILL_RETENTION_SECONDS)
 
 def write_day_view(redis, family, trade_date, rows: Mapping[str, Mapping], *, source, version, available_at, fields):
     deadline = expire_at(trade_date)

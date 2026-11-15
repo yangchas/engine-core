@@ -126,6 +126,11 @@ def test_job_pipeline_persists_immutable_artifact_and_manifest(name, tmp_path):
             runner.run(name, trade_date, fetch=lambda _: rows, now=now)
         assert not (tmp_path / "catalog.json").exists()
         return
+    if name == "limit_up_pool":
+        with pytest.raises(RuntimeError, match="limit_up_pool_use_guardian"):
+            runner.run(name, trade_date, fetch=lambda _: rows, now=now)
+        assert not (tmp_path / "catalog.json").exists()
+        return
     result = runner.run(name, trade_date, fetch=lambda _: rows, now=now)
     assert result.manifest["row_count"] == (50 if name == "hot_plates" else 1)
     assert result.manifest["storage_backend"] == "artifact"

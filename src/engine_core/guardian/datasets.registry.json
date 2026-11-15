@@ -438,7 +438,7 @@
       "redis_ttl_trade_days": 5,
       "owner": "kaipan_fetch",
       "artifact": {
-        "catalog_dataset": "limit_up_pool",
+        "catalog_dataset": null,
         "date_basis": "D 日取前一交易日 D-1 的池(name=D-1, 抓取时刻另记 fetched_at);D-1 数据 D 日 00:30 起可得"
       },
       "phases": [

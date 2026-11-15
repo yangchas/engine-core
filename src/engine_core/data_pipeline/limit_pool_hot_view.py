@@ -124,8 +124,8 @@ def priority(item):
 
 
 def deadline_for(day, calendar_root):
-    deadline_day = nth_trade_date(day, 5, root=calendar_root)
-    return int(datetime.combine(deadline_day, time.min, ZoneInfo('Asia/Shanghai')).timestamp())
+    from .redis_day_view import hot_view_expire_at
+    return hot_view_expire_at(day, root=calendar_root) if calendar_root is not None else hot_view_expire_at(day)
 
 
 def expiry_matches(client, key, deadline, now):

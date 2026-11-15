@@ -224,6 +224,8 @@ class JobRunner:
             source_event_at: str | None = None, algorithm_version: str = "1",
             dry_run: bool = False,
             baostock_policy: Mapping[str, Any] | None = None) -> JobResult:
+        if name == "limit_up_pool":
+            raise RuntimeError("limit_up_pool_use_guardian")
         spec = get_dataset(name)
         day = datetime.strptime(trade_date, "%Y-%m-%d").date()
         clock = _parse_now(now)
