@@ -2589,5 +2589,17 @@
     "tradestatus"
    ]
   }
+ },
+ "_c1312": {
+  "file": "c1312/td_excerpt.json",
+  "sha256": "1a37628ee544e3e19dc6d0dcff3f31001b4186e0a74335833bba9bc489f78fd9",
+  "source": "TD core_data reference_snapshot_versions and stock_static_latest",
+  "sql": [
+   "SELECT version,row_count,sha256,source,available_at,request_count,elapsed_ms FROM core_data.reference_snapshot_versions WHERE dataset='stock_static' AND snapshot_state='ACTIVE' ORDER BY ts DESC LIMIT 50",
+   "SELECT row_id,symbol,payload FROM core_data.stock_static_latest WHERE version='20261116005011-39a46555d8c7' ORDER BY row_id LIMIT 40"
+  ],
+  "fetched_at": "2026-11-17T04:13:24.953096+08:00",
+  "marker_count": 2,
+  "row_count": 40
  }
 }
