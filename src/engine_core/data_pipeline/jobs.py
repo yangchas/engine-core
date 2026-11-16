@@ -711,7 +711,7 @@ class JobRunner:
                     restore_ttl = prior_ttl if isinstance(prior_ttl, int) and prior_ttl > 0 else ttl
                     _redis_set(self.redis, key, previous, restore_ttl)
             raise
-        if spec.name == "hot_plates":
+        if spec.name in {"hot_plates", "limit_reasons"}:
             from .cold_archive import archive, flush, receipt_warning
             try:
                 receipt = archive(spec.name, trade_date, str(manifest["version"]),
