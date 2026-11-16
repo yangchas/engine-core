@@ -1025,3 +1025,17 @@ def test_c1105_builder_exemption(tmp_path, monkeypatch, capsys):
     assert capsys.readouterr().out.count('PM 明确豁免') == 1
     assert main(['newcard', '--recipe', 'runner-verify', '--question', '验证什么?', '--goal', '观察', *args]) == 0
     assert 'PM 明确豁免' not in capsys.readouterr().out
+
+
+def test_c1273_newcard_stubs_override(tmp_path, monkeypatch, capsys):
+    from examples.card_lint import lint_card
+    monkeypatch.setenv('PM_CARDS_DIR', str(tmp_path))
+    args = ['newcard', '--recipe', 'builder-fix', '--title', '修复', '--serves', '目标',
+            '--plan', 'P0 2/6', '--approval', '已授权', '--scope', 'examples/pm.py',
+            '--goal', '经 capture_real_fixture 录制并登记 PROVENANCE', '--real-data', '真实卡',
+            '--oracle', '结果一致', '--accept-by', 'fail-first-real-fixture', '--dry-run',
+            '--stubs', '允许使用采集工具录制真实夹具']
+    assert main(args) == 0
+    output = capsys.readouterr().out
+    assert 'STUBS_ALLOWED: 允许使用采集工具录制真实夹具' in output
+    assert not any(x.startswith('FAIL stubs_conflict:') for x in lint_card(output, Path(__file__).parents[1]))

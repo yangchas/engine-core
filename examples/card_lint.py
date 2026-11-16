@@ -72,7 +72,33 @@ def lint_card(card, repo):
         add('FAIL', 'missing_path', '路径不存在，请核对：' + ', '.join(missing_paths))
 
     scope = fields.get('SCOPE_WRITE', '')
+    goal = fields.get('GOAL', '')
+    invalid_scope = []
+    for entry in re.split(r'[,，;；\n]+', scope):
+        entry = entry.strip().strip('`')
+        if not entry:
+            continue
+        if re.search(r'\.[\w]+\s+(?:/home/exedev/repos/|src/|tests/|examples/)', entry):
+            invalid_scope.append(entry)
+            continue
+        worktree = re.match(r'^/home/exedev/repos/engine_core(?:-wt-[^/]+)?/(.+)$', entry)
+        if worktree:
+            entry = worktree.group(1)
+        elif Path(entry).is_absolute() or entry.startswith('~/'):
+            continue
+        path = Path(entry)
+        if not path.suffix or any(c in entry for c in '*?[]'):
+            continue
+        new_file = (repo / path).parent.is_dir() and re.search(
+            r'(?:新增|新建|创建)[^\n。；;]*' + re.escape(path.name), goal)
+        if not (repo / path).is_file() and not new_file:
+            invalid_scope.append(entry)
+    if invalid_scope:
+        add('FAIL', 'scope_path', '范围文件不存在或路径粘连，请用 find 核实真实路径：' + ', '.join(invalid_scope))
     default_stubs = '无需新增 kind,不使用采集工具;夹具为真实文件摘录并附 PROVENANCE'
+    if (fields.get('STUBS_ALLOWED', '').strip() == default_stubs
+            and re.search(r'capture_real_fixture|td_stock_tick|td_stock_static|采集工具|录制夹具|只读\s*HGETALL', goal, re.I)):
+        add('FAIL', 'stubs_conflict', 'STUBS_ALLOWED 与 GOAL 冲突，请用 --stubs 或修改卡面')
     without_default = re.sub(r'^STUBS_ALLOWED:\s*' + re.escape(default_stubs) + r'\s*$', '', card, flags=re.MULTILINE)
     capture_requested = re.search(r'(?:抓[^\n]*夹具|夹具[^\n]*抓)', without_default)
     exemption = re.search(r'无需新增\s*kind|已有\s*kind\s*覆盖', without_default, re.I)
@@ -89,7 +115,6 @@ def lint_card(card, repo):
         add('WARN', 'test_list_mismatch', '精确清单：' + ' '.join(expected))
     if re.search(r'(?:新增测试|测试(?:数量|数))\s*[≤<=>:：约]*\s*([4-9]|[1-9]\d+)', budget) and not re.search(r'理由|因为|由于|原因', budget):
         add('WARN', 'test_budget_high', '新增测试超过 3 个，请说明理由')
-    goal = fields.get('GOAL', '')
     if len(re.findall(r'^\s*(?:\d+|[a-z])[.、]', goal, re.MULTILINE)) > 12 or len(card) > 6000:
         add('WARN', 'card_too_large', '建议拆卡，每张卡不超过 3 组规则')
     constraints = json.loads(Path(__file__).with_name('card_constraints.json').read_text(encoding='utf-8'))
