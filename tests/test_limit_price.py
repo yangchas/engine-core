@@ -23,3 +23,23 @@ def test_exact_touch_and_unlimited_or_suspended_prices():
     assert state_at_close(0, 0, 0, 10.0, "600001") == "无"
     assert state_at_close(None, None, None, 10.0, "600001") == "缺价格字段"
 
+
+
+def test_unlimited_listing_real_static_and_core_calendar():
+    import json
+    from pathlib import Path
+    from engine_core.limit_price import is_unlimited_listing
+
+    fixture_dir = Path(__file__).parent / "fixtures" / "real"
+    calendar_data = json.loads(Path("/home/exedev/core-data/trade_calendar/calendar.json").read_text())
+    calendar = [row["d"] for row in calendar_data["days"] if row["t"] == 1]
+    for symbol, free_days, sixth in (
+        ("688827", ("2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13", "2026-11-16"), "2026-11-17"),
+        ("001381", ("2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06", "2026-11-09"), "2026-11-10"),
+    ):
+        fixture = json.loads(next(fixture_dir.glob(f"td_stock_static_2026-11-16_{symbol}_*.json")).read_text())
+        listing = json.loads(fixture["rows"][0][-1])["listing_date"]
+        for day in free_days:
+            assert is_unlimited_listing(symbol, day, listing, calendar) is True
+        assert is_unlimited_listing(symbol, sixth, listing, calendar) is False
+        assert is_unlimited_listing(symbol, sixth, None, calendar) is None

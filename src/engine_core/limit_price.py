@@ -2,10 +2,32 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from datetime import date
 from typing import Any
 
 
 CENT = Decimal("0.01")
+
+
+def is_unlimited_listing(symbol: str, trade_date: str, listing_date: str | None,
+                         calendar: Any) -> bool | None:
+    """Return the five-session exemption, or None when inputs cannot establish it."""
+    if not symbol or not listing_date or calendar is None:
+        return None
+    try:
+        trade = date.fromisoformat(trade_date)
+        listed = date.fromisoformat(listing_date)
+        days = sorted({date.fromisoformat(day) for day in calendar})
+    except (TypeError, ValueError):
+        return None
+    if listed > trade or trade not in days:
+        return None
+    prior = [day for day in days if day <= trade]
+    if listed not in days:
+        if len(prior) >= 5 and listed < prior[-5]:
+            return False
+        return None
+    return sum(listed <= day <= trade for day in prior) <= 5
 
 
 def limit_percent(symbol: str) -> int:

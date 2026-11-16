@@ -117,3 +117,53 @@ def test_real_late_rebuild_accepts_late_stored_prior_day_pool_but_flags_it(monke
                           late_asof="2026-11-11T09:25:10+08:00")
     assert rows == pool and meta["trade_date"] == "2026-11-10" and meta["late_visible"] is True
     assert meta["status"] == "PARTIAL"
+
+
+def test_listing_exemption_from_real_auction_and_static_fixtures(tmp_path, monkeypatch):
+    from examples.fetch_auction_item import _products, SnapshotRows
+    from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+
+    real = ROOT / 'tests/fixtures/real'
+    listings = []
+    for symbol in ('688827', '001381'):
+        raw = json.loads(next(real.glob(f'td_stock_static_2026-11-16_{symbol}_*.json')).read_text())
+        listings.append(json.loads(raw['rows'][0][-1]))
+    monkeypatch.setattr(ReferenceSnapshotStore, 'read_latest', lambda self, dataset: {'rows': listings})
+    captured = []
+    monkeypatch.setattr(stock_facts, 'store_auction_stock_facts', lambda facts, **kw: captured.append(facts) or {})
+    for day, symbol, expected in [('2026-11-10', '688827', None),
+                                  ('2026-11-09', '001381', None),
+                                  ('2026-11-10', '001381', 'limited')]:
+        raw = json.loads(next(real.glob(f'td_stock_tick_{day}_{symbol}_092500_092503_1619.json')).read_text())
+        tick = dict(zip(raw['columns'], raw['rows'][0]))
+        snap = {'symbol': symbol, 'ts': tick['ts'], 'auction_tag': '0925',
+                'pre_close_milli': tick['pc_milli'], 'price_milli': tick['px_milli']}
+        snapshots = SnapshotRows([snap], {'0925': {'source': 'redis_auction_full'}})
+        _products(day, 'auction_stock_facts', tmp_path, snapshots, [tick], source_catalog_root=Path.home() / 'core-data')
+        price = captured[-1]['rows'][0]['official_limit_up_price']
+        assert not captured[-1]['unknown_listing'], captured[-1]['listing_error']
+        assert (price is None) if expected is None else (price is not None)
+
+
+def test_listing_snapshot_failure_degrades_real_auction(tmp_path, monkeypatch):
+    from examples.fetch_auction_item import _products, SnapshotRows
+    from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+
+    real = ROOT / 'tests/fixtures/real'
+    raw = json.loads(next(real.glob('td_stock_tick_2026-11-10_688827_092500_092503_1619.json')).read_text())
+    tick = dict(zip(raw['columns'], raw['rows'][0]))
+    snap = {'symbol': tick['symbol'], 'ts': tick['ts'], 'auction_tag': '0925',
+            'pre_close_milli': tick['pc_milli'], 'price_milli': tick['px_milli']}
+    def fail(self, dataset):
+        raise RuntimeError('snapshot unavailable')
+    monkeypatch.setattr(ReferenceSnapshotStore, 'read_latest', fail)
+    captured = []
+    monkeypatch.setattr(stock_facts, 'store_auction_stock_facts', lambda facts, **kw: captured.append(facts) or {})
+    snapshots = SnapshotRows([snap], {'0925': {'source': 'redis_auction_full'}})
+    result = _products('2026-11-10', 'auction_stock_facts', tmp_path, snapshots, [tick])
+    facts = captured[0]
+    assert result['status'] == facts['input_status'] == 'degraded'
+    assert facts['unknown_listing'] == ['688827']
+    assert facts['listing_error'] == 'RuntimeError: snapshot unavailable'
+    assert facts['rows'][0]['official_limit_up_price'] is None
+    assert facts['rows'][0]['seal']['reason'] == 'LISTING_UNKNOWN'
