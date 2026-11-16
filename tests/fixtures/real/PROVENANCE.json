@@ -1,4 +1,26 @@
 {
+ "_c1254": {
+ "auction": {
+  "rows": 256,
+  "selection": "first 250 sorted symbols plus all present yesterday multi-board symbols",
+  "source": "Redis core:auction:full:2026-11-16:0925",
+  "source_sha256": "c5c853678b76f57e896f3f90ddba4e00a09ea6bd64a1e1302254778fd7f4e74f"
+ },
+ "fetched_at": "2026-11-16T13:17:20.011828+08:00",
+ "files": {
+  "auction.json": "1194113c3454fb2384c64e5048353782a1f52dfbd705481b38edd21fc1432458",
+  "panorama.json": "953bd8ae6bbe4ffef2141eb7d9fb349f9a160b622d341d3abefe5da183f186c6",
+  "pool.json": "7ae010b672a297a288c1f56a75b2433ef072cee66b9a8565bb330a24720f1a43"
+ },
+ "panorama": {
+  "source": "/home/exedev/core-data/reports/2026-11-16/auction_0926/auction_panorama.json",
+  "source_sha256": "953bd8ae6bbe4ffef2141eb7d9fb349f9a160b622d341d3abefe5da183f186c6"
+ },
+ "pool": {
+  "rows": 37,
+  "source": "Redis cache:yest_limit_pool:2026-11-13"
+ }
+},
  "_core_artifacts": {
   "core_artifacts/c522/daily_kline/2026-10-23/formal/manifest.json": {
    "bytes": 1785,
