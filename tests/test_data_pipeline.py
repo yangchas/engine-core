@@ -37,7 +37,7 @@ def test_registry_declares_tiered_storage_and_bounded_redis_views():
     for name, spec in DATASETS.items():
         if not spec.hot_view or name not in items:
             continue
-        if name in {"hot_plates", "limit_up_pool", "limit_up_pool_today", "auction_points", "auction_seal_facts"}:
+        if name in {"hot_plates", "limit_up_pool", "limit_up_pool_today", "auction_points", "auction_seal_facts", "plate_stock_index"}:
             assert items[name]["redis_ttl_trade_days"] == spec.redis_ttl_trade_days
             assert spec.redis_ttl_seconds is None
             view = next(location for location in items[name]["storage"] if location["kind"] == "redis_view")

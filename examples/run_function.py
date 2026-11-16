@@ -130,6 +130,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--json", action="store_true", help="print the full answers as JSON")
     args = parser.parse_args(argv)
+    if args.event == "plate_stock_index":
+        import gzip
+        from engine_core.data_pipeline.plate_stock_index import run
+        from engine_core.storage.two_layer import StoreResult
+        if args.date != "2026-10-29":
+            raise SystemExit("plate_stock_index: no recorded inputs for date")
+        root = ROOT / "tests/fixtures/real/core_artifacts/c594/plate_members/2026-10-28/current"
+        manifest = json.loads((root / "manifest.json").read_text())
+        with gzip.open(root / "rows.jsonl.gz", "rt") as stream:
+            rows = [json.loads(line) for line in stream]
+        class RecordedReference:
+            def read_as_of(self, dataset, asof):
+                assert dataset == "plate_members"
+                return {"rows": rows, "trade_date": manifest["trade_date"],
+                        "version": manifest["version"], "available_at": manifest["available_at"]}
+        class ReplayStore:
+            def publish(self, dataset, day, output, metadata):
+                print(f"{dataset} rows={len(output)} memberships={sum(len(row['plates']) for row in output)} "
+                      f"member_version={metadata['member_version']}")
+                return StoreResult(status="published")
+        run(args.date, args.date + "T09:26:00+08:00", reference_store=RecordedReference(), store=ReplayStore())
+        return 0
     if args.event == "auction_seal_facts":
         import gzip
         from engine_core.data_pipeline.auction_seal_facts import build_facts
