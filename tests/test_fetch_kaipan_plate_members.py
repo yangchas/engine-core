@@ -78,3 +78,34 @@ def test_nonempty_output_directory_requires_resume(tmp_path):
     with pytest.raises(FileExistsError):
         fetch_all(lambda _code, _date: {}, ["801001"], date="2026-10-13",
                   output_dir=out, sleep_s=0, sleep_fn=lambda _: None)
+
+
+def test_refresh_partial_reports_provider_failure_details(tmp_path, monkeypatch):
+    from pathlib import Path
+    from examples import run_data_jobs
+    from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
+
+    real = Path(__file__).parent / 'fixtures' / 'real'
+    paths = sorted(real.glob('kaipan_plate_members_2026-10-28_*_i0_*.json'))[:2]
+    responses = {path.name.split('_')[4]: json.loads(path.read_text()) for path in paths}
+    codes = list(responses)
+
+    class Replay:
+        def get_his_plate_ids(self, plate, day, index, size):
+            return responses[plate]
+
+    partial = KaipanProvider(Replay(), plate_codes=codes, max_requests=1,
+                             sleep_fn=lambda _: None).plate_members('2026-10-28', concurrency=1)
+    assert partial['partial'] and len(partial['failed_plates']) == 1
+    monkeypatch.setattr(run_data_jobs, '_plate_registry_rows',
+                        lambda *args: [{'plate_code': code} for code in codes])
+    monkeypatch.setattr(KaipanProvider, 'plate_members', lambda *args, **kwargs: partial)
+    with pytest.raises(RuntimeError) as exc:
+        run_data_jobs._refresh_plate_members_latest('2026-10-28', str(tmp_path),
+                                                   persist=False, max_requests=1)
+    message = str(exc.value)
+    assert message.startswith('kaipan_plate_members_incomplete_retry_all:')
+    for part in ('failed=1', 'completed=1', 'queried=2', 'unqueried=1',
+                 'query_trade_date=2026-10-28', 'requests=1', 'elapsed_ms=',
+                 'failure_types={"RuntimeError":1}', f'failed_plate_codes={codes[1]}'):
+        assert part in message
