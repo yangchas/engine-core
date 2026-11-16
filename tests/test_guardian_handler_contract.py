@@ -1107,3 +1107,27 @@ def test_auction_seal_handler_real_fixtures_and_missing_tick(monkeypatch):
     monkeypatch.setattr(auction_redis_view, 'redis_client', lambda: pytest.fail('dry run accessed Redis'))
     code, payload = guardian_handler._run(request)
     assert code == 0 and payload['status'] == 'ok' and payload['detail'] == 'auction_seal_facts dry run'
+
+
+def test_plate_stock_index_dispatch_and_unavailable_retry(monkeypatch):
+    from examples import guardian_handler
+    from engine_core.data_pipeline import auction_redis_view, plate_stock_index
+    from engine_core.storage.two_layer import StoreResult
+    calls = []
+    monkeypatch.setattr(auction_redis_view, 'redis_client', lambda: object())
+    def run(day, asof, **kwargs):
+        calls.append((day, asof, kwargs))
+        return StoreResult(status='published', version='v', archive_status='FAILED', reason='cold_failure')
+    monkeypatch.setattr(plate_stock_index, 'run', run)
+    request = _core_request('plate_stock_index_0905', '2026-11-16')
+    request['dry_run'] = True
+    request['asof'] = '2026-11-16T09:20:00+08:00'
+    code, payload = guardian_handler._run(request)
+    assert code == 0 and payload['status'] == 'degraded' and not payload['retryable']
+    assert calls[0][0:2] == ('2026-11-16', '2026-11-16T09:05:00+08:00')
+    assert calls[0][2]['store'].redis is calls[0][2]['redis_client']
+    def unavailable(*args, **kwargs):
+        raise ValueError('plate_members_unavailable')
+    monkeypatch.setattr(plate_stock_index, 'run', unavailable)
+    code, payload = guardian_handler._run(request)
+    assert code == 75 and payload['status'] == 'failed' and payload['retryable']

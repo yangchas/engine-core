@@ -93,15 +93,20 @@ def publish(store, day, rows, metadata):
     from . import cold_archive
     try:
         value, raw, version = _envelope(day, rows, metadata)
-        receipt = cold_archive.archive('plate_stock_index', day, version, raw, value)
-        if receipt is False or receipt is None:
-            return StoreResult(status='FAILED', version=version, archive_status='NOT_QUEUED', reason='cold_archive_not_queued')
-        if not receipt.done.wait(6):
-            return StoreResult(status='FAILED', version=version, archive_status='UNKNOWN', reason='cold_archive_timeout')
-        if not receipt.success:
-            return StoreResult(status='FAILED', version=version, archive_status='FAILED', reason=receipt.error_category)
+        archive_status, reason = 'ARCHIVED', None
+        try:
+            receipt = cold_archive.archive('plate_stock_index', day, version, raw, value)
+            if receipt is False or receipt is None:
+                archive_status, reason = 'NOT_QUEUED', 'cold_archive_not_queued'
+            elif not receipt.done.wait(6):
+                archive_status, reason = 'UNKNOWN', 'cold_archive_timeout'
+            elif not receipt.success:
+                archive_status, reason = 'FAILED', receipt.error_category
+        except Exception as exc:
+            archive_status, reason = 'FAILED', type(exc).__name__
         _write_view(store.redis, day, value)
-        return StoreResult(status='published', version=value['version'], metadata=value, archive_status='ARCHIVED')
+        return StoreResult(status='published', version=value['version'], metadata=value,
+                           archive_status=archive_status, reason=reason)
     except Exception as exc:
         return StoreResult(status='FAILED', reason=type(exc).__name__)
 

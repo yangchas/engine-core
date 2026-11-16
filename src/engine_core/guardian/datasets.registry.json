@@ -2757,8 +2757,8 @@
         "force": "refetch",
         "clear": "UNKNOWN"
       },
-      "notes": "独立数据函数；无 guardian 事件",
-      "guardian_event": null,
+      "notes": "独立数据函数；交易日 09:05 生成",
+      "guardian_event": "plate_stock_index_0905",
       "storage": [
         {
           "kind": "redis_view",
