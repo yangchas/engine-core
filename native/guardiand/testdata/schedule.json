@@ -1791,6 +1791,36 @@
       }
     },
     {
+      "event_id": "auction_seal_facts_0926",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:26:05",
+      "available_after": null,
+      "deadline": "09:29:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "degrade",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 300,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": null,
+      "args": {
+        "dataset": "auction_seal_facts"
+      }
+    },
+    {
       "event_id": "auction_report_0926",
       "handler": "auction_report",
       "enabled": true,

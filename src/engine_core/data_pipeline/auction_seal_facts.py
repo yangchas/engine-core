@@ -95,7 +95,11 @@ def run(trade_date, *, redis_client=None, store=None):
         try:
             cursor.execute("SELECT ts,px_milli,bp1_milli,ap1_milli,bv1,bv2,av1,av2 FROM market_data1.stock_tick_v2 "
                            f"WHERE symbol='{symbol}' AND ts>='{day} 09:24:30' AND ts<='{day} 09:26:00' ORDER BY ts")
-            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+            ticks = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            if not any(f'{day} 09:25:00' <= str(t['ts'])[:19] < f'{day} 09:26:00'
+                       or str(t['ts'])[:19] == f'{day} 09:24:57' for t in ticks):
+                raise ConnectionError(f'auction_tick_unavailable:{symbol}')
+            return ticks
         finally:
             cursor.close()
     try:

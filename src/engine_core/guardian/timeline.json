@@ -2146,6 +2146,33 @@
       "accept_degraded_dependencies": [
         "daily_dde_0200"
       ]
+    },
+    "auction_seal_facts": {
+      "after": [],
+      "args": {
+        "dataset": "auction_seal_facts"
+      },
+      "available_after": null,
+      "calendar": "trading_day",
+      "catchup_mode": "run_in_window",
+      "cost": null,
+      "data_date_offset": 0,
+      "depends_on": [],
+      "enabled": true,
+      "gate": "calendar_ready",
+      "handler": "intraday_data",
+      "late_until": null,
+      "max_attempts": 3,
+      "on_deadline": "degrade",
+      "on_phase_mismatch": null,
+      "on_start": null,
+      "order": null,
+      "phases": null,
+      "retry_backoff": null,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "timeout_seconds": 300,
+      "trigger_type": "window"
     }
   },
   "timeline": [
@@ -2549,6 +2576,16 @@
             ]
           },
           "deadline": "09:25:50"
+        }
+      ]
+    },
+    {
+      "at": "09:26:05",
+      "run": [
+        {
+          "fn": "auction_seal_facts",
+          "id": "auction_seal_facts_0926",
+          "deadline": "09:29:59"
         }
       ]
     },
@@ -3374,6 +3411,7 @@
     "auction_0924_check",
     "auction_0925_check",
     "auction_facts_0925",
+    "auction_seal_facts_0926",
     "auction_report_0926",
     "kaipan_hot_092520",
     "limit_up_today_092630",
