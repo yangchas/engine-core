@@ -718,7 +718,7 @@ def test_resource_failure_reply_includes_publish_progress(monkeypatch, tmp_path)
 
     store, client, days = _c806_setup()
     store.shard_events = [{"segments": 4}]
-    def publish(root, store, days, expected, threshold, progress):
+    def publish(root, store, days, expected, threshold, progress, **kwargs):
         progress.update(completed_days=1, published_days=1, current_day=days[1])
         raise TdResourceExhausted('Query memory exhausted')
     monkeypatch.setattr(module, 'publish_filled_days', publish)
@@ -758,3 +758,52 @@ def test_publish_completeness_uses_authoritative_td_fixture(tmp_path, monkeypatc
     publish_filled_days(tmp_path, store, ['2026-11-16'], lambda day: {row['symbol'] for row in rows}, 0.995)
     assert seen['open'] == 'COMPLETE'
     assert seen['amount_yuan'] == 'MISSING'
+
+
+def test_publish_recovers_trade_status_from_real_responses(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from engine_core.data_pipeline.daily_kline_fill import publish_filled_days
+    from engine_core.data_pipeline.jobs import JobRunner
+    from engine_core.data_pipeline.registry.daily_kline import classify_daily_kline
+
+    fixture = json.loads((Path(__file__).parent / 'fixtures/real/c1299/td_missing.json').read_text())
+    row = next(dict(zip(fixture['columns'], r)) for r in fixture['rows'] if r[0] == '605255')
+    raw = json.loads((Path(__file__).parent / 'fixtures/real/c1301/baostock_trade_status.json').read_text())
+    response = dict(zip(raw['fields'], raw['rows'][0]))
+    active = RAW['sz.000001'][0]
+    seen = {}
+    def run(self, dataset, day, *, fetch, **kwargs):
+        meta = fetch(day)
+        seen.update(meta)
+        return SimpleNamespace(rows=meta['rows'], manifest={'td_publish': 'READY'})
+    monkeypatch.setattr(JobRunner, 'run', run)
+    class Client:
+        def __init__(self, answer): self.answer = answer
+        def login(self): pass
+        def logout(self): pass
+        def query(self, code, day):
+            if self.answer is None: raise ValueError('query failed')
+            return [self.answer]
+    for source, day, data in [(response, '2026-11-16', row),
+                               (active, active['date'], {**parse_row(active), 'amount_yuan': None}),
+                               (None, active['date'], {**parse_row(active), 'amount_yuan': None})]:
+        store = MemoryTdStore()
+        store.ensure_schema()
+        if day == active['date']:
+            data = {**data, 'volume_shares': data['volume']}
+        stored = {data['symbol']: data}
+        if day == active['date']:
+            complete = parse_row(RAW['sh.600519'][0])
+            stored[complete['symbol']] = {**complete, 'volume_shares': complete['volume']}
+        store.replace_day(day, BAOSTOCK_PROGRESS_VERSION, stored)
+        publish_filled_days(tmp_path, store, [day], lambda d: set(stored), 0.995,
+                            status_client_factory=lambda: Client(source))
+        completeness = seen['field_completeness']
+        if source is response:
+            assert completeness['amount_yuan'] == 'SUSPENDED_ONLY'
+            assert classify_daily_kline('baostock', 1.0, completeness) == 'FORMAL'
+            assert seen['trade_status_recovery']['unknown'] == 0
+        else:
+            assert completeness['amount_yuan'] == 'PARTIAL'
+            assert classify_daily_kline('baostock', 1.0, completeness) == 'PROVISIONAL'
+            assert seen['trade_status_recovery']['unknown'] == (source is None)
