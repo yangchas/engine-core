@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 from .limit_pool import DATASET, FIELD_UNITS, PROVIDER_RANK, REQUIRED_COLUMNS, SCHEMA_VERSION
 from .trade_calendar import nth_trade_date
+from .time_format import shanghai_seconds_ceil
 
 
 def _instant(value):
@@ -99,6 +100,7 @@ def envelope(day, rows, manifest):
              'field_units': manifest.get('field_units', FIELD_UNITS),
              **{key: manifest.get(key) for key in ('source', 'provider', 'business_status', 'degraded',
                                                      'quality', 'version', 'available_at')}}
+    value['available_at'] = shanghai_seconds_ceil(value['available_at'])
     return _validate(value, day)
 
 
@@ -150,7 +152,7 @@ def publish(day, rows, manifest, *, redis_client=None, prefix='core:view:limit_u
     raw = client.get(key)
     if fresh:
         published_at = (clock() if clock else datetime.now(timezone.utc)).astimezone(timezone.utc)
-        manifest = {**manifest, 'available_at': published_at.isoformat().replace('+00:00', 'Z')}
+        manifest = {**manifest, 'available_at': shanghai_seconds_ceil(published_at)}
     value = envelope(day, rows, manifest)
     if raw:
         try:

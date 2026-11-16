@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from . import cold_archive
 from .redis_day_view import hot_view_expire_at
+from .time_format import shanghai_seconds, shanghai_seconds_ceil
 
 
 def _instant(value):
@@ -38,9 +39,14 @@ def publish(client, day, rows, metadata):
             row['captured_at'] = _instant(row['captured_at'])
     value = dict(metadata, dataset='hot_rank', trade_date=day, rows=rows,
                  row_count=len(rows), rows_sha256=_digest(rows),
-                 available_at=_instant(metadata['available_at']))
+                 available_at=shanghai_seconds_ceil(metadata['available_at']))
     if value.get('captured_at'):
         value['captured_at'] = _instant(value['captured_at'])
+    for key in ('fetched_at', 'committed_at'):
+        if value.get(key):
+            value[key] = shanghai_seconds(value[key])
+    if value.get('declared_available_at'):
+        value['declared_available_at'] = shanghai_seconds_ceil(value['declared_available_at'])
     raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
     validate(raw, day)
     if not client.set(f'core:view:hot_rank:{day}', raw, exat=hot_view_expire_at(day)):

@@ -2561,5 +2561,17 @@
   "row_count": 7,
   "file": "c1299/td_missing.json",
   "sha256": "dfce6f09ae080c93550c8e7e3ab2eedb0075173288ac00c55b5edfa9ca44d7ad"
+ },
+ "_c1302": {
+  "file": "c1302/timestamps.json",
+  "sha256": "06d72a752d6cd25bc65afbbf945afc65d0e8f32c0029b563c363228f908ef678",
+  "source": "Redis GET via REDIS_URL; excerpts of fields from listed keys",
+  "keys": [
+   "core:view:limit_up_pool:2026-11-13",
+   "core:view:hot_rank:2026-11-16",
+   "core:view:intraday_checkpoint:2026-11-16:09:45:00"
+  ],
+  "fetched_at": "2026-11-16T20:17:37+08:00",
+  "selection": "timestamp fields and first checkpoint ts and first hot rank row; source hashes included"
  }
 }

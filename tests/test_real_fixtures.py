@@ -36,6 +36,9 @@ def load(prefix: str) -> dict:
 
 
 def test_every_real_fixture_has_matching_provenance():
+    c1302 = PROVENANCE["_c1302"]
+    assert hashlib.sha256((REAL / c1302["file"]).read_bytes()).hexdigest() == c1302["sha256"]
+    assert c1302["keys"] and c1302["fetched_at"] and c1302["source"]
     c1299 = PROVENANCE["_c1299"]
     c1299_body = (REAL / c1299["file"]).read_bytes()
     assert hashlib.sha256(c1299_body).hexdigest() == c1299["sha256"]
