@@ -2324,5 +2324,126 @@
   "command": "examples/capture_real_fixture.py td_stock_static --date 2026-11-16 --symbol 688827",
   "sql": "SELECT * FROM core_data.stock_static_latest WHERE symbol='688827' AND payload LIKE '%\"date\":\"2026-11-16\"%' ORDER BY ts",
   "row_count": 1
+ },
+ "td_stock_tick_2026-11-16_002425_092430_092600_1344.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-16",
+  "fetched_at": "2026-11-16T13:44:49+08:00",
+  "bytes": 945,
+  "sha256": "cb37ecd79a0e95db0ec0ae07b3dd948aa29b492b601f1ba27c3e34206efcd16a",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-16 --symbol 002425 --start 09:24:30 --end 09:26:00",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='002425' AND ts>='2026-11-16 09:24:30' AND ts<='2026-11-16 09:26:00' ORDER BY ts",
+  "row_count": 5
+ },
+ "td_stock_tick_2026-11-16_002242_092430_092600_1344.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-16",
+  "fetched_at": "2026-11-16T13:44:50+08:00",
+  "bytes": 953,
+  "sha256": "192e3cd01da7d98e3836da465bc12faa1799fa850188e1fe46f0e65218578dbe",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-16 --symbol 002242 --start 09:24:30 --end 09:26:00",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='002242' AND ts>='2026-11-16 09:24:30' AND ts<='2026-11-16 09:26:00' ORDER BY ts",
+  "row_count": 5
+ },
+ "td_stock_tick_2026-11-16_000819_092430_092600_1344.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-16",
+  "fetched_at": "2026-11-16T13:44:52+08:00",
+  "bytes": 948,
+  "sha256": "649470a1e607a26ae9c05903378b90e8e2986362874bbaad3e89896142eab1c6",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-16 --symbol 000819 --start 09:24:30 --end 09:26:00",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='000819' AND ts>='2026-11-16 09:24:30' AND ts<='2026-11-16 09:26:00' ORDER BY ts",
+  "row_count": 5
+ },
+ "td_stock_tick_2026-11-16_002148_092430_092600_1344.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-16",
+  "fetched_at": "2026-11-16T13:44:54+08:00",
+  "bytes": 933,
+  "sha256": "67290e9f63cfd959fa1bb976e454ac7327bc769da0aa3bf18ca0dd433fc0a62b",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-16 --symbol 002148 --start 09:24:30 --end 09:26:00",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='002148' AND ts>='2026-11-16 09:24:30' AND ts<='2026-11-16 09:26:00' ORDER BY ts",
+  "row_count": 5
+ },
+ "td_stock_tick_2026-11-16_000831_092430_092600_1344.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-16",
+  "fetched_at": "2026-11-16T13:44:55+08:00",
+  "bytes": 943,
+  "sha256": "25457bb3f3dfec7270f8de3a7bdec625cb7ff3d848a015053437c36a82c40b14",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-16 --symbol 000831 --start 09:24:30 --end 09:26:00",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='000831' AND ts>='2026-11-16 09:24:30' AND ts<='2026-11-16 09:26:00' ORDER BY ts",
+  "row_count": 5
+ },
+ "td_stock_tick_2026-11-16_600880_092430_092600_1344.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-16",
+  "fetched_at": "2026-11-16T13:44:57+08:00",
+  "bytes": 1780,
+  "sha256": "181c84fe7f8862fcb9cbb584fcb51aec3b937edb174510f02c985e203d6ec7c5",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-16 --symbol 600880 --start 09:24:30 --end 09:26:00",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='600880' AND ts>='2026-11-16 09:24:30' AND ts<='2026-11-16 09:26:00' ORDER BY ts",
+  "row_count": 11
+ },
+ "td_stock_tick_2026-11-16_002905_092430_092600_1344.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-16",
+  "fetched_at": "2026-11-16T13:44:59+08:00",
+  "bytes": 783,
+  "sha256": "aa4c5c9b1896f44382d08a63771a221310b0302552c512c78ef636cae0f4c477",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-16 --symbol 002905 --start 09:24:30 --end 09:26:00",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='002905' AND ts>='2026-11-16 09:24:30' AND ts<='2026-11-16 09:26:00' ORDER BY ts",
+  "row_count": 4
+ },
+ "td_stock_tick_2026-11-16_603381_092430_092600_1345.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-16",
+  "fetched_at": "2026-11-16T13:45:01+08:00",
+  "bytes": 1806,
+  "sha256": "ba513d0dddc4398663af385f01255ab12f5ea10dddccefb1114bd4923c60785b",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-16 --symbol 603381 --start 09:24:30 --end 09:26:00",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='603381' AND ts>='2026-11-16 09:24:30' AND ts<='2026-11-16 09:26:00' ORDER BY ts",
+  "row_count": 11
+ },
+ "td_stock_tick_2026-11-16_603536_092430_092600_1345.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-16",
+  "fetched_at": "2026-11-16T13:45:02+08:00",
+  "bytes": 1819,
+  "sha256": "1e2b260689e4399dd58af4bd69cd63fb14297ea790824cdb779ed0602cf911cd",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-16 --symbol 603536 --start 09:24:30 --end 09:26:00",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='603536' AND ts>='2026-11-16 09:24:30' AND ts<='2026-11-16 09:26:00' ORDER BY ts",
+  "row_count": 11
+ },
+ "td_stock_tick_2026-11-16_002973_092430_092600_1345.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-16",
+  "fetched_at": "2026-11-16T13:45:04+08:00",
+  "bytes": 769,
+  "sha256": "244451a57e0eab06db68c13ba9b79bb5f582fa8f48832eac36ad0b834661e917",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-16 --symbol 002973 --start 09:24:30 --end 09:26:00",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='002973' AND ts>='2026-11-16 09:24:30' AND ts<='2026-11-16 09:26:00' ORDER BY ts",
+  "row_count": 4
+ },
+ "td_stock_tick_2026-11-16_300779_092430_092600_1345.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-16",
+  "fetched_at": "2026-11-16T13:45:05+08:00",
+  "bytes": 937,
+  "sha256": "dfec8909d68f347007ac5e18d4483f8d2f3a09a63302911d1a00c9c88d08a528",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-16 --symbol 300779 --start 09:24:30 --end 09:26:00",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='300779' AND ts>='2026-11-16 09:24:30' AND ts<='2026-11-16 09:26:00' ORDER BY ts",
+  "row_count": 5
  }
 }

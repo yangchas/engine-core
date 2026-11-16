@@ -67,3 +67,32 @@ def test_corrupt_real_envelope_reports_reason_and_plans_fetch(monkeypatch):
                                         now='2026-11-13T08:30:00+08:00')
     assert any(row['id'] == 'limit_up_pool' and row['action'] == 'FETCH_NOW'
                and 'corrupt' in row.get('reason', '') for row in result['detail']['plan'])
+
+
+def test_auction_seal_publish_idempotence_and_cold_failure(monkeypatch):
+    from engine_core.storage.two_layer import TwoLayerStore
+    from engine_core.data_pipeline import cold_archive
+    from pathlib import Path
+    import gzip
+    auction = json.load(gzip.open(Path(__file__).parent / 'fixtures/real/c1256/auction.json.gz', 'rt'))
+    rows = [{'symbol': '002905', 'price': auction['002905']['price_milli'] / 1000}]
+    meta = {'version': 'v1', 'available_at': '2026-11-16T09:26:00+08:00'}
+    class Redis:
+        def __init__(self): self.values = []
+        def set(self, key, raw, **kwargs):
+            self.values.append((key, raw, kwargs)); return True
+    def receipt(success):
+        result = cold_archive.ArchiveReceipt()
+        result.success = success; result.error_category = 'TDWriteError'; result.done.set()
+        return result
+    redis = Redis()
+    monkeypatch.setattr('engine_core.data_pipeline.redis_day_view.expire_at', lambda _: 2000000000)
+    monkeypatch.setattr(cold_archive, 'archive', lambda *args: receipt(True))
+    store = TwoLayerStore(redis)
+    a = store.publish('auction_seal_facts', '2026-11-16', rows, meta)
+    b = store.publish('auction_seal_facts', '2026-11-16', rows, meta)
+    assert a.version == b.version and redis.values[0] == redis.values[1]
+    assert a.archive_status == 'ARCHIVED'
+    monkeypatch.setattr(cold_archive, 'archive', lambda *args: receipt(False))
+    failure = store.publish('auction_seal_facts', '2026-11-16', rows, meta)
+    assert failure.archive_status == 'FAILED' and failure.reason == 'TDWriteError'

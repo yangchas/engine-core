@@ -130,6 +130,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--json", action="store_true", help="print the full answers as JSON")
     args = parser.parse_args(argv)
+    if args.event == "auction_seal_facts":
+        import gzip
+        from engine_core.data_pipeline.auction_seal_facts import build_facts
+        fixture = ROOT / "tests" / "fixtures" / "real"
+        if args.date != "2026-11-16":
+            raise SystemExit("auction_seal_facts: no recorded inputs for date")
+        with gzip.open(fixture / "c1256/auction.json.gz", "rt") as stream:
+            auction = json.load(stream)
+        with gzip.open(fixture / "core_artifacts/c594/stock_static/2026-10-29/c573_guardian/rows.jsonl.gz", "rt") as stream:
+            listings = {row["symbol"]: row.get("listing_date") for line in stream if (row := json.loads(line))}
+        for symbol in ("001381", "688827"):
+            raw = json.loads(next(fixture.glob(f"td_stock_static_2026-11-16_{symbol}_*.json")).read_text())
+            listings[symbol] = json.loads(raw["rows"][0][raw["columns"].index("payload")])["listing_date"]
+        ticks = {}
+        for path in fixture.glob("td_stock_tick_2026-11-16_*_092430_092600_*.json"):
+            raw = json.loads(path.read_text())
+            ticks[path.name.split("_")[4]] = [dict(zip(raw["columns"], row)) for row in raw["rows"]]
+        calendar = json.loads((ROOT / "tests/fixtures/trade_calendar/baostock-2026-01-01_2026-12-31.json").read_text())
+        dates = [row["calendar_date"] for row in calendar["rows"] if row["is_trading_day"] == "1"]
+        result = build_facts(args.date, auction, listings, dates, lambda symbol: ticks.get(symbol, []))
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
     schedule = json.loads(args.schedule_file.read_text(encoding="utf-8"))
     work = args.work_dir or Path(tempfile.mkdtemp(prefix="run-function-"))
     for sub in ("core-data", "replay", "home"):
