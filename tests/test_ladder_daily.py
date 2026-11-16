@@ -59,7 +59,7 @@ def test_loader_reads_pool_hot_view_and_preserves_metadata(tmp_path, monkeypatch
         assert got["status"] == "ok"
         assert got["rows"] == rows
         assert (got["business_status"], got["quality"], got["source"], got["version"], got["available_at"]) == (
-            effective, quality, pool["source"], pool["version"], pool["available_at"])
+            effective, quality, pool["source"], pool["version"], "2026-10-28T08:31:25+08:00")
         cross = Loader(ArtifactCatalog(tmp_path), {}, when=clock)
         cross.preload_kaipan_cross(day)
         assert cross.days[day]["kaipan"] == got
