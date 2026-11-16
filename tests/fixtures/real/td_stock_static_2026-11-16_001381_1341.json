@@ -1,0 +1,24 @@
+{
+ "columns": [
+  "ts",
+  "version",
+  "row_id",
+  "plate_code",
+  "symbol",
+  "source",
+  "available_at",
+  "payload"
+ ],
+ "rows": [
+  [
+   "2026-11-16 00:51:16.192000",
+   "20261116005011-39a46555d8c7",
+   "00000515ce80effd72fe7ec92a9216a8c33be099f86173c30e11b88042ce89d7",
+   null,
+   "001381",
+   "baostock_stock_basic",
+   "2026-11-16T08:50:00+08:00",
+   "{\"available_at\":\"2026-11-16T08:50:00+08:00\",\"cap_as_of\":null,\"date\":\"2026-11-16\",\"exchange\":\"SZ\",\"float_cap_yuan\":null,\"industry\":null,\"is_new_stock\":null,\"is_st\":false,\"limit_width_pct\":null,\"listing_date\":\"2026-11-03\",\"market_board\":\"MAIN\",\"name\":\"皇冠新材\",\"pit_date\":null,\"source_quality\":\"baostock_stock_basic+symbol_universe\",\"symbol\":\"001381\",\"total_cap_yuan\":null}"
+  ]
+ ]
+}

@@ -158,6 +158,30 @@ def _baostock_stock_basic() -> tuple[object, dict]:
 def capture(kind: str, day: str, level: int, *, plate_code: str | None = None,
             index: int = 0, page_size: int = 2000, symbol: str | None = None,
             start: str | None = None, end: str | None = None) -> tuple[str, object, dict]:
+    if kind == "td_stock_static":
+        if not symbol or len(symbol) != 6 or not symbol.isdigit():
+            raise SystemExit("--symbol must be a six-digit stock code")
+        try:
+            if datetime.strptime(day, "%Y-%m-%d").strftime("%Y-%m-%d") != day:
+                raise ValueError
+        except ValueError:
+            raise SystemExit("--date must be a valid date in YYYY-MM-DD format")
+        import taos
+        sql = (f"SELECT * FROM core_data.stock_static_latest WHERE symbol='{symbol}' "
+               f"AND payload LIKE '%\"date\":\"{day}\"%' ORDER BY ts")
+        options = {"config": os.environ["TD_CONFIG"], "database": "core_data"}
+        for key, option in (("TD_HOST", "host"), ("TD_PORT", "port"), ("TD_USER", "user"), ("TD_PASSWORD", "password")):
+            if os.getenv(key):
+                options[option] = int(os.environ[key]) if option == "port" else os.environ[key]
+        connection = taos.connect(**options)
+        try:
+            cursor = connection.cursor()
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            columns = [column[0] for column in cursor.description]
+            return kind, {"columns": columns, "rows": rows}, {"sql": sql, "row_count": len(rows)}
+        finally:
+            connection.close()
     if kind == "td_stock_tick":
         import taos
         if not symbol or len(symbol) != 6 or not symbol.isdigit():
@@ -294,7 +318,7 @@ def main(argv=None) -> int:
                                                      "wencai_daily_kline", "wencai_limit_up_pool_today",
                                                      "q2_limit_up_pool_today",
                                                      "baostock_query_all_stock",
-                                                     "baostock_stock_basic", "td_stock_tick", "redis_auction_full_row", "t1v2_replay_row"])
+                                                     "baostock_stock_basic", "td_stock_tick", "td_stock_static", "redis_auction_full_row", "t1v2_replay_row"])
     parser.add_argument("--date", default=datetime.now(TZ).date().isoformat())
     parser.add_argument("--level", type=int, default=1)
     parser.add_argument("--plate-code")
@@ -372,7 +396,7 @@ def main(argv=None) -> int:
     body = json.dumps(raw, ensure_ascii=False, sort_keys=True, default=str, indent=1).encode("utf-8") + b"\n"
     level = f"_L{args.level}" if args.kind == "kaipan_pool" else ""
     plate_part = f"_{args.plate_code}_i{args.index}" if args.kind == "kaipan_plate_members" else ""
-    symbol_part = f"_{args.symbol}" if args.kind in {"kaipan_stock_dde", "td_stock_tick"} else ""
+    symbol_part = f"_{args.symbol}" if args.kind in {"kaipan_stock_dde", "td_stock_tick", "td_stock_static"} else ""
     if args.kind == "td_stock_tick":
         symbol_part += f"_{args.start.replace(":", "")}_{args.end.replace(":", "")}"
     name = f"{source}_{args.date}{level}{plate_part}{symbol_part}_{fetched_at[11:16].replace(':', '')}.json"

@@ -1,36 +1,36 @@
 {
  "_c1256": {
- "auction": {
-  "source": "Redis core:auction:full:2026-11-16:0925",
-  "source_sha256": "c5c853678b76f57e896f3f90ddba4e00a09ea6bd64a1e1302254778fd7f4e74f",
-  "fixture_sha256": "6003b2bc4588bf638d93d854615607a2e84fd7592907735c5fe5623a193b10f8",
-  "rows": 5215,
-  "selection": "complete upstream value"
+  "auction": {
+   "source": "Redis core:auction:full:2026-11-16:0925",
+   "source_sha256": "c5c853678b76f57e896f3f90ddba4e00a09ea6bd64a1e1302254778fd7f4e74f",
+   "fixture_sha256": "6003b2bc4588bf638d93d854615607a2e84fd7592907735c5fe5623a193b10f8",
+   "rows": 5215,
+   "selection": "complete upstream value"
+  },
+  "fetched_at": "2026-11-16T13:21:47.159462+08:00"
  },
- "fetched_at": "2026-11-16T13:21:47.159462+08:00"
-},
  "_c1254": {
- "auction": {
-  "rows": 256,
-  "selection": "first 250 sorted symbols plus all present yesterday multi-board symbols",
-  "source": "Redis core:auction:full:2026-11-16:0925",
-  "source_sha256": "c5c853678b76f57e896f3f90ddba4e00a09ea6bd64a1e1302254778fd7f4e74f"
+  "auction": {
+   "rows": 256,
+   "selection": "first 250 sorted symbols plus all present yesterday multi-board symbols",
+   "source": "Redis core:auction:full:2026-11-16:0925",
+   "source_sha256": "c5c853678b76f57e896f3f90ddba4e00a09ea6bd64a1e1302254778fd7f4e74f"
+  },
+  "fetched_at": "2026-11-16T13:17:20.011828+08:00",
+  "files": {
+   "auction.json": "1194113c3454fb2384c64e5048353782a1f52dfbd705481b38edd21fc1432458",
+   "panorama.json": "953bd8ae6bbe4ffef2141eb7d9fb349f9a160b622d341d3abefe5da183f186c6",
+   "pool.json": "7ae010b672a297a288c1f56a75b2433ef072cee66b9a8565bb330a24720f1a43"
+  },
+  "panorama": {
+   "source": "/home/exedev/core-data/reports/2026-11-16/auction_0926/auction_panorama.json",
+   "source_sha256": "953bd8ae6bbe4ffef2141eb7d9fb349f9a160b622d341d3abefe5da183f186c6"
+  },
+  "pool": {
+   "rows": 37,
+   "source": "Redis cache:yest_limit_pool:2026-11-13"
+  }
  },
- "fetched_at": "2026-11-16T13:17:20.011828+08:00",
- "files": {
-  "auction.json": "1194113c3454fb2384c64e5048353782a1f52dfbd705481b38edd21fc1432458",
-  "panorama.json": "953bd8ae6bbe4ffef2141eb7d9fb349f9a160b622d341d3abefe5da183f186c6",
-  "pool.json": "7ae010b672a297a288c1f56a75b2433ef072cee66b9a8565bb330a24720f1a43"
- },
- "panorama": {
-  "source": "/home/exedev/core-data/reports/2026-11-16/auction_0926/auction_panorama.json",
-  "source_sha256": "953bd8ae6bbe4ffef2141eb7d9fb349f9a160b622d341d3abefe5da183f186c6"
- },
- "pool": {
-  "rows": 37,
-  "source": "Redis cache:yest_limit_pool:2026-11-13"
- }
-},
  "_core_artifacts": {
   "core_artifacts/c522/daily_kline/2026-10-23/formal/manifest.json": {
    "bytes": 1785,
@@ -2302,5 +2302,27 @@
    "rows": 200,
    "sha256": "2b2330180ce122d2d466976d53127cb03ade15209c26172bc21810af5d110583"
   }
+ },
+ "td_stock_static_2026-11-16_001381_1341.json": {
+  "source": "td_stock_static",
+  "trade_date": "2026-11-16",
+  "fetched_at": "2026-11-16T13:41:19+08:00",
+  "bytes": 796,
+  "sha256": "3f360349741037554ccaa03198ec2959f9852931dfa6632c80bbaa495c9db728",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_static --date 2026-11-16 --symbol 001381",
+  "sql": "SELECT * FROM core_data.stock_static_latest WHERE symbol='001381' AND payload LIKE '%\"date\":\"2026-11-16\"%' ORDER BY ts",
+  "row_count": 1
+ },
+ "td_stock_static_2026-11-16_688827_1341.json": {
+  "source": "td_stock_static",
+  "trade_date": "2026-11-16",
+  "fetched_at": "2026-11-16T13:41:20+08:00",
+  "bytes": 793,
+  "sha256": "44e574d96305430ea79a1f0eac9274d806b11332ea8e068074c52bf104520fd3",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_static --date 2026-11-16 --symbol 688827",
+  "sql": "SELECT * FROM core_data.stock_static_latest WHERE symbol='688827' AND payload LIKE '%\"date\":\"2026-11-16\"%' ORDER BY ts",
+  "row_count": 1
  }
 }
