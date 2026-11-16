@@ -165,14 +165,22 @@ def run_checkpoint(request: Mapping[str, Any], root: Path, *, dry_run: bool = Fa
                     raise RuntimeError("checkpoint_set_failed")
             except Exception as exc:
                 return _reply(30, "failed", "CHECKPOINT_PUBLISH_FAILED", True, type(exc).__name__)
+            cold_warning = None
             try:
                 import hashlib
                 from ..data_pipeline.cold_archive import archive, flush
                 raw = payload.encode("utf-8")
-                version = cutoff + ":sha256-" + hashlib.sha256(raw).hexdigest()[:48]
-                archive("intraday_checkpoint", trade_date, version, raw, {**part.manifest, "cutoff": cutoff})
-                flush(timeout=5.0)
-            except Exception:
+                version = cutoff + ":sha256-" + hashlib.sha256(raw).hexdigest()[:16]
+                receipt = archive("intraday_checkpoint", trade_date, version, raw, {**part.manifest, "cutoff": cutoff})
+                flushed = flush(timeout=5.0)
+                if (receipt is False or
+                    (hasattr(receipt, 'success') and receipt.success is not True) or
+                    (not hasattr(receipt, 'success') and not flushed)):
+                    cold_warning = {"category": getattr(receipt, 'error_category', None) or 'unavailable_or_timeout',
+                                    "td_error_code": getattr(receipt, 'td_error_code', None),
+                                    "successful_chunks": getattr(receipt, 'successful_chunks', 0)}
+            except Exception as exc:
+                cold_warning = {"category": type(exc).__name__, "td_error_code": None, "successful_chunks": 0}
                 import logging
                 logging.getLogger(__name__).warning("cold_archive dispatch_failed", exc_info=True)
             degraded = bool(part.manifest["degraded"])
@@ -180,6 +188,7 @@ def run_checkpoint(request: Mapping[str, Any], root: Path, *, dry_run: bool = Fa
                 "checkpoint": cutoff, "source": part.manifest["source"], "row_count": len(part.rows),
                 "coverage": part.manifest["quality"]["coverage"], "redis_key": key,
                 "dropped": part.notes["counts"],
+                **({"cold_archive_warning": cold_warning} if cold_warning else {}),
                 "elapsed_ms": round((time.monotonic() - started) * 1000)})
         last_error = (CheckpointError("CHECKPOINT_WINDOW_PASSED", str(part.notes["counts"]), exit_code=40)
                       if part.notes["state"] == "passed" else

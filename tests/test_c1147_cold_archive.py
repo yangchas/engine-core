@@ -103,7 +103,9 @@ def test_checkpoint_archive_exact_bytes_and_failure(tmp_path, monkeypatch):
     assert cold_archive.read_envelope(dataset, day, version, store=store) == raw
     monkeypatch.setattr(cold_archive, 'archive', lambda *args: (_ for _ in ()).throw(RuntimeError('cold')))
     redis2 = FakeRedis({'000001': {}})
-    assert checkpoint.run_checkpoint(req(), tmp_path, redis=redis2)[0] == 0
+    code, failed = checkpoint.run_checkpoint(req(), tmp_path, redis=redis2)
+    assert code == 0
+    assert failed['detail']['cold_archive_warning']['category'] == 'RuntimeError'
     assert redis2.values == redis.values
 
 
