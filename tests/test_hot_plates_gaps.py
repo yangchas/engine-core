@@ -180,4 +180,11 @@ def test_real_legacy_gap_remains_readable_and_new_gap_uses_standard_envelope(tmp
     assert gap['trade_date'] == old['trade_date']
     for field in ('scheduled_at', 'deadline', 'observed_at', 'stale_captured_at', 'captured_at', 'available_at'):
         assert re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+08:00', gap[field])
-    assert json.loads(gap_redis.values[key.rsplit(':', 1)[0] + ':' + gap['event_id']]) == gap
+    stored_gap = json.loads(gap_redis.values[key.rsplit(':', 1)[0] + ':' + gap['event_id']])
+    warning = gap.pop('cold_archive_warning', None)
+    assert stored_gap == gap
+    if warning:
+        assert warning['category']
+        assert 'td_error_code' in warning
+    else:
+        assert warning in (None, {})
