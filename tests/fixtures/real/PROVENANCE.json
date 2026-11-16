@@ -2601,5 +2601,14 @@
   "fetched_at": "2026-11-17T04:13:24.953096+08:00",
   "marker_count": 2,
   "row_count": 40
+ },
+ "_c1317": {
+  "file": "c1317/seals.out",
+  "sha256": "c7a30e0a648dea5fc1d1960028dcc9513dd735890df4d826c611bb5f40d07bd0",
+  "source": "/home/exedev/fw/evidence/C1316/probe.out",
+  "source_sha256": "a34bddb4c73014802eabda57f790d682805165f5743f8430deb26bc3ca2ef5bb",
+  "selection": "lines 3-4, unchanged",
+  "row_count": 11,
+  "trade_date": "2026-11-16"
  }
 }

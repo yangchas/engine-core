@@ -26,6 +26,9 @@ def test_real_auction_candidates_and_tick_seals():
     assert sum(row['side'] == 'limit_down' for row in result['rows']) == 4
     assert '688827' in result['unlimited'] and '001381' not in result['unlimited']
     by_symbol = {row['symbol']: row for row in result['rows']}
+    assert by_symbol['002905']['price_source'] == 'indicative_bid_ask_mid'
+    assert by_symbol['002973']['price_source'] == 'indicative_bid_ask_mid'
+    assert by_symbol['000831']['price_source'] == 'auction_match'
     assert by_symbol['002905']['basis'] == 'pre_0924_57'
     assert by_symbol['002905']['seal_amount_yuan'] == 90844380
     assert by_symbol['002973']['basis'] == 'pre_0924_57'
@@ -51,6 +54,7 @@ def test_real_limit_price_before_auction_does_not_override_final_tick():
     quote = {'002129': {'price_milli': pre['px_milli'], 'pre_close_milli': pre['pc_milli']}}
     result = build_facts('2026-11-16', quote, listings, dates, lambda symbol: ticks)
     row = result['rows'][0]
+    assert row['price_source'] == 'missing'
     assert row['basis'] is None and row['seal_volume'] is None and row['seal_amount_yuan'] is None
 
 
