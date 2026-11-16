@@ -65,7 +65,7 @@ def build_facts(trade_date, auction, listings, trading_dates, fetch_ticks):
             else:
                 basis = None
         rows.append(dict(symbol=symbol, side=side, price=float(Decimal(price)/1000),
-                         pre_close=float(Decimal(pre)/1000), seal_volume=volume,
+                         pre_close=float(Decimal(pre)/1000), price_source=quote.get('source', quote.get('src', 'missing')), seal_volume=volume,
                          seal_amount_yuan=amount, source_tick_ts=stamp, basis=basis))
     return {'rows': rows, 'unknown_listing': unknown, 'unknown_prices': unknown_prices, 'unlimited': unlimited}
 

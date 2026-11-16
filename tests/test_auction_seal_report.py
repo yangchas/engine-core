@@ -38,11 +38,11 @@ def test_real_facts_summary_and_missing_amount():
     facts, plates = real_inputs()
     section = build_seal_section(facts, plates)
     for side in ('limit_up', 'limit_down'):
-        valid = [r for r in facts['rows'] if r['side'] == side and r['seal_amount_yuan'] is not None]
-        assert section[side]['count'] == len(valid)
-        assert section[side]['seal_amount_yuan'] == sum(r['seal_amount_yuan'] for r in valid)
-        assert section[side]['top_stocks'] == sorted(valid, key=lambda r: (-r['seal_amount_yuan'], r['symbol']))[:10]
-        assert all(r['symbol'] != '002129' for r in section[side]['top_stocks'])
+        valid = [r for r in facts['rows'] if r['side'] == side and r['seal_amount_yuan'] is not None and r['price_source'] == 'auction_match']
+        assert section[side]['confirmed']['count'] == len(valid)
+        assert section[side]['confirmed']['seal_amount_yuan'] == sum(r['seal_amount_yuan'] for r in valid)
+        assert section[side]['confirmed']['top_stocks'] == sorted(valid, key=lambda r: (-r['seal_amount_yuan'], r['symbol']))[:10]
+        assert all(r['symbol'] != '002129' for r in section[side]['confirmed']['top_stocks'])
         expected = {}
         for row in valid:
             for plate in plates.get(row['symbol'], []):
@@ -106,3 +106,25 @@ def test_cold_fallback_replays_real_facts_without_redis_writes(monkeypatch):
     assert result == report.build_seal_section(facts, plates)
     monkeypatch.setattr(report.cold_archive, 'read_envelope', lambda *args, **kw: raw + b' ')
     assert report.read_and_build(DAY, store=Store())['status'] == 'unavailable'
+
+
+def test_real_price_sources_are_separated():
+    from engine_core.auction_seal_report import build_seal_section
+    facts, plates = real_inputs()
+    excerpt = {}
+    for line in (REAL / 'c1317/seals.out').read_text().splitlines():
+        prefix, payload = line.split('[', 1)
+        side = prefix.split()[1]
+        excerpt[side] = json.loads('[' + payload)
+    facts['rows'] = [r for r in facts['rows'] if r['symbol'] != '002129']
+    section = build_seal_section(facts, plates)
+    for side, symbol in (('limit_up', '002905'), ('limit_down', '002973')):
+        confirmed = [r for r in excerpt[side] if r['source'] == 'auction_match']
+        estimated = [r for r in excerpt[side] if r['source'] != 'auction_match']
+        assert section[side]['confirmed']['count'] == len(confirmed)
+        assert section[side]['confirmed']['seal_amount_yuan'] == sum(r['amount_yuan'] for r in confirmed)
+        assert section[side]['estimated']['count'] == len(estimated)
+        assert section[side]['estimated']['seal_amount_yuan'] == sum(r['amount_yuan'] for r in estimated)
+        assert [r['symbol'] for r in section[side]['estimated']['rows']] == [symbol]
+        assert symbol not in [r['symbol'] for r in section[side]['confirmed']['top_stocks']]
+        assert 'seal_amount_yuan' not in section[side]

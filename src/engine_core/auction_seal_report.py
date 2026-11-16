@@ -23,10 +23,19 @@ def build_seal_section(facts, stock_plates, *, top_n=10):
               'themes': {'status': 'available' if stock_plates is not None else 'unavailable'},
               'notes': ['一只股票属于多个题材时，各题材分别计入；涨停与跌停分开统计。']}
     for side in ('limit_up', 'limit_down'):
-        rows = [r for r in facts['rows'] if r['side'] == side and r['seal_amount_yuan'] is not None and r['basis']]
+        side_rows = [r for r in facts['rows'] if r['side'] == side]
+        estimated = [r for r in side_rows if r.get('price_source', 'missing') != 'auction_match']
+        estimated.sort(key=lambda r: r['symbol'])
+        rows = [r for r in side_rows if r.get('price_source', 'missing') == 'auction_match' and r['seal_amount_yuan'] is not None and r['basis']]
         rows.sort(key=lambda r: (-r['seal_amount_yuan'], r['symbol']))
-        result[side] = {'count': len(rows), 'seal_amount_yuan': sum(r['seal_amount_yuan'] for r in rows),
-                        'top_stocks': rows[:top_n]}
+        result[side] = {
+            'confirmed': {'count': len(rows), 'seal_amount_yuan': sum(r['seal_amount_yuan'] for r in rows),
+                          'top_stocks': rows[:top_n]},
+            'estimated': {'count': len(estimated),
+                          'seal_amount_yuan': (sum(r['seal_amount_yuan'] for r in estimated)
+                                               if all(r['seal_amount_yuan'] is not None and r['basis'] for r in estimated) else None),
+                          'rows': estimated},
+        }
         if stock_plates is not None:
             themes = defaultdict(lambda: {'count': 0, 'seal_amount_yuan': 0})
             for row in rows:
