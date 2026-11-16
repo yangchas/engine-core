@@ -279,6 +279,7 @@ def publish_filled_days(root: Any, store: Any, days: Sequence[str], expected_sym
 
     from .jobs import JobRunner, RequestBudget
     from .registry.daily_kline import DAILY_KLINE_QUALITY_FIELDS
+    from .storage import ArtifactCatalog, _prepare_daily_kline_manifest
 
     if coverage_threshold < MIN_FORMAL_COVERAGE:
         # classify_daily_kline downgrades anything below this to PARTIAL/PROVISIONAL whatever the policy says.
@@ -287,24 +288,22 @@ def publish_filled_days(root: Any, store: Any, days: Sequence[str], expected_sym
     sink = DailyKlineTdSink(store, base)
     runner = JobRunner(artifact_root=base, td_adapter=sink,
                        budget=RequestBudget(max_requests=max(1, len(days)), min_interval_seconds=0))
-    quality_fields = ("open", "high", "low", "close", "pre_close", "pct_chg", "amount_yuan", "volume")
+    catalog = ArtifactCatalog(base)
     outcomes = []
     for day in days:
         if progress is not None:
             progress["current_day"] = day
         expected = set(expected_symbols(day))
         rows = sorted(sink.read_progress_rows(day, sorted(expected)).values(), key=lambda row: row["symbol"])
-        completeness = {field: ("COMPLETE" if all(row.get(field) is not None for row in rows)
-                                else "SUSPENDED_ONLY" if all(row.get("suspended") for row in rows)
-                                else "PARTIAL") for field in quality_fields}
         meta = {"rows": rows, "source": "baostock", "provider": "baostock", "expected_count": len(expected),
-                "field_completeness": completeness, "expected_symbols": sorted(expected),
+                "expected_symbols": sorted(expected),
                 "source_symbols": sorted(expected), "source_universe_status": "NOT_REQUIRED",
                 "field_units": {"volume": "shares"},
                 "source_dates": {field: day for field in DAILY_KLINE_QUALITY_FIELDS},
                 "source_date_values": [day], "source_dates_consistent": True,
                 "provider_attempts": [{"provider": "baostock", "result": "ok", "reason": "per_symbol_fill"}],
                 "available_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(), "as_of": day}
+        meta["field_completeness"] = _prepare_daily_kline_manifest(catalog, day, rows, meta)["field_completeness"]
         result = runner.run("daily_kline", day, fetch=(lambda payload: lambda _day: payload)(meta), td_write=True,
                             source="baostock", expected_count=len(expected),
                             baostock_policy={"formal_coverage_threshold": coverage_threshold,

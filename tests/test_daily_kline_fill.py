@@ -737,3 +737,24 @@ def test_resource_failure_reply_includes_publish_progress(monkeypatch, tmp_path)
     assert reply['detail']['publish_skipped'] is False
     assert reply['detail']['shard_events'] == [{"segments": 4}]
     assert check_reply(code, reply) == []
+
+
+def test_publish_completeness_uses_authoritative_td_fixture(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from engine_core.data_pipeline.daily_kline_fill import publish_filled_days
+    from engine_core.data_pipeline.jobs import JobRunner
+
+    fixture = json.loads((Path(__file__).parent / 'fixtures/real/c1299/td_missing.json').read_text())
+    rows = [dict(zip(fixture['columns'], row)) for row in fixture['rows']]
+    store = MemoryTdStore()
+    store.ensure_schema()
+    store.replace_day('2026-11-16', BAOSTOCK_PROGRESS_VERSION, {row['symbol']: row for row in rows})
+    seen = {}
+    def run(self, dataset, day, *, fetch, **kwargs):
+        meta = fetch(day)
+        seen.update(meta['field_completeness'])
+        return SimpleNamespace(rows=meta['rows'], manifest={'td_publish': 'READY'})
+    monkeypatch.setattr(JobRunner, 'run', run)
+    publish_filled_days(tmp_path, store, ['2026-11-16'], lambda day: {row['symbol'] for row in rows}, 0.995)
+    assert seen['open'] == 'COMPLETE'
+    assert seen['amount_yuan'] == 'MISSING'

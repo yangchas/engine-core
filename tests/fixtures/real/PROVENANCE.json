@@ -2553,5 +2553,13 @@
   "rows": 50,
   "bytes": 10803,
   "capture": "direct read-only TD query; capture_real_fixture.py lacks this source"
+ },
+ "_c1299": {
+  "source": "core_data.daily_kline_v1",
+  "sql": "SELECT symbol, open, high, low, close, pre_close, pct_chg, volume_shares, amount_yuan, turnover_pct, suspended FROM core_data.daily_kline_v1 WHERE ts >= '2026-11-16 00:00:00' AND ts < '2026-11-17 00:00:00' AND (amount_yuan IS NULL OR volume_shares IS NULL OR pct_chg IS NULL) ORDER BY symbol",
+  "fetched_at": "2026-11-16T20:04:04.365697+08:00",
+  "row_count": 7,
+  "file": "c1299/td_missing.json",
+  "sha256": "dfce6f09ae080c93550c8e7e3ab2eedb0075173288ac00c55b5edfa9ca44d7ad"
  }
 }
