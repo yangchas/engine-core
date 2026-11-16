@@ -61,3 +61,19 @@ def test_go_style_durations_of_the_profiles_parse():
     for profile in SCHEDULE["profiles"].values():          # every ladder timeout in the real schedule
         for rung in profile["ladder"]:
             assert run_function._seconds(rung["timeout"]) > 0
+
+
+def test_kaipan_replay_redis_empty_reads_are_limited(tmp_path, monkeypatch):
+    import pytest
+    import replay_handler
+
+    monkeypatch.setattr(replay_handler, "REPLAY_DIR", tmp_path)
+    monkeypatch.setenv("CORE_REPLAY_INSTANCE", "kaipan_hot_092110")
+    client = replay_handler._GapRedis()
+    assert list(client.scan_iter(match=f"core:cache:data:hot_plates_gaps:{DAY}:*", count=100)) == []
+    assert client.get(f"core:view:hot_rank:{DAY}") is None
+    with pytest.raises(replay_handler._RedisGapError):
+        client.get("core:unrecorded")
+    monkeypatch.setenv("CORE_REPLAY_INSTANCE", "another_event")
+    with pytest.raises(replay_handler._RedisGapError):
+        client.scan_iter(match=f"core:cache:data:hot_plates_gaps:{DAY}:*", count=100)

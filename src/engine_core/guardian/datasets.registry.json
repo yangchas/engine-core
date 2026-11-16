@@ -2686,6 +2686,7 @@
     },
     {
       "id": "auction_seal_facts",
+      "redis_ttl_trade_days": 5,
       "owner": "data_function",
       "artifact": {
         "catalog_dataset": null,

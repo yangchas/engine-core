@@ -5,8 +5,8 @@ Runs the real examples/guardian_handler.py with every upstream replaced:
   * the Kaipan SDK (``pykaipan.pykaipan``) answers from recorded raw responses in tests/fixtures/real, matched on the
     request's date/level/plate/symbol; anything else raises UnrecordedRequest;
   * every internet-protocol connection is a recorded gap (network.connect / network.resolve);
-  * ``baostock`` / ``pywencai`` / ``redis`` / ``taos`` are stand-ins: any use is a recorded gap and fails the way an
-    unreachable source fails (UnrecordedRequest, or ConnectionError for Redis and Baostock).
+  * ``baostock`` / ``pywencai`` / ``redis`` / ``taos`` are stand-ins. Redis exposes an empty isolated view for
+    selected Kaipan replay reads; unsupported calls remain recorded gaps and fail as unreachable sources.
 Every request that could not be answered is appended, with the instance that made it, to $CORE_REPLAY_DIR/unrecorded.jsonl and every reply the handler
 produced to $CORE_REPLAY_DIR/replies.jsonl, so the report can list gaps instead of hiding them.
 """
@@ -144,7 +144,7 @@ class _RedisGapError(RedisConnectionError):
 
 
 class _GapRedis:
-    """Redis stand-in: every command is a recorded gap that fails like an unreachable server."""
+    """Redis stand-in with narrowly scoped empty reads for the isolated Kaipan replay."""
 
     @classmethod
     def from_url(cls, *_args, **_kwargs):
@@ -155,6 +155,22 @@ class _GapRedis:
 
     def close(self, *_args, **_kwargs):
         """Closing a client that never reached a server sends nothing, so it is not a gap."""
+
+    @staticmethod
+    def _kaipan():
+        return (_CONTEXT["instance"] or os.environ.get("CORE_REPLAY_INSTANCE", "")) == "kaipan_hot_092110"
+
+    def get(self, key):
+        if self._kaipan() and re.fullmatch(r"core:view:hot_rank:\d{4}-\d{2}-\d{2}", key):
+            return None
+        raise _RedisGapError(str(_unrecorded("redis", "get")))
+
+    def scan_iter(self, *args, **kwargs):
+        match = kwargs.get("match")
+        if (self._kaipan() and not args and isinstance(match, str) and
+                re.fullmatch(r"core:cache:data:hot_plates(?:_gaps)?:\d{4}-\d{2}-\d{2}:\*", match)):
+            return iter(())
+        raise _RedisGapError(str(_unrecorded("redis", "scan_iter")))
 
     def __getattr__(self, command):
         if command.startswith("__"):
