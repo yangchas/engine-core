@@ -1,0 +1,24 @@
+{
+ "columns": [
+  "ts",
+  "version",
+  "row_id",
+  "plate_code",
+  "symbol",
+  "source",
+  "available_at",
+  "payload"
+ ],
+ "rows": [
+  [
+   "2026-11-16 00:51:20.894000",
+   "20261116005011-39a46555d8c7",
+   "00005217e154a9c6d5dc3951c393e4c6d1cff0ea52a27845503900e5fc4990be",
+   null,
+   "688827",
+   "baostock_stock_basic",
+   "2026-11-16T08:50:00+08:00",
+   "{\"available_at\":\"2026-11-16T08:50:00+08:00\",\"cap_as_of\":null,\"date\":\"2026-11-16\",\"exchange\":\"SH\",\"float_cap_yuan\":null,\"industry\":null,\"is_new_stock\":null,\"is_st\":false,\"limit_width_pct\":null,\"listing_date\":\"2026-11-10\",\"market_board\":\"STAR\",\"name\":\"钶锐锶\",\"pit_date\":null,\"source_quality\":\"baostock_stock_basic+symbol_universe\",\"symbol\":\"688827\",\"total_cap_yuan\":null}"
+  ]
+ ]
+}

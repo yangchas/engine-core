@@ -26,7 +26,7 @@ C526_EXCERPT_INDEX = PROVENANCE.get("_c526_excerpts", {})
 SOURCES = {"ths_hot_rank", "kaipan_hot_plates", "kaipan_pool", "wencai_daily_kline",
            "kaipan_ban_reasons", "wencai_limit_up_pool",
            "wencai_limit_up_pool_today", "q2_limit_up_pool_today", "kaipan_plate_members", "kaipan_stock_dde", "baostock_query_all_stock",
-           "baostock_stock_basic", "td_stock_tick", "redis_auction_full_row", "t1v2_replay_row"}
+           "baostock_stock_basic", "td_stock_tick", "td_stock_static", "redis_auction_full_row", "t1v2_replay_row"}
 CREDENTIAL_WORDS = ("token", "password", "secret", "cookie", "authorization")
 
 
@@ -527,3 +527,26 @@ def test_hot_rank_guardian_presence_ignores_catalog_real_snapshot(tmp_path, monk
     assert stale_items(now, empty, [item], trade_date=day)[0]['status'] == 'OVERDUE'
     assert not any(row['action'] == 'FETCH_NOW' for row in reconcile_plan(
         now, empty, trade_date=day, prev_trade_date='2026-10-22', phase='INTRADAY_PM', registry=[item]))
+
+
+def test_td_stock_static_rejects_invalid_symbol():
+    from examples.capture_real_fixture import capture
+
+    for symbol in (None, '12345', '1234567', '12a456', "12345'"):
+        with pytest.raises(SystemExit, match='six-digit stock code'):
+            capture('td_stock_static', '2026-11-16', 1, symbol=symbol)
+
+
+def test_td_stock_static_real_rows_and_provenance():
+    for symbol, listing_date in (('001381', '2026-11-03'), ('688827', '2026-11-10')):
+        names = [name for name in INDEX if name.startswith(f'td_stock_static_2026-11-16_{symbol}_')]
+        assert len(names) == 1
+        meta = INDEX[names[0]]
+        fixture = json.loads((REAL / names[0]).read_text(encoding='utf-8'))
+        assert meta['source'] == 'td_stock_static' and meta['trade_date'] == '2026-11-16'
+        assert meta['row_count'] == len(fixture['rows']) == 1
+        assert f"symbol='{symbol}'" in meta['sql'] and 'core_data.stock_static_latest' in meta['sql']
+        row = dict(zip(fixture['columns'], fixture['rows'][0], strict=True))
+        payload = json.loads(row['payload'])
+        assert row['symbol'] == symbol and payload['date'] == '2026-11-16'
+        assert payload['listing_date'] == listing_date
