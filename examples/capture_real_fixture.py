@@ -155,9 +155,57 @@ def _baostock_stock_basic() -> tuple[object, dict]:
         bs.logout()
 
 
+def _baostock_daily_trade_status(day: str, symbol: str) -> tuple[object, dict]:
+    import baostock as bs
+    from engine_core.daily_kline_capture import to_baostock_code
+
+    code = to_baostock_code(symbol)
+    import socket
+    previous_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(15)
+    try:
+        login = bs.login()
+    except Exception as exc:
+        raise SystemExit(f"Baostock login failed: {type(exc).__name__}: {exc}") from exc
+    finally:
+        socket.setdefaulttimeout(previous_timeout)
+    if getattr(login, "error_code", None) != "0":
+        raise SystemExit("Baostock login failed")
+    try:
+        from baostock.common import context
+        if context.default_socket is not None:
+            context.default_socket.settimeout(15)
+        try:
+            result = bs.query_history_k_data_plus(code, "date,code,tradestatus", start_date=day, end_date=day, frequency="d")
+        except Exception as exc:
+            raise SystemExit(f"Baostock daily trade status query failed: {type(exc).__name__}: {exc}") from exc
+        if getattr(result, "error_code", None) != "0":
+            raise SystemExit("Baostock daily trade status query failed")
+        rows = []
+        while result.next():
+            rows.append(result.get_row_data())
+        return {"fields": list(result.fields), "rows": rows}, {
+            "call": "baostock.query_history_k_data_plus",
+            "params": {"code": code, "start_date": day, "end_date": day,
+                       "fields": "date,code,tradestatus", "frequency": "d"},
+            "request_count": 1, "row_count": len(rows)}
+    finally:
+        bs.logout()
+
+
 def capture(kind: str, day: str, level: int, *, plate_code: str | None = None,
             index: int = 0, page_size: int = 2000, symbol: str | None = None,
             start: str | None = None, end: str | None = None) -> tuple[str, object, dict]:
+    if kind == "baostock_daily_trade_status":
+        if not symbol or len(symbol) != 6 or not symbol.isascii() or not symbol.isdigit():
+            raise SystemExit("--symbol must be a six-digit stock code")
+        try:
+            if datetime.strptime(day, "%Y-%m-%d").strftime("%Y-%m-%d") != day:
+                raise ValueError
+        except ValueError:
+            raise SystemExit("--date must be a valid date in YYYY-MM-DD format")
+        raw, meta = _baostock_daily_trade_status(day, symbol)
+        return kind, raw, meta
     if kind == "td_stock_static":
         if not symbol or len(symbol) != 6 or not symbol.isdigit():
             raise SystemExit("--symbol must be a six-digit stock code")
@@ -318,8 +366,8 @@ def main(argv=None) -> int:
                                                      "wencai_daily_kline", "wencai_limit_up_pool_today",
                                                      "q2_limit_up_pool_today",
                                                      "baostock_query_all_stock",
-                                                     "baostock_stock_basic", "td_stock_tick", "td_stock_static", "redis_auction_full_row", "t1v2_replay_row"])
-    parser.add_argument("--date", default=datetime.now(TZ).date().isoformat())
+                                                     "baostock_stock_basic", "baostock_daily_trade_status", "td_stock_tick", "td_stock_static", "redis_auction_full_row", "t1v2_replay_row"])
+    parser.add_argument("--date")
     parser.add_argument("--level", type=int, default=1)
     parser.add_argument("--plate-code")
     parser.add_argument("--symbol")
@@ -340,6 +388,9 @@ def main(argv=None) -> int:
     parser.add_argument("--label", help="fixture subdirectory label")
     parser.add_argument("--catalog-root", default="~/core-data")
     args = parser.parse_args(argv)
+    if args.kind == "baostock_daily_trade_status" and not args.date:
+        parser.error("--date is required for baostock_daily_trade_status")
+    args.date = args.date or datetime.now(TZ).date().isoformat()
     if args.from_catalog:
         if args.kind or not all((args.dataset, args.version, args.label)):
             parser.error("--from-catalog requires --dataset, --version and --label, and no kind")
@@ -396,7 +447,7 @@ def main(argv=None) -> int:
     body = json.dumps(raw, ensure_ascii=False, sort_keys=True, default=str, indent=1).encode("utf-8") + b"\n"
     level = f"_L{args.level}" if args.kind == "kaipan_pool" else ""
     plate_part = f"_{args.plate_code}_i{args.index}" if args.kind == "kaipan_plate_members" else ""
-    symbol_part = f"_{args.symbol}" if args.kind in {"kaipan_stock_dde", "td_stock_tick", "td_stock_static"} else ""
+    symbol_part = f"_{args.symbol}" if args.kind in {"kaipan_stock_dde", "td_stock_tick", "td_stock_static", "baostock_daily_trade_status"} else ""
     if args.kind == "td_stock_tick":
         symbol_part += f"_{args.start.replace(":", "")}_{args.end.replace(":", "")}"
     name = f"{source}_{args.date}{level}{plate_part}{symbol_part}_{fetched_at[11:16].replace(':', '')}.json"

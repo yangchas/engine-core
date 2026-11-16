@@ -26,7 +26,7 @@ C526_EXCERPT_INDEX = PROVENANCE.get("_c526_excerpts", {})
 SOURCES = {"ths_hot_rank", "kaipan_hot_plates", "kaipan_pool", "wencai_daily_kline",
            "kaipan_ban_reasons", "wencai_limit_up_pool",
            "wencai_limit_up_pool_today", "q2_limit_up_pool_today", "kaipan_plate_members", "kaipan_stock_dde", "baostock_query_all_stock",
-           "baostock_stock_basic", "td_stock_tick", "td_stock_static", "redis_auction_full_row", "t1v2_replay_row"}
+           "baostock_stock_basic", "baostock_daily_trade_status", "td_stock_tick", "td_stock_static", "redis_auction_full_row", "t1v2_replay_row"}
 CREDENTIAL_WORDS = ("token", "password", "secret", "cookie", "authorization")
 
 
@@ -591,8 +591,6 @@ def test_baostock_daily_trade_status_rejects_invalid_parameters():
     with pytest.raises(SystemExit) as exc:
         main(['baostock_daily_trade_status', '--symbol', '605255'])
     assert exc.value.code == 2
-
-
 def test_c1301_trade_status_excerpt_provenance():
     meta = PROVENANCE['_c1301']
     body = (REAL / meta['file']).read_bytes()
