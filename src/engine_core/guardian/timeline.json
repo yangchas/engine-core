@@ -2173,6 +2173,33 @@
       "silent_until_last": false,
       "timeout_seconds": 300,
       "trigger_type": "window"
+    },
+    "plate_stock_index": {
+      "after": [],
+      "args": {
+        "dataset": "plate_stock_index"
+      },
+      "available_after": null,
+      "calendar": "trading_day",
+      "catchup_mode": "run_in_window",
+      "cost": null,
+      "data_date_offset": 0,
+      "depends_on": [],
+      "enabled": true,
+      "gate": "calendar_ready",
+      "handler": "intraday_data",
+      "late_until": null,
+      "max_attempts": 3,
+      "on_deadline": "degrade",
+      "on_phase_mismatch": null,
+      "on_start": null,
+      "order": null,
+      "phases": null,
+      "retry_backoff": null,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "timeout_seconds": 300,
+      "trigger_type": "window"
     }
   },
   "timeline": [
@@ -2456,6 +2483,16 @@
         {
           "fn": "td_resource_check",
           "id": "td_resource_check_0910"
+        }
+      ]
+    },
+    {
+      "at": "09:05:00",
+      "run": [
+        {
+          "fn": "plate_stock_index",
+          "id": "plate_stock_index_0905",
+          "deadline": "09:20:00"
         }
       ]
     },
@@ -3402,6 +3439,7 @@
     "premarket_slice_0850",
     "static_data_refresh_0850",
     "startup_0900",
+    "plate_stock_index_0905",
     "auction_watch_0915",
     "kaipan_hot_091610",
     "limit_up_today_091600",

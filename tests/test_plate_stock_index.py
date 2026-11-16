@@ -143,7 +143,8 @@ def test_real_data_storage_failure_receipts_and_missing(monkeypatch):
     archiver = cold_archive.Archiver(RejectedCold)
     monkeypatch.setattr(cold_archive, 'archive', archiver.submit)
     failure = store.publish('plate_stock_index', '2026-10-28', rows, meta)
-    assert failure.status == 'FAILED' and failure.archive_status == 'FAILED'
+    assert failure.status == 'published' and failure.archive_status == 'FAILED'
+    assert store.get_stock_plates('2026-10-28', [picked])[picked]['status'] == 'PRESENT_REDIS'
 
 
 def test_captured_markers_select_distinct_index_versions(monkeypatch):

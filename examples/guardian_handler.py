@@ -474,6 +474,35 @@ def _run_event(request):
         except (IndexError, ValueError):
             return _failure_response(request, error=ValueError("invalid stock listing job reply"))
         return result.returncode, reply
+    if name == "intraday_data" and args.get("dataset") == "plate_stock_index":
+        if dry:
+            return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
+                       "artifacts": [], "detail": "plate_stock_index dry run"}
+        from engine_core.data_pipeline.auction_redis_view import redis_client
+        from engine_core.data_pipeline.plate_stock_index import run as run_plate_stock_index
+        from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotError
+        from engine_core.storage.two_layer import TwoLayerStore
+        try:
+            client = redis_client()
+            result = run_plate_stock_index(str(trade_date), f"{trade_date}T09:05:00+08:00",
+                                           redis_client=client, store=TwoLayerStore(client))
+            if result.status != "published":
+                return _failure_response(request, error=ConnectionError(result.reason or result.status))
+            return 0, {"contract": 1, "status": "ok" if result.archive_status == "ARCHIVED" else "degraded",
+                       "error_code": "", "retryable": False, "artifacts": [],
+                       "detail": {"version": result.version, "archive_status": result.archive_status,
+                                  "reason": result.reason}}
+        except ReferenceSnapshotError as exc:
+            if str(exc) == "TD_CONFIG_required":
+                return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                            "retryable": False, "artifacts": [], "detail": str(exc)}
+            return _failure_response(request, error=ConnectionError(str(exc)))
+        except ValueError as exc:
+            if str(exc) in {"plate_members_unavailable", "plate_members_not_visible"}:
+                return _failure_response(request, error=ConnectionError(str(exc)))
+            return _failure_response(request, error=exc)
+        except Exception as exc:
+            return _failure_response(request, error=exc)
     if name == "intraday_data" and args.get("dataset") == "auction_seal_facts":
         if dry:
             return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,

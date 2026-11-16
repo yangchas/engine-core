@@ -407,3 +407,15 @@ def test_auction_seal_event_matches_timeline_and_registry():
     assert event['phases'] == source['phases'] and event['max_attempts'] == source['max_attempts'] and event['timeout_seconds'] == source['timeout_seconds']
     assert any(p['at'] == event['at'] and any(r['id'] == event['event_id'] for r in p['run']) for p in timeline['timeline'])
     assert next(i for i in registry['items'] if i['id'] == 'auction_seal_facts')['guardian_event'] == event['event_id']
+
+
+def test_plate_stock_index_event_matches_timeline_and_registry():
+    root = Path(__file__).resolve().parents[1]
+    schedule = json.loads((root / 'src/engine_core/guardian/schedule.json').read_text())
+    timeline = json.loads((root / 'src/engine_core/guardian/timeline.json').read_text())
+    registry = json.loads((root / 'src/engine_core/guardian/datasets.registry.json').read_text())
+    event = next(e for e in schedule['events'] if e['event_id'] == 'plate_stock_index_0905')
+    assert (event['at'], event['deadline'], event['calendar'], event['trigger_type'], event['on_deadline']) == ('09:05:00', '09:20:00', 'trading_day', 'window', 'degrade')
+    assert (event['gate'], event['max_attempts'], event['handler'], event['args']['dataset']) == ('calendar_ready', 3, 'intraday_data', 'plate_stock_index')
+    assert any(p['at'] == event['at'] and any(r['id'] == event['event_id'] for r in p['run']) for p in timeline['timeline'])
+    assert next(i for i in registry['items'] if i['id'] == 'plate_stock_index')['guardian_event'] == event['event_id']
