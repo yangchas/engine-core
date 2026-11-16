@@ -229,3 +229,56 @@ def test_all_sources_failed_is_typed_missing_without_fabricated_rows():
     assert result["expected_count"] == 1
     assert result["coverage_count"] == 0
     assert result["rows"] == []
+
+
+def _publish_real_limit_reasons(tmp_path, monkeypatch, archive):
+    from engine_core.data_pipeline import cold_archive
+    from engine_core.data_pipeline.jobs import JobRunner, JobState, RequestBudget
+    from engine_core.data_pipeline.limit_reasons import build_limit_reasons
+
+    class RedisMemory:
+        def __init__(self):
+            self.values = {}
+        def get(self, key):
+            return self.values.get(key)
+        def set(self, key, value, **kwargs):
+            self.values[key] = value
+            return True
+
+    day = "2026-10-23"
+    pool_row = next(row for row in _real_pool_rows(day, "0537") if row["symbol"] == "002982")
+    payload = build_limit_reasons(day, [pool_row], kaipan_rows=_reason_rows(_reason_history("002982")),
+                                  pool_source="kaipan_getHisBans")
+    redis = RedisMemory()
+    monkeypatch.setattr(cold_archive, "archive", archive)
+    monkeypatch.setattr(cold_archive, "flush", lambda: True)
+    result = JobRunner(artifact_root=tmp_path, redis=redis, state=JobState(),
+                       budget=RequestBudget(min_interval_seconds=0)).run(
+        "limit_reasons", day, fetch=lambda _: payload,
+        now="2026-10-23T16:00:00+08:00", publish=True)
+    return day, result, redis
+
+
+def test_limit_reasons_real_fixture_archives_published_version(tmp_path, monkeypatch):
+    calls = []
+    day, result, redis = _publish_real_limit_reasons(tmp_path, monkeypatch,
+                                                     lambda *args: calls.append(args) or True)
+    assert result.manifest["cache_publish"] == "READY"
+    assert len(calls) == 1
+    dataset, archive_day, version, envelope, meta = calls[0]
+    assert (dataset, archive_day, version) == ("limit_reasons", day, result.manifest["version"])
+    key = f"core:cache:data:limit_reasons:{day}:{version}"
+    assert envelope == redis.values[key].encode("utf-8")
+    assert meta == json.loads(envelope)
+    assert meta["rows"] == result.rows
+    assert "cold_archive_warning" not in result.manifest
+
+
+def test_limit_reasons_real_fixture_archive_error_is_warning(tmp_path, monkeypatch):
+    def fail(*args):
+        raise RuntimeError("archive unavailable")
+    day, result, redis = _publish_real_limit_reasons(tmp_path, monkeypatch, fail)
+    assert result.manifest["cache_publish"] == "READY"
+    assert result.manifest["cold_archive_warning"] == {
+        "category": "RuntimeError", "td_error_code": None, "successful_chunks": 0}
+    assert f"core:cache:data:limit_reasons:{day}:{result.manifest['version']}" in redis.values
