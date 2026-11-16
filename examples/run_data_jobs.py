@@ -9,6 +9,7 @@ import inspect
 import json
 import os
 import time
+from collections import Counter
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -106,7 +107,22 @@ def _refresh_plate_members_latest(trade_date: str, artifact_root: str, *, persis
                                   min_interval_seconds=0.2)
         fetched = provider.plate_members(trade_date, concurrency=4)
         if fetched.get("partial"):
-            raise RuntimeError("kaipan_plate_members_incomplete_retry_all")
+            failed_plates = fetched.get("failed_plates") or []
+            failure_types = Counter(str(row.get("error_type") or "UNKNOWN")
+                                    for row in failed_plates if isinstance(row, Mapping))
+            failed_codes = [str(row.get("plate_code") or "") for row in failed_plates
+                            if isinstance(row, Mapping) and row.get("plate_code")]
+            elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
+            raise RuntimeError(
+                "kaipan_plate_members_incomplete_retry_all:"
+                f"failed={len(failed_plates)},completed={fetched.get('completed_plate_count', 0)},"
+                f"queried={fetched.get('queried_plate_count', 0)},"
+                f"unqueried={fetched.get('unqueried_plate_count', 0)},"
+                f"query_trade_date={trade_date},requests={fetched.get('request_count', 0)},"
+                f"elapsed_ms={elapsed_ms},"
+                f"failure_types={json.dumps(dict(sorted(failure_types.items())), separators=(',', ':'))},"
+                f"failed_plate_codes={','.join(failed_codes[:20])}"
+            )
         partition = build_plate_members(
             fetched["rows"], registry_rows, trade_date=trade_date, as_of=available_at,
             source_dates={"kaipan_getHisPlateIds": {"query_trade_date": trade_date,
