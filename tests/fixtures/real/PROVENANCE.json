@@ -2510,5 +2510,38 @@
   "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-10 --symbol 001381 --start 09:25:00 --end 09:25:03",
   "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='001381' AND ts>='2026-11-10 09:25:00' AND ts<='2026-11-10 09:25:03' ORDER BY ts",
   "row_count": 1
+ },
+ "td_stock_tick_2026-11-10_688827_092500_092503_1619.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-10",
+  "fetched_at": "2026-11-16T16:19:16+08:00",
+  "bytes": 367,
+  "sha256": "5befbc527e98c1d2d90987bf9e294fee0f3e4b2132ad40de66f5d2f643917404",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-10 --symbol 688827 --start 09:25:00 --end 09:25:03",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='688827' AND ts>='2026-11-10 09:25:00' AND ts<='2026-11-10 09:25:03' ORDER BY ts",
+  "row_count": 1
+ },
+ "td_stock_tick_2026-11-09_001381_092500_092503_1619.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-09",
+  "fetched_at": "2026-11-16T16:19:18+08:00",
+  "bytes": 361,
+  "sha256": "e5b6b9ddfd87c787b0741ff9c96beae76d09fedd3043bbed7063371d18d253e2",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-09 --symbol 001381 --start 09:25:00 --end 09:25:03",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='001381' AND ts>='2026-11-09 09:25:00' AND ts<='2026-11-09 09:25:03' ORDER BY ts",
+  "row_count": 1
+ },
+ "td_stock_tick_2026-11-10_001381_092500_092503_1619.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-10",
+  "fetched_at": "2026-11-16T16:19:20+08:00",
+  "bytes": 364,
+  "sha256": "4c41a466e67bd7dd3beec488db0f9b92c6a3bf7eb36109b8f5d581d476161dcf",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-10 --symbol 001381 --start 09:25:00 --end 09:25:03",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='001381' AND ts>='2026-11-10 09:25:00' AND ts<='2026-11-10 09:25:03' ORDER BY ts",
+  "row_count": 1
  }
 }
