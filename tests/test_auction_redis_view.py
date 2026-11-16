@@ -20,6 +20,18 @@ def test_auction_redis_consumer(monkeypatch, tmp_path, scenario):
     from engine_core.data_pipeline import td_sink
     from engine_core.data_pipeline.auction_redis_view import read_auction_view
     from engine_core.data_pipeline import storage
+    from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+    import gzip
+    real = Path(__file__).parent / 'fixtures' / 'real'
+    static_file = real / 'core_artifacts/c594/stock_static/2026-10-29/c573_guardian/rows.jsonl.gz'
+    with gzip.open(static_file, 'rt') as stream:
+        static_rows = [json.loads(line) for line in stream]
+    for symbol in ('688827', '001381'):
+        raw = json.loads(next(real.glob(f'td_stock_static_2026-11-16_{symbol}_*.json')).read_text())
+        row = json.loads(raw['rows'][0][-1])
+        static_rows = [item for item in static_rows if item.get('symbol') != symbol]
+        static_rows.append(row)
+    monkeypatch.setattr(ReferenceSnapshotStore, 'read_latest', lambda self, dataset: {'rows': static_rows})
 
     pairs = {}
     for tag in TAGS:

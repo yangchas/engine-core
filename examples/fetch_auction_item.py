@@ -142,12 +142,32 @@ def _products(day: str, item: str, root: Path, snapshots, ticks, *, source_catal
     if item == "auction_stock_facts" and not source_quality:
         final_symbols = {str(row.get("symbol") or "").zfill(6) for row in final_snapshots}
         _require_snapshot_coverage(final_symbols)
+    from engine_core.data_pipeline.static_data import read_listing_dates
+    from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
+    from engine_core.limit_price import is_unlimited_listing
+    symbols = {str(row.get("symbol") or "").zfill(6) for row in final_snapshots}
+    listing_error = None
+    try:
+        listings = read_listing_dates(symbols)
+        calendar = TradeCalendarStore(source_catalog_root).all_trading_dates()
+    except Exception as exc:
+        listings, calendar = {}, None
+        listing_error = f"{type(exc).__name__}: {exc}"
+    decisions = {symbol: is_unlimited_listing(symbol, day, listings.get(symbol), calendar)
+                 for symbol in symbols}
+    unlimited_symbols = {symbol for symbol, decision in decisions.items() if decision is True}
+    unknown_listing = sorted(symbol for symbol, decision in decisions.items() if decision is None)
+    degraded = degraded or listing_error is not None
     facts = build_auction_stock_facts(day, cutoff, final_snapshots, ticks,
                                      anchor_snapshots=visible_snapshots,
+                                     unlimited_symbols=unlimited_symbols,
+                                     unknown_listing_symbols=set(unknown_listing),
                                      now=read_at if live else None,
                                      read_at=read_at if live else None)
     facts["source_quality"] = source_quality or {}
     facts["input_status"] = "degraded" if degraded else "ok"
+    facts["unknown_listing"] = unknown_listing
+    facts["listing_error"] = listing_error
     if item == "auction_stock_facts":
         stored = store_auction_stock_facts(facts, artifact_root=root,
                                            capture_semantics=capture_semantics)

@@ -77,6 +77,7 @@ def build_auction_stock_facts(trade_date: str, asof: str,
                               tick_volume_unit: str | None = None,
                               st_symbols: set[str] | None = None,
                               unlimited_symbols: set[str] | None = None,
+                              unknown_listing_symbols: set[str] | None = None,
                               now: str | None = None, read_at: str | None = None) -> dict[str, Any]:
     """Build facts from supplied source rows. Rank is competition rank over positive amounts."""
     cutoff = _dt(asof)
@@ -121,7 +122,8 @@ def build_auction_stock_facts(trade_date: str, asof: str,
         preclose_milli = _number(snap.get("pre_close_milli"))
         preclose = preclose_milli / 1000 if preclose_milli is not None else None
         is_st = symbol in (st_symbols or set())
-        unlimited = (symbol in (unlimited_symbols or set())
+        listing_unknown = symbol in (unknown_listing_symbols or set())
+        unlimited = (listing_unknown or symbol in (unlimited_symbols or set())
                      or bool(snap.get("unlimited") or snap.get("is_unlimited_price_band")))
         limit_yuan = _official_limit_up(snap, symbol, preclose, is_st=is_st, unlimited=unlimited)
         tick = latest_ticks.get(symbol)
@@ -186,6 +188,8 @@ def build_auction_stock_facts(trade_date: str, asof: str,
             amt_tick = _number(tick.get("amt_yuan"))
             if px_tick is not None and px_tick > 0 and amt_tick is not None and amt_tick > 0:
                 px = px_tick
+        if listing_unknown:
+            status, reason, seal_amount, basis, seal_side = "UNKNOWN", "LISTING_UNKNOWN", None, None, None
         facts.append({"symbol": symbol, "name": snap.get("name"),
                       "auction_amount_yuan": amount, "amount_rank": None,
                       "src": snap.get("src"), "source": snap.get("source"),
@@ -267,6 +271,8 @@ def store_auction_stock_facts(facts: Mapping[str, Any], *, artifact_root: str | 
                                            "verified_seal_n": summary["verified_seal_n"],
                                            "capture_semantics": capture_semantics,
                                            "source_quality": facts.get("source_quality", {}),
+                                           "unknown_listing": facts.get("unknown_listing", []),
+                                           "listing_error": facts.get("listing_error"),
                                            "input_status": facts.get("input_status", "ok")}},
                               source="auction_stock_facts")
     if redis is not None:
@@ -274,6 +280,8 @@ def store_auction_stock_facts(facts: Mapping[str, Any], *, artifact_root: str | 
         view = {"version": manifest["version"], "trade_date": day, "used_date": day,
                 "asof": facts["asof"], "available_at": available_at, "summary": summary,
                 "source_quality": facts.get("source_quality", {}),
+                "unknown_listing": facts.get("unknown_listing", []),
+                "listing_error": facts.get("listing_error"),
                 "input_status": facts.get("input_status", "ok"),
                 "top50": [row for row in rows if row["amount_top50"]],
                 "verified_seals": [row for row in rows if row["seal"]["status"] == "VERIFIED"]}

@@ -5,6 +5,7 @@ normalize supplied source rows and report the evidence gaps they can observe.
 """
 from __future__ import annotations
 
+
 import re
 from dataclasses import dataclass
 from datetime import datetime, time
@@ -14,6 +15,19 @@ from zoneinfo import ZoneInfo
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def read_listing_dates(symbols):
+    """Read one active static snapshot and select listing dates for this universe."""
+    from .reference_snapshot_td import ReferenceSnapshotStore
+
+    with ReferenceSnapshotStore() as store:
+        snapshot = store.read_latest("stock_static")
+    if not snapshot or not snapshot.get("rows"):
+        raise ValueError("stock_static_snapshot_unavailable")
+    wanted = set(symbols)
+    return {str(row.get("symbol") or "").zfill(6): row.get("listing_date")
+            for row in snapshot["rows"] if str(row.get("symbol") or "").zfill(6) in wanted}
 
 
 @dataclass(frozen=True)
