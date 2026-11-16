@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from ..data_pipeline import intraday_checkpoint as core
+from ..data_pipeline.time_format import shanghai_seconds
 from ..data_pipeline.intraday_checkpoint import CheckpointError
 
 SAMPLE_SIZE = 300
@@ -123,7 +124,7 @@ def run_checkpoint(request: Mapping[str, Any], root: Path, *, dry_run: bool = Fa
                 part = core.build_intraday_checkpoint({
                     "trade_date": trade_date, "cutoff": cutoff, "tolerance_seconds": cfg["tolerance_seconds"],
                     "min_symbols": cfg["min_symbols"], "symbols": symbols, "raw": raw,
-                    "read_at": datetime.now(timezone.utc).isoformat(), "provider_chain": cfg["sources"],
+                    "read_at": shanghai_seconds(datetime.now(timezone.utc)), "provider_chain": cfg["sources"],
                     "provider_attempts": attempts})
             else:
                 if cutoff > cfg["td_until"]:
@@ -134,7 +135,7 @@ def run_checkpoint(request: Mapping[str, Any], root: Path, *, dry_run: bool = Fa
                 part = core.build_intraday_checkpoint({
                     "trade_date": trade_date, "cutoff": cutoff, "tolerance_seconds": cfg["tolerance_seconds"],
                     "min_symbols": cfg["min_symbols"], "symbols": [s for s, _ in pairs], "raw": dict(pairs),
-                    "read_at": datetime.now(timezone.utc).isoformat(), "provider_chain": cfg["sources"],
+                    "read_at": shanghai_seconds(datetime.now(timezone.utc)), "provider_chain": cfg["sources"],
                     "provider_attempts": attempts})
                 part.manifest.update({"source": "td_stock_tick_v2_checkpoint", "provider": "td_stock_tick_v2_checkpoint",
                                       "degraded": True, "source_dependency": "TD market_data1.stock_tick_v2 (read-only)"})

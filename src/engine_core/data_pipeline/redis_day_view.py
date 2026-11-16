@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from ..calendar import parse_trade_date
 from .trade_calendar import nth_trade_date
+from .time_format import shanghai_seconds
 
 
 def view_key(family, trade_date):
@@ -44,7 +45,7 @@ def write_day_view(redis, family, trade_date, rows: Mapping[str, Mapping], *, so
                for symbol, row in rows.items()}
     metadata = {"family": family, "trade_date": parse_trade_date(trade_date).isoformat(),
                 "row_count": len(payload), "source": source, "version": version,
-                "available_at": available_at, "written_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+                "available_at": available_at, "written_at": shanghai_seconds(datetime.now(ZoneInfo("Asia/Shanghai"))),
                 "status": "COMPLETE" if payload else "EMPTY", "write_id": uuid4().hex}
     encoded = json.dumps(metadata, sort_keys=True, separators=(",", ":"))
     # Invalidate old metadata first, then clear the hash so removed rows cannot survive a rewrite.

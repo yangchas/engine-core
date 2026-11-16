@@ -18,6 +18,7 @@ from ..errors import CoreError, QualityInvalid, SchemaInvalid
 from .registry import DatasetSpec, get_dataset
 from .registry.daily_kline import classify_daily_kline
 from .storage import ArtifactCatalog, canonical_json
+from .time_format import shanghai_seconds, shanghai_seconds_ceil
 
 
 @dataclass(frozen=True)
@@ -325,6 +326,9 @@ class JobRunner:
         fetched = (clock.astimezone(ZoneInfo("Asia/Shanghai")).isoformat() if name == "daily_kline"
                    else clock.isoformat().replace("+00:00", "Z"))
         declared_available_at = available_at or fetch_meta.get("available_at")
+        if name == "hot_rank":
+            fetched = shanghai_seconds(clock)
+            declared_available_at = shanghai_seconds_ceil(declared_available_at)
         provider_chain = None
         if name == "daily_kline":
             requested_source = source
@@ -354,6 +358,11 @@ class JobRunner:
             "row_count": len(rows), "request_count": fetch_meta.get("request_count"),
             "raw_sha256": raw_digest,
         }
+        if name == "hot_rank":
+            for key in ("as_of", "source_asof"):
+                value = manifest[key]
+                if isinstance(value, str) and "T" in value:
+                    manifest[key] = shanghai_seconds(value)
         for key in ("inputs", "input_refs", "window"):     # which upstream versions this partition was built from
             if fetch_meta.get(key):
                 manifest[key] = fetch_meta[key]
@@ -561,10 +570,12 @@ class JobRunner:
                 raise RuntimeError("redis_adapter_not_configured_or_publish_disabled")
             payload = b"\n".join(canonical_json(row) for row in rows) + (b"\n" if rows else b"")
             digest = hashlib.sha256(payload).hexdigest()
-            committed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            commit_clock = datetime.now(timezone.utc)
+            committed_at = shanghai_seconds(commit_clock)
+            available_time = shanghai_seconds_ceil(commit_clock)
             version = f"wencai-sha256-{digest[:16]}" if safe_source == "wencai_hot_rank" else f"sha256-{digest[:16]}"
             committed = dict(manifest, sha256=digest, version=version,
-                             committed_at=committed_at, available_at=committed_at,
+                             committed_at=committed_at, available_at=available_time,
                              storage_backend="redis", storage_uri=None, manifest_uri=None, rows_uri=None)
             from .hot_rank_view import publish as publish_hot_rank
             _, receipt = publish_hot_rank(self.redis, trade_date, rows, committed)

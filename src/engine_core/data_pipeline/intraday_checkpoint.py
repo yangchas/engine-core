@@ -13,6 +13,8 @@ Units (verified on the live feed, same as ``Q2FinalProvider``): ``px/pc/mx/mn`` 
 """
 from __future__ import annotations
 
+from .time_format import shanghai_seconds
+
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -181,7 +183,7 @@ def build_intraday_checkpoint(request: Mapping[str, Any]) -> Partition:
                 "provider_attempts": list(request.get("provider_attempts") or []),
                 "checkpoint": str(request["cutoff"]), "tolerance_seconds": tolerance,
                 "window": [cutoff.isoformat(), (cutoff + timedelta(seconds=tolerance)).isoformat()],
-                "as_of": cutoff.isoformat(), "captured_at": request.get("read_at"),
+                "as_of": cutoff.isoformat(), "captured_at": shanghai_seconds(request.get("read_at")),
                 "business_status": "PROVISIONAL", "degraded": False, "row_count": count, "quality": quality,
                 "field_units": dict(FIELD_UNITS),
                 "source_dates": {"date_evidence": "per-row ts (epoch ms) must be on trade_date and inside the window",
