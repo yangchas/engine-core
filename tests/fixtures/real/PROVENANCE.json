@@ -2445,5 +2445,16 @@
   "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-16 --symbol 300779 --start 09:24:30 --end 09:26:00",
   "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='300779' AND ts>='2026-11-16 09:24:30' AND ts<='2026-11-16 09:26:00' ORDER BY ts",
   "row_count": 5
+ },
+ "td_stock_tick_2026-11-16_002129_092457_092503_1352.json": {
+  "source": "td_stock_tick",
+  "trade_date": "2026-11-16",
+  "fetched_at": "2026-11-16T13:52:43+08:00",
+  "bytes": 523,
+  "sha256": "eb168898c884d310cb06dd05430456ed95069a4116b7fda87b836c81b2a73a29",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-16 --symbol 002129 --start 09:24:57 --end 09:25:03",
+  "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='002129' AND ts>='2026-11-16 09:24:57' AND ts<='2026-11-16 09:25:03' ORDER BY ts",
+  "row_count": 2
  }
 }
