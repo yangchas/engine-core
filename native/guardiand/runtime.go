@@ -1291,7 +1291,7 @@ func (r *liveRunner) runBootEvents(now time.Time) error {
 		blocked := ""
 		for _, dep := range e.Trigger.After {
 			s := results[dep]
-			if s != "SUCCEEDED" && s != "SUCCEEDED_DEGRADED" {
+			if !dependencySatisfied(s, true) {
 				blocked = dep
 				break
 			}
@@ -3382,6 +3382,10 @@ func (r *liveRunner) dependencyStatus(date, id string, c config.Config) (string,
 	return selected.Status, found
 }
 
+func dependencySatisfied(status string, acceptDegraded bool) bool {
+	return status == "SUCCEEDED" || status == "SKIPPED_SATISFIED" || status == "SUCCEEDED_DEGRADED" && acceptDegraded
+}
+
 func (r *liveRunner) windowDependencyDecision(date string, event *config.Event, c config.Config) (pending []string, blocked string) {
 	if event == nil {
 		return nil, ""
@@ -3392,7 +3396,7 @@ func (r *liveRunner) windowDependencyDecision(date string, event *config.Event, 
 			pending = append(pending, dep.ID)
 			continue
 		}
-		if status == "SUCCEEDED" || status == "SUCCEEDED_DEGRADED" && dep.AcceptDegraded {
+		if dependencySatisfied(status, dep.AcceptDegraded) {
 			continue
 		}
 		return nil, dep.ID

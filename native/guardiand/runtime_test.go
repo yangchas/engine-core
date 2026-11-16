@@ -4227,3 +4227,54 @@ func TestReplySummaryBoundsAndRedacts(t *testing.T) {
 		t.Fatalf("redaction=%s", all)
 	}
 }
+
+// C1278 ledger excerpt: /home/exedev/fw/evidence/C1278/PROVENANCE.
+func TestC1278SatisfiedDependency(t *testing.T) {
+	const excerpt = `{"limit_pool_d1":{"status":"SKIPPED_SATISFIED","attempts":1,"rung":1,"tier":"kaipan","rung_attempts":1,"started_at":"2026-11-16T00:40:00+08:00","completed_at":"2026-11-16T00:40:01+08:00","last_error":"ALREADY_SATISFIED","data_date":"2026-11-13"},"limit_reasons_d1":{"status":"SKIPPED_DEP","attempts":0,"started_at":"","completed_at":"2026-11-16T00:40:02+08:00","last_error":"dependency failed: limit_pool_d1"}}`
+	var states map[string]instanceState
+	if err := json.Unmarshal([]byte(excerpt), &states); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join("..", "..", "src", "engine_core", "guardian", "schedule.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := compileScheduleV3(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, reasons := findEvent(c, "limit_pool_d1"), findEvent(c, "limit_reasons_d1")
+	if pool == nil || reasons == nil || len(reasons.DependsOn) != 1 || reasons.DependsOn[0].ID != pool.ID {
+		t.Fatal("real schedule dependency changed")
+	}
+	if states[pool.ID].Status != "SKIPPED_SATISFIED" || states[reasons.ID].Status != "SKIPPED_DEP" {
+		t.Fatal("ledger excerpt changed")
+	}
+	date := "2026-11-16"
+	root := t.TempDir()
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 00:40:02", loc)
+	r, closeRunner := newC545Runner(t, root, date, newFakeClock(now), c)
+	defer closeRunner()
+	cases := []struct {
+		status          string
+		accept, blocked bool
+	}{
+		{"SKIPPED_SATISFIED", false, false}, {"SKIPPED_NA", false, true}, {"FAILED_FINAL", false, true},
+		{"SUCCEEDED_DEGRADED", false, true}, {"SUCCEEDED_DEGRADED", true, false},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("%s_accept_%t", tc.status, tc.accept), func(t *testing.T) {
+			state := states[pool.ID]
+			state.Status = tc.status
+			r.setState(Instance{ID: pool.ID, EventID: pool.ID}, date, state)
+			e := *reasons
+			e.DependsOn = append([]config.Dependency(nil), reasons.DependsOn...)
+			e.DependsOn[0].AcceptDegraded = tc.accept
+			pending, blocked := r.windowDependencyDecision(date, &e, c)
+			if len(pending) != 0 || (blocked != "") != tc.blocked {
+				t.Errorf("pending=%v blocked=%q", pending, blocked)
+			}
+		})
+	}
+}
