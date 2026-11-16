@@ -1,0 +1,108 @@
+import gzip
+import json
+from pathlib import Path
+
+from engine_core.data_pipeline.auction_seal_facts import build_facts
+from engine_core.data_pipeline.plate_stock_index import build_index
+
+REAL = Path(__file__).parent / 'fixtures' / 'real'
+DAY = '2026-11-16'
+
+
+def real_inputs():
+    with gzip.open(REAL / 'c1256/auction.json.gz', 'rt') as stream:
+        auction = json.load(stream)
+    with gzip.open(REAL / 'core_artifacts/c594/stock_static/2026-10-29/c573_guardian/rows.jsonl.gz', 'rt') as stream:
+        listings = {r['symbol']: r['listing_date'] for line in stream if (r := json.loads(line))}
+    for symbol in ('001381', '688827'):
+        raw = json.loads(next(REAL.glob(f'td_stock_static_{DAY}_{symbol}_*.json')).read_text())
+        listings[symbol] = json.loads(raw['rows'][0][raw['columns'].index('payload')])['listing_date']
+    ticks = {}
+    for path in REAL.glob(f'td_stock_tick_{DAY}_*_092430_092600_*.json'):
+        raw = json.loads(path.read_text())
+        ticks[path.name.split('_')[4]] = [dict(zip(raw['columns'], row)) for row in raw['rows']]
+    raw = json.loads(next(REAL.glob(f'td_stock_tick_{DAY}_002129_092457_092503_*.json')).read_text())
+    ticks['002129'] = [dict(zip(raw['columns'], row)) for row in raw['rows']]
+    pre = ticks['002129'][0]
+    auction['002129'] = {'price_milli': pre['px_milli'], 'pre_close_milli': pre['pc_milli']}
+    calendar = json.loads((REAL.parent / 'trade_calendar/baostock-2026-01-01_2026-12-31.json').read_text())
+    dates = [r['calendar_date'] for r in calendar['rows'] if r['is_trading_day'] == '1']
+    facts = build_facts(DAY, auction, listings, dates, lambda symbol: ticks[symbol])
+    with gzip.open(REAL / 'core_artifacts/c594/plate_members/2026-10-28/current/rows.jsonl.gz', 'rt') as stream:
+        plates = build_index([json.loads(line) for line in stream])
+    return facts, plates
+
+
+def test_real_facts_summary_and_missing_amount():
+    from engine_core.auction_seal_report import build_seal_section
+    facts, plates = real_inputs()
+    section = build_seal_section(facts, plates)
+    for side in ('limit_up', 'limit_down'):
+        valid = [r for r in facts['rows'] if r['side'] == side and r['seal_amount_yuan'] is not None]
+        assert section[side]['count'] == len(valid)
+        assert section[side]['seal_amount_yuan'] == sum(r['seal_amount_yuan'] for r in valid)
+        assert section[side]['top_stocks'] == sorted(valid, key=lambda r: (-r['seal_amount_yuan'], r['symbol']))[:10]
+        assert all(r['symbol'] != '002129' for r in section[side]['top_stocks'])
+        expected = {}
+        for row in valid:
+            for plate in plates.get(row['symbol'], []):
+                code = plate['plate_code']
+                count, amount = expected.get(code, (0, 0))
+                expected[code] = (count + 1, amount + row['seal_amount_yuan'])
+        actual = section['themes'][side]
+        assert [(r['plate_code'], r['count'], r['seal_amount_yuan']) for r in actual] == [
+            (code, count, amount) for code, (count, amount) in sorted(expected.items(), key=lambda p: (-p[1][1], p[0]))[:10]]
+    assert '002129' in section['missing']['seal_amount_yuan']['symbols']
+    for key in ('unknown_listing', 'unknown_prices', 'unlimited'):
+        assert section['missing'][key] == {'count': len(facts[key]), 'symbols': sorted(facts[key])[:20]}
+    assert section['themes']['status'] == 'available' and section['notes']
+    assert build_seal_section(facts, None)['themes']['status'] == 'unavailable'
+
+
+def test_read_replays_real_facts_and_unavailable(monkeypatch):
+    from engine_core import auction_seal_report as report
+    facts, plates = real_inputs()
+    payload = dict(facts, dataset='auction_seal_facts', trade_date=DAY, row_count=len(facts['rows']), version='auction_seal_facts_v1', available_at=DAY + 'T09:26:00+08:00')
+    class Redis:
+        def get(self, key):
+            return json.dumps(payload).encode()
+    class Store:
+        redis = Redis()
+        cold = None
+    def get_plates(symbols, trade_date, **kwargs):
+        assert trade_date == DAY
+        return {s: {'status': 'PRESENT_REDIS', 'version': 'captured', 'plates': plates.get(s, [])} for s in symbols}
+    monkeypatch.setattr(report.plate_stock_index, 'get_stock_plates', get_plates)
+    result = report.read_and_build(DAY, store=Store())
+    assert result['status'] == 'available' and result['themes']['status'] == 'available'
+    monkeypatch.setattr(report.plate_stock_index, 'get_stock_plates', lambda *a, **kw: (_ for _ in ()).throw(ConnectionError()))
+    result = report.read_and_build(DAY, store=Store())
+    assert result['status'] == 'available' and result['themes']['status'] == 'unavailable'
+    assert report.read_and_build('invalid', store=Store())['status'] == 'unavailable'
+
+
+def test_cold_fallback_replays_real_facts_without_redis_writes(monkeypatch):
+    import hashlib
+    from engine_core import auction_seal_report as report
+    facts, plates = real_inputs()
+    payload = dict(facts, dataset='auction_seal_facts', trade_date=DAY, row_count=len(facts['rows']),
+                   version='auction_seal_facts_v1', available_at=DAY + 'T09:26:00+08:00')
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
+    version = payload['version'] + ':' + hashlib.sha256(raw).hexdigest()[:16]
+    class Redis:
+        def get(self, key):
+            raise ConnectionError('redis unavailable')
+    class Cold:
+        def latest_version(self, dataset, day):
+            assert (dataset, day) == ('auction_seal_facts', DAY)
+            return version
+    class Store:
+        redis = Redis()
+        cold = Cold()
+    monkeypatch.setattr(report.cold_archive, 'read_envelope', lambda dataset, day, ver, *, store: raw)
+    monkeypatch.setattr(report.plate_stock_index, 'get_stock_plates',
+                        lambda symbols, day, **kw: {s: {'status': 'RESTORED_FROM_TD', 'version': 'captured', 'plates': plates.get(s, [])} for s in symbols})
+    result = report.read_and_build(DAY, store=Store())
+    assert result == report.build_seal_section(facts, plates)
+    monkeypatch.setattr(report.cold_archive, 'read_envelope', lambda *args, **kw: raw + b' ')
+    assert report.read_and_build(DAY, store=Store())['status'] == 'unavailable'
