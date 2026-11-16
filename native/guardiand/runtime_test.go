@@ -4229,10 +4229,11 @@ func TestReplySummaryBoundsAndRedacts(t *testing.T) {
 }
 
 // C1278 ledger excerpt: /home/exedev/fw/evidence/C1278/PROVENANCE.
+const c1278LedgerExcerpt = `{"limit_pool_d1":{"status":"SKIPPED_SATISFIED","attempts":1,"rung":1,"tier":"kaipan","rung_attempts":1,"started_at":"2026-11-16T00:40:00+08:00","completed_at":"2026-11-16T00:40:01+08:00","last_error":"ALREADY_SATISFIED","data_date":"2026-11-13"},"limit_reasons_d1":{"status":"SKIPPED_DEP","attempts":0,"started_at":"","completed_at":"2026-11-16T00:40:02+08:00","last_error":"dependency failed: limit_pool_d1"}}`
+
 func TestC1278SatisfiedDependency(t *testing.T) {
-	const excerpt = `{"limit_pool_d1":{"status":"SKIPPED_SATISFIED","attempts":1,"rung":1,"tier":"kaipan","rung_attempts":1,"started_at":"2026-11-16T00:40:00+08:00","completed_at":"2026-11-16T00:40:01+08:00","last_error":"ALREADY_SATISFIED","data_date":"2026-11-13"},"limit_reasons_d1":{"status":"SKIPPED_DEP","attempts":0,"started_at":"","completed_at":"2026-11-16T00:40:02+08:00","last_error":"dependency failed: limit_pool_d1"}}`
 	var states map[string]instanceState
-	if err := json.Unmarshal([]byte(excerpt), &states); err != nil {
+	if err := json.Unmarshal([]byte(c1278LedgerExcerpt), &states); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join("..", "..", "src", "engine_core", "guardian", "schedule.json"))
@@ -4276,5 +4277,97 @@ func TestC1278SatisfiedDependency(t *testing.T) {
 				t.Errorf("pending=%v blocked=%q", pending, blocked)
 			}
 		})
+	}
+}
+
+// The input statuses originate in the C1278 real ledger excerpt and its PROVENANCE.
+func TestC1288WindowDependencyRunsDownstream(t *testing.T) {
+	var states map[string]instanceState
+	if err := json.Unmarshal([]byte(c1278LedgerExcerpt), &states); err != nil {
+		t.Fatal(err)
+	}
+	if states["limit_pool_d1"].Status != "SKIPPED_SATISFIED" || states["limit_reasons_d1"].Status != "SKIPPED_DEP" {
+		t.Fatal("unexpected real ledger excerpt")
+	}
+	date := "2026-11-16"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now := time.Date(2026, 11, 16, 9, 5, 0, 0, loc)
+	for _, tc := range []struct {
+		status          string
+		accept, blocked bool
+	}{
+		{"SKIPPED_SATISFIED", false, false}, {"SKIPPED_NA", false, true}, {"FAILED_FINAL", false, true},
+		{"SUCCEEDED_DEGRADED", false, true}, {"SUCCEEDED_DEGRADED", true, false},
+	} {
+		t.Run(fmt.Sprintf("%s_accept_%t", tc.status, tc.accept), func(t *testing.T) {
+			root := t.TempDir()
+			calendar := filepath.Join(root, "calendar.json")
+			if err := os.WriteFile(calendar, []byte(`["2026-11-16"]`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			handler := writeC545Script(t, filepath.Join(root, "handler.sh"), "printf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n")
+			c := config.Config{Calendars: map[string]struct {
+				File string `json:"file"`
+			}{"trading": {File: calendar}},
+				Handlers: map[string]config.Handler{"h": {Argv: []string{handler}}}, Events: []config.Event{
+					{ID: "limit_pool_d1", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:10:00"}},
+					{ID: "limit_reasons_d1", Handler: "h", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:10:00"}, Catchup: "run_in_window", Phases: []string{"any"}, DependsOn: []config.Dependency{{ID: "limit_pool_d1", AcceptDegraded: tc.accept}}},
+				}}
+			fc := newFakeClock(now)
+			r, closeRunner := newC545Runner(t, root, date, fc, c)
+			defer closeRunner()
+			upstream := states["limit_pool_d1"]
+			upstream.Status = tc.status
+			r.setState(Instance{ID: "limit_pool_d1", EventID: "limit_pool_d1"}, date, upstream)
+			x := Instance{ID: "limit_reasons_d1", EventID: "limit_reasons_d1", Start: "09:00:00", Deadline: "09:10:00", TriggerType: "window"}
+			r.reconcileWindowDependencies([]Instance{x}, date, c, now)
+			got := runtimeTestState(r, date+"/"+x.ID)
+			if tc.blocked {
+				if got.Status != "SKIPPED_DEP" {
+					t.Fatalf("expected SKIPPED_DEP, got %+v", got)
+				}
+				return
+			}
+			if got.Status == "SKIPPED_DEP" {
+				t.Fatalf("downstream blocked: %+v", got)
+			}
+			r.schedule(now)
+			waitFor(t, func() bool {
+				r.mu.Lock()
+				defer r.mu.Unlock()
+				return r.states[date+"/"+x.ID].Status == "SUCCEEDED" && !r.running[x.ID]
+			})
+		})
+	}
+}
+
+func TestC1288BootSatisfiedDependencyRunsDownstream(t *testing.T) {
+	var states map[string]instanceState
+	if err := json.Unmarshal([]byte(c1278LedgerExcerpt), &states); err != nil {
+		t.Fatal(err)
+	}
+	date, root := "2026-11-16", t.TempDir()
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now := time.Date(2026, 11, 16, 9, 5, 0, 0, loc)
+	calendar := filepath.Join(root, "calendar.json")
+	if err := os.WriteFile(calendar, []byte(`["2026-11-16"]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	handler := writeC545Script(t, filepath.Join(root, "handler.sh"), "printf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n")
+	c := config.Config{Calendars: map[string]struct {
+		File string `json:"file"`
+	}{"trading": {File: calendar}}, Handlers: map[string]config.Handler{"h": {Argv: []string{handler}}}, Events: []config.Event{
+		{ID: "limit_pool_d1", Trigger: config.Trigger{Type: "startup"}},
+		{ID: "limit_reasons_d1", Handler: "h", Trigger: config.Trigger{Type: "startup", After: []string{"limit_pool_d1"}}},
+	}}
+	r, closeRunner := newC545Runner(t, root, date, newFakeClock(now), c)
+	defer closeRunner()
+	r.bootSummary = map[string]string{"limit_pool_d1": states["limit_pool_d1"].Status}
+	r.bootRerunIDs = map[string]bool{"limit_reasons_d1": true}
+	if err := r.runBootEvents(now); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.bootSummary["limit_reasons_d1"]; got != "SUCCEEDED" {
+		t.Fatalf("downstream boot status=%s", got)
 	}
 }
