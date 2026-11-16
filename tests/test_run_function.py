@@ -77,3 +77,21 @@ def test_kaipan_replay_redis_empty_reads_are_limited(tmp_path, monkeypatch):
     monkeypatch.setenv("CORE_REPLAY_INSTANCE", "another_event")
     with pytest.raises(replay_handler._RedisGapError):
         client.scan_iter(match=f"core:cache:data:hot_plates_gaps:{DAY}:*", count=100)
+
+
+def test_kaipan_replay_redis_gap_ledger_round_trip(tmp_path, monkeypatch):
+    import replay_handler
+
+    monkeypatch.setattr(replay_handler, "REPLAY_DIR", tmp_path)
+    monkeypatch.setenv("CORE_REPLAY_INSTANCE", "kaipan_hot_092110")
+    client = replay_handler._GapRedis(decode_responses=True)
+    key = f"core:cache:data:hot_plates_gaps:{DAY}:kaipan_hot_092110"
+    raw = next((ROOT / "tests/fixtures/real").glob("kaipan_hot_plates_2026-10-23_*.json")).read_text()
+    assert client.set(key, raw, ex=60, nx=True) is True
+    assert client.set(key, raw, ex=60, nx=True) is None
+    assert list(client.scan_iter(match=f"core:cache:data:hot_plates_gaps:{DAY}:*")) == [key]
+    assert client.get(key) == raw
+    assert client.exists(key) == 1
+    assert client.expire(key, 60) is True
+    assert client.delete(key) == 1
+    assert client.get(key) is None

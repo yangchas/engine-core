@@ -5,21 +5,25 @@ Runs the real examples/guardian_handler.py with every upstream replaced:
   * the Kaipan SDK (``pykaipan.pykaipan``) answers from recorded raw responses in tests/fixtures/real, matched on the
     request's date/level/plate/symbol; anything else raises UnrecordedRequest;
   * every internet-protocol connection is a recorded gap (network.connect / network.resolve);
-  * ``baostock`` / ``pywencai`` / ``redis`` / ``taos`` are stand-ins. Redis exposes an empty isolated view for
-    selected Kaipan replay reads; unsupported calls remain recorded gaps and fail as unreachable sources.
+  * ``baostock`` / ``pywencai`` / ``redis`` / ``taos`` are stand-ins. Redis provides a shared in-memory
+    Kaipan gap ledger and mail deduplication; unsupported calls remain recorded gaps and fail as unreachable sources.
 Every request that could not be answered is appended, with the instance that made it, to $CORE_REPLAY_DIR/unrecorded.jsonl and every reply the handler
 produced to $CORE_REPLAY_DIR/replies.jsonl, so the report can list gaps instead of hiding them.
 """
 from __future__ import annotations
 
+import fnmatch
 import glob
 import io
 import json
+import threading
+from multiprocessing.managers import BaseManager, DictProxy
 import os
 import re
 import sys
 import time
 import types
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -144,33 +148,103 @@ class _RedisGapError(RedisConnectionError):
 
 
 class _GapRedis:
-    """Redis stand-in with narrowly scoped empty reads for the isolated Kaipan replay."""
+    """Isolated Kaipan ledger and mail deduplication; other upstream data stays unavailable."""
+
+    _values = {}
+    _deadlines = {}
 
     @classmethod
-    def from_url(cls, *_args, **_kwargs):
-        return cls()
+    def from_url(cls, *_args, **kwargs):
+        return cls(**kwargs)
 
-    def __init__(self, *_args, **_kwargs):
-        pass
+    def __init__(self, *_args, **kwargs):
+        self.decode_responses = kwargs.get("decode_responses", False)
+        socket_path = os.environ.get("CORE_REPLAY_REDIS_SOCKET")
+        if socket_path:
+            manager = _ReplayRedisManager(address="\0" + socket_path, authkey=b"replay")
+            manager.connect()
+            self._values = manager.get_values()
+            self._deadlines = manager.get_deadlines()
 
     def close(self, *_args, **_kwargs):
-        """Closing a client that never reached a server sends nothing, so it is not a gap."""
+        """No connection to close."""
 
     @staticmethod
     def _kaipan():
-        return (_CONTEXT["instance"] or os.environ.get("CORE_REPLAY_INSTANCE", "")) == "kaipan_hot_092110"
+        return bool(re.fullmatch(r"kaipan_hot_\d{6}", _CONTEXT["instance"] or os.environ.get("CORE_REPLAY_INSTANCE", "")))
+
+    def _allowed(self, key):
+        return self._kaipan() and isinstance(key, str) and (
+            key.startswith("core:cache:data:hot_plates_gaps:") or key.startswith("core:mail:sent:"))
+
+    def _check(self, command, key):
+        if not self._allowed(key):
+            raise _RedisGapError(str(_unrecorded("redis", command)))
+        if key in self._deadlines and self._deadlines[key] <= time.monotonic():
+            self._values.pop(key, None)
+            self._deadlines.pop(key, None)
 
     def get(self, key):
+        key = key.decode() if isinstance(key, bytes) else key
         if self._kaipan() and re.fullmatch(r"core:view:hot_rank:\d{4}-\d{2}-\d{2}", key):
             return None
-        raise _RedisGapError(str(_unrecorded("redis", "get")))
+        self._check("get", key)
+        value = self._values.get(key)
+        return value.decode() if value is not None and self.decode_responses else value
+
+    def set(self, key, value, ex=None, nx=False, xx=False):
+        key = key.decode() if isinstance(key, bytes) else key
+        self._check("set", key)
+        if (nx and key in self._values) or (xx and key not in self._values):
+            return None
+        if ex is not None and ex <= 0:
+            raise RedisError("invalid expire time in set")
+        self._values[key] = value if isinstance(value, bytes) else str(value).encode()
+        self._deadlines.pop(key, None)
+        if ex is not None:
+            self._deadlines[key] = time.monotonic() + ex
+        return True
 
     def scan_iter(self, *args, **kwargs):
         match = kwargs.get("match")
         if (self._kaipan() and not args and isinstance(match, str) and
-                re.fullmatch(r"core:cache:data:hot_plates(?:_gaps)?:\d{4}-\d{2}-\d{2}:\*", match)):
+                re.fullmatch(r"core:cache:data:hot_plates:\d{4}-\d{2}-\d{2}:\*", match)):
             return iter(())
-        raise _RedisGapError(str(_unrecorded("redis", "scan_iter")))
+        if not self._allowed(match):
+            raise _RedisGapError(str(_unrecorded("redis", "scan_iter")))
+        keys = []
+        for key in self._values.keys():
+            self._check("scan_iter", key)
+            if key in self._values and fnmatch.fnmatchcase(key, match):
+                keys.append(key if self.decode_responses else key.encode())
+        return iter(keys)
+
+    def delete(self, *keys):
+        count = 0
+        for key in keys:
+            key = key.decode() if isinstance(key, bytes) else key
+            self._check("delete", key)
+            count += key in self._values
+            self._values.pop(key, None)
+            self._deadlines.pop(key, None)
+        return count
+
+    def expire(self, key, seconds):
+        key = key.decode() if isinstance(key, bytes) else key
+        self._check("expire", key)
+        if key not in self._values:
+            return False
+        if seconds <= 0:
+            self.delete(key)
+        else:
+            self._deadlines[key] = time.monotonic() + seconds
+        return True
+
+    def exists(self, *keys):
+        keys = tuple(key.decode() if isinstance(key, bytes) else key for key in keys)
+        for key in keys:
+            self._check("exists", key)
+        return sum(key in self._values for key in keys)
 
     def __getattr__(self, command):
         if command.startswith("__"):
@@ -180,6 +254,25 @@ class _GapRedis:
             raise _RedisGapError(str(_unrecorded("redis", command)))
         return call
 
+
+
+class _ReplayRedisManager(BaseManager):
+    pass
+
+
+_ReplayRedisManager.register("get_values", callable=lambda: _GapRedis._values, proxytype=DictProxy)
+_ReplayRedisManager.register("get_deadlines", callable=lambda: _GapRedis._deadlines, proxytype=DictProxy)
+
+
+def _start_replay_redis():
+    if os.environ.get("CORE_REPLAY_REDIS_SOCKET"):
+        return
+    REPLAY_DIR.mkdir(parents=True, exist_ok=True)
+    socket_path = "engine-core-replay-" + uuid.uuid4().hex
+    manager = _ReplayRedisManager(address="\0" + socket_path, authkey=b"replay")
+    server = manager.get_server()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    os.environ["CORE_REPLAY_REDIS_SOCKET"] = socket_path
 
 def _gap_taos_connect(*_args, **_kwargs):
     raise _unrecorded("td", "connect")
@@ -232,6 +325,7 @@ def install() -> None:
     if _INSTALLED["done"]:
         return
     _INSTALLED["done"] = True
+    _start_replay_redis()
     # Job scripts are started with sys.executable and some replace PYTHONPATH, so every replayed process (handler, job,
     # the jobs' own children ...) points sys.executable at a wrapper that installs the stand-ins before running anything.
     wrapper = str(ROOT / "examples" / "replay_python")
