@@ -56,8 +56,10 @@ def previous_day(monkeypatch):
 def run(tmp_path, datasets, fill, checks=CHECKS, dry_run=False):
     from unittest.mock import patch
     from ladder_support import fixture
-    from engine_core.data_pipeline import limit_pool_hot_view as hot
+    from engine_core.data_pipeline import limit_pool_hot_view as hot, hot_plates_gaps
 
+    real = json.loads((Path(__file__).parent / "fixtures/real/c1280/hot_plates.json").read_text())
+    snapshots = [{**real, **m, "rows": real["rows"][:m["row_count"]]} for m in datasets.get("hot_plates", [])]
     pool = fixture()["pools"][DAY]
     selected = datasets.get("limit_up_pool", [])
     client = hot._client()
@@ -71,7 +73,7 @@ def run(tmp_path, datasets, fill, checks=CHECKS, dry_run=False):
                 "quality": {"status": "DEGRADED" if status == "DEGRADED" else "READY", "partial": False}}
         client.value = json.dumps(hot.envelope(DAY, rows, meta))
     request = {"trade_date": CHECK_DAY, "now": "2026-10-27T08:35:00+08:00", "args": {"checks": checks}}
-    with patch.object(hot, "_client", return_value=client):
+    with patch.object(hot, "_client", return_value=client), patch.object(hot_plates_gaps, "_snapshot_manifests", return_value=snapshots), patch("engine_core.data_pipeline.cold_archive.TdStore", side_effect=RuntimeError("no TD")):
         return preopen_check.run(request, tmp_path, dry_run=dry_run, fill=fill,
                                  catalog=StubCatalog(tmp_path, {k: v for k, v in datasets.items() if k != "limit_up_pool"}))
 
@@ -201,3 +203,42 @@ def test_the_td_health_probe_is_given_more_than_the_default_five_seconds(monkeyp
     monkeypatch.setattr(startup, "_timed_probe", fake)
     startup._health_probes(Path("."))
     assert seen["_td_probes"] >= 15.0
+
+
+def test_real_hot_plates_redis_version_without_catalog(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import hot_plates_gaps
+    import engine_core.prep_trade_day as prep
+    real = json.loads((Path(__file__).parent / 'fixtures/real/c1280/hot_plates.json').read_text())
+    monkeypatch.setattr(prep, 'previous_trade_date', lambda *_: '2026-11-13')
+    monkeypatch.setattr(hot_plates_gaps, '_snapshot_manifests', lambda *_: [real])
+    request = {'trade_date': '2026-11-16', 'now': '2026-11-16T08:35:00+08:00',
+               'args': {'checks': {'hot_plates': CHECKS['hot_plates']}}}
+    code, payload = preopen_check.run(request, tmp_path, catalog=StubCatalog(tmp_path, {}))
+    assert code == 0, payload
+    assert payload['detail']['results'][0]['detail']['rows'] == 243
+    from engine_core.data_pipeline import cold_archive
+
+    class EmptyStore:
+        def latest_version(self, *_):
+            return None
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cold_archive, 'TdStore', EmptyStore)
+    monkeypatch.setattr(hot_plates_gaps, '_snapshot_manifests', lambda *_: [])
+    code, payload = preopen_check.run(request, tmp_path, catalog=StubCatalog(tmp_path, {}))
+    assert code == 75
+    assert payload['detail']['results'][0]['detail']['reasons'] == ['redis_no_version', 'td_no_version']
+    monkeypatch.setattr(hot_plates_gaps, '_snapshot_manifests', lambda *_: [real])
+    request['args']['checks']['hot_plates'] = {**CHECKS['hot_plates'], 'captured_after': '08:16:00'}
+    code, payload = preopen_check.run(request, tmp_path, catalog=StubCatalog(tmp_path, {}))
+    assert code == 75 and 'version_too_old' in payload['detail']['results'][0]['detail']['reasons']
+    request['args']['checks']['hot_plates'] = CHECKS['hot_plates']
+    request['now'] = '2026-11-16T08:15:07+08:00'
+    assert preopen_check.run(request, tmp_path, catalog=StubCatalog(tmp_path, {}))[0] == 75
+    request['now'] = '2026-11-16T08:35:00+08:00'
+    monkeypatch.setattr(hot_plates_gaps, '_snapshot_manifests', lambda *_: [])
+    monkeypatch.setattr(EmptyStore, 'latest_version', lambda *_: real['version'])
+    monkeypatch.setattr(cold_archive, 'read_envelope', lambda *_a, **_k: json.dumps(real))
+    code, payload = preopen_check.run(request, tmp_path, catalog=StubCatalog(tmp_path, {}))
+    assert code == 0 and payload['detail']['results'][0]['detail']['storage_source'] == 'td'
