@@ -213,16 +213,15 @@ def run_ladder_once(day: str, root: str | Path, *, schedule_path: str | Path | N
 
 
 def _archive_pool(raw, value):
+    from ..data_pipeline.cold_archive import archive, flush, receipt_warning
     try:
         import hashlib
-        from ..data_pipeline.cold_archive import archive, flush
         raw = raw if isinstance(raw, bytes) else raw.encode("utf-8")
         version = value["version"] + ":" + hashlib.sha256(raw).hexdigest()[:16]
-        archive("limit_up_pool", value["trade_date"], version, raw, value)
-        flush(timeout=5.0)
-    except Exception:
-        import logging
-        logging.getLogger(__name__).warning("cold_archive dispatch_failed", exc_info=True)
+        receipt = archive("limit_up_pool", value["trade_date"], version, raw, value)
+        return receipt_warning(receipt, flush(timeout=5.0))
+    except Exception as exc:
+        return receipt_warning(exc, False)
 
 
 def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool = False,
@@ -251,6 +250,16 @@ def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool
         return reply(64, "failed", "CONFIG_ERROR", False, str(exc))
     wanted = core.PROVIDER_RANK[provider]
     client = deps.redis_client
+    cold_warnings = []
+
+    def archive_pool(raw, value):
+        warning = _archive_pool(raw, value)
+        if warning:
+            cold_warnings.append(warning)
+
+    def with_warning(outcome):
+        return {**outcome, **({"cold_archive_warning": cold_warnings[-1]} if cold_warnings else {})}
+
     try:
         client = client if client is not None else hot._client()
         key = hot._key(day, 'core:view:limit_up_pool')
@@ -264,11 +273,11 @@ def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool
                        {"status": "unchanged", "version": current['version'], "expire_at": deadline}
                        if hot.expiry_matches(client, key, deadline, now) else
                        hot.publish(day, current['rows'], current, redis_client=client,
-                                   calendar_root=deps.calendar_root, clock=deps.now_utc, lock_root=root, on_write=_archive_pool))
+                                   calendar_root=deps.calendar_root, clock=deps.now_utc, lock_root=root, on_write=archive_pool))
             return reply(20, "not_applicable", "ALREADY_SATISFIED", False,
                          {"partition": day, "existing_rank": core.PROVIDER_RANK[current['provider']],
                           "wanted_rank": wanted, "source": source, "version": current['version'],
-                          "hot_write": outcome})
+                          "hot_write": with_warning(outcome)})
     except Exception:
         current = None
     if dry_run:
@@ -288,6 +297,8 @@ def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool
         return False
 
     def source_failure(code, error, retryable, detail):
+        if cold_warnings:
+            detail = {**detail, "cold_archive_warning": cold_warnings[-1]}
         if degraded_copy():
             return reply(10, "degraded", error, False,
                          {**detail, "upstream_exit_code": code, "upstream_retryable": retryable})
@@ -315,7 +326,7 @@ def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool
                     raise ValueError('td_source_digest_mismatch')
                 recovered['degraded'] = True
                 hot.publish(day, rows, recovered, redis_client=client,
-                            calendar_root=deps.calendar_root, clock=deps.now_utc, lock_root=root, on_write=_archive_pool)
+                            calendar_root=deps.calendar_root, clock=deps.now_utc, lock_root=root, on_write=archive_pool)
         except Exception:
             pass  # Recovery is optional; the requested upstream is still tried.
         finally:
@@ -348,7 +359,8 @@ def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool
                 "provider_details": {**partition.manifest.get("provider_details", {}), **extra}}
     try:
         outcome = hot.publish(day, partition.rows, manifest, redis_client=client,
-                              calendar_root=deps.calendar_root, clock=deps.now_utc, lock_root=root, fresh=True, on_write=_archive_pool)
+                              calendar_root=deps.calendar_root, clock=deps.now_utc, lock_root=root, fresh=True, on_write=archive_pool)
+        outcome = with_warning(outcome)
     except Exception as exc:
         return reply(30, "failed", "HOT_PUBLISH_FAILED", True,
                      {"partition": day, "source": provider, "hot_write": {"status": "error",

@@ -94,7 +94,9 @@ def record_hot_plates_gap(root: str | Path, trade_date: str, event_id: str,
             try:
                 raw = _client().get(key)
                 if raw is not None:
-                    _archive_gap(raw, previous)
+                    warning = _archive_gap(raw, previous)
+                    if warning:
+                        previous = dict(previous, cold_archive_warning=warning)
             except Exception:
                 pass
         return previous
@@ -150,24 +152,23 @@ def record_hot_plates_gap(root: str | Path, trade_date: str, event_id: str,
         if raw is None:
             raise RuntimeError("hot_plates_gap_redis_write_failed")
         existing = json.loads(raw)
-        _archive_gap(raw, existing)
-        return existing
+        warning = _archive_gap(raw, existing)
+        return dict(existing, cold_archive_warning=warning) if warning else existing
 
-    _archive_gap(encoded, gap)
-    return gap
+    warning = _archive_gap(encoded, gap)
+    return dict(gap, cold_archive_warning=warning) if warning else gap
 
 
 
-def _archive_gap(raw: str | bytes, gap: Mapping[str, Any]) -> None:
+def _archive_gap(raw: str | bytes, gap: Mapping[str, Any]) -> dict[str, Any] | None:
+    from .cold_archive import archive, flush, receipt_warning
     try:
-        from .cold_archive import archive, flush
-        archive("hot_plates_gaps", str(gap["trade_date"]), str(gap["version"]),
-                raw.encode("utf-8") if isinstance(raw, str) else raw, gap)
-        flush()
-    except Exception:
-        # Cold storage must never change the result of the Redis publish.
-        import logging
-        logging.getLogger(__name__).warning("cold_archive_gap dispatch_failed", exc_info=True)
+        receipt = archive("hot_plates_gaps", str(gap["trade_date"]), str(gap["version"]),
+                          raw.encode("utf-8") if isinstance(raw, str) else raw, gap)
+        return receipt_warning(receipt, flush())
+    except Exception as exc:
+        return receipt_warning(exc, False)
+
 
 def _event_datetimes(trade_date: str, event: Mapping[str, Any]) -> tuple[datetime, datetime] | None:
     at, deadline = event.get("at"), event.get("deadline")

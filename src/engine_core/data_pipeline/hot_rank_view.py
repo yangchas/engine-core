@@ -45,5 +45,10 @@ def publish(client, day, rows, metadata):
     validate(raw, day)
     if not client.set(f'core:view:hot_rank:{day}', raw, exat=hot_view_expire_at(day)):
         raise RuntimeError('hot_rank_view_write_failed')
-    queued = cold_archive.archive('hot_rank', day, value['version'], raw.encode(), value)
+    try:
+        queued = cold_archive.archive('hot_rank', day, value['version'], raw.encode(), value)
+    except Exception as exc:
+        queued = cold_archive.ArchiveReceipt()
+        queued.success = False
+        queued.error_category = type(exc).__name__
     return value, queued

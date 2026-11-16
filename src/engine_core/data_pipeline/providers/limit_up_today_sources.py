@@ -211,15 +211,14 @@ def publish_hot_snapshot(manifest: Mapping[str, Any], rows: list[dict[str, Any]]
         else:
             for key, value in plan:
                 client.set(key, value, exat=deadline)
+        from ..cold_archive import archive, flush, receipt_warning
         try:
-            from ..cold_archive import archive, flush
-            archive("limit_up_pool_today", day, version, version_json.encode("utf-8"), payload)
-            flush()
-        except Exception:
-            import logging
-            logging.getLogger(__name__).warning("cold_archive dispatch_failed", exc_info=True)
+            receipt = archive("limit_up_pool_today", day, version, version_json.encode("utf-8"), payload)
+            warning = receipt_warning(receipt, flush())
+        except Exception as exc:
+            warning = receipt_warning(exc, False)
         return {"status": "published", "keys": [key for key, _ in plan],
-                "ttl_seconds": ttl_seconds}
+                "ttl_seconds": ttl_seconds, **({"cold_archive_warning": warning} if warning else {})}
     except Exception as exc:  # noqa: BLE001 - callers keep artifact commit as the durable record
         raise SourceUnavailable("core_redis_publish_failed:" + type(exc).__name__) from None
     finally:

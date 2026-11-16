@@ -129,3 +129,23 @@ def test_formal_pool_publication_archives_once(tmp_path, monkeypatch):
     assert code == 0, body
     assert len(calls) == 1
     assert calls[0][3] == redis.writes['core:view:limit_up_pool:' + value['trade_date']].encode()
+
+
+def test_pool_td_rejection_warns_after_hot_publish(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    value = load_fixture('c1147', 'limit_up_pool_1112_formal.json')
+    now = datetime.fromisoformat(value['available_at'].replace('Z', '+00:00'))
+    redis = RedisSpy()
+    class RejectStore:
+        def read(self, *args): return []
+        def write(self, *args, **kwargs): raise RuntimeError('TD rejected 0x2603')
+        def close(self): pass
+    monkeypatch.setattr(cold_archive, '_worker', cold_archive.Archiver(RejectStore))
+    monkeypatch.setattr(cold_archive, '_enabled', lambda: True)
+    monkeypatch.setattr(hot, 'deadline_for', lambda *args: int(now.timestamp()) + 10000)
+    monkeypatch.setattr(hot, '_td_value', lambda *args: (_ for _ in ()).throw(ValueError('missing')))
+    monkeypatch.setattr(limit_pool_d1, '_build', lambda *args: (SimpleNamespace(rows=value['rows'], manifest=value), {}))
+    deps = limit_pool_d1.PoolDeps(redis_client=redis, now_utc=lambda: now, td_store=RejectStore)
+    code, body = limit_pool_d1.run_pool_tier({'data_date': value['trade_date'], 'args': {'source': 'kaipan'}}, tmp_path, deps=deps)
+    assert code == 0 and redis.writes
+    assert body['detail']['hot_write']['cold_archive_warning'] == {'category': 'RuntimeError', 'td_error_code': '0x2603', 'successful_chunks': 0}

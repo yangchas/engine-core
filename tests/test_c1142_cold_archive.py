@@ -34,7 +34,7 @@ def test_publish_archives_exact_redis_bytes_and_survives_failure(tmp_path, monke
     assert hot_plates_gaps.record_hot_plates_gap(*args) == row
     assert len(calls) == 1 and calls[0][3] == raw
     monkeypatch.setattr(cold_archive, 'archive', lambda *args: (_ for _ in ()).throw(RuntimeError('td failure')))
-    assert hot_plates_gaps.record_hot_plates_gap(*args) == row
+    assert hot_plates_gaps.record_hot_plates_gap(*args) == {**row, 'cold_archive_warning': {'category': 'RuntimeError', 'td_error_code': None, 'successful_chunks': 0}}
 
 
 def test_roundtrip_idempotence_and_corruption():
