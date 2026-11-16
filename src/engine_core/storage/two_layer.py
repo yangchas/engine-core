@@ -55,11 +55,13 @@ class TwoLayerStore:
 
     @staticmethod
     def _dataset(dataset):
-        if dataset not in ('limit_up_pool', 'hot_rank'):
+        if dataset not in ('limit_up_pool', 'hot_rank', 'auction_seal_facts'):
             raise NotImplementedError('only limit_up_pool is supported')
 
     def publish(self, dataset, partition, rows, metadata):
         self._dataset(dataset)
+        if dataset == 'auction_seal_facts':
+            return self._publish_auction_seal(partition, rows, metadata)
         if dataset == 'hot_rank':
             from ..data_pipeline import hot_rank_view
             value, queued = hot_rank_view.publish(self.redis, partition, rows, metadata)
@@ -82,8 +84,34 @@ class TwoLayerStore:
         return StoreResult(status=result['status'], version=result['version'],
                            metadata=result, archive_status=archive_status)
 
+    def _publish_auction_seal(self, partition, rows, metadata):
+        from ..data_pipeline.redis_day_view import expire_at
+        value = dict(metadata, dataset='auction_seal_facts', trade_date=partition,
+                     rows=rows, row_count=len(rows))
+        raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+        version = value['version'] + ':' + hashlib.sha256(raw).hexdigest()[:16]
+        if not self.redis.set(f'core:view:auction_seal_facts:{partition}', raw, exat=expire_at(partition)):
+            return StoreResult(status='UNKNOWN', version=version, reason='redis_write_failed')
+        try:
+            receipt = cold_archive.archive('auction_seal_facts', partition, version, raw, value)
+            if receipt is False or receipt is None:
+                return StoreResult(status='published', version=version, metadata=value,
+                                   archive_status='NOT_QUEUED', reason='cold_archive_not_queued')
+            if not receipt.done.wait(6):
+                return StoreResult(status='published', version=version, metadata=value,
+                                   archive_status='UNKNOWN', reason='cold_archive_timeout')
+            if not receipt.success:
+                return StoreResult(status='published', version=version, metadata=value,
+                                   archive_status='FAILED', reason=receipt.error_category)
+            return StoreResult(status='published', version=version, metadata=value, archive_status='ARCHIVED')
+        except Exception as exc:
+            return StoreResult(status='published', version=version, metadata=value,
+                               archive_status='FAILED', reason=type(exc).__name__)
+
     def get(self, dataset, partition, *, asof=None, version=None):
         self._dataset(dataset)
+        if dataset == 'auction_seal_facts':
+            raise NotImplementedError('auction_seal_facts read is not implemented')
         if version is not None:
             raise NotImplementedError('exact version selection is not implemented')
         if dataset == 'hot_rank':
@@ -106,6 +134,8 @@ class TwoLayerStore:
 
     def presence(self, dataset, partition, *, asof=None, requirements=None):
         self._dataset(dataset)
+        if dataset == 'auction_seal_facts':
+            raise NotImplementedError('auction_seal_facts presence is not implemented')
         if asof is not None or requirements is not None:
             raise NotImplementedError('presence asof and requirements are not implemented')
         if dataset == 'hot_rank':

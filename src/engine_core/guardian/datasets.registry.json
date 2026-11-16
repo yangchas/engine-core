@@ -1630,9 +1630,16 @@
       },
       "kind": "point_snapshot",
       "source": "ths",
-      "source_kinds": {"ths": "point_snapshot", "wencai": "day_refetchable"},
-      "hot_store": {"key": "core:view:hot_rank:{trade_date}"},
-      "cold_store": {"dataset": "hot_rank"},
+      "source_kinds": {
+        "ths": "point_snapshot",
+        "wencai": "day_refetchable"
+      },
+      "hot_store": {
+        "key": "core:view:hot_rank:{trade_date}"
+      },
+      "cold_store": {
+        "dataset": "hot_rank"
+      },
       "redis_ttl_seconds": 172800,
       "storage": [
         {
@@ -2676,6 +2683,57 @@
           "role": "marker"
         }
       ]
+    },
+    {
+      "id": "auction_seal_facts",
+      "redis_ttl_trade_days": 5,
+      "owner": "data_function",
+      "artifact": {
+        "catalog_dataset": null,
+        "source_dataset": "core:auction:full + TD stock_tick_v2",
+        "date_basis": "D"
+      },
+      "phases": [
+        "AUCTION_END"
+      ],
+      "cadence": "on demand",
+      "rule": "候选股终局封单",
+      "freshness": "UNKNOWN",
+      "retry": "UNKNOWN",
+      "degrade": [],
+      "lifecycle": {
+        "init": "on demand",
+        "force": "refetch",
+        "clear": "UNKNOWN"
+      },
+      "notes": "独立数据函数；无 guardian 事件",
+      "guardian_event": null,
+      "storage": [
+        {
+          "kind": "redis_view",
+          "name": "core:view:auction_seal_facts:{date}",
+          "role": "authority",
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
+        },
+        {
+          "kind": "td_stable",
+          "name": "cold_auction_seal_facts_archive",
+          "role": "mirror"
+        }
+      ],
+      "kind": "day_refetchable",
+      "hot_store": {
+        "key": "core:view:auction_seal_facts:{date}"
+      },
+      "cold_store": {
+        "dataset": "auction_seal_facts"
+      }
     }
   ],
   "quiet_phases_for_heavy": [
