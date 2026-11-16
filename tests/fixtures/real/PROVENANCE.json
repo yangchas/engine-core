@@ -2479,5 +2479,14 @@
    "bytes": 212,
    "sha256": "4c5ae2d37a3a15315331a3c7e3568a4f457aa24c5858fe923edf49d89931604d"
   }
+ },
+ "_c1280": {
+  "file": "c1280/hot_plates.json",
+  "source": "Redis core:cache:data:hot_plates:2026-11-13:sha256-f6b4997645f9378d",
+  "sha256": "e229f90b1e5902da005e9b6736b6a604bc857a055fccaa96dba5b74bdc1fe219",
+  "bytes": 137538,
+  "rows": 243,
+  "selection": "complete Redis version value",
+  "fetched_at": "2026-11-16T08:11:11.961813+00:00"
  }
 }

@@ -36,6 +36,10 @@ def load(prefix: str) -> dict:
 
 
 def test_every_real_fixture_has_matching_provenance():
+    captured = PROVENANCE["_c1280"]
+    body = (REAL / captured["file"]).read_bytes()
+    assert hashlib.sha256(body).hexdigest() == captured["sha256"]
+    assert len(body) == captured["bytes"] and len(json.loads(body)["rows"]) == captured["rows"] == 243
     # These files describe fixtures rather than containing raw upstream responses.
     files = {p.name for p in REAL.glob("*.json")
              if p.name != "PROVENANCE.json" and not p.name.endswith("_PROVENANCE.json")}

@@ -84,6 +84,61 @@ def check_catalog_dataset(catalog: Any, dataset: str, day: str, rule: Mapping[st
     return {"id": dataset, "day": day, "status": "OK", "detail": best}
 
 
+def _check_hot_plates(root: Any, day: str, rule: Mapping[str, Any], check_day: str, cutoff: str) -> dict[str, Any]:
+    from ..data_pipeline.hot_plates_gaps import _snapshot_manifests
+    from ..data_pipeline import cold_archive
+
+    threshold = _instant(f"{check_day}T{rule['captured_after']}") if rule.get("captured_after") else None
+    asof = _instant(cutoff)
+    statuses = {str(item).upper() for item in rule.get("statuses", ())}
+    min_rows = int(rule.get("min_rows", 1))
+    versions = _snapshot_manifests(Path(root), day)
+    reasons = []
+    if not versions:
+        reasons.append("redis_no_version")
+    def eligible(manifest):
+        available = _instant(manifest.get("available_at"))
+        return (asof is not None and available is not None and available <= asof
+                and (threshold is None or available >= threshold)
+                and (not statuses or _status(manifest) in statuses)
+                and len(manifest.get("rows", [])) >= min_rows)
+    found = next((m for m in versions if eligible(m)), None)
+    source = "redis"
+    if found is None:
+        store = None
+        try:
+            store = cold_archive.TdStore()
+            version = store.latest_version("hot_plates", day)
+            if version is None:
+                reasons.append("td_no_version")
+            else:
+                value = json.loads(cold_archive.read_envelope("hot_plates", day, version, store=store))
+                if (isinstance(value, dict) and value.get("dataset") == "hot_plates"
+                        and value.get("trade_date") == day and value.get("version") == version
+                        and isinstance(value.get("rows"), list) and value.get("row_count") == len(value["rows"])):
+                    versions.append(value)
+                    if eligible(value):
+                        found, source = value, "td"
+                else:
+                    reasons.append("td_invalid_version")
+        except Exception:
+            reasons.append("td_unavailable")
+        finally:
+            if store is not None:
+                store.close()
+    if found:
+        return {"id": "hot_plates", "day": day, "status": "OK", "detail": {
+            "status": _status(found), "rows": len(found["rows"]),
+            "available_at": found.get("available_at"), "storage_source": source}}
+    if any(_instant(m.get("available_at")) is not None and threshold is not None
+           and _instant(m.get("available_at")) < threshold for m in versions):
+        reasons.append("version_too_old")
+    if versions and not reasons:
+        reasons.append("no_eligible_version")
+    return {"id": "hot_plates", "day": day, "status": "DEGRADED" if versions else "MISSING",
+            "detail": {"reasons": reasons, "need": {"captured_after": rule.get("captured_after")}}}
+
+
 def run(request: Mapping[str, Any], root: str | Path, *, dry_run: bool = False,
         fill: Callable[..., dict[str, Any]] | None = None, catalog: Any = None) -> tuple[int, dict[str, Any]]:
     args = request.get("args") if isinstance(request.get("args"), Mapping) else {}
@@ -107,7 +162,10 @@ def run(request: Mapping[str, Any], root: str | Path, *, dry_run: bool = False,
     for dataset, rule in checks.items():
         if dataset == "daily_kline":
             continue
-        if dataset == "limit_up_pool":
+        if dataset == "hot_plates":
+            cutoff = str(request.get("now") or datetime.now(SHANGHAI).isoformat())
+            results.append(_check_hot_plates(root, day, rule, check_day, cutoff))
+        elif dataset == "limit_up_pool":
             from ..data_pipeline.limit_pool_hot_view import read
             cutoff = str(request.get("now") or datetime.now(SHANGHAI).isoformat())
             rows, meta = read(day, cutoff)
