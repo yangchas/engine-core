@@ -14,6 +14,7 @@ from .published_daily_kline import find_published_baostock_manifest
 from .td_sink import (BAOSTOCK_PROGRESS_VERSION, DailyKlineTdSink, has_baostock_date_evidence, map_rows,
                       pick_best, read_watermarks)
 
+TRADE_STATUS_MAX_SYMBOLS = 50
 MIN_FORMAL_COVERAGE = 0.98  # the floor hard-coded in registry.daily_kline.classify_daily_kline
 _MANIFEST = {"provider": "baostock", "source": "baostock", "field_units": {"volume": "shares"}}
 
@@ -267,7 +268,9 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
 
 
 def publish_filled_days(root: Any, store: Any, days: Sequence[str], expected_symbols: Callable[[str], set[str]],
-                        coverage_threshold: float, progress: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+                        coverage_threshold: float, progress: dict[str, Any] | None = None, *,
+                        status_client_factory: Callable[[], Any] | None = None,
+                        status_min_interval_seconds: float = 0.0) -> list[dict[str, Any]]:
     """Write the completion marker (TD version + catalog manifest) for days whose rows reached the threshold.
 
     Completion is judged on coverage alone: every missing symbol counts as source-empty and the allowed
@@ -290,11 +293,35 @@ def publish_filled_days(root: Any, store: Any, days: Sequence[str], expected_sym
                        budget=RequestBudget(max_requests=max(1, len(days)), min_interval_seconds=0))
     catalog = ArtifactCatalog(base)
     outcomes = []
+    remaining_status_budget = TRADE_STATUS_MAX_SYMBOLS
     for day in days:
         if progress is not None:
             progress["current_day"] = day
         expected = set(expected_symbols(day))
         rows = sorted(sink.read_progress_rows(day, sorted(expected)).values(), key=lambda row: row["symbol"])
+        candidates = [row for row in rows if row.get("source_trade_status") not in {"0", "1"}
+                      and any(row.get(field) is None for field in DAILY_KLINE_QUALITY_FIELDS)]
+        selected = candidates[:remaining_status_budget]
+        remaining_status_budget -= len(selected)
+        recovered = 0
+        if selected and status_client_factory is not None:
+            from .providers.baostock_daily_provider import BaostockDailyProvider
+            provider = BaostockDailyProvider(client_factory=status_client_factory,
+                symbols=[row["symbol"] for row in selected], sample_scope=True,
+                min_request_interval_seconds=status_min_interval_seconds)
+            try:
+                fetched = provider.fetch(day)
+                statuses = {row["symbol"]: row.get("source_trade_status") for row in fetched["rows"]}
+                for row in selected:
+                    status = statuses.get(row["symbol"])
+                    if status in {"0", "1"}:
+                        row["source_trade_status"] = status
+                        recovered += 1
+            except Exception:
+                pass  # Missing evidence remains unknown; publishing stays provisional.
+        recovery = {"candidates": len(candidates), "selected": len(selected),
+                    "recovered": recovered, "unknown": len(candidates) - recovered,
+                    "budget_exceeded": len(candidates) - len(selected)}
         meta = {"rows": rows, "source": "baostock", "provider": "baostock", "expected_count": len(expected),
                 "expected_symbols": sorted(expected),
                 "source_symbols": sorted(expected), "source_universe_status": "NOT_REQUIRED",
@@ -303,6 +330,7 @@ def publish_filled_days(root: Any, store: Any, days: Sequence[str], expected_sym
                 "source_date_values": [day], "source_dates_consistent": True,
                 "provider_attempts": [{"provider": "baostock", "result": "ok", "reason": "per_symbol_fill"}],
                 "available_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(), "as_of": day}
+        meta["trade_status_recovery"] = recovery
         meta["field_completeness"] = _prepare_daily_kline_manifest(catalog, day, rows, meta)["field_completeness"]
         result = runner.run("daily_kline", day, fetch=(lambda payload: lambda _day: payload)(meta), td_write=True,
                             source="baostock", expected_count=len(expected),
@@ -312,7 +340,7 @@ def publish_filled_days(root: Any, store: Any, days: Sequence[str], expected_sym
                          "version": result.manifest.get("version"),
                          "business_status": result.manifest.get("business_status"),
                          "mode": result.manifest.get("mode"), "td_publish": result.manifest.get("td_publish"),
-                         "error_code": result.manifest.get("error_code")})
+                         "error_code": result.manifest.get("error_code"), "trade_status_recovery": recovery})
         if progress is not None and outcomes[-1]["td_publish"] == "READY" and outcomes[-1]["mode"] != "RETRYABLE_INCOMPLETE":
             progress["completed_days"] += 1
             progress["published_days"] += 1
@@ -429,6 +457,14 @@ def run_daily_kline_fill_from_root(root: Any, target: str, *, args: Mapping[str,
         return (manifest is None or current is None or not manifest.get("version") or
                 manifest.get("version") != current.get("version"))
 
+    class StatusClient:
+        def login(self):
+            client.login()
+        def logout(self):
+            client.logout()
+        def query(self, code, day):
+            return client.query(code, day, day)
+
     try:
         result = run_daily_kline_fill(
             target, store=store, client=client, trading_dates=trading_dates, expected_symbols=expected_symbols,
@@ -443,7 +479,9 @@ def run_daily_kline_fill_from_root(root: Any, target: str, *, args: Mapping[str,
             require_all=True,
             needs_publish=needs_publish,
             on_complete=lambda done: done.__setitem__(
-                "partitions", publish_filled_days(base, store, done["publish_days"], expected_symbols, threshold, done["_progress"])))
+                "partitions", publish_filled_days(base, store, done["publish_days"], expected_symbols, threshold, done["_progress"],
+                    status_client_factory=StatusClient, status_min_interval_seconds=float(
+                        options.get("baostock_min_request_interval_seconds", 0.0)))))
         result.update(detail)
         if result.get("status") == "INCOMPLETE":
             exc = _abort("planned_gaps_remain", {"incomplete_total": result["incomplete_total"]})

@@ -2573,5 +2573,21 @@
   ],
   "fetched_at": "2026-11-16T20:17:37+08:00",
   "selection": "timestamp fields and first checkpoint ts and first hot rank row; source hashes included"
+ },
+ "_c1301": {
+  "file": "c1301/baostock_trade_status.json",
+  "sha256": "da73f5cb7a48b8fbd35d6a13a400b0d37ebc83ce6f0623362fb092e6ebf3014b",
+  "source_path": "/home/exedev/fw/evidence/C1300/baostock-query.txt",
+  "fetched_at": "2026-11-16T20:10:13.974870+08:00",
+  "collector": "C1300",
+  "params": {
+   "code": "sh.605255",
+   "date": "2026-11-16",
+   "fields": [
+    "date",
+    "code",
+    "tradestatus"
+   ]
+  }
  }
 }

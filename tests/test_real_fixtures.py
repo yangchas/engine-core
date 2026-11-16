@@ -577,3 +577,30 @@ def test_c1279_prep_excerpt_provenance():
         assert len(body) == meta["bytes"] and hashlib.sha256(body).hexdigest() == meta["sha256"]
         assert meta["source_path"] and meta["source_sha256"] and meta["selection"] and meta["command"]
         assert not any(word in body.decode("utf-8").lower() for word in CREDENTIAL_WORDS)
+
+
+def test_baostock_daily_trade_status_rejects_invalid_parameters():
+    from examples.capture_real_fixture import capture, main
+
+    for symbol in (None, '12345', '1234567', '12a456', '１２３４５６'):
+        with pytest.raises(SystemExit, match='six-digit stock code'):
+            capture('baostock_daily_trade_status', '2026-11-16', 1, symbol=symbol)
+    for day in ('2026-02-30', '2026-1-01', ''):
+        with pytest.raises(SystemExit, match='valid date'):
+            capture('baostock_daily_trade_status', day, 1, symbol='605255')
+    with pytest.raises(SystemExit) as exc:
+        main(['baostock_daily_trade_status', '--symbol', '605255'])
+    assert exc.value.code == 2
+
+
+def test_c1301_trade_status_excerpt_provenance():
+    meta = PROVENANCE['_c1301']
+    body = (REAL / meta['file']).read_bytes()
+    raw = json.loads(body)
+    assert hashlib.sha256(body).hexdigest() == meta['sha256']
+    assert meta['source_path'] == '/home/exedev/fw/evidence/C1300/baostock-query.txt'
+    assert meta['collector'] == 'C1300'
+    assert meta['fetched_at'] == '2026-11-16T20:10:13.974870+08:00'
+    assert meta['params'] == {'code': 'sh.605255', 'date': '2026-11-16', 'fields': raw['fields']}
+    assert raw == {'fields': ['date', 'code', 'tradestatus'],
+                   'rows': [['2026-11-16', 'sh.605255', '0']]}

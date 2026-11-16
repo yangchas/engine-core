@@ -55,7 +55,9 @@ class BaostockDailyProvider:
                  source_universe_checkpoint: str | Path | None = None,
                  progress_writer: Any = None,
                  total_timeout_seconds: float | None = None, sample_scope: bool = False,
-                 no_progress_timeout_seconds: float = 300):
+                 no_progress_timeout_seconds: float = 300, min_request_interval_seconds: float = 0):
+        self.min_request_interval_seconds = max(0.0, float(min_request_interval_seconds))
+        self._last_query_at: float | None = None
         self.client_factory = client_factory
         self.symbols = symbols
         self.timeout_seconds = float(timeout_seconds)
@@ -282,6 +284,11 @@ class BaostockDailyProvider:
         }
 
     def _query(self, client: Any, code: str, day: str) -> Any:
+        if self._last_query_at is not None:
+            delay = self.min_request_interval_seconds - (time.monotonic() - self._last_query_at)
+            if delay > 0:
+                self.sleep_fn(delay)
+        self._last_query_at = time.monotonic()
         query = client.query
         try:
             supports_timeout = "timeout_seconds" in inspect.signature(query).parameters
