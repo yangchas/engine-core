@@ -981,6 +981,18 @@
    "source_path": "/home/exedev/core-data/plate_members/trade_date=2026-10-29/source=kaipan_getHisPlateIds/sha256-9a9492578bf6327b/rows.jsonl.gz",
    "trade_date": "2026-10-29",
    "version": "sha256-9a9492578bf6327b"
+  },
+  "core_artifacts/c1279/limit_reasons_manifest.json": {
+   "bytes": 2574,
+   "command": "cp /home/exedev/core-data/limit_reasons/trade_date=2026-11-13/source=kaipan_getHisBans/sha256-d31ce296cb3ffbd4/manifest.json tests/fixtures/real/core_artifacts/c1279/limit_reasons_manifest.json",
+   "copied_at": "2026-11-16",
+   "dataset": "limit_reasons",
+   "kind": "core_artifact_manifest",
+   "sha256": "4200342b94257505108dcecd59102cb093952df1db09e47b1cf63da8b37b37bb",
+   "source": "kaipan_getHisBans",
+   "source_path": "/home/exedev/core-data/limit_reasons/trade_date=2026-11-13/source=kaipan_getHisBans/sha256-d31ce296cb3ffbd4/manifest.json",
+   "trade_date": "2026-11-13",
+   "version": "sha256-d31ce296cb3ffbd4"
   }
  },
  "kaipan_hot_plates_2026-10-23_1441.json": {
@@ -2456,5 +2468,16 @@
   "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-16 --symbol 002129 --start 09:24:57 --end 09:25:03",
   "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='002129' AND ts>='2026-11-16 09:24:57' AND ts<='2026-11-16 09:25:03' ORDER BY ts",
   "row_count": 2
+ },
+ "_c1279": {
+  "c1279/limit_reasons_prep.json": {
+   "source_path": "/home/exedev/fw/evidence/C1275/retry.txt",
+   "source_sha256": "fb405ad076d6b4e7bbd4e53c3395faad3ad4089dcefd4387a7f80d58828a0248",
+   "selection": "PREP 2026-11-16 limit_reasons JSON excerpt",
+   "command": "extract PREP 2026-11-16 limit_reasons JSON from C1275 retry.txt",
+   "trade_date": "2026-11-13",
+   "bytes": 212,
+   "sha256": "4c5ae2d37a3a15315331a3c7e3568a4f457aa24c5858fe923edf49d89931604d"
+  }
  }
 }

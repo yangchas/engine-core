@@ -550,3 +550,13 @@ def test_td_stock_static_real_rows_and_provenance():
         payload = json.loads(row['payload'])
         assert row['symbol'] == symbol and payload['date'] == '2026-11-16'
         assert payload['listing_date'] == listing_date
+
+
+def test_c1279_prep_excerpt_provenance():
+    index = PROVENANCE["_c1279"]
+    assert {p.relative_to(REAL).as_posix() for p in (REAL / "c1279").iterdir()} == set(index)
+    for name, meta in index.items():
+        body = (REAL / name).read_bytes()
+        assert len(body) == meta["bytes"] and hashlib.sha256(body).hexdigest() == meta["sha256"]
+        assert meta["source_path"] and meta["source_sha256"] and meta["selection"] and meta["command"]
+        assert not any(word in body.decode("utf-8").lower() for word in CREDENTIAL_WORDS)

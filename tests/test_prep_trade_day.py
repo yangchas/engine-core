@@ -443,3 +443,40 @@ def test_prep_previous_hot_rank_uses_real_snapshot_and_continues_on_failure(tmp_
             assert timing['fill_exit'] == 1 and timing['fill_script'] == 'capture_wencai_hot_rank.py'
         if state in ('unknown', 'corrupt'):
             assert timing['status'] == state.upper() and timing['reason']
+
+
+def test_successful_fill_rechecks_real_c1275_artifact_at_completion(tmp_path, monkeypatch):
+    import engine_core.prep_trade_day as prep
+
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.delenv("CORE_REDIS_URL", raising=False)
+    _seed_c325(tmp_path)
+    fixtures = Path(__file__).parent / "fixtures/real"
+    manifest_path = fixtures / "core_artifacts/c1279/limit_reasons_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    observed = json.loads((fixtures / "c1279/limit_reasons_prep.json").read_text())
+    day, asof = observed["trade_date"], "2026-11-16T08:30:00+08:00"
+    entry = {"version": manifest["version"], "manifest": str(manifest_path)}
+    (tmp_path / "catalog.json").write_text(json.dumps({"datasets": {
+        "limit_reasons": {"dates": {day: [entry]}}}}))
+    catalog = ArtifactCatalog(tmp_path)
+    assert observed["status"] == "MISSING" and observed["fill_exit"] == 0
+    assert prep._step("limit_reasons", "limit_reasons", day, catalog, asof=asof)["status"] == "MISSING"
+    completion = prep._post_fill_cutoff(asof, succeeded=True)
+    assert prep._manifest(catalog, "limit_reasons", day, asof=completion)["version"] == manifest["version"]
+    assert prep._manifest(catalog, "limit_reasons", "2026-11-16", asof=completion) is None
+    wrong_index = {"datasets": {"limit_reasons": {"dates": {"2026-11-16": [entry]}}}}
+    (tmp_path / "catalog.json").write_text(json.dumps(wrong_index))
+    assert prep._manifest(catalog, "limit_reasons", "2026-11-16", asof=completion) is None
+    wrong_index["datasets"]["limit_reasons"]["dates"] = {day: [{**entry, "version": "invalid"}]}
+    (tmp_path / "catalog.json").write_text(json.dumps(wrong_index))
+    assert prep._manifest(catalog, "limit_reasons", day, asof=completion) is None
+    (tmp_path / "catalog.json").write_text(json.dumps({"datasets": {
+        "limit_reasons": {"dates": {day: [entry]}}}}))
+    monkeypatch.setattr(prep, "_prepare_theme_snapshot_cache", lambda *a, **k: True)
+    monkeypatch.setattr(prep, "_plate_members_snapshot", lambda **k: None)
+    for exit_code in (0, 1):
+        monkeypatch.setattr(prep, "_run", lambda _repo, script, args: (exit_code if args[:2] == ["--job", "limit_reasons"] else 1, ""))
+        report = prep.build_prep_report(tmp_path, "2026-11-16", write=True, asof=asof)
+        step = next(s for s in report["steps"] if s["step"] == "limit_reasons")
+        assert step["status"] == ("READY" if exit_code == 0 else "MISSING")
