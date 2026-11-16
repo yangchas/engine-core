@@ -252,6 +252,9 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
     changes = [_num(row.get("pct_change")) for row in price_rows]
     changes = [value for value in changes if value is not None]
     market_median = _median(changes)
+    market_changes = [_num(row.get("pct_change")) for row in price_rows
+                      if (_num(row.get("pre_close_price")) or 0) > 0]
+    market_mean = sum(market_changes) / len(market_changes) if market_changes else None
     up_n = sum(value > 0 for value in changes)
     seals_verified = [row for row in by_symbol.values() if row.get("seal", {}).get("status") in ("VERIFIED", "VERIFIED_REPLAY")
                       and _num(row.get("seal", {}).get("seal_amount_yuan")) is not None]
@@ -594,6 +597,7 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
                     break
         output_row = {"symbol": symbol, "name": stock_name(symbol, row, pool_row),
             "auction_amount_yuan": _num(row.get("auction_amount_yuan")), "pct_change": _num(row.get("pct_change")),
+            "valid_price": valid_auction_price,
             "amount_rank": amount_ranks.get(symbol), "amount_top50": bool(row.get("amount_top50")),
             "seal_amount_yuan": _num(seal.get("seal_amount_yuan")) if seal.get("status") in ("VERIFIED", "VERIFIED_REPLAY") else None,
             "seal_rank": seal_ranks.get(symbol) if seal.get("status") in ("VERIFIED", "VERIFIED_REPLAY") else "UNKNOWN",
@@ -855,7 +859,8 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
             "status": "READY" if baseline_ready else "PARTIAL", "reasons": baseline_reasons},
         "valid_amount_n": len(valid_amounts), "universe_n": len(by_symbol),
         "valid_price_n": len(changes), "up_ratio": {"numerator": up_n, "denominator": len(changes), "ratio": market_up_ratio},
-        "market_median_pct": market_median, "yesterday_limit_high_open": pool_open,
+        "market_median_pct": market_median, "market_mean_pct": market_mean,
+        "market_mean_valid_n": len(market_changes), "yesterday_limit_high_open": pool_open,
         "yesterday_vs_market_pp": high_open_pp,
         "verified_seal_sum_yuan": verified_sum if seals_verified else None,
         "verified_seal_scope": f"{len(seals_verified)}/{candidates}" if seals_verified else "待核实",

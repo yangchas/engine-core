@@ -584,3 +584,30 @@ def test_input_quality_empty_universe():
         'missing_price_ratio': None, 'missing_pct_n': 0, 'missing_pct_ratio': None,
         'missing_amount_n': 0, 'missing_price_with_amount_n': 0,
         'reason_codes': [], 'status': 'OK'}
+
+
+def test_c1256_real_market_mean_and_streak_price_validity():
+    import gzip
+    import hashlib
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).parent / 'fixtures/real/c1256/auction.json.gz'
+    provenance = json.loads((path.parent.parent / "PROVENANCE.json").read_text())["_c1256"]["auction"]
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == provenance["fixture_sha256"]
+    assert hashlib.sha256(gzip.decompress(path.read_bytes())).hexdigest() == provenance["source_sha256"]
+    with gzip.open(path, 'rt') as stream:
+        capture = json.load(stream)
+    rows = [{'symbol': symbol, 'price': row['price_milli'] / 1000,
+             'pre_close_price': row['pre_close_milli'] / 1000,
+             'pct_change': row['change_bp'] / 100,
+             'valid_price': row['price_milli'] > 0}
+            for symbol, row in capture.items()
+            if row.get('price_milli') and row.get('pre_close_milli') and row.get('change_bp') is not None]
+    pool = json.loads((path.parent.parent / 'c1254/pool.json').read_text())
+    result = build_auction_panorama({'trade_date': '2026-11-16', 'asof': '2026-11-16T09:26:00+08:00', 'rows': rows},
+                                    plate_members=[], yesterday_pool=pool)
+    assert round(result['overview']['market_mean_pct'], 5) == -0.47981
+    stocks = [stock for layer in result['yesterday_ladder'] for bucket in layer['buckets'] for stock in bucket['stocks']]
+    assert next(stock for stock in stocks if stock['symbol'] == '605255')['valid_price'] is False
+    assert next(stock for stock in stocks if stock['symbol'] == '001358')['valid_price'] is True

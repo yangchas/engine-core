@@ -122,7 +122,7 @@ def _streak_and_hot_conclusions(product: Mapping[str, Any]) -> list[str]:
             if isinstance(bucket, Mapping):
                 groups[key].extend(row for row in bucket.get("stocks", []) if isinstance(row, Mapping))
     def describe(label: str, rows: list[Mapping[str, Any]]) -> str:
-        valid = [r for r in rows if isinstance(r.get("pct_change"), (int, float))]
+        valid = [r for r in rows if r.get("valid_price", True) is True and isinstance(r.get("pct_change"), (int, float))]
         weighted = [r for r in valid if isinstance(r.get("auction_amount_yuan"), (int, float)) and r["auction_amount_yuan"] > 0]
         total = sum(r["auction_amount_yuan"] for r in weighted)
         mean = sum(r["pct_change"] for r in valid) / len(valid) if valid else None
@@ -132,7 +132,14 @@ def _streak_and_hot_conclusions(product: Mapping[str, Any]) -> list[str]:
                 f"（有效{len(valid)}/{len(rows)}，加权有效{len(weighted)}；缺失 {','.join(missing) or '无'}）")
     all_rows = [row for rows in groups.values() for row in rows]
     lines = ["【昨日连板开盘平均涨幅】" + "；".join(describe(k, v) for k, v in groups.items()) + "；" + describe("总体", all_rows)]
-    lines.append("短线赚钱效应：UNKNOWN（缺全市场竞价平均涨幅，无法比较）")
+    market_mean = (product.get("overview") or {}).get("market_mean_pct")
+    valid_all = [row["pct_change"] for row in all_rows if row.get("valid_price", True) is True
+                 and isinstance(row.get("pct_change"), (int, float))]
+    if isinstance(market_mean, (int, float)) and valid_all:
+        gap = sum(valid_all) / len(valid_all) - market_mean
+        lines.append(f"短线赚钱效应：昨日连板均涨较全市场{gap:+.2f}pp（全市场均涨 {_fmt(market_mean, 2, '%')}）")
+    else:
+        lines.append("短线赚钱效应：UNKNOWN（缺全市场或昨日连板有效竞价涨幅）")
     lines.append("【昨日热板溢价】UNKNOWN（缺昨日热板同版本成份股及全市场竞价平均涨幅）")
     lines.append("竞价涨停封单合计：UNKNOWN；竞价跌停封单合计：UNKNOWN（缺逐股封单方向及终局盘口）")
     return lines
