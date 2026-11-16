@@ -109,6 +109,35 @@ def _digest_stock(stock: Mapping[str, Any]) -> str:
             f'<span style="color:#667085">封单{_esc(seal)}·{_esc(seal_rank)}</span>{suffix}')
 
 
+def _streak_and_hot_conclusions(product: Mapping[str, Any]) -> list[str]:
+    groups: dict[str, list[Mapping[str, Any]]] = {"2板": [], "3板": [], "4板及以上": []}
+    for layer in product.get("yesterday_ladder", []):
+        if not isinstance(layer, Mapping):
+            continue
+        level = layer.get("yesterday_streak")
+        if not isinstance(level, int) or level < 2:
+            continue
+        key = f"{level}板" if level < 4 else "4板及以上"
+        for bucket in layer.get("buckets", []):
+            if isinstance(bucket, Mapping):
+                groups[key].extend(row for row in bucket.get("stocks", []) if isinstance(row, Mapping))
+    def describe(label: str, rows: list[Mapping[str, Any]]) -> str:
+        valid = [r for r in rows if isinstance(r.get("pct_change"), (int, float))]
+        weighted = [r for r in valid if isinstance(r.get("auction_amount_yuan"), (int, float)) and r["auction_amount_yuan"] > 0]
+        total = sum(r["auction_amount_yuan"] for r in weighted)
+        mean = sum(r["pct_change"] for r in valid) / len(valid) if valid else None
+        weight = sum(r["pct_change"] * r["auction_amount_yuan"] for r in weighted) / total if total else None
+        missing = [str(r.get("symbol") or "未知代码") for r in rows if r not in valid]
+        return (f"{label}：均涨 {_fmt(mean, 2, '%')}，加权 {_fmt(weight, 2, '%')}"
+                f"（有效{len(valid)}/{len(rows)}，加权有效{len(weighted)}；缺失 {','.join(missing) or '无'}）")
+    all_rows = [row for rows in groups.values() for row in rows]
+    lines = ["【昨日连板开盘平均涨幅】" + "；".join(describe(k, v) for k, v in groups.items()) + "；" + describe("总体", all_rows)]
+    lines.append("短线赚钱效应：UNKNOWN（缺全市场竞价平均涨幅，无法比较）")
+    lines.append("【昨日热板溢价】UNKNOWN（缺昨日热板同版本成份股及全市场竞价平均涨幅）")
+    lines.append("竞价涨停封单合计：UNKNOWN；竞价跌停封单合计：UNKNOWN（缺逐股封单方向及终局盘口）")
+    return lines
+
+
 def render_auction_email_digest(product: Mapping[str, Any], quickbrief: Mapping[str, Any], *,
                                 completeness: str = "PARTIAL", degraded_note: str = "") -> tuple[str, str]:
     """Render compact theme comparisons from product-layer statistics."""
@@ -272,7 +301,9 @@ def render_auction_email_digest(product: Mapping[str, Any], quickbrief: Mapping[
         f'<h2>高标与封单极值</h2><p style="font-size:10px">高标（昨≥2板）</p><div>{highboard_html}</div><p>{market_extremes_html}</p>'
         '<p style="font-size:10px;color:#667085">完整明细已存档于 Core 报告目录；个股点名仅用于极值、封单和高标。缺失不补0。</p>'
         '</td></tr></table></td></tr></table></body></html>')
-    plain_blocks = [f"09:26竞价速览 | {date} {asof} {('历史回放样本,非当时实时信号' if replay else '')}",
+    extra = _streak_and_hot_conclusions(product)
+    html = html.replace('</body>', '<div>' + '<br>'.join(_esc(line) for line in extra) + '</div></body>')
+    plain_blocks = [f"09:26竞价速览 | {date} {asof} {('历史回放样本,非当时实时信号' if replay else '')}\n" + "\n".join(extra),
         f"昨日整批统计 / 市场整体：{whole_batch}",
         "①题材横向对比：" + ("\n".join(plate_text) or "无可展示题材"),
         "②昨日涨停×题材接力意愿：" + ("\n".join(bucket_text) or "无可展示题材"),
@@ -306,7 +337,7 @@ def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
     seal_text = (f"{_fmt(seal_sum / 1e8, 2, '亿')}（核实 {seal_scope}，{overview.get('verified_seal_label') or '待核实'}）"
                  if isinstance(seal_sum, (int, float)) else f"待核实（{seal_scope}）")
     cards = [("竞价匹配额", amount + " · " + history_text), ("上涨 / 中位涨幅", up_text),
-             ("昨日涨停高开", high_open + "（按竞价价>昨收）"), ("竞价涨停封单合计", seal_text)]
+             ("昨日涨停高开", high_open + "（按竞价价>昨收）"), ("竞价双侧封单合计", seal_text)]
     conclusions = []
     if not history_ready:
         conclusions.append("竞价额基线不足，仅参考")
@@ -345,7 +376,7 @@ def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
                        and isinstance(seal_sum, (int, float)) and seal_sum > 0 else None)
     feedback_summary = (f"昨日池最弱：{worst_text}；全市场已核实封单 {global_verified_n if global_verified_n is not None else '—'} 只、合计 {_money(seal_sum)}；"
                         f"昨日涨停池内已核实封单 {verified_n if verified_n is not None else '—'} 只、合计 {_money(verified_sum)}，占全市场 {_fmt(pool_seal_share * 100 if pool_seal_share is not None else None, 1, '%')}")
-    summaries = [pool_summary, bias_summary, feedback_summary]
+    summaries = [pool_summary, bias_summary, feedback_summary, *_streak_and_hot_conclusions(product)]
     cards_html = '<table role="presentation" width="100%"><tr>' + ''.join(
         f'<td style="width:50%;padding:4px;vertical-align:top"><div style="background:#f6f8fb;border:1px solid #e4e7ec;padding:9px">'
         f'<div style="font-size:10px;color:#667085">{_esc(label)}</div><strong style="display:block;padding-top:3px;font-size:13px">{_esc(value)}</strong></div></td>'

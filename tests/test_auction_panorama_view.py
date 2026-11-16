@@ -89,7 +89,7 @@ def test_seal_summary_scopes_are_explicit_and_hot_coverage_is_single_source():
             {"plate_name": "乙", "hot_rank": None, "stocks": []}],
         "yesterday_ladder": []}
     _html, plain = render_auction_panorama(product)
-    assert "竞价涨停封单合计：46.86亿（核实 7/7" in plain
+    assert "竞价双侧封单合计：46.86亿（核实 7/7" in plain
     assert "全市场已核实封单 7 只、合计 46.86亿" in plain
     assert "昨日涨停池内已核实封单 3 只、合计 14.24亿" in plain
     assert "占全市场 30.4%" in plain
@@ -192,3 +192,21 @@ def test_c302_digest_two_tables_six_blocks_and_only_authorized_stock_names():
     assert html.count("高标股 · 昨3板") == 1
     assert "高标股 · 昨3板" in html
     assert html.index("① 题材横向对比") < html.index("② 昨日涨停×题材 接力意愿") < html.index("高标与封单极值")
+
+
+def test_c1254_real_panorama_streak_and_seal_labels():
+    import json
+    from pathlib import Path
+
+    # C1253 independently recomputed 2板 1.59%/4.53%, 3板 1.31%/2.49%.
+    fixture = Path(__file__).parent / 'fixtures' / 'real' / 'c1254'
+    product = json.loads((fixture / 'panorama.json').read_text())['panorama']
+    _, plain = render_auction_panorama(product)
+    assert '2板：均涨 1.59%' in plain
+    assert '加权 4.53%' in plain
+    assert '3板：均涨 1.31%' in plain
+    assert '加权 2.49%' in plain
+    assert '605255' in plain and '缺失' in plain
+    assert '昨日热板溢价' in plain and 'UNKNOWN' in plain
+    assert '竞价涨停封单合计：UNKNOWN' in plain
+    assert '竞价跌停封单合计：UNKNOWN' in plain
