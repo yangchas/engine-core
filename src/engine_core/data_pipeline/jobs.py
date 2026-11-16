@@ -553,7 +553,8 @@ class JobRunner:
             committed["cache_publish"] = "READY"
             self.state.set_status(name, {"trade_date": trade_date, "available_at": committed["available_at"],
                                          "version": committed["version"], "quality": quality,
-                                         "cache_publish": "READY"})
+                                         "cache_publish": "READY",
+                                         **({"cold_archive_warning": committed["cold_archive_warning"]} if committed.get("cold_archive_warning") else {})})
             return JobResult(committed, rows)
         if name == "hot_rank":
             if not publish or self.redis is None:
@@ -566,13 +567,16 @@ class JobRunner:
                              committed_at=committed_at, available_at=committed_at,
                              storage_backend="redis", storage_uri=None, manifest_uri=None, rows_uri=None)
             from .hot_rank_view import publish as publish_hot_rank
-            publish_hot_rank(self.redis, trade_date, rows, committed)
-            from .cold_archive import flush
-            flush()
+            _, receipt = publish_hot_rank(self.redis, trade_date, rows, committed)
+            from .cold_archive import flush, receipt_warning
+            warning = receipt_warning(receipt, flush())
+            if warning:
+                committed["cold_archive_warning"] = warning
             committed["cache_publish"] = "READY"
             self.state.set_status(name, {"trade_date": trade_date, "available_at": committed["available_at"],
                                          "version": committed["version"], "quality": quality,
-                                         "cache_publish": "READY"})
+                                         "cache_publish": "READY",
+                                         **({"cold_archive_warning": committed["cold_archive_warning"]} if committed.get("cold_archive_warning") else {})})
             return JobResult(committed, rows)
         # Durable artifact publication is the commit point. Redis/TD are later, optional tiers.
         committed = self.catalog.commit(name, trade_date, rows, manifest, source=safe_source)
@@ -697,14 +701,16 @@ class JobRunner:
                     _redis_set(self.redis, key, previous, restore_ttl)
             raise
         if spec.name == "hot_plates":
+            from .cold_archive import archive, flush, receipt_warning
             try:
-                from .cold_archive import archive, flush
-                archive(spec.name, trade_date, str(manifest["version"]),
-                        version_json.encode("utf-8"), payload)
-                flush()
-            except Exception:
-                import logging
-                logging.getLogger(__name__).warning("cold_archive dispatch_failed", exc_info=True)
+                receipt = archive(spec.name, trade_date, str(manifest["version"]),
+                                  version_json.encode("utf-8"), payload)
+                warning = receipt_warning(receipt, flush())
+            except Exception as exc:
+                warning = receipt_warning(exc, False)
+            if warning:
+                manifest["cold_archive_warning"] = warning
+
 
 
 def _redis_set(client: Any, key: str, value: str, ttl: int) -> None:

@@ -278,6 +278,18 @@ class Archiver:
             self.queue.task_done()
 
 
+def receipt_warning(receipt, flushed):
+    if isinstance(receipt, Exception):
+        return {'category': type(receipt).__name__, 'td_error_code': None, 'successful_chunks': 0}
+    if (receipt is False or
+        (hasattr(receipt, 'success') and receipt.success is not True) or
+        (not hasattr(receipt, 'success') and not flushed)):
+        return {'category': getattr(receipt, 'error_category', None) or 'unavailable_or_timeout',
+                'td_error_code': getattr(receipt, 'td_error_code', None),
+                'successful_chunks': getattr(receipt, 'successful_chunks', 0)}
+    return None
+
+
 def _enabled():
     return bool(os.environ.get('TD_CONFIG')) and not os.environ.get('CORE_REPLAY_DIR') and 'pytest' not in sys.modules
 

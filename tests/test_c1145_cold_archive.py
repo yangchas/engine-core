@@ -135,8 +135,6 @@ def test_gap_failure_receipt_is_returned(tmp_path, monkeypatch):
     result = hot_plates_gaps.record_hot_plates_gap(*args)
     assert result['cold_archive_warning'] == {'category': 'RuntimeError', 'td_error_code': '0x2603', 'successful_chunks': 0}
     assert json.loads(next(iter(redis.values.values()))) == row
-
-
 def test_today_td_rejection_warns_after_hot_publish(monkeypatch):
     from engine_core.data_pipeline import redis_day_view
     class RejectStore:
