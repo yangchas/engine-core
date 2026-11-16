@@ -20,6 +20,7 @@ _TABLES = {
     "stock_listing": "stock_listing_latest",
 }
 _META_TABLE = "reference_snapshot_versions"
+_AS_OF_MARKER_LIMIT = 50
 _DB_RE = re.compile(r"^(?:core_data|core_dev_[a-z0-9_]{1,24})$")
 
 
@@ -250,3 +251,49 @@ class ReferenceSnapshotStore:
                 "sha256": str(digest), "source": str(source), "available_at": str(available_at),
                 "request_count": int(request_count or 0), "elapsed_ms": int(elapsed_ms or 0),
                 "trade_date": trade_date, "rows": rows}
+
+    def read_as_of(self, dataset: str, asof: str | None) -> dict[str, Any] | None:
+        """Read the newest retained ACTIVE marker visible at an aware as-of time."""
+        if asof is None:
+            return self.read_latest(dataset)
+        if dataset not in _TABLES:
+            raise ValueError("reference_snapshot_dataset_not_allowed")
+
+        def pit_time(value: Any) -> datetime | None:
+            if not isinstance(value, str) or not value:
+                return None
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                return parsed.astimezone() if parsed.tzinfo else None
+            except ValueError:
+                return None
+
+        cutoff = pit_time(asof)
+        if cutoff is None:
+            return None
+        try:
+            markers = self._run(
+                f"SELECT version,row_count,sha256,source,available_at,request_count,elapsed_ms "
+                f"FROM {self.database}.{_META_TABLE} WHERE dataset={_literal(dataset)} "
+                f"AND snapshot_state='ACTIVE' ORDER BY ts DESC LIMIT {_AS_OF_MARKER_LIMIT}", fetch="all")
+        except Exception as exc:
+            if td_object_missing(exc):
+                return None
+            raise
+        for marker in markers:
+            version, row_count, digest, source, available_at, request_count, elapsed_ms = marker
+            visible_at = pit_time(available_at)
+            if visible_at is None or visible_at > cutoff:
+                continue
+            data = self._rows_for_version(dataset, str(version))
+            payloads = [payload_json(item["payload"]) for item in data]
+            if len(data) != int(row_count) or rows_sha256(payloads) != str(digest):
+                raise ReferenceSnapshotError("reference_snapshot_active_integrity_failed:" + dataset)
+            rows = [item["payload"] for item in data]
+            trade_date = next((str(row.get("trade_date") or row.get("date"))
+                               for row in rows if row.get("trade_date") or row.get("date")), None)
+            return {"dataset": dataset, "version": str(version), "row_count": len(data),
+                    "sha256": str(digest), "source": str(source), "available_at": str(available_at),
+                    "request_count": int(request_count or 0), "elapsed_ms": int(elapsed_ms or 0),
+                    "trade_date": trade_date, "rows": rows}
+        return None

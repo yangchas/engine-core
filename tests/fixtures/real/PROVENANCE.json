@@ -2543,5 +2543,15 @@
   "command": "examples/capture_real_fixture.py td_stock_tick --date 2026-11-10 --symbol 001381 --start 09:25:00 --end 09:25:03",
   "sql": "SELECT ts,px_milli,pc_milli,bp1_milli,bp2_milli,ap1_milli,ap2_milli,bv1,bv2,av1,av2,amt_yuan,vol_units,symbol FROM market_data1.stock_tick_v2 WHERE symbol='001381' AND ts>='2026-11-10 09:25:00' AND ts<='2026-11-10 09:25:03' ORDER BY ts",
   "row_count": 1
+ },
+ "_c1287": {
+  "file": "c1287/markers.json",
+  "source": "core_data.reference_snapshot_versions",
+  "sql": "SELECT version,row_count,sha256,source,available_at,request_count,elapsed_ms FROM core_data.reference_snapshot_versions WHERE dataset='plate_members' AND snapshot_state='ACTIVE' ORDER BY ts DESC LIMIT 50",
+  "fetched_at": "2026-11-16T16:53:03.249434+08:00",
+  "sha256": "184aca7a790efb33f6ff33890aa5a403420562dc953eca9a67cc80b7ce5b50a6",
+  "rows": 50,
+  "bytes": 10803,
+  "capture": "direct read-only TD query; capture_real_fixture.py lacks this source"
  }
 }
