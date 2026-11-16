@@ -61,6 +61,7 @@ def _manifest(catalog: ArtifactCatalog, dataset: str, day: str | None = None,
         indexed = any(item.get("version") == value.get("version") for item in indexed_versions
                       if isinstance(item, dict))
         if (int(value.get("row_count", 0)) <= 0 or
+                value.get("trade_date") != day or
                 value.get("quality", {}).get("status") == "FAILED" or
                 not isinstance(value.get("version"), str) or not value.get("version") or
                 not indexed or
@@ -473,6 +474,7 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
     if _pit_time(asof) is None:
         raise ValueError("invalid_preparation_asof")
     members_fill_cutoff: str | None = None
+    fill_cutoffs: dict[str, str] = {}
     members_refetched = False
     root = Path(root).expanduser()
     catalog = ArtifactCatalog(root)
@@ -546,6 +548,8 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
         started = time.monotonic()
         try:
             rc, out = original_run(repo, script, args)
+            if rc == 0:
+                fill_cutoffs[name] = _post_fill_cutoff(asof, succeeded=True)
             if job == "plate_members":
                 members_refetched = True
                 if rc == 0:
@@ -808,11 +812,12 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
             dataset, day = item["dataset"], item.get("trade_date")
             if item["status"] == "SKIPPED_REASON":
                 continue
+            cutoff = fill_cutoffs.get(item["step"], asof)
             if item["step"] == "hot_rank":
-                revised = _latest_step("hot_rank", "hot_rank", trade_date, fresh, asof=asof, redis=client)
+                revised = _latest_step("hot_rank", "hot_rank", trade_date, fresh, asof=cutoff, redis=client)
             else:
-                cutoff = (max((asof, members_fill_cutoff), key=_pit_time)
-                          if dataset == "plate_members" and members_fill_cutoff else asof)
+                cutoff = (max((cutoff, members_fill_cutoff), key=_pit_time)
+                          if dataset == "plate_members" and members_fill_cutoff else cutoff)
                 revised = _step(item["step"], dataset, day, fresh, asof=cutoff,
                                 reason=item.get("reason") if not day else None)
             item.update(revised)
