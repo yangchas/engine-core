@@ -1078,6 +1078,7 @@ def test_auction_seal_handler_real_fixtures_and_missing_tick(monkeypatch):
         def __enter__(self): return self
         def __exit__(self, *args): pass
         def read_latest(self, dataset): return {'trade_date': '2026-11-16', 'rows': listing}
+        def read_as_of(self, dataset, asof): return {'trade_date': '2026-11-16', 'rows': listing}
     class Cursor:
         def execute(self, sql): pass
         def fetchall(self): return ticks
