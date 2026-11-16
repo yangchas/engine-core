@@ -474,6 +474,26 @@ def _run_event(request):
         except (IndexError, ValueError):
             return _failure_response(request, error=ValueError("invalid stock listing job reply"))
         return result.returncode, reply
+    if name == "intraday_data" and args.get("dataset") == "auction_seal_facts":
+        if dry:
+            return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
+                       "artifacts": [], "detail": "auction_seal_facts dry run"}
+        from engine_core.data_pipeline.auction_redis_view import redis_client
+        from engine_core.data_pipeline.auction_seal_facts import run as run_auction_seal_facts
+        from engine_core.storage.two_layer import TwoLayerStore
+        try:
+            client = redis_client()
+            result = run_auction_seal_facts(str(trade_date), redis_client=client, store=TwoLayerStore(client))
+            if result.status != "published":
+                return _failure_response(request, error=ConnectionError(result.reason or result.status))
+            degraded = result.archive_status != "ARCHIVED"
+            return 0, {"contract": 1, "status": "degraded" if degraded else "ok",
+                       "error_code": "", "retryable": False, "artifacts": [],
+                       "detail": {"version": result.version, "archive_status": result.archive_status,
+                                  "reason": result.reason, "unknown_listing": result.metadata.get("unknown_listing", []),
+                                  "unknown_prices": result.metadata.get("unknown_prices", [])}}
+        except Exception as exc:
+            return _failure_response(request, error=exc)
     if name == "postmarket_data" and args.get("dataset") == "auction_amount_facts":
         from engine_core.data_pipeline.auction_amount_facts import run as run_auction_amount_facts
         end_date = (date.fromisoformat(str(trade_date)) - timedelta(days=1)).isoformat()

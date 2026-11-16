@@ -1051,3 +1051,58 @@ def test_chip_and_dde_handler_reports_unavailable_td(monkeypatch):
         code, reply = guardian_handler._run(request)
         assert code == 75 and reply['error_code'] == 'TD_UNAVAILABLE'
         assert check_reply(code, reply) == []
+
+
+def test_auction_seal_handler_real_fixtures_and_missing_tick(monkeypatch):
+    import gzip
+    from examples import guardian_handler
+    from engine_core.data_pipeline import auction_redis_view, reference_snapshot_td, td_sink, trade_calendar, cold_archive, redis_day_view
+
+    real = ROOT / 'tests/fixtures/real'
+    with gzip.open(real / 'c1256/auction.json.gz', 'rt') as f:
+        auction = json.load(f)
+    with gzip.open(real / 'core_artifacts/c594/stock_static/2026-10-29/c573_guardian/rows.jsonl.gz', 'rt') as f:
+        listing = [json.loads(line) for line in f]
+    raw = json.loads(next(real.glob('td_stock_tick_2026-11-16_002242_092430_092600_*.json')).read_text())
+    columns = ('ts', 'px_milli', 'bp1_milli', 'ap1_milli', 'bv1', 'bv2', 'av1', 'av2')
+    ticks = [tuple(row[raw['columns'].index(c)] for c in columns) for row in raw['rows']]
+    listing = [r for r in listing if r['symbol'] != '002129']
+    calendar = json.loads((real.parent / 'trade_calendar/baostock-2026-01-01_2026-12-31.json').read_text())
+    dates = [r['calendar_date'] for r in calendar['rows'] if r['is_trading_day'] == '1']
+    class Redis:
+        def set(self, key, value, **kwargs):
+            self.value = json.loads(value)
+            return True
+    client = Redis()
+    class Ref:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read_latest(self, dataset): return {'trade_date': '2026-11-16', 'rows': listing}
+    class Cursor:
+        def execute(self, sql): pass
+        def fetchall(self): return ticks
+        def close(self): pass
+    class Conn:
+        def cursor(self): return Cursor()
+        def close(self): pass
+    monkeypatch.setattr(auction_redis_view, 'redis_client', lambda: client)
+    monkeypatch.setattr(auction_redis_view, 'read_auction_view', lambda *args: [dict(auction[symbol], symbol=symbol) for symbol in ('002242', '002129')])
+    monkeypatch.setattr(reference_snapshot_td, 'ReferenceSnapshotStore', Ref)
+    monkeypatch.setattr(trade_calendar.TradeCalendarStore, 'all_trading_dates', lambda self: dates)
+    monkeypatch.setattr(td_sink, 'connect_td', lambda *args: Conn())
+    monkeypatch.setattr(redis_day_view, 'expire_at', lambda day: 2000000000)
+    monkeypatch.setattr(cold_archive, 'archive', lambda *args: None)
+    request = _core_request('auction_seal_facts_0926', '2026-11-16')
+    request['dry_run'] = True
+    code, payload = guardian_handler._run(request)
+    assert payload['detail']['unknown_listing'] == ['002129']
+    assert code == 0 and payload['status'] == 'degraded' and not payload['retryable'] and payload['error_code'] == ''
+    assert payload['contract'] == 1 and 'artifacts' in payload
+    assert client.value['rows'][0]['seal_amount_yuan'] == 848119626
+    ticks.clear()
+    code, payload = guardian_handler._run(request)
+    assert code == 75 and payload['status'] == 'failed' and payload['retryable'] and payload['error_code']
+    monkeypatch.setenv('GUARDIAN_DRY_RUN', '1')
+    monkeypatch.setattr(auction_redis_view, 'redis_client', lambda: pytest.fail('dry run accessed Redis'))
+    code, payload = guardian_handler._run(request)
+    assert code == 0 and payload['status'] == 'ok' and payload['detail'] == 'auction_seal_facts dry run'

@@ -393,3 +393,17 @@ def test_fill_limits_are_configured_on_every_trigger_point_and_the_code_reads_ev
         minutes = int(ladder["timeout"].rstrip("m"))
         assert event["args"]["total_timeout_seconds"] < minutes * 60
     assert events["daily_kline_backfill"]["args"]["total_timeout_seconds"] == 43200   # the user's 12 h cap
+
+
+def test_auction_seal_event_matches_timeline_and_registry():
+    root = Path(__file__).resolve().parents[1]
+    schedule = json.loads((root / 'src/engine_core/guardian/schedule.json').read_text())
+    timeline = json.loads((root / 'src/engine_core/guardian/timeline.json').read_text())
+    registry = json.loads((root / 'src/engine_core/guardian/datasets.registry.json').read_text())
+    event = next(e for e in schedule['events'] if e['event_id'] == 'auction_seal_facts_0926')
+    source = next(e for e in schedule['events'] if e['event_id'] == 'auction_facts_0925')
+    assert (event['at'], event['deadline'], event['calendar'], event['trigger_type'], event['on_deadline']) == ('09:26:05', '09:29:59', 'trading_day', 'window', 'degrade')
+    assert event['handler'] == 'intraday_data' and event['args']['dataset'] == 'auction_seal_facts'
+    assert event['phases'] == source['phases'] and event['max_attempts'] == source['max_attempts'] and event['timeout_seconds'] == source['timeout_seconds']
+    assert any(p['at'] == event['at'] and any(r['id'] == event['event_id'] for r in p['run']) for p in timeline['timeline'])
+    assert next(i for i in registry['items'] if i['id'] == 'auction_seal_facts')['guardian_event'] == event['event_id']
