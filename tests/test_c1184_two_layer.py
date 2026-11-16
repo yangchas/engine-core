@@ -10,6 +10,7 @@ def test_presence_is_read_only_and_distinguishes_missing_and_outage(monkeypatch)
     monkeypatch.setattr('engine_core.data_pipeline.redis_day_view.hot_view_expire_at', lambda _: 2000000000)
     redis, cold = Redis(), Cold()
     store = TwoLayerStore(redis, cold)
+    store._dataset('plate_stock_index')
     assert store.presence('limit_up_pool', DAY).status == 'RESTORED_FROM_TD'
     assert redis.writes == 0
     assert TwoLayerStore(Redis(), Cold(False)).presence('limit_up_pool', DAY).status == 'MISSING'

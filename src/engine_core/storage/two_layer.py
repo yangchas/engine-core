@@ -55,11 +55,14 @@ class TwoLayerStore:
 
     @staticmethod
     def _dataset(dataset):
-        if dataset not in ('limit_up_pool', 'hot_rank', 'auction_seal_facts'):
+        if dataset not in ('limit_up_pool', 'hot_rank', 'auction_seal_facts', 'plate_stock_index'):
             raise NotImplementedError('only limit_up_pool is supported')
 
     def publish(self, dataset, partition, rows, metadata):
         self._dataset(dataset)
+        if dataset == 'plate_stock_index':
+            from ..data_pipeline.plate_stock_index import publish
+            return publish(self, partition, rows, metadata)
         if dataset == 'auction_seal_facts':
             return self._publish_auction_seal(partition, rows, metadata)
         if dataset == 'hot_rank':
@@ -110,8 +113,8 @@ class TwoLayerStore:
 
     def get(self, dataset, partition, *, asof=None, version=None):
         self._dataset(dataset)
-        if dataset == 'auction_seal_facts':
-            raise NotImplementedError('auction_seal_facts read is not implemented')
+        if dataset in ('auction_seal_facts', 'plate_stock_index'):
+            raise NotImplementedError('dataset generic read is not implemented')
         if version is not None:
             raise NotImplementedError('exact version selection is not implemented')
         if dataset == 'hot_rank':
@@ -134,8 +137,8 @@ class TwoLayerStore:
 
     def presence(self, dataset, partition, *, asof=None, requirements=None):
         self._dataset(dataset)
-        if dataset == 'auction_seal_facts':
-            raise NotImplementedError('auction_seal_facts presence is not implemented')
+        if dataset in ('auction_seal_facts', 'plate_stock_index'):
+            raise NotImplementedError('dataset presence is not implemented')
         if asof is not None or requirements is not None:
             raise NotImplementedError('presence asof and requirements are not implemented')
         if dataset == 'hot_rank':
@@ -184,6 +187,10 @@ class TwoLayerStore:
         finally:
             if store is not None and self.cold is None:
                 store.close()
+
+    def get_stock_plates(self, partition, symbols):
+        from ..data_pipeline.plate_stock_index import read_stocks
+        return read_stocks(self, partition, symbols)
 
     def list_versions(self, dataset, partition_range, *, asof=None):
         raise NotImplementedError('version enumeration needs dataset-specific support')

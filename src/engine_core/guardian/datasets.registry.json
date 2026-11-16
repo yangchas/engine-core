@@ -2734,6 +2734,57 @@
       "cold_store": {
         "dataset": "auction_seal_facts"
       }
+    },
+    {
+      "id": "plate_stock_index",
+      "redis_ttl_trade_days": 5,
+      "owner": "data_function",
+      "artifact": {
+        "catalog_dataset": null,
+        "source_dataset": "TD plate_members snapshot",
+        "date_basis": "D"
+      },
+      "phases": [
+        "AUCTION_END"
+      ],
+      "cadence": "on demand",
+      "rule": "按股票倒排板块成员",
+      "freshness": "UNKNOWN",
+      "retry": "UNKNOWN",
+      "degrade": [],
+      "lifecycle": {
+        "init": "on demand",
+        "force": "refetch",
+        "clear": "UNKNOWN"
+      },
+      "notes": "独立数据函数；无 guardian 事件",
+      "guardian_event": null,
+      "storage": [
+        {
+          "kind": "redis_view",
+          "name": "core:view:plate_stock_index:{date}",
+          "role": "authority",
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
+        },
+        {
+          "kind": "td_stable",
+          "name": "cold_plate_stock_index_archive",
+          "role": "mirror"
+        }
+      ],
+      "kind": "day_refetchable",
+      "hot_store": {
+        "key": "core:view:plate_stock_index:{date}"
+      },
+      "cold_store": {
+        "dataset": "plate_stock_index"
+      }
     }
   ],
   "quiet_phases_for_heavy": [
