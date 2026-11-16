@@ -1,4 +1,14 @@
 {
+ "_c1256": {
+ "auction": {
+  "source": "Redis core:auction:full:2026-11-16:0925",
+  "source_sha256": "c5c853678b76f57e896f3f90ddba4e00a09ea6bd64a1e1302254778fd7f4e74f",
+  "fixture_sha256": "6003b2bc4588bf638d93d854615607a2e84fd7592907735c5fe5623a193b10f8",
+  "rows": 5215,
+  "selection": "complete upstream value"
+ },
+ "fetched_at": "2026-11-16T13:21:47.159462+08:00"
+},
  "_c1254": {
  "auction": {
   "rows": 256,
