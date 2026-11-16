@@ -15,6 +15,8 @@ from typing import Any, Mapping
 
 _LOG = logging.getLogger(__name__)
 _CHUNK = 6000
+# TD rejects the observed 2.2 MB statement; stay below half its 1 MB SQL limit.
+MAX_INSERT_SQL_BYTES = 500_000
 class CorruptArchive(ValueError):
     """An existing archive failed its integrity checks."""
 
@@ -64,7 +66,11 @@ def write_envelope(store: Any, dataset: str, trade_date: str, version: str,
         if candidate is None or any(old[k] != candidate[k] for k in ('chunk_count', 'sha256', 'payload')):
             raise ValueError('cold_archive_identity_conflict')
     store.write(dataset, trade_date, version, rows, meta=meta)
-    store.write(dataset, trade_date, version, [marker], meta=meta)
+    try:
+        store.write(dataset, trade_date, version, [marker], meta=meta)
+    except Exception as exc:
+        exc.successful_chunks = len(rows)
+        raise
 
 
 def read_envelope(dataset: str, trade_date: str, version: str, *, store: Any = None) -> bytes:
@@ -127,14 +133,39 @@ class TDColdClient:
 
     def write(self, dataset, day, version, rows, *, meta):
         table = f'{self.database}.{_table(dataset, day, version)}'
+        prefix = f'INSERT INTO {table} VALUES '
         values = []
+        size = len(prefix.encode('utf-8'))
+        written = 0
         for row in rows:
             fields = [str(row['ts']), _quote(day), _quote(version), _quote(meta.get('event_id')),
                       _quote(meta.get('cutoff')), _quote(meta.get('available_at')), _quote(meta.get('provider') or meta.get('source')),
                       _quote(meta.get('status')), str(row['chunk_no']), str(row['chunk_count']), _quote(row['sha256']),
                       "'\\x" + row['payload'].hex() + "'"]
-            values.append('(' + ','.join(fields) + ')')
-        self._execute(f"INSERT INTO {table} VALUES " + ' '.join(values))
+            value = '(' + ','.join(fields) + ')'
+            value_size = len(value.encode('utf-8'))
+            if len(prefix.encode('utf-8')) + value_size > MAX_INSERT_SQL_BYTES:
+                exc = ValueError('cold_archive_chunk_exceeds_sql_limit')
+                exc.successful_chunks = written
+                raise exc
+            if values and size + 1 + value_size > MAX_INSERT_SQL_BYTES:
+                try:
+                    self._execute(prefix + ' '.join(values))
+                except Exception as exc:
+                    exc.successful_chunks = written
+                    raise
+                written += len(values)
+                values = []
+                size = len(prefix.encode('utf-8'))
+            size += value_size + bool(values)
+            values.append(value)
+        if values:
+            try:
+                self._execute(prefix + ' '.join(values))
+            except Exception as exc:
+                exc.successful_chunks = written
+                raise
+        return written + len(values)
 
     def latest_version(self, dataset, day):
         _table(dataset, day, '')  # validate the interpolated identifiers and date
@@ -155,6 +186,18 @@ class TDColdClient:
 TdStore = TDColdClient
 
 
+class ArchiveReceipt:
+    def __init__(self):
+        self.success = None
+        self.successful_chunks = 0
+        self.error_category = None
+        self.td_error_code = None
+        self.done = threading.Event()
+
+    def __bool__(self):
+        return self.success is not False
+
+
 class Archiver:
     def __init__(self, factory, *, max_queue=128, timeout=5.0, start=True):
         self.factory, self.timeout = factory, timeout
@@ -169,9 +212,10 @@ class Archiver:
 
     def submit(self, dataset, trade_date, version, envelope_bytes, meta):
         item = (dataset, trade_date, version, envelope_bytes, dict(meta))
+        receipt = ArchiveReceipt()
         try:
-            self.queue.put_nowait(item)
-            return True
+            self.queue.put_nowait((item, receipt))
+            return receipt
         except queue.Full:
             self._gap('queue_full', item)
             return False
@@ -185,11 +229,11 @@ class Archiver:
                     _LOG.warning('cold_archive_flush_timeout')
                     return False
                 self.queue.all_tasks_done.wait(remaining)
-        return True
+        return self.gaps == 0
 
     def _run(self):
         while True:
-            item = self.queue.get()
+            item, receipt = self.queue.get()
             errors = []
             def operation():
                 store = None
@@ -197,7 +241,7 @@ class Archiver:
                     store = self.factory()
                     write_envelope(store, *item)
                 except Exception as exc:
-                    errors.append(type(exc).__name__)
+                    errors.append(exc)
                 finally:
                     if store is not None:
                         try: store.close()
@@ -207,13 +251,30 @@ class Archiver:
             task.join(self.timeout)
             if task.is_alive():
                 self._gap('timeout', item)
+                receipt.success = False
+                receipt.error_category = 'timeout'
+                receipt.done.set()
                 # Do not accumulate abandoned I/O threads. Drain later submissions as gaps.
                 self.queue.task_done()
                 while True:
-                    self._gap('worker_unavailable', self.queue.get())
+                    queued_item, queued_receipt = self.queue.get()
+                    self._gap('worker_unavailable', queued_item)
+                    queued_receipt.success = False
+                    queued_receipt.error_category = 'worker_unavailable'
+                    queued_receipt.done.set()
                     self.queue.task_done()
             if errors:
-                self._gap(errors[0], item)
+                exc = errors[0]
+                receipt.success = False
+                receipt.successful_chunks = getattr(exc, 'successful_chunks', 0)
+                receipt.error_category = type(exc).__name__
+                match = re.search(r'0x[0-9a-fA-F]+', str(exc))
+                receipt.td_error_code = match.group(0) if match else None
+                self._gap(receipt.error_category, item)
+            else:
+                receipt.success = True
+                receipt.successful_chunks = max(1, (len(item[3]) + _CHUNK - 1) // _CHUNK)
+            receipt.done.set()
             self.queue.task_done()
 
 

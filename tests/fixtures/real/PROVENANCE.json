@@ -2261,5 +2261,14 @@
    "trade_date": "2026-11-13",
    "version": "sha256-9e77af022cfac39f"
   }
+ },
+ "_c1245": {
+  "c1245/checkpoint.json": {
+   "source": "Redis core:view:intraday_checkpoint:2026-11-16:09:33:00",
+   "source_sha256": "5eb2b7f97ce91239362d16bc3bb2c261ecb5f687b9e649df7dbcddbb335f164e",
+   "selection": "first 200 rows; original manifest",
+   "rows": 200,
+   "sha256": "2b2330180ce122d2d466976d53127cb03ade15209c26172bc21810af5d110583"
+  }
  }
 }
