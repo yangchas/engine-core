@@ -53,3 +53,57 @@ def test_real_limit_price_before_auction_does_not_override_final_tick():
     row = result['rows'][0]
     assert row['basis'] is None and row['seal_volume'] is None and row['seal_amount_yuan'] is None
 
+
+
+def test_run_uses_latest_visible_real_stock_static_snapshot(monkeypatch):
+    from datetime import datetime
+    import pytest
+    from engine_core.data_pipeline import auction_seal_facts, auction_redis_view, reference_snapshot_td, td_sink, trade_calendar
+
+    excerpt = json.loads((REAL / 'c1312/td_excerpt.json').read_text())
+    markers = [dict(zip(excerpt['marker_columns'], row)) for row in excerpt['markers']]
+    rows = [json.loads(row[2]) for row in excerpt['rows']]
+    selected = []
+
+    class ReplaySnapshots:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read_latest(self, dataset):
+            return {'trade_date': rows[0]['date'], 'rows': rows}
+
+        def read_as_of(self, dataset, asof):
+            assert dataset == 'stock_static'
+            assert asof.endswith('T23:59:59+08:00')
+            visible = [marker for marker in markers
+                       if datetime.fromisoformat(marker['available_at']) <= datetime.fromisoformat(asof)]
+            if not visible:
+                return None
+            marker = visible[0]
+            selected.append(marker['version'])
+            return {'trade_date': marker['available_at'][:10],
+                    'rows': rows if marker is markers[0] else []}
+
+    class Conn:
+        def close(self):
+            pass
+
+    class Store:
+        def publish(self, dataset, day, rows, metadata):
+            return metadata
+
+    monkeypatch.setattr(reference_snapshot_td, 'ReferenceSnapshotStore', ReplaySnapshots)
+    monkeypatch.setattr(auction_redis_view, 'read_auction_view', lambda *args: [])
+    monkeypatch.setattr(trade_calendar.TradeCalendarStore, 'all_trading_dates', lambda self: [])
+    monkeypatch.setattr(td_sink, 'connect_td', lambda database: Conn())
+    monkeypatch.setattr(auction_seal_facts, 'build_facts', lambda *args: {
+        'rows': [], 'unknown_listing': [], 'unknown_prices': [], 'unlimited': []})
+    for day, expected in [('2026-11-17', '20261116005011-39a46555d8c7'),
+                          ('2026-11-13', '20261109005007-ea8cc8112d41')]:
+        auction_seal_facts.run(day, redis_client=object(), store=Store())
+        assert selected[-1] == expected
+    with pytest.raises(ValueError, match='^stock_static_date_unavailable$'):
+        auction_seal_facts.run('2026-11-08', redis_client=object(), store=Store())

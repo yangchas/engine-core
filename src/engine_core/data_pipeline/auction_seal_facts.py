@@ -81,8 +81,8 @@ def run(trade_date, *, redis_client=None, store=None):
     client = redis_client or make_redis()
     quotes = read_auction_view(client, day, '0925')
     with ReferenceSnapshotStore() as ref:
-        snapshot = ref.read_latest('stock_static')
-    if not snapshot or snapshot['trade_date'] != day:
+        snapshot = ref.read_as_of('stock_static', f'{day}T23:59:59+08:00')
+    if not snapshot or not snapshot['trade_date'] or snapshot['trade_date'] > day:
         raise ValueError('stock_static_date_unavailable')
     listings = {row['symbol']: row.get('listing_date') for row in snapshot['rows']}
     dates = TradeCalendarStore().all_trading_dates()
