@@ -64,3 +64,20 @@ def test_historical_capture_required_still_warns():
         default = json.loads((ROOT / 'examples/card_recipes' / f'{recipe}.json').read_text())['fixed']['STUBS_ALLOWED']
         generated = card + f'\nSTUBS_ALLOWED: {default}\n'
         assert any('fixture_tool_not_in_scope' in line for line in lint_card(generated, ROOT)), recipe
+
+
+def test_c1273_historical_scope_and_stubs_conflicts():
+    # C1234: original SCOPE_WRITE; C1269: two original incorrect paths.
+    scope = '/home/exedev/repos/engine_core-wt-C1234/src/engine_core/data_pipeline/daily_dde.py src/engine_core/data_pipeline/dde_derived.py tests/test_daily_dde_streaming.py tests/test_dde_derived.py'
+    wrong = '/home/exedev/repos/engine_core-wt-C1269/src/engine_core/data_pipeline/limit_pool_d1.py, /home/exedev/repos/engine_core-wt-C1269/src/engine_core/data_pipeline/limit_up_today_sources.py'
+    default = '无需新增 kind,不使用采集工具;夹具为真实文件摘录并附 PROVENANCE'
+    goal = '测试:先写修复前失败的测试,夹具用真实 tick 与 0925 行与静态快照形状(经 capture_real_fixture 录制并登记 PROVENANCE)'
+    def card(paths, stubs, objective):
+        return f'SCOPE_WRITE: {paths}\nSTUBS_ALLOWED: {stubs}\nGOAL: {objective}\n'
+    for paths in (scope, wrong):
+        assert any(x.startswith('FAIL scope_path:') and 'find' in x for x in lint_card(card(paths, default, '修复'), ROOT))
+    assert any(x.startswith('FAIL stubs_conflict:') for x in lint_card(card('examples/pm.py', default, goal), ROOT))
+    good = card('src/engine_core/guardian/limit_pool_d1.py, examples/pm.py', '允许使用采集工具录制真实夹具', goal)
+    assert not any(x.startswith(('FAIL scope_path:', 'FAIL stubs_conflict:')) for x in lint_card(good, ROOT))
+    new = card('examples/new_c1273_example.py', default, '新建 new_c1273_example.py')
+    assert not any(x.startswith('FAIL scope_path:') for x in lint_card(new, ROOT))

@@ -678,6 +678,8 @@ def newcard(args):
     selected = lint_module().exact_test_list(files, repo)
     context = {**values, 'id': ident, 'test_files': ' '.join(selected)}
     fixed = {k: v.format_map(context) for k, v in recipe['fixed'].items()}
+    if args.stubs is not None:
+        fixed['STUBS_ALLOWED'] = args.stubs
     if args.authorize:
         if fixed['ROLE'] != 'runner':
             print('--authorize requires a runner recipe')
@@ -1760,6 +1762,7 @@ def main(argv=None):
     goals.add_argument('--goal')
     goals.add_argument('--goal-file')
     new.add_argument('--authorize')
+    new.add_argument('--stubs')
     new.add_argument('--template', choices=('field-unify', 'catalog-retire'))
     new.add_argument('--function')
     new.add_argument('--survey')
