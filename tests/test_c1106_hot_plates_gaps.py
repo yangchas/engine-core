@@ -44,7 +44,17 @@ def test_real_gap_published_only_to_redis(tmp_path, monkeypatch):
     expected = {**row, 'observed_at': observed, 'schema_version': 1,
                 'dataset': 'hot_plates_gaps', 'source': 'guardian_gap_only',
                 'version': row['event_id'], 'captured_at': observed, 'available_at': observed}
-    assert gap == expected
+    assert {key: value for key, value in gap.items()
+            if key != 'cold_archive_warning'} == expected
+    assert gap['cold_archive_warning'] == {
+        'category': 'unavailable_or_timeout',
+        'td_error_code': None,
+        'successful_chunks': 0,
+    }
+    stored = json.loads(redis.values[
+        f"core:cache:data:hot_plates_gaps:{row['trade_date']}:{row['event_id']}"
+    ])
+    assert stored == expected
     assert not (tmp_path / 'catalog.json').exists()
     assert not (tmp_path / 'hot_plates_gaps').exists()
     assert hot_plates_gaps._existing_gap_rows(ArtifactCatalog(tmp_path), row['trade_date']) == [expected]
