@@ -710,13 +710,10 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
         if not rows_by_symbol:
             continue
         rows = sorted(rows_by_symbol.values(), key=lambda row: row["symbol"])
-        completeness = {field: ("COMPLETE" if all(row.get(field) is not None for row in rows)
-                                else "SUSPENDED_ONLY" if all(row.get("suspended") for row in rows)
-                                else "PARTIAL") for field in _QUALITY_FIELDS}
         day_expected_count = len(day_expected_symbols)
         from .registry.daily_kline import DAILY_KLINE_QUALITY_FIELDS
         meta = {"rows": rows, "source": "baostock", "provider": "baostock",
-                "expected_count": day_expected_count, "field_completeness": completeness,
+                "expected_count": day_expected_count,
                 "expected_symbols": sorted(day_expected_symbols),
                 "field_units": {"volume": "shares"},
                 "source_dates": {field: day for field in DAILY_KLINE_QUALITY_FIELDS},
@@ -744,6 +741,8 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
             classified_source_symbols = baostock_symbols_for_day(day)
         if classified_source_symbols is not None:
             meta["source_symbols"] = sorted(classified_source_symbols)
+        from .storage import _prepare_daily_kline_manifest
+        meta["field_completeness"] = _prepare_daily_kline_manifest(catalog, day, rows, meta)["field_completeness"]
         result = runner.run("daily_kline", day, fetch=lambda _day: meta,
                             td_write=True, source="baostock", expected_count=day_expected_count,
                             baostock_policy=completion_policy if day == target else None)
