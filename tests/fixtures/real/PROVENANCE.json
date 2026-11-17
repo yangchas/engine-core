@@ -2729,5 +2729,15 @@
     "source_sha256": "a12d13b4e91e9e0e58b9a44ba359db3f947c49e2dcc60eba34197c802dbbe721",
     "selection": "10 original sample rows and 23 page summaries; pagination tests replay copies, not captured pages",
     "trade_date": "2026-11-17"
+  },
+  "_c1367": {
+    "file": "c1367/inputs.json",
+    "sha256": "c490cd386b5b96e51a8ae8fbace6f1f20d99b6c804a185a9c7e2b6b02a5830e7",
+    "sources": {
+      "/home/exedev/fw/evidence/C1350/inputs.json": "edada8ff711ca50125d101628fe08b87dcf1274c85d33cfc20e6d47e5f79a4f9",
+      "/home/exedev/fw/evidence/C1352/inputs.json": "292029ac7c761cd08926e40649a9bec80db3b6af1bcd9a401fd0a132348b5e68"
+    },
+    "selection": "C1350 pool rows and reason rows; C1352 0924 auction rows; unchanged original records",
+    "trade_date": "2026-11-17"
   }
 }
