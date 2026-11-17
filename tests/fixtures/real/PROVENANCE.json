@@ -2677,5 +2677,21 @@
    "source_sha256": "10c3436ed659e558851da7f0c6d41da01dbcb96373d1ecaa609021fb73344d31",
    "selection": "lines 2-3"
   }
- ]
+ ],
+ "_c1337": {
+ "file": "c1337/excerpt.json",
+ "sha256": "3ac70497286bd5a443303f61d940c83033cd62fcdbc5eefcfaced8188111f28f",
+ "fetched_at": "2026-11-17T11:27:04.523808+08:00",
+ "sources": [
+  "core_data.reference_snapshot stock_static read_as_of 2026-11-16T23:59:59+08:00",
+  "core:cache:data:hot_plates:2026-11-16:sha256-ad73f9110d4eae77"
+ ],
+ "version": "20261116005011-39a46555d8c7",
+ "available_at": "2026-11-16T08:50:00+08:00",
+ "selection": "stock_static symbol and listing_date for C1332 auction symbols; latest captured hot_plates plate_code and name",
+ "rows": {
+  "stock_static": 300,
+  "hot_plates": 243
+ }
+}
 }
