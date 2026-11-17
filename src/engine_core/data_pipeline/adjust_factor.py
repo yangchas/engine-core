@@ -34,6 +34,7 @@ def factor_for(events, day):
 
 # Reject obviously incomplete day coverage; fewer than half of expected symbols is insufficient.
 MIN_DAY_ROWS_FRACTION = 0.5
+MAX_INCREMENTAL_UNPROCESSED = 50
 # TD daily bars cover roughly six months; one year leaves headroom for delisted
 # stocks whose remaining bars need adjustment factors for price-volume indicators.
 DELISTED_LOOKBACK_DAYS = 366
@@ -313,8 +314,20 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
             if not expected or detail['day_rows'] < len(expected) * MIN_DAY_ROWS_FRACTION:
                 detail['reason'] = 'DAY_ROWS_INCOMPLETE'
                 return _reply(10, 'INCOMPLETE', detail)
-            symbols = sorted(detect_suspected(current, previous))
-            detail['suspected_total'] = len(symbols)
+            suspected = detect_suspected(current, previous)
+            detail['suspected_total'] = len(suspected)
+            try:
+                snapshots = facts.read_events_many(expected)
+                unprocessed = [symbol for symbol in sorted(expected)
+                               if snapshots.get(symbol, (None, 'UNPROCESSED'))[1] == 'UNPROCESSED']
+                detail['unprocessed_total'] = len(unprocessed)
+                symbols = sorted(suspected | set(unprocessed[:MAX_INCREMENTAL_UNPROCESSED]))
+                detail['unprocessed_deferred'] = len(set(unprocessed) - set(symbols))
+            except Exception as exc:
+                detail['unprocessed_check_error'] = type(exc).__name__
+                detail['unprocessed_total'] = None
+                detail['unprocessed_deferred'] = None
+                symbols = sorted(suspected)
         else:
             universe, detail['listing_source'] = facts.listing_symbols(day)
             detail['delisted_included'] = getattr(facts, 'delisted_included', 0)

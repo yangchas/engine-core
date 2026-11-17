@@ -2654,4 +2654,28 @@
       "plate_members": 6163
     }
   }
+,
+ "_c1333": [
+  {
+   "file": "c1333/td.log",
+   "sha256": "356e2e6f8f8c5eb07ee541e9b3467b801303e245119d177f842c183bff5a567c",
+   "source": "/home/exedev/fw/evidence/C1329/td.log",
+   "source_sha256": "92f8d2b75e5c9bf0842fdcc9e0f39d2e80a2ef281ee9da534676804812813ce2",
+   "selection": "lines 1-4"
+  },
+  {
+   "file": "c1333/baostock.log",
+   "sha256": "8d1b8afaa7bac8e54eebd0621f319f35eaf91a9d34847d4d62d7054b9c5bfa3c",
+   "source": "/home/exedev/fw/evidence/C1329/baostock.log",
+   "source_sha256": "efbc812c895d612b2a80181b81a86d55f0dd7f533d0372787c4b1b3ca4aa65a6",
+   "selection": "lines 1-2"
+  },
+  {
+   "file": "c1333/bars.log",
+   "sha256": "62ce6e2fa337b27ae874f4ab2c32ab89cce929abe862a23ba7e939a95f05f8b2",
+   "source": "/home/exedev/fw/evidence/C1329/bars.log",
+   "source_sha256": "10c3436ed659e558851da7f0c6d41da01dbcb96373d1ecaa609021fb73344d31",
+   "selection": "lines 2-3"
+  }
+ ]
 }

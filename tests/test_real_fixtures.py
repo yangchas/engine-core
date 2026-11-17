@@ -41,6 +41,10 @@ def test_every_real_fixture_has_matching_provenance():
     assert hashlib.sha256(body).hexdigest() == excerpt['sha256']
     assert {key: len(value) for key, value in json.loads(body).items()} == excerpt['rows']
     assert excerpt['sources'] and excerpt['version'] and excerpt['available_at'] and excerpt['fetched_at']
+
+    for item in PROVENANCE['_c1333']:
+        assert hashlib.sha256((REAL / item['file']).read_bytes()).hexdigest() == item['sha256']
+        assert item['source'] and item['source_sha256'] and item['selection']
     for item in PROVENANCE['_c1326']:
         assert hashlib.sha256((REAL / item['file']).read_bytes()).hexdigest() == item['sha256']
         assert item['source'] and item['source_sha256'] and item['selection']
