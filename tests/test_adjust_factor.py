@@ -67,6 +67,7 @@ def test_incremental_keeps_completed_on_upstream_failure(monkeypatch):
         def listing_symbols(self, day, include_delisted=True): return {'600519'}, 'stock_listing'
         def previous_day(self, day): return '2026-11-05'
         def read_events(self, symbol): return [], 'NO_EVENTS'
+        def read_events_many(self, symbols): return {s: self.read_events(s) for s in symbols}
         def replace_snapshot(self, symbol, events, version): self.writes.append(symbol)
         def write_status(self, *args): pass
         def invalidate_day_marker(self, day): pass
@@ -100,6 +101,7 @@ def test_incremental_spacing_and_unchanged(monkeypatch):
         def listing_symbols(self, day, include_delisted=True): return {'600519'}, 'stock_listing'
         def previous_day(self, day): return '2026-11-05'
         def read_events(self, symbol): return rows_by_symbol[symbol], 'FORMAL'
+        def read_events_many(self, symbols): return {s: self.read_events(s) for s in symbols}
         def replace_snapshot(self, symbol, events, version): self.writes.append(symbol)
         def write_status(self, *args): pass
         def invalidate_day_marker(self, day): self.writes.append('invalidate')
@@ -412,6 +414,7 @@ def test_incremental_backfills_unprocessed_real_listing(monkeypatch):
             return {'688827': {'pre_close': current_pre_close}, '600519': {'pre_close': current_normal['前收盘价:不复权[20261026]']}}
         def listing_symbols(self, day, include_delisted=True): return set(self.missing) | {'600519'}, 'stock_listing'
         def read_events(self, symbol): return ([], 'UNPROCESSED') if symbol in self.missing else (rows, 'FORMAL')
+        def read_events_many(self, symbols): return {s: self.read_events(s) for s in symbols if s != '688827'}
         def replace_snapshot(self, symbol, events, version): self.writes[symbol] = events
         def invalidate_day_marker(self, day): pass
         def write_day_marker(self, *args): pass
@@ -439,3 +442,83 @@ def test_incremental_backfills_unprocessed_real_listing(monkeypatch):
     calls, detail = execute(store)
     assert calls == ['001381']
     assert (detail['unprocessed_total'], detail['unprocessed_deferred']) == (2, 1)
+
+
+def test_incremental_batches_real_listing_and_backfills_new_stock():
+    import ast
+    import math
+    from engine_core.data_pipeline import adjust_factor as module
+
+    root = Path(__file__).parent / 'fixtures/real'
+    listing = json.loads((root / 'baostock_stock_basic_2026-10-29_0454.json').read_text())
+    symbols = sorted({row[0].split('.')[-1] for row in listing['rows']
+                      if row[4] == '1' and row[2] and row[2] <= '2026-10-29'})[:5249]
+    expected = set(symbols) | {'688827'}
+    assert len(expected) == 5250
+    rows = [ast.literal_eval((root / 'c1333/baostock.log').read_text().splitlines()[1][4:])]
+    entries = [{'date': r['dividOperateDate'], 'fore': r['foreAdjustFactor'],
+                'back': r['backAdjustFactor'], 'adjust': r['adjustFactor']} for r in rows]
+    snapshot = ('20261108000000-bbbbbbbb', len(rows), module._snapshot_digest(rows), json.dumps(entries))
+    class TD:
+        database = 'core_data'
+        def __init__(self): self.calls = 0
+        def _run(self, sql, **kwargs):
+            self.calls += 1
+            return [] if 'adjust_factor_688827' in sql else [snapshot]
+        def _day_scan(self, sql, **kwargs):
+            import re
+            self.calls += 1
+            found = re.findall(r"'([0-9]{6})'", sql)
+            return [(s, *snapshot) for s in found if s != '688827'], None
+    class Store(module.AdjustFactorStore):
+        def ensure_schema(self): pass
+        def previous_day(self, day): return '2026-11-10'
+        def read_day_rows(self, day): return dict.fromkeys(expected, {})
+        def listing_symbols(self, day, include_delisted=True): return expected, 'stock_listing'
+        def replace_snapshot(self, symbol, events, version): self.writes.append(symbol)
+        def invalidate_day_marker(self, day): pass
+        def write_day_marker(self, *args): pass
+    class Lease:
+        def acquire(self): return True
+        def renew(self): return True
+        def release(self): pass
+    td = TD()
+    store = Store(td)
+    store.writes = []
+    code, reply = module.run({'trade_date': '2026-11-11', 'args': {'mode': 'incremental'}}, '.',
+                             store=store, fetcher=lambda _: rows, sleep=lambda _: None,
+                             lease_factory=lambda *_: Lease())
+    assert code == 0
+    assert td.calls <= math.ceil(len(expected) / 200) + 1
+    assert store.writes == ['688827']
+    assert (reply['detail']['unprocessed_total'], reply['detail']['unprocessed_deferred']) == (1, 0)
+
+
+def test_incremental_batch_read_failure_keeps_suspected(monkeypatch):
+    import ast
+    from engine_core.data_pipeline import adjust_factor as module
+    root = Path(__file__).parent / 'fixtures/real'
+    rows = [ast.literal_eval((root / 'c1333/baostock.log').read_text().splitlines()[1][4:])]
+    monkeypatch.setattr(module, 'detect_suspected', lambda *_: {'688827'})
+    class Store:
+        def ensure_schema(self): pass
+        def previous_day(self, day): return '2026-11-10'
+        def read_day_rows(self, day): return {'688827': {}}
+        def listing_symbols(self, day, include_delisted=True): return {'688827'}, 'stock_listing'
+        def read_events_many(self, symbols): raise RuntimeError('batch unavailable')
+        def read_events(self, symbol): return [], 'UNPROCESSED'
+        def replace_snapshot(self, symbol, events, version): self.writes.append(symbol)
+        def invalidate_day_marker(self, day): pass
+        def write_day_marker(self, *args): pass
+    class Lease:
+        def acquire(self): return True
+        def renew(self): return True
+        def release(self): pass
+    store = Store()
+    store.writes = []
+    code, reply = module.run({'trade_date': '2026-11-11', 'args': {'mode': 'incremental'}}, '.',
+                             store=store, fetcher=lambda _: rows, sleep=lambda _: None,
+                             lease_factory=lambda *_: Lease())
+    assert code == 0
+    assert reply['detail']['unprocessed_check_error']
+    assert store.writes == ['688827']

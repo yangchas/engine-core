@@ -316,11 +316,18 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
                 return _reply(10, 'INCOMPLETE', detail)
             suspected = detect_suspected(current, previous)
             detail['suspected_total'] = len(suspected)
-            unprocessed = [symbol for symbol in sorted(expected)
-                           if facts.read_events(symbol)[1] == 'UNPROCESSED']
-            detail['unprocessed_total'] = len(unprocessed)
-            symbols = sorted(suspected | set(unprocessed[:MAX_INCREMENTAL_UNPROCESSED]))
-            detail['unprocessed_deferred'] = len(set(unprocessed) - set(symbols))
+            try:
+                snapshots = facts.read_events_many(expected)
+                unprocessed = [symbol for symbol in sorted(expected)
+                               if snapshots.get(symbol, (None, 'UNPROCESSED'))[1] == 'UNPROCESSED']
+                detail['unprocessed_total'] = len(unprocessed)
+                symbols = sorted(suspected | set(unprocessed[:MAX_INCREMENTAL_UNPROCESSED]))
+                detail['unprocessed_deferred'] = len(set(unprocessed) - set(symbols))
+            except Exception as exc:
+                detail['unprocessed_check_error'] = type(exc).__name__
+                detail['unprocessed_total'] = None
+                detail['unprocessed_deferred'] = None
+                symbols = sorted(suspected)
         else:
             universe, detail['listing_source'] = facts.listing_symbols(day)
             detail['delisted_included'] = getattr(facts, 'delisted_included', 0)
