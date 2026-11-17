@@ -4549,6 +4549,36 @@
         "dataset": "dde_derived",
         "target": "prev_trade_day"
       }
+    },
+    {
+      "event_id": "stock_cap_2130",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "21:30:00",
+      "available_after": null,
+      "deadline": "22:30:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "degrade",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 1200,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": null,
+      "args": {
+        "dataset": "stock_cap"
+      }
     }
   ]
 }

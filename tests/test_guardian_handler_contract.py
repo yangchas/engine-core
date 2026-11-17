@@ -1131,3 +1131,14 @@ def test_plate_stock_index_dispatch_and_unavailable_retry(monkeypatch):
     monkeypatch.setattr(plate_stock_index, 'run', unavailable)
     code, payload = guardian_handler._run(request)
     assert code == 75 and payload['status'] == 'failed' and payload['retryable']
+
+
+def test_stock_cap_event_dispatches_to_dry_run():
+    from examples import guardian_handler
+
+    event = next(e for e in _schedule_events() if e['event_id'] == 'stock_cap_2130')
+    assert event['handler'] == 'intraday_data' and event['args']['dataset'] == 'stock_cap'
+    request = _core_request(event['event_id'], '2026-11-16')
+    request['dry_run'] = True
+    code, payload = guardian_handler._run(request)
+    assert code == 0 and payload['status'] == 'ok' and payload['detail'] == 'stock_cap dry run'

@@ -58,3 +58,28 @@ def test_literal_guardian_replies_obey_the_contract():
     bad = [(where, code, check_reply(code, reply)) for where, code, reply in literal_replies()
            if check_reply(code, reply)]
     assert bad == []
+
+
+def test_stock_cap_schedule_avoids_wencai_windows():
+    import json
+    from datetime import datetime, timedelta
+    schedule = json.loads((ROOT / 'src/engine_core/guardian/schedule.json').read_text())
+    events = schedule['events']
+    cap, = [e for e in events if (e.get('args') or {}).get('dataset') == 'stock_cap']
+    clock = lambda value: datetime.strptime(value, '%H:%M:%S')
+    start, end = clock(cap['at']), clock(cap['deadline'])
+    assert start > clock('18:30:00') and end <= start + timedelta(minutes=90)
+    assert cap['calendar'] == 'trading_day' and cap['handler'] == 'intraday_data'
+    for event in events:
+        if event is cap: continue
+        profile = schedule['profiles'].get(event.get('profile'), {})
+        chain = (event.get('args') or {}).get('chain')
+        is_wencai = ('wencai' in str(event).lower() or 'wencai' in str(profile).lower()
+                     or isinstance(chain, dict) and chain.get('name') == 'daily_kline')
+        if is_wencai:
+            other_start, other_end = clock(event['at']), clock(event.get('late_until') or event['deadline'])
+            timeout = max(event.get('timeout_seconds') or 0,
+                          1500 if event.get('profile') == 'chain_sweep' else 0,
+                          chain.get('budget_seconds', 0) if isinstance(chain, dict) else 0)
+            other_end += timedelta(seconds=timeout)
+            assert end <= other_start or start >= other_end, event['event_id']

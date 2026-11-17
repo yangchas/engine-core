@@ -115,3 +115,44 @@ def test_live_http_guard_restores_send_after_upstream_exception(monkeypatch):
 
     assert result['error'] == 'upstream_error'
     assert requests.sessions.Session.send is original
+
+
+def test_stock_cap_event_dispatch_and_dangerous_controls(monkeypatch):
+    from examples import guardian_handler
+    from engine_core.data_pipeline import auction_redis_view, reference_snapshot_td
+
+    calls = []
+    class Snapshot:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read_latest(self, name):
+            assert name == 'stock_static'
+            return {'rows': [{'symbol': symbol} for symbol in UNIVERSE]}
+    monkeypatch.setattr(reference_snapshot_td, 'ReferenceSnapshotStore', Snapshot)
+    client = object()
+    monkeypatch.setattr(auction_redis_view, 'redis_client', lambda: client)
+    result = {'rows': ROWS, 'meta': {'version': 'fixture'}, 'error': None}
+    def fetch_stub(day, **kwargs):
+        calls.append(('fetch', day, kwargs))
+        return result
+    monkeypatch.setattr(stock_cap, 'fetch_stock_caps', fetch_stub)
+    monkeypatch.setattr(stock_cap, 'publish_stock_caps', lambda *args: calls.append(('publish', *args)))
+    request = {'handler': 'intraday_data', 'event': 'stock_cap_2130', 'trade_date': DAY,
+               'data_date': '2026-11-16', 'args': {'dataset': 'stock_cap'}}
+    code, reply = guardian_handler._run_event(request)
+    assert code == 0 and reply['status'] == 'ok'
+    assert calls == [('fetch', '2026-11-16', {'universe': UNIVERSE}),
+                     ('publish', '2026-11-16', client, result)]
+    calls.clear()
+    result['error'] = 'incomplete_pages'
+    code, reply = guardian_handler._run_event(request)
+    assert code == 75 and reply['retryable'] and reply['error_code'] == 'FETCH_FAILED'
+    assert [call[0] for call in calls] == ['fetch']
+    calls.clear()
+    result.update(error='http_403', retryable=False)
+    code, reply = guardian_handler._run_event(request)
+    assert code == 40 and not reply['retryable'] and [call[0] for call in calls] == ['fetch']
+    calls.clear()
+    monkeypatch.setenv('GUARDIAN_DRY_RUN', '1')
+    code, reply = guardian_handler._run_event(request)
+    assert code == 0 and reply['status'] == 'ok' and not calls

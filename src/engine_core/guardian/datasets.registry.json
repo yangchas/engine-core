@@ -2745,7 +2745,7 @@
         "date_basis": "D"
       },
       "phases": ["POST_MARKET"],
-      "cadence": "on demand",
+      "cadence": "daily",
       "rule": "A股流通市值与总市值",
       "freshness": "UNKNOWN",
       "retry": "UNKNOWN",
@@ -2755,8 +2755,8 @@
         "force": "refetch",
         "clear": "UNKNOWN"
       },
-      "notes": "问财日视图，无事件",
-      "guardian_event": null,
+      "notes": "问财日视图；交易日 21:30 生成",
+      "guardian_event": "stock_cap_2130",
       "storage": [
         {
           "kind": "redis_view",
