@@ -13,7 +13,7 @@ def data():
 def build(caps=None, top_n=243):
     from engine_core.auction_theme_cards import build_auction_theme_view
     a,b,_ = data()
-    return build_auction_theme_view(a['auction']+b['auction_0924'], a['index'], a['hot'], a['seal'], b['pool'], b['reason_rows'], names=a['names'], boards=a['boards'], listings=a['listings'], trading_dates=a['calendar'], trade_date='2026-11-17', previous_trade_date='2026-11-16', caps=caps, top_n_hot=top_n)
+    return build_auction_theme_view(a['auction']+b['auction_0924'], a['index'], a['hot'], a['seal'], b['pool'], b['reason_rows'], names=a['names'], boards=a['boards'], listings=a['listings'], trading_dates=a['calendar'], trade_date='2026-11-17', previous_trade_date='2026-11-16', caps=caps, top_n_hot=top_n, min_active=0, sort_by='active_count')
 
 def test_real_vocabulary_metrics_hierarchy_and_exclusions():
     view=build()
@@ -128,7 +128,7 @@ def test_real_c1377_v3_vocabulary_and_display():
     a, b, _ = data()
     expected = json.loads((REAL / 'c1378/expected.json').read_text())
     def run(**kwargs):
-        return build_auction_theme_view(a['auction'] + b['auction_0924'], a['index'], a['hot'], a['seal'], b['pool'], b['reason_rows'], names=a['names'], listings=a['listings'], trading_dates=a['calendar'], trade_date='2026-11-17', previous_trade_date='2026-11-16', **kwargs)
+        return build_auction_theme_view(a['auction'] + b['auction_0924'], a['index'], a['hot'], a['seal'], b['pool'], b['reason_rows'], names=a['names'], listings=a['listings'], trading_dates=a['calendar'], trade_date='2026-11-17', previous_trade_date='2026-11-16', min_active=0, sort_by='active_count', **kwargs)
     view = run()
     stocks = {s['symbol']: s for s in view['active_stocks']}
     assert len(stocks) == 54
@@ -148,3 +148,40 @@ def test_real_c1377_v3_vocabulary_and_display():
     assert sum(s['primary_theme'] is not None for s in k3['active_stocks']) == 52
     html = render_theme_cards_html(view)
     assert '更多' in html and '预测' not in html and '延续' not in html
+
+
+def test_real_enrichment_and_cap_attribution():
+    import pytest
+    from engine_core.auction_theme_cards import build_auction_theme_view, render_theme_cards_html, _hypergeom_tail
+    a, b, _ = data()
+    caps = json.loads((REAL / 'c1380/caps.json').read_text())
+    def run(**kwargs):
+        return build_auction_theme_view(a['auction'] + b['auction_0924'], a['index'], a['hot'], a['seal'], b['pool'], b['reason_rows'], names=a['names'], listings=a['listings'], trading_dates=a['calendar'], trade_date='2026-11-17', previous_trade_date='2026-11-16', caps=caps, **kwargs)
+    view = run()
+    cards = {c['name']: c for c in view['cards']}
+    for name, count, total in [('机器人概念', 13, 1269), ('游戏', 4, 95), ('文化传媒', 7, 242)]:
+        card = cards[name]
+        assert (card['active_count'], card['auction_count']) == (count, total)
+        assert card['expected_active'] == pytest.approx(total * 54 / 5214)
+        assert card['lift'] == pytest.approx(count / card['expected_active'])
+    order = [c['name'] for c in view['cards']]
+    assert all(order.index(n) < order.index('机器人概念') for n in ('游戏', '文化传媒', '字节概念'))
+    assert all(c['active_count'] >= 2 for c in view['cards'])
+    assert _hypergeom_tail(10, 3, 4, 2) == pytest.approx(1/3)
+    legacy = run(sort_by='active_count', min_active=0)['cards']
+    assert any(c['active_count'] < 2 for c in legacy)
+    assert legacy == sorted(legacy, key=lambda c: (-c['active_count'], c['amount_yuan'] is None, -(c['amount_yuan'] or 0), c['plate_code']))
+    stocks = {s['symbol']: s for s in view['active_stocks']}
+    for symbol in ('688256', '300308', '300502'):
+        assert stocks[symbol]['float_cap_yuan'] == caps[symbol]['float_cap_yuan']
+        assert 'anchor_cap_rank' in stocks[symbol]
+    assert (stocks['688256']['primary_theme']['name'], stocks['688256']['theme_source'], stocks['688256']['anchor_cap_rank']) == ('操作系统', 'anchor_theme', 1)
+    assert (stocks['300308']['primary_theme']['name'], stocks['300308']['anchor_cap_rank']) == ('光芯片', 1)
+    assert (stocks['300502']['primary_theme']['name'], stocks['300502']['anchor_cap_rank']) == ('光模块', 3)
+    assert stocks['688256']['anchor_cap_share'] == pytest.approx(0.5087052002335308)
+    for card in view['cards']:
+        assert 0 <= card['p_value'] <= 1
+
+    html = render_theme_cards_html(view)
+    assert all(word in html for word in ('期望数', '倍数', '龙头', '涨跌幅(bp)', '流通市值(亿元)', 'anchor_delta_bp'))
+    assert '预测' not in html and '延续' not in html
