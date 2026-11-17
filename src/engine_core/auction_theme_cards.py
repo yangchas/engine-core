@@ -38,10 +38,12 @@ def _hypergeom_tail(population, successes, draws, hits):
 def build_auction_theme_view(auction_rows, stock_plates, hot_rows, seal_rows, pool_rows, reason_rows, *,
                              names=None, boards=None, listings=None, trading_dates=None, trade_date=None,
                              previous_trade_date=None, caps=None, top_n_hot=40, bottom_n_hot=40, k_active=2,
-                             size_cap=400, display_top=50, active_top_n=20, min_active=2, sort_by='p_value'):
+                             size_cap=400, display_top=50, active_top_n=20, min_active=2, sort_by='p_value', group_jaccard=0.5):
     for key, value in (('top_n_hot', top_n_hot), ('bottom_n_hot', bottom_n_hot), ('k_active', k_active), ('size_cap', size_cap), ('display_top', display_top), ('active_top_n', active_top_n), ('min_active', min_active)):
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise ValueError('invalid_' + key)
+    if not isinstance(group_jaccard, (int, float)) or isinstance(group_jaccard, bool) or not 0 <= group_jaccard <= 1:
+        raise ValueError('invalid_group_jaccard')
     if sort_by not in ('p_value', 'lift', 'active_count'):
         raise ValueError('invalid_sort_by')
     if not stock_plates:
@@ -176,6 +178,7 @@ def build_auction_theme_view(auction_rows, stock_plates, hot_rows, seal_rows, po
                            hot_plates=[{'plate_code': c, 'name': plates[c]['name'], 'rank': rows[c]['rank']} for c in fallback[:5]]))
     all_cards = [rows[c] for c in valid]
     population, successes = len(current), len(auction_active)
+    directional = {direction: {s for s in auction_active if current[s].get('change_bp') is not None and (current[s]['change_bp'] > 0 if direction == 'up' else current[s]['change_bp'] < 0)} for direction in ('up', 'down')}
     for card in all_cards:
         card_members = members[card['plate_code']] & current.keys()
         card['active_count'] = len(card_members & auction_active)
@@ -183,6 +186,13 @@ def build_auction_theme_view(auction_rows, stock_plates, hot_rows, seal_rows, po
         card['expected_active'] = expected
         card['lift'] = card['active_count'] / expected if expected else None
         card['p_value'] = _hypergeom_tail(population, successes, len(card_members), card['active_count'])
+        for direction, symbols in directional.items():
+            count = len(card_members & symbols)
+            expected_direction = len(card_members) * len(symbols) / population if population else None
+            card['active_' + direction + '_count'] = count
+            card['p_' + direction] = _hypergeom_tail(population, len(symbols), len(card_members), count)
+            card['expected_' + direction] = expected_direction
+            card['lift_' + direction] = count / expected_direction if expected_direction else None
     cards = [c for c in all_cards if c['active_count'] >= min_active]
     def sort_key(c):
         amount = (c['amount_yuan'] is None, -(c['amount_yuan'] or 0), c['plate_code'])
@@ -191,7 +201,42 @@ def build_auction_theme_view(auction_rows, stock_plates, hot_rows, seal_rows, po
         lift_key = (c['lift'] is None, -(c['lift'] or 0), -c['active_count'], *amount)
         return (c['p_value'] is None, c['p_value'] if c['p_value'] is not None else 0, *lift_key) if sort_by == 'p_value' else lift_key
     cards.sort(key=sort_key)
-    return {'status':'available', 'cards':cards, 'plates':all_cards, 'display_cards':cards[:display_top], 'more_cards':cards[display_top:], 'excluded':excluded, 'active_stocks':stocks,
+    def directional_key(card, direction):
+        p = card['p_' + direction]
+        lift = card['lift_' + direction]
+        return (p is None, p if p is not None else 0, lift is None, -(lift or 0),
+                -card['active_' + direction + '_count'], card['amount_yuan'] is None,
+                -(card['amount_yuan'] or 0), card['plate_code'])
+    up_cards, down_cards = (sorted((c for c in all_cards if c['active_' + d + '_count'] >= min_active),
+                                   key=lambda c: directional_key(c, d))[:display_top] for d in ('up', 'down'))
+    def group_cards(ranked_cards, active_symbols, p_key):
+        sets = [members[c['plate_code']] & active_symbols for c in ranked_cards]
+        parents = list(range(len(ranked_cards)))
+        def root(i):
+            while parents[i] != i:
+                parents[i] = parents[parents[i]]
+                i = parents[i]
+            return i
+        for i in range(len(sets)):
+            for j in range(i):
+                union = sets[i] | sets[j]
+                if union and len(sets[i] & sets[j]) / len(union) >= group_jaccard:
+                    parents[root(i)] = root(j)
+        components = defaultdict(list)
+        for i, card in enumerate(ranked_cards):
+            components[root(i)].append(card)
+        def key(c):
+            p = c[p_key]
+            return (p is None, p if p is not None else 0, c['plate_code'])
+        groups = []
+        for component in components.values():
+            ordered = sorted(component, key=key)
+            groups.append({'head': ordered[0], 'others': ordered[1:]})
+        return sorted(groups, key=lambda g: key(g['head']))
+    groups = group_cards(cards[:display_top], auction_active, 'p_value')
+    up_groups = group_cards(up_cards, directional['up'], 'p_up')
+    down_groups = group_cards(down_cards, directional['down'], 'p_down')
+    return {'status':'available', 'up_cards':up_cards, 'down_cards':down_cards, 'groups':groups, 'up_groups':up_groups, 'down_groups':down_groups, 'cards':cards, 'plates':all_cards, 'display_cards':cards[:display_top], 'more_cards':cards[display_top:], 'excluded':excluded, 'active_stocks':stocks,
             'notes':['Stocks may appear in multiple themes; totals overlap.',
                      'excluded_non_theme=' + ','.join(f"{r['rank']}:{r['plate_code']}:{r['name']}:{r['non_theme_reason']}" for r in excluded)]}
 
@@ -234,7 +279,7 @@ def render_theme_cards_html(view):
     def cell(value):
         return escape(str(value)) if value is not None else '—'
     def table(cards):
-        columns = [('排名','rank'), ('板块','name'), ('活跃股数','active_count'), ('期望数','expected_active'), ('倍数','lift'), ('竞价只数','auction_count'),
+        columns = [('排名','rank'), ('板块','name'), ('活跃股数','active_count'), ('期望数','expected_active'), ('倍数','lift'), ('p 值','p_value'), ('竞价只数','auction_count'),
                    ('强只数','strong_count'), ('强占比','strong_share'), ('中只数','middle_count'),
                    ('中占比','middle_share'), ('弱只数','weak_count'), ('弱占比','weak_share'),
                    ('涨停','limit_up_count'), ('跌停','limit_down_count'), ('均值(bp)','mean_change_bp'),
@@ -249,7 +294,19 @@ def render_theme_cards_html(view):
         return '<table><thead><tr>'+head+'</tr></thead><tbody>'+body+'</tbody></table>'
     if view.get('status') != 'available':
         return '<p>数据不可用：'+cell(view.get('reason'))+'</p>'
-    parts = ['<section><h2>热板卡片</h2>', table(view['display_cards']), '<details><summary>更多</summary>', table(view['more_cards']), '</details>']
+    def group_table(groups, direction):
+        columns = [('板块', 'name'), ('活跃上涨', 'active_up_count'), ('活跃下跌', 'active_down_count'),
+                   ('期望数', 'expected_' + direction), ('倍数', 'lift_' + direction), ('p 值', 'p_' + direction)]
+        result = ['<table><thead><tr>' + ''.join('<th>' + cell(label) + '</th>' for label, _ in columns) + '</tr></thead><tbody>']
+        for group in groups:
+            card = group['head']
+            names = ''.join('<li>' + cell(c['name']) + '：' + cell(c['p_' + direction]) + '</li>' for c in group['others'])
+            detail = '<details><summary>同组板块</summary><ul>' + names + '</ul></details>' if names else ''
+            result.append('<tr>' + ''.join('<td>' + cell(card.get(key)) + (detail if key == 'name' else '') + '</td>' for _, key in columns) + '</tr>')
+        return ''.join(result) + '</tbody></table>'
+    parts = ['<section><h2>上涨聚集榜</h2><p>活跃股聚集</p>', group_table(view['up_groups'], 'up'),
+             '<h2>下跌聚集榜</h2><p>活跃股聚集</p>', group_table(view['down_groups'], 'down'),
+             '<h2>热板卡片</h2>', table(view['display_cards']), '<details><summary>更多</summary>', table(view['more_cards']), '</details>']
     parts.append('<h2>活跃个股</h2><table><thead><tr><th>代码</th><th>名称</th><th>涨跌(bp)</th><th>成交额</th><th>封单额</th><th>价格来源</th><th>主题材</th><th>证据</th><th>龙头地位板块</th><th>流通市值(亿元)</th><th>所属热板</th></tr></thead><tbody>')
     for stock in view['active_stocks']:
         values = [stock['symbol'], stock['name'], stock['change_bp'], stock['amount_yuan'], stock['seal_amount_yuan'], stock['price_source'], (stock['primary_theme'] or {}).get('name'), stock['theme_source'], '、'.join(p['name'] or p['plate_code'] for p in stock['anchor_themes']), round(stock['float_cap_yuan']/1e8, 2) if stock['float_cap_yuan'] is not None else None, '、'.join(p['name'] or p['plate_code'] for p in stock['hot_plates'])]
