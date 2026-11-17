@@ -2200,6 +2200,33 @@
       "silent_until_last": false,
       "timeout_seconds": 300,
       "trigger_type": "window"
+    },
+    "stock_cap": {
+      "after": [],
+      "args": {
+        "dataset": "stock_cap"
+      },
+      "available_after": null,
+      "calendar": "trading_day",
+      "catchup_mode": "run_in_window",
+      "cost": null,
+      "data_date_offset": 0,
+      "depends_on": [],
+      "enabled": true,
+      "gate": "calendar_ready",
+      "handler": "intraday_data",
+      "late_until": null,
+      "max_attempts": 3,
+      "on_deadline": "degrade",
+      "on_phase_mismatch": null,
+      "on_start": null,
+      "order": null,
+      "phases": null,
+      "retry_backoff": null,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "timeout_seconds": 1200,
+      "trigger_type": "window"
     }
   },
   "timeline": [
@@ -3385,6 +3412,16 @@
           }
         }
       ]
+    },
+    {
+      "at": "21:30:00",
+      "run": [
+        {
+          "fn": "stock_cap",
+          "id": "stock_cap_2130",
+          "deadline": "22:30:00"
+        }
+      ]
     }
   ],
   "startup": [
@@ -3530,6 +3567,7 @@
     "price_volume_0130",
     "chip_peak_postclose",
     "chip_peak_0145",
-    "dde_derived_0445"
+    "dde_derived_0445",
+    "stock_cap_2130"
   ]
 }

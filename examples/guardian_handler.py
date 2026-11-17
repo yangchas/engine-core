@@ -474,6 +474,31 @@ def _run_event(request):
         except (IndexError, ValueError):
             return _failure_response(request, error=ValueError("invalid stock listing job reply"))
         return result.returncode, reply
+    if name == "intraday_data" and args.get("dataset") == "stock_cap":
+        if dry or request.get("dry_run"):
+            return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
+                       "artifacts": [], "detail": "stock_cap dry run"}
+        from engine_core.data_pipeline.auction_redis_view import redis_client
+        from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+        from engine_core.data_pipeline.stock_cap import fetch_stock_caps, publish_stock_caps
+        try:
+            with ReferenceSnapshotStore() as snapshots:
+                snapshot = snapshots.read_latest("stock_static")
+            universe = {str(row.get("symbol") or "").zfill(6) for row in (snapshot or {}).get("rows", [])
+                        if row.get("symbol")}
+            result = fetch_stock_caps(target_day, universe=universe)
+            if result.get("error") or not result.get("rows"):
+                if result.get("retryable") is False:
+                    return 40, {"contract": 1, "status": "failed", "error_code": "FETCH_FAILED",
+                                "retryable": False, "artifacts": [], "detail": result.get("error")}
+                return 75, {"contract": 1, "status": "failed", "error_code": "FETCH_FAILED",
+                            "retryable": True, "artifacts": [], "detail": result.get("error")}
+            publish_stock_caps(target_day, redis_client(), result)
+            return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
+                       "artifacts": [], "detail": {"version": result["meta"]["version"]}}
+        except Exception as exc:
+            return 75, {"contract": 1, "status": "failed", "error_code": "FETCH_FAILED",
+                        "retryable": True, "artifacts": [], "detail": str(exc)}
     if name == "intraday_data" and args.get("dataset") == "plate_stock_index":
         if dry:
             return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
