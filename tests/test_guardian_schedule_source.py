@@ -419,3 +419,16 @@ def test_plate_stock_index_event_matches_timeline_and_registry():
     assert (event['gate'], event['max_attempts'], event['handler'], event['args']['dataset']) == ('calendar_ready', 3, 'intraday_data', 'plate_stock_index')
     assert any(p['at'] == event['at'] and any(r['id'] == event['event_id'] for r in p['run']) for p in timeline['timeline'])
     assert next(i for i in registry['items'] if i['id'] == 'plate_stock_index')['guardian_event'] == event['event_id']
+
+
+def test_stock_cap_event_matches_native_timeline_and_registry():
+    schedule = json.loads((ROOT / 'src/engine_core/guardian/schedule.json').read_text())
+    native = json.loads((ROOT / 'native/guardiand/testdata/schedule.json').read_text())
+    timeline = json.loads((ROOT / 'src/engine_core/guardian/timeline.json').read_text())
+    registry = json.loads((ROOT / 'src/engine_core/guardian/datasets.registry.json').read_text())
+    event = next(e for e in schedule['events'] if e['event_id'] == 'stock_cap_2130')
+    assert (event['at'], event['deadline'], event['calendar'], event['trigger_type']) == ('21:30:00', '22:30:00', 'trading_day', 'window')
+    assert (event['handler'], event['args']['dataset']) == ('intraday_data', 'stock_cap')
+    assert next(e for e in native['events'] if e['event_id'] == event['event_id']) == event
+    assert any(p['at'] == event['at'] and any(r['id'] == event['event_id'] for r in p['run']) for p in timeline['timeline'])
+    assert next(i for i in registry['items'] if i['id'] == 'stock_cap')['guardian_event'] == event['event_id']
