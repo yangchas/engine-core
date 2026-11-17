@@ -1,6 +1,7 @@
 """Describe supplied auction prices by plate; no acquisition or side effects."""
 from collections import defaultdict
 from html import escape
+from math import isfinite
 from statistics import mean
 
 from .auction_theme_cards import non_theme_reason
@@ -11,10 +12,12 @@ def build_auction_plate_view(auction_rows, stock_plates, *, tag, names=None, cap
                              hot_rows=None, previous_rows=None, listings=None,
                              trading_dates=None, trade_date=None, min_members=10,
                              top_n=15, pool_rows=None, reason_rows=None,
-                             hide_non_theme=False):
+                             hide_non_theme=False, min_limit_lift=2.0):
     for key, value in (('min_members', min_members), ('top_n', top_n)):
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise ValueError('invalid_' + key)
+    if isinstance(min_limit_lift, bool) or not isinstance(min_limit_lift, (int, float)) or not isfinite(min_limit_lift) or min_limit_lift < 0:
+        raise ValueError('invalid_min_limit_lift')
     quotes = {r['symbol']: r for r in auction_rows if r.get('symbol')}
     priced = {s: r for s, r in quotes.items() if r.get('price_milli') is not None}
     valid = {s: r for s, r in priced.items() if r.get('change_bp') is not None}
@@ -33,6 +36,8 @@ def build_auction_plate_view(auction_rows, stock_plates, *, tag, names=None, cap
     limit_available = bool(trade_date and trading_dates is not None and listings is not None)
     limits = {s: classify_limit(trade_date, s, r, listings.get(s), trading_dates)
               for s, r in priced.items()} if limit_available else {}
+    market_ratios = {side: (sum(v == 'limit_' + side for v in limits.values()) / len(priced)
+                            if limit_available and priced else None) for side in ('up', 'down')}
     result = []
     for code, symbols in sorted(members.items()):
         selected = [valid[s] for s in sorted(symbols & valid.keys())]
@@ -75,18 +80,31 @@ def build_auction_plate_view(auction_rows, stock_plates, *, tag, names=None, cap
                    anchors_status=('caps_unavailable' if not cap_rows else ('available' if anchors else 'caps_missing')),
                    anchor_delta_bp=(mean(a['change_bp'] for a in anchors)-avg if anchors else None),
                    kaipan_rank=h.get('rank'), kaipan_strength=h.get('strength'), kaipan_change_pct=h.get('change_pct'))
+        for side in ('up', 'down'):
+            count = row['limit_' + side + '_count']
+            ratio = count / len(priced_members) if count is not None and priced_members else None
+            market_ratio = market_ratios[side]
+            row['limit_' + side + '_ratio'] = ratio
+            row['lift_limit_' + side] = ratio / market_ratio if ratio is not None and market_ratio else None
         result.append(row)
     eligible = [r for r in result if not hide_non_theme or not r['non_theme_reason']]
     rising = sorted(eligible, key=lambda r: (-r['r_bp'], r['plate_code']))[:top_n]
     falling = sorted(eligible, key=lambda r: (r['r_bp'], r['plate_code']))[:top_n]
-    limit_up = sorted((r for r in eligible if (r['limit_up_count'] or 0) > 0), key=lambda r: (-r['limit_up_count'], -r['r_bp'], r['plate_code']))[:top_n]
-    limit_down = sorted((r for r in eligible if (r['limit_down_count'] or 0) > 0), key=lambda r: (-r['limit_down_count'], r['r_bp'], r['plate_code']))[:top_n]
+    rankings = {}
+    filtered = {}
+    for side in ('up', 'down'):
+        candidates = [r for r in eligible if (r['limit_' + side + '_count'] or 0) > 0]
+        qualified = [r for r in candidates if r['lift_limit_' + side] is not None and r['lift_limit_' + side] >= min_limit_lift]
+        filtered[side] = len(candidates) - len(qualified)
+        rankings[side] = sorted(qualified, key=lambda r: (-r['limit_' + side + '_count'], -r['lift_limit_' + side], -r['r_bp'] if side == 'up' else r['r_bp'], r['plate_code']))[:top_n]
     indicative = sum(r.get('src') == 'indicative_bid_ask_mid' for r in priced.values())
     share = indicative/len(priced) if priced else None
     note = '指示价，终局会变' if tag in ('0920', '0924') else (f'指示买卖中间价来源占有价股票 {share:.1%}' if tag == '0925' and indicative else '')
     return dict(tag=tag, price_note=note, indicative_share=share, market_bp=market,
                 market_count=len(valid), market_amount_yuan=market_amount if market_amount_complete else None,
-                plates=result, rising=rising, falling=falling, limit_up=limit_up, limit_down=limit_down)
+                market_limit_up_ratio=market_ratios['up'], market_limit_down_ratio=market_ratios['down'],
+                limit_up_filtered_count=filtered['up'], limit_down_filtered_count=filtered['down'],
+                plates=result, rising=rising, falling=falling, limit_up=rankings['up'], limit_down=rankings['down'])
 
 
 def render_auction_plate_html(view):
@@ -94,8 +112,11 @@ def render_auction_plate_html(view):
         return escape('—' if value is None else str(value))
     parts = [f"<p>{cell(view.get('tag'))} {cell(view.get('price_note'))}；板块相对大盘平均涨幅（bp），涨停只数为触及限价的股票数。</p>"]
     for key, title in (('rising', '涨幅榜'), ('limit_up', '涨停榜'), ('falling', '跌幅榜'), ('limit_down', '跌停榜')):
-        parts.append(f'<h2>{title}</h2><table><thead><tr><th>板块</th><th>板块相对大盘平均涨幅</th><th>涨停只数</th><th>跌停只数</th></tr></thead><tbody>')
+        side = key.removeprefix('limit_') if key.startswith('limit_') else None
+        extra = '<th>占比</th><th>倍数</th>' if side else ''
+        parts.append(f'<h2>{title}</h2><table><thead><tr><th>板块</th><th>板块相对大盘平均涨幅</th><th>涨停只数</th><th>跌停只数</th>{extra}</tr></thead><tbody>')
         for row in view.get(key, []):
-            parts.append('<tr>' + ''.join('<td>' + cell(row.get(k)) + '</td>' for k in ('name', 'r_bp', 'limit_up_count', 'limit_down_count')) + '</tr>')
+            fields = ('name', 'r_bp', 'limit_up_count', 'limit_down_count') + (('limit_' + side + '_ratio', 'lift_limit_' + side) if side else ())
+            parts.append('<tr>' + ''.join('<td>' + cell(row.get(k)) + '</td>' for k in fields) + '</tr>')
         parts.append('</tbody></table>')
     return ''.join(parts)
