@@ -111,3 +111,16 @@ def test_run_uses_latest_visible_real_stock_static_snapshot(monkeypatch):
         assert selected[-1] == expected
     with pytest.raises(ValueError, match='^stock_static_date_unavailable$'):
         auction_seal_facts.run('2026-11-08', redis_client=object(), store=Store())
+
+
+def test_real_daily_view_price_source():
+    quote = json.loads((REAL / 'c1326/view.json').read_text())
+    with gzip.open(REAL / 'core_artifacts/c594/stock_static/2026-10-29/c573_guardian/rows.jsonl.gz', 'rt') as f:
+        listings = {row['symbol']: row['listing_date'] for line in f if (row := json.loads(line))}
+    tick_data = json.loads(next(REAL.glob('td_stock_tick_2026-11-16_002905_092430_092600_*.json')).read_text())
+    ticks = [dict(zip(tick_data['columns'], row)) for row in tick_data['rows']]
+    calendar = json.loads((REAL.parent / 'trade_calendar/baostock-2026-01-01_2026-12-31.json').read_text())
+    dates = [r['calendar_date'] for r in calendar['rows'] if r['is_trading_day'] == '1']
+    assert quote['source'] == 'redis_auction_full'
+    result = build_facts('2026-11-16', {quote['symbol']: quote}, listings, dates, lambda _: ticks)
+    assert result['rows'][0]['price_source'] == quote['src']

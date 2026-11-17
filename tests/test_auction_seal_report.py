@@ -128,3 +128,18 @@ def test_real_price_sources_are_separated():
         assert [r['symbol'] for r in section[side]['estimated']['rows']] == [symbol]
         assert symbol not in [r['symbol'] for r in section[side]['confirmed']['top_stocks']]
         assert 'seal_amount_yuan' not in section[side]
+
+
+def test_real_nov17_price_source_counts():
+    from engine_core.auction_seal_report import build_seal_section
+    lines = (REAL / 'c1326/report.out').read_text().splitlines()
+    captured = json.loads(next(line.removeprefix('read_and_build ') for line in lines if line.startswith('read_and_build ')))
+    rows = captured['limit_up']['estimated']['rows'] + captured['limit_down']['estimated']['rows']
+    # The two indicative symbols and side counts are recorded in the source output.
+    indicative = {line.split()[2] for line in lines if line.startswith('SAMPLE ') and 'actual_src indicative_bid_ask_mid' in line}
+    assert len(rows) == 20 and indicative == {'002724', '300553'}
+    facts = {'rows': [dict(row, price_source='indicative_bid_ask_mid' if row['symbol'] in indicative else 'auction_match') for row in rows],
+             'unknown_listing': [], 'unknown_prices': [], 'unlimited': []}
+    section = build_seal_section(facts, None)
+    assert (section['limit_up']['confirmed']['count'], section['limit_up']['estimated']['count']) == (3, 0)
+    assert (section['limit_down']['confirmed']['count'], section['limit_down']['estimated']['count']) == (15, 2)

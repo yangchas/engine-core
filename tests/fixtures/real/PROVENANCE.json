@@ -2619,5 +2619,21 @@
   "rows": 243,
   "sha256": "1d0c14a1c7d850f2fd13577b814c164637ed7bbd659cd666119232fca755aaa2",
   "capture": "direct read-only Redis key"
- }
+ },
+ "_c1326": [
+  {
+   "file": "c1326/view.json",
+   "source": "/home/exedev/fw/evidence/C1320/query.out",
+   "source_sha256": "3003e0b7ef10db2cdc6ff7e14faa802a49d81cccc3784da1358e88f5f401b8ec",
+   "selection": "symbols.002905.redis_views.0925[0]",
+   "sha256": "dc9f4fe4feb2085e0182c90dd514e0bb6eac8c677718f009d10b9b81880b6b3b"
+  },
+  {
+   "file": "c1326/report.out",
+   "source": "/home/exedev/fw/evidence/C1325/check_data_retry.out",
+   "source_sha256": "0fb27db0054d8fe46142340273115cf9fd65a815705111c20a3fa4903ec79103",
+   "selection": "actual_src_counts, SAMPLE and read_and_build lines unchanged",
+   "sha256": "bcb63a0e016cec1c1c51576fe191be1323988441b2f57e947d24811c74432488"
+  }
+ ]
 }

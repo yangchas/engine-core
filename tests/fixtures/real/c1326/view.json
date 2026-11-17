@@ -1,0 +1,17 @@
+{
+  "price_milli": 10890,
+  "pre_close_milli": 9900,
+  "change_bp": 1000,
+  "amount_yuan": 8128296,
+  "bid_amount_yuan": 90844380,
+  "rank_amount": 313,
+  "src": "indicative_bid_ask_mid",
+  "ask_amount_yuan": 0,
+  "tick_ts_ms": 1794792297000,
+  "symbol": "002905",
+  "auction_tag": "0925",
+  "auction_amount_yuan": 8128296,
+  "source_rank_amount": 313,
+  "snapshot_cutoff": "2026-11-16T09:25:06+08:00",
+  "source": "redis_auction_full"
+}
