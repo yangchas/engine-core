@@ -165,7 +165,9 @@ def test_real_enrichment_and_cap_attribution():
         assert card['expected_active'] == pytest.approx(total * 54 / 5214)
         assert card['lift'] == pytest.approx(count / card['expected_active'])
     order = [c['name'] for c in view['cards']]
-    assert all(order.index(n) < order.index('机器人概念') for n in ('游戏', '文化传媒', '字节概念'))
+    assert order.index('文化传媒') < order.index('字节概念') < order.index('游戏') < order.index('机器人概念')
+    lift_cards = run(sort_by='lift')['cards']
+    assert lift_cards == sorted(lift_cards, key=lambda c: (c['lift'] is None, -(c['lift'] or 0), -c['active_count'], c['amount_yuan'] is None, -(c['amount_yuan'] or 0), c['plate_code']))
     assert all(c['active_count'] >= 2 for c in view['cards'])
     assert _hypergeom_tail(10, 3, 4, 2) == pytest.approx(1/3)
     legacy = run(sort_by='active_count', min_active=0)['cards']
@@ -175,13 +177,16 @@ def test_real_enrichment_and_cap_attribution():
     for symbol in ('688256', '300308', '300502'):
         assert stocks[symbol]['float_cap_yuan'] == caps[symbol]['float_cap_yuan']
         assert 'anchor_cap_rank' in stocks[symbol]
-    assert (stocks['688256']['primary_theme']['name'], stocks['688256']['theme_source'], stocks['688256']['anchor_cap_rank']) == ('操作系统', 'anchor_theme', 1)
-    assert (stocks['300308']['primary_theme']['name'], stocks['300308']['anchor_cap_rank']) == ('光芯片', 1)
-    assert (stocks['300502']['primary_theme']['name'], stocks['300502']['anchor_cap_rank']) == ('光模块', 3)
-    assert stocks['688256']['anchor_cap_share'] == pytest.approx(0.5087052002335308)
+    assert stocks['688256']['primary_theme']['name'] == '阿里巴巴概念'
+    assert stocks['300308']['primary_theme']['name'] == 'CPO/MPO'
+    assert stocks['300502']['primary_theme']['name'] == 'CPO/MPO'
+    assert [x['name'] for x in stocks['688256']['anchor_themes']] == ['操作系统', '数字芯片', '东数西算']
+    assert 'GPU' not in [x['name'] for x in stocks['688256']['anchor_themes']]
+    assert '光芯片' in [x['name'] for x in stocks['300308']['anchor_themes']]
+    assert '光模块' in [x['name'] for x in stocks['300502']['anchor_themes']]
     for card in view['cards']:
         assert 0 <= card['p_value'] <= 1
 
     html = render_theme_cards_html(view)
-    assert all(word in html for word in ('期望数', '倍数', '龙头', '涨跌幅(bp)', '流通市值(亿元)', 'anchor_delta_bp'))
+    assert all(word in html for word in ('期望数', '倍数', '龙头地位板块', '涨跌幅(bp)', '流通市值(亿元)', 'anchor_delta_bp'))
     assert '预测' not in html and '延续' not in html
