@@ -67,3 +67,25 @@ def test_preview_filter_and_html():
     for word in ('涨幅榜','涨停榜','跌幅榜','跌停榜','板块相对大盘平均涨幅','涨停只数'):
         assert word in html
     assert '预测' not in html and '看好' not in html
+
+
+def test_limit_lift_filter_on_real_excerpt():
+    view = build()
+    down = view['limit_down']
+    assert '中报增长' not in [row['name'] for row in down]
+    assert [row['name'] for row in down] == ['短剧', '游戏', '影视院线']
+    assert [row['limit_down_count'] for row in down] == [4, 3, 2]
+    assert next(row for row in build(min_limit_lift=0)['limit_down'] if row['name'] == '中报增长')
+    assert view['limit_down_filtered_count'] == 2
+    assert view['market_limit_down_ratio'] == pytest.approx(8 / 3386)
+    for side in ('up', 'down'):
+        for row in view['limit_' + side]:
+            assert row['lift_limit_' + side] >= 2
+            assert row['limit_' + side + '_ratio'] / view['market_limit_' + side + '_ratio'] == pytest.approx(row['lift_limit_' + side])
+    assert build(min_limit_lift=10000)['limit_up'] == []
+    without_limits = build_auction_plate_view(DATA['quotes']['0925'], MAPPING, tag='0925')
+    assert without_limits['market_limit_up_ratio'] is None
+    assert without_limits['limit_up'] == []
+    assert all(row['lift_limit_up'] is None for row in without_limits['plates'])
+    html = render_auction_plate_html(view)
+    assert '占比' in html and '倍数' in html
