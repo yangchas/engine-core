@@ -196,3 +196,179 @@ def read_and_build(trade_date, store=None, redis_client=None):
         return result
     except Exception as exc:
         return {'status': 'unavailable', 'reason': f'{stage}:{type(exc).__name__}:{exc}'}
+
+
+def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows, *, top_n_hot=40,
+                            listings=None, trading_dates=None, seal_rows=(), trade_date=None,
+                            previous_trade_date=None, pool_labels=None, reason_rows=()):
+    """Aggregate PIT hot plates independently; overlapping members count in each plate."""
+    from .stock_theme_assignment import build_stock_theme_assignments
+    if not isinstance(top_n_hot, int) or isinstance(top_n_hot, bool) or top_n_hot < 0:
+        raise ValueError('invalid_top_n_hot')
+    if not stock_plates:
+        return {'status': 'unavailable', 'reason': 'mapping_unavailable'}
+    registry = {str(r.get('plate_code') or r.get('code')): r.get('class', r.get('plate_class')) for r in registry_rows}
+    selected, missing, excluded = [], 0, 0
+    for row in sorted(hot_rows, key=lambda r: (r['rank'], str(r['plate_code']))):
+        kind = registry.get(str(row['plate_code']))
+        if not kind:
+            missing += 1
+        elif kind not in ('THEME', 'NICHE'):
+            excluded += 1
+        else:
+            selected.append(row)
+    selected = selected[:top_n_hot]
+    current, previous = {}, {}
+    for row in auction_rows:
+        target = previous if row.get('auction_tag', '0925') == '0924' else current
+        if row['symbol'] in target:
+            raise ValueError('duplicate_auction_symbol')
+        target[row['symbol']] = row
+    market_amount = sum(r['amount_yuan'] for r in current.values() if r.get('amount_yuan') is not None)
+    listings = listings or {}
+    themes = []
+    for hot in selected:
+        code = str(hot['plate_code'])
+        symbols = {s for s, plates in stock_plates.items() if any(str(p['plate_code']) == code for p in plates)}
+        priced = [current[s] for s in symbols if s in current and current[s].get('price_milli') is not None]
+        changed = [r for r in priced if r.get('change_bp') is not None]
+        strong = sum(r['change_bp'] >= 300 for r in changed)
+        weak = sum(r['change_bp'] <= -300 for r in changed)
+        middle = len(changed) - strong - weak
+        amounts = [r['amount_yuan'] for r in priced if r.get('amount_yuan') is not None]
+        amount = sum(amounts) if len(amounts) == len(priced) else None
+        weighted_rows = [r for r in changed if r.get('amount_yuan') is not None]
+        weight = sum(r['amount_yuan'] for r in weighted_rows)
+        sides = [classify_limit(trade_date or str(r.get('snapshot_cutoff', ''))[:10], r['symbol'], r,
+                                listings.get(r['symbol']), trading_dates) for r in priced] if trading_dates else []
+        ordered = sorted(changed, key=lambda r: (-r['change_bp'], r['symbol']))
+        deltas = [r['amount_yuan'] - previous[r['symbol']]['amount_yuan'] for r in priced
+                  if r.get('amount_yuan') is not None and r['symbol'] in previous and previous[r['symbol']].get('amount_yuan') is not None]
+        ka_amount = hot.get('amount_yuan')
+        n = len(priced)
+        themes.append({'plate_code': code, 'name': hot.get('name'), 'class': registry[code],
+                       'member_count': len(symbols), 'auction_count': n, 'missing_price_count': len(symbols)-n,
+                       'missing_change_count': n-len(changed), 'strong_count': strong, 'middle_count': middle, 'weak_count': weak,
+                       'strong_share': strong/n if n else None, 'middle_share': middle/n if n else None, 'weak_share': weak/n if n else None,
+                       'limit_up_count': sides.count('limit_up'), 'limit_down_count': sides.count('limit_down'),
+                       'unknown_limit_count': sum(s in ('unknown_listing','unknown_price') for s in sides) if trading_dates else n,
+                       'mean_change_bp': mean(r['change_bp'] for r in changed) if changed else None,
+                       'weighted_mean_change_bp': sum(r['change_bp']*r['amount_yuan'] for r in weighted_rows)/weight if weight else None,
+                       'mean_ex_top3_bp': mean(r['change_bp'] for r in ordered[3:]) if len(ordered)>3 else None,
+                       'amount_top3_share': sum(sorted(amounts, reverse=True)[:3])/amount if amount else None,
+                       'amount_yuan': amount, 'market_amount_share': amount/market_amount if amount is not None and market_amount else None,
+                       'amount_delta_yuan': sum(deltas) if n and len(deltas)==n else None,
+                       'rank': hot.get('rank'), 'strength': hot.get('strength'), 'change_pct': hot.get('change_pct'),
+                       'kaipan_amount_yuan': ka_amount, 'amount_to_kaipan_ratio': amount/ka_amount if amount is not None and ka_amount else None})
+    members = {s: [{'id': str(p['plate_code']), 'name': h.get('name') or str(p['plate_code'])}
+                    for p in plates for h in selected if str(p['plate_code']) == str(h['plate_code'])]
+               for s, plates in stock_plates.items()}
+    seal_symbols = {r['symbol'] for r in seal_rows if r.get('side') in ('limit_up', 'limit_down')}
+    assigned = build_stock_theme_assignments(trade_date=trade_date or '', previous_trade_date=previous_trade_date or '',
+                    pool_labels={s:v for s,v in (pool_labels or {}).items() if s in seal_symbols},
+                    reason_rows=[r for r in reason_rows if r.get('symbol') in seal_symbols],
+                    static_themes={s: [] for s in seal_symbols}, trading_dates=trading_dates)
+    seals = [dict(r, assignment=assigned.get(r['symbol']), hot_plates=members.get(r['symbol'], []))
+             for r in seal_rows if r.get('side') in ('limit_up', 'limit_down')]
+    return {'status':'available', 'themes':themes, 'market':{'amount_yuan':market_amount}, 'seals':seals,
+            'notes':[f'category_missing={missing}; category_excluded={excluded}', 'Stocks in multiple hot plates are counted once in each; totals overlap.']}
+
+
+def read_and_build_hot(trade_date, store=None, redis_client=None, top_n_hot=40):
+    """Read only versions visible by 09:26; never consult the retired catalog."""
+    import gzip
+    import json
+    from datetime import date, datetime
+    from pathlib import Path
+    from .data_pipeline.auction_redis_view import read_auction_view, redis_client as make_redis
+    from .data_pipeline.plate_stock_index import get_stock_plates
+    from .data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+    from .data_pipeline.trade_calendar import TradeCalendarStore
+    notes, stage = [], 'trade_date'
+    try:
+        day = date.fromisoformat(trade_date).isoformat()
+        cutoff = datetime.fromisoformat(f'{day}T09:26:00+08:00')
+        client = redis_client or make_redis()
+        stage = 'hot_plates'
+        versions = []
+        for key in client.scan_iter(match=f'core:cache:data:hot_plates:{day}:*', count=100):
+            value = json.loads(client.get(key))
+            stamp = datetime.fromisoformat(value['available_at'].replace('Z', '+00:00'))
+            if (stamp.tzinfo is not None and stamp <= cutoff and value.get('trade_date') == day
+                    and value.get('dataset') == 'hot_plates' and isinstance(value.get('rows'), list)
+                    and value.get('row_count') == len(value['rows'])):
+                versions.append((stamp, str(value.get('version', '')), value))
+        if not versions:
+            raise ValueError('no_visible_hot_version')
+        hot = max(versions, key=lambda x: (x[0], x[1]))[2]
+        notes.append(f"hot_version={hot.get('version')}; event_id={hot.get('event_id')}; available_at={hot['available_at']}; cutoff={cutoff.isoformat()}")
+        stage = 'auction_view'
+        current = read_auction_view(client, day, '0925')
+        previous = read_auction_view(client, day, '0924')
+        stage = 'mapping'
+        mapping = get_stock_plates([r['symbol'] for r in current], day, store=store, redis_client=client, readonly=True)
+        if not mapping or len(mapping) != len(current) or any(v.get('status') not in ('PRESENT_REDIS','RESTORED_FROM_TD','MISSING') or (v.get('status') == 'MISSING' and not v.get('version')) for v in mapping.values()):
+            raise ValueError('mapping_incomplete')
+        plates = {s:v['plates'] for s,v in mapping.items() if v.get('status') != 'MISSING'}
+        stage = 'reference_snapshots'
+        with ReferenceSnapshotStore() as ref:
+            registry = ref.read_as_of('plate_registry', cutoff.isoformat())
+            static = ref.read_as_of('stock_static', cutoff.isoformat())
+        if not registry:
+            raise ValueError('plate_registry_unavailable_at_cutoff')
+        if not static or not static.get('trade_date') or static['trade_date'] > day:
+            raise ValueError('stock_static_unavailable_at_cutoff')
+        stage = 'calendar'
+        dates = sorted(d for d in TradeCalendarStore().all_trading_dates() if d <= day)
+        if day not in dates or len(dates) < 5:
+            raise ValueError('calendar_coverage_missing')
+        prev_day = dates[-2]
+        stage = 'seal_facts'
+        seal = json.loads(client.get(f'core:view:auction_seal_facts:{day}'))
+        seal_at = datetime.fromisoformat(seal['available_at'].replace('Z', '+00:00'))
+        if seal_at.tzinfo is None or seal_at > cutoff or seal.get('trade_date') != day or seal.get('row_count') != len(seal['rows']):
+            raise ValueError('seal_facts_not_visible')
+        # Resolve only registry codes or unambiguous registry names; attribution may be outside the hot vocabulary.
+        by_code = {str(r.get('plate_code') or r.get('code')): {'id':str(r.get('plate_code') or r.get('code')), 'name':r.get('name') or str(r.get('plate_code') or r.get('code'))} for r in registry['rows'] if r.get('plate_code') or r.get('code')}
+        by_name = defaultdict(list)
+        for item in by_code.values():
+            by_name[item['name']].append(item)
+        pool_labels, reasons = {}, []
+        stage = 'assignment_evidence'
+        raw = client.get(f'core:view:limit_up_pool:{prev_day}')
+        if raw:
+            pool = json.loads(raw)
+            visible = datetime.fromisoformat(pool['available_at'].replace('Z', '+00:00'))
+            if visible.tzinfo is not None and visible <= cutoff and pool.get('trade_date') == prev_day and pool.get('row_count') == len(pool['rows']):
+                for r in pool['rows']:
+                    candidates = []
+                    if str(r.get('plate_code') or '') in by_code:
+                        candidates.append(by_code[str(r['plate_code'])])
+                    for name in [r.get('reason_category')] + str(r.get('reason_plates_text') or '').replace('，','、').split('、'):
+                        if len(by_name.get(name, [])) == 1:
+                            candidates.append(by_name[name][0])
+                    pool_labels[r['symbol']] = candidates
+        for prior in dates[:-1][-20:]:
+            pointer = client.get(f'core:cache:data:limit_reasons:{prior}')
+            if not pointer:
+                continue
+            manifest = json.loads(Path(json.loads(pointer)['manifest']).read_text())
+            visible = datetime.fromisoformat(manifest['available_at'].replace('Z', '+00:00'))
+            if visible.tzinfo is None or visible > cutoff or manifest.get('trade_date') != prior:
+                continue
+            with gzip.open(manifest['rows_uri'], 'rt') as f:
+                for line in f:
+                    r = json.loads(line)
+                    candidates = [by_code[str(c)] for c in r.get('plate_codes', []) if str(c) in by_code]
+                    name = r.get('main_reason') or r.get('reason')
+                    if len(by_name.get(name, [])) == 1:
+                        candidates += by_name[name]
+                    reasons.append({'symbol':r['symbol'], 'Date':r.get('event_date') or r.get('date'), 'ZSCode':candidates})
+        stage = 'build'
+        result = build_hot_theme_buckets(current+previous, plates, hot['rows'], registry['rows'], top_n_hot=top_n_hot,
+            listings={r['symbol']:r.get('listing_date') for r in static['rows']}, trading_dates=dates,
+            seal_rows=seal['rows'], trade_date=day, previous_trade_date=prev_day, pool_labels=pool_labels, reason_rows=reasons)
+        result.setdefault('notes', []).extend(notes)
+        return result
+    except Exception as exc:
+        return {'status':'unavailable', 'reason':f'{stage}:{type(exc).__name__}:{exc}', 'notes':notes}

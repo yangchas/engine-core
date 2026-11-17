@@ -1,4 +1,11 @@
 {
+  "_c1351": {
+    "file": "c1351/excerpt.json",
+    "sha256": "d505dee182ff11e6dc4d74b67a503039ab691577d9e2579757cbe9f1c5383d44",
+    "source": "read-only production Redis and C1349/C1350 real evidence excerpts",
+    "selection": "four plate membership and auction rows, hot versions, historical registry, calendar, seal, pool and reason excerpts",
+    "trade_date": "2026-11-17"
+  },
  "_c1256": {
   "auction": {
    "source": "Redis core:auction:full:2026-11-16:0925",

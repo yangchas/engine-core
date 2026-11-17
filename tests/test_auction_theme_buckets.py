@@ -144,3 +144,51 @@ def test_registry_names_and_point_in_time_fallback_from_real_excerpts(monkeypatc
         themes = {r['plate_code']: r['name'] for r in result['themes']}
         assert themes[named['code']] is None and themes[hot_code] == hot[hot_code]
         assert 'registry_unavailable_at_asof' in str(result['notes'])
+
+
+def test_hot_buckets_real_members_and_category_filter():
+    from engine_core.auction_theme_buckets import build_hot_theme_buckets
+    data = json.loads((Path(__file__).parent / 'fixtures/real/c1351/excerpt.json').read_text())
+    hot = next(h for h in data['hot'] if h['event_id'] == 'kaipan_hot_092520')
+    result = build_hot_theme_buckets(data['auction_0925'] + data['auction_0924'], data['mapping'], hot['rows'], data['registry']['rows'], listings={r['symbol']: r['listing_date'] for r in data['stock_static']}, trading_dates=data['calendar'], top_n_hot=243)
+    bank = next(r for r in result['themes'] if r['plate_code'] == '801027')
+    baseline = next(r for r in data['baseline'] if r['code'] == '801027')
+    assert (bank['auction_count'], bank['strong_count'], bank['middle_count'], bank['weak_count']) == (42, 0, 42, 0)
+    assert bank['mean_change_bp'] / 100 == baseline['mean']
+    assert bank['amount_yuan'] == baseline['amount']
+    assert not {'801676', '801346', '801909'} & {r['plate_code'] for r in result['themes']}
+    assert 'excluded' in str(result['notes'])
+
+
+def test_hot_reader_reports_missing_data_and_cutoff(monkeypatch):
+    from engine_core.auction_theme_buckets import read_and_build_hot
+    data = json.loads((Path(__file__).parent / 'fixtures/real/c1351/excerpt.json').read_text())
+    class Client:
+        def scan_iter(self, **kwargs): return range(len(data['hot']))
+        def get(self, key): return json.dumps(data['hot'][key])
+    from engine_core.data_pipeline import auction_redis_view
+    monkeypatch.setattr(auction_redis_view, 'read_auction_view', lambda *args: (_ for _ in ()).throw(RuntimeError('read failure')))
+    result = read_and_build_hot('2026-11-17', store=object(), redis_client=Client())
+    assert result['status'] == 'unavailable'
+    assert 'read failure' in result['reason']
+    assert 'kaipan_hot_092520' in str(result['notes'])
+    assert 'kaipan_hot_094520' not in str(result['notes'])
+
+
+def test_hot_seal_assignments_use_real_evidence_and_unknown():
+    from engine_core.auction_theme_buckets import build_hot_theme_buckets
+    data = json.loads((Path(__file__).parent / 'fixtures/real/c1351/excerpt.json').read_text())
+    hot = next(h for h in data['hot'] if h['event_id'] == 'kaipan_hot_092520')
+    registry = {r['plate_code']: r for r in data['registry']['rows']}
+    candidate = lambda code: {'id': code, 'name': registry[code]['name']}
+    pool = {r['symbol']: [candidate(r['plate_code'])] for r in data['pool']['rows'] if r.get('plate_code') in registry}
+    reasons = [{'symbol': r['symbol'], 'Date': r['event_date'], 'ZSCode': [candidate(c) for c in r['plate_codes'] if c in registry]} for r in data['reason_rows']]
+    result = build_hot_theme_buckets(data['auction_0925'], data['mapping'], hot['rows'], data['registry']['rows'],
+        trade_date='2026-11-17', previous_trade_date='2026-11-16', trading_dates=data['calendar'],
+        seal_rows=data['seals']['rows'], pool_labels=pool, reason_rows=reasons)
+    assignments = {r['symbol']: r['assignment'] for r in result['seals']}
+    assert assignments['600715']['source'] == 'POOL_LABEL'
+    assert assignments['002685']['source'] == 'POOL_LABEL'
+    assert assignments['002685']['primary_theme']['id'] == '801808'
+    assert assignments['603396']['source'] == 'REASON_LATEST'
+    assert assignments['300779']['source'] == 'UNKNOWN'
