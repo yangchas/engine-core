@@ -11,6 +11,18 @@ GEOGRAPHY_SUFFIXES = ('省', '市', '自治区', '自贸区', '特别行政区')
 VERSION = 'theme_taxonomy_v1'
 
 
+def _name_overlap(child_name, parent_name):
+    """Return a deterministic longest common contiguous substring, if meaningful."""
+    if not child_name or not parent_name:
+        return None
+    for length in range(min(len(child_name), len(parent_name)), 1, -1):
+        matches = {child_name[i:i + length] for i in range(len(child_name) - length + 1)
+                   if child_name[i:i + length] in parent_name}
+        if matches:
+            return min(matches)
+    return None
+
+
 def build_taxonomy(plate_members_by_code, plate_names=None, stock_boards=None, *, containment=0.8,
                    size_ratio=1.5, min_children_for_broad=3, min_broad_members=300):
     if not 0 < containment <= 1 or size_ratio <= 1 or min_children_for_broad < 1 or min_broad_members < 1:
@@ -49,11 +61,24 @@ def build_taxonomy(plate_members_by_code, plate_names=None, stock_boards=None, *
         elif symbols and all(boards.get(s) and boards[s] != 'UNKNOWN' for s in symbols) and len({boards[s] for s in symbols}) == 1:
             reason = 'single_market_board'
         candidates = sorted(by_child[code], key=lambda r: (r['parent_members'], -r['containment'], r['parent']))
+        overlaps = {r['parent']: _name_overlap(name, names.get(r['parent'])) for r in candidates}
+        named = [r for r in candidates if overlaps[r['parent']]]
+        if named:
+            primary = min(named, key=lambda r: (-len(overlaps[r['parent']]), r['parent_members'],
+                                                -r['containment'], r['parent']))
+            disambiguation, matched_name = 'name_overlap', overlaps[primary['parent']]
+        elif candidates:
+            primary = candidates[0]
+            disambiguation = 'smallest' if name and names.get(primary['parent']) else 'none'
+            matched_name = None
+        else:
+            primary, disambiguation, matched_name = None, 'none', None
         plates[code] = dict(plate_code=code, name=name or None, members=symbols,
                             member_count=len(symbols), non_theme_reason=reason,
                             is_broad=not reason and len(symbols) >= min_broad_members and len(by_parent[code]) >= min_children_for_broad,
-                            primary_parent=candidates[0]['parent'] if candidates else None,
-                            secondary_parents=[r['parent'] for r in candidates[1:]])
+                            primary_parent=primary['parent'] if primary else None,
+                            secondary_parents=[r['parent'] for r in candidates if r is not primary],
+                            disambiguation=disambiguation, name_overlap=matched_name)
     orphans = [c for c in codes if not plates[c]['is_broad'] and not plates[c]['non_theme_reason'] and plates[c]['primary_parent'] is None]
     return dict(parameters=parameters, plates=plates, relations=relations, orphans=orphans)
 
