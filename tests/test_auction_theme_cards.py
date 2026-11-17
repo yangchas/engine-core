@@ -190,3 +190,45 @@ def test_real_enrichment_and_cap_attribution():
     html = render_theme_cards_html(view)
     assert all(word in html for word in ('期望数', '倍数', '龙头地位板块', '涨跌幅(bp)', '流通市值(亿元)', 'anchor_delta_bp'))
     assert '预测' not in html and '延续' not in html
+
+
+def test_real_directional_enrichment_and_overlap_groups():
+    import pytest
+    from engine_core.auction_theme_cards import build_auction_theme_view, render_theme_cards_html, _hypergeom_tail
+    a, b, _ = data()
+    def run(**kwargs):
+        return build_auction_theme_view(a['auction'] + b['auction_0924'], a['index'], a['hot'], a['seal'], b['pool'], b['reason_rows'], names=a['names'], listings=a['listings'], trading_dates=a['calendar'], trade_date='2026-11-17', previous_trade_date='2026-11-16', **kwargs)
+    view = run(display_top=200)
+    cards = {c['name']: c for c in view['plates']}
+    for name, up, down in [('影视院线', 1, 3), ('光模块', 1, 4), ('CPO/MPO', 1, 5), ('GPU', 2, 0), ('芯片', 5, 13), ('光芯片', 0, 2), ('数字芯片', 1, 1)]:
+        assert (cards[name]['active_up_count'], cards[name]['active_down_count']) == (up, down)
+    up = {s['symbol'] for s in view['active_stocks'] if s['change_bp'] is not None and s['change_bp'] > 0}
+    down = {s['symbol'] for s in view['active_stocks'] if s['change_bp'] is not None and s['change_bp'] < 0}
+    population = len({r['symbol'] for r in a['auction'] if r.get('auction_tag', '0925') == '0925'})
+    for c in view['plates']:
+        assert c['p_up'] == pytest.approx(_hypergeom_tail(population, len(up), c['auction_count'], c['active_up_count']))
+        assert c['p_down'] == pytest.approx(_hypergeom_tail(population, len(down), c['auction_count'], c['active_down_count']))
+    assert '影视院线' in {c['name'] for c in view['down_cards']}
+    assert '影视院线' not in {c['name'] for c in view['up_cards']}
+    assert cards['影视院线']['p_up'] > 0.05
+    cinema_group = next(g for g in view['down_groups'] if '影视院线' in {c['name'] for c in [g['head']] + g['others']})
+    assert {'影视院线', '互动影游', '短剧', '文化传媒', '游戏'} <= {c['name'] for c in [cinema_group['head']] + cinema_group['others']}
+    optical_group = next(g for g in view['down_groups'] if '光模块' in {c['name'] for c in [g['head']] + g['others']})
+    assert {'光模块', 'CPO/MPO', '芯片', '光芯片'} <= {c['name'] for c in [optical_group['head']] + optical_group['others']}
+    for cards_key, groups_key, direction, p in [('up_cards', 'up_groups', up, 'p_up'), ('down_cards', 'down_groups', down, 'p_down'), ('display_cards', 'groups', up | down | {s['symbol'] for s in view['active_stocks'] if s['change_bp'] == 0}, 'p_value')]:
+        ranked = view[cards_key]
+        groups = view[groups_key]
+        assert sorted(c['plate_code'] for g in groups for c in [g['head']] + g['others']) == sorted(c['plate_code'] for c in ranked)
+        membership = {c['plate_code']: {s for s, plates in a['index'].items() if any(str(x.get('plate_code') if isinstance(x, dict) else x) == c['plate_code'] for x in plates)} & direction for c in ranked}
+        group_index = {c['plate_code']: i for i, g in enumerate(groups) for c in [g['head']] + g['others']}
+        for c in ranked:
+            for d in ranked:
+                x, y = membership[c['plate_code']], membership[d['plate_code']]
+                if x | y and len(x & y) / len(x | y) >= .5:
+                    assert group_index[c['plate_code']] == group_index[d['plate_code']]
+        for g in groups:
+            assert g['head'] == min([g['head']] + g['others'], key=lambda c: (c[p], c['plate_code']))
+    assert view['groups'] == run(display_top=200)['groups']
+    html = render_theme_cards_html(view)
+    assert all(x in html for x in ('上涨聚集榜', '下跌聚集榜', '活跃上涨', '活跃下跌', 'p 值', '期望数', '倍数'))
+    assert '预测' not in html and '延续' not in html
