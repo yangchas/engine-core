@@ -6,11 +6,16 @@ from statistics import mean
 from .auction_theme_cards import non_theme_reason
 from .data_pipeline.auction_seal_facts import classify_limit
 
+BUCKET_VERSION = 'bucket_v1'
+SMOOTH_K = 20
+
 
 def build_active_bucket_view(auction_rows, stock_plates, yesterday_limit_up_symbols,
                              yesterday_reason_rows, *, names, top_amount=100,
                              top_abs_change=100, plate_names, hot_rows=None, caps=None,
-                             trade_date=None, listings=None, trading_dates=None):
+                             trade_date=None, listings=None, trading_dates=None, sort_by='score'):
+    if sort_by not in ('score', 'active_count'):
+        raise ValueError('invalid_sort_by')
     for key, n in (('top_amount', top_amount), ('top_abs_change', top_abs_change)):
         if type(n) is not int or n < 0:
             raise ValueError('invalid_' + key)
@@ -66,37 +71,50 @@ def build_active_bucket_view(auction_rows, stock_plates, yesterday_limit_up_symb
             return value.get('float_cap_yuan') if isinstance(value, dict) else value
         if cap_rows:
             ranked = sorted((r for r in active if cap(r['symbol']) is not None), key=lambda r: (-cap(r['symbol']), r['symbol']))
-            status = 'available' if ranked else 'caps_missing'
+            status = 'caps_ok' if ranked else 'caps_missing'
         else:
             ranked = sorted((r for r in active if r['amount_yuan'] is not None), key=lambda r: (-r['amount_yuan'], r['symbol']))
             status = 'caps_unavailable'
         name = plate_names.get(code) or hot.get(code, {}).get('name') or code
         bucket = dict(plate_code=code, name=name, non_theme_reason=non_theme_reason(name),
                       active_count=len(active), member_count=len(symbols), active_share=len(active)/len(symbols),
+                      score=len(active)/(len(symbols)+SMOOTH_K),
                       mean_change_bp=mean(changes) if changes else None, amount_yuan=total,
                       amount_share=total/market_amount if total is not None and market_amount else None,
                       limit_up_count=sum(r['limit_status'] == 'limit_up' for r in active) if limit_available else None,
                       limit_down_count=sum(r['limit_status'] == 'limit_down' for r in active) if limit_available else None,
                       limit_unknown_count=sum(r['limit_status'] in ('unknown_listing', 'unknown_price') or r['price_missing'] for r in active) if limit_available else None,
-                      leaders=ranked[:3], leaders_status=status,
+                      leaders=[dict(symbol=r['symbol'], name=r['name'], change_bp=r['change_bp'],
+                                    amount_yuan=r['amount_yuan'], float_cap_yuan=cap(r['symbol'])) for r in ranked[:3]], leaders_status=status,
                       yesterday_reason_hit_count=sum(code in reasons[r['symbol']] for r in active),
                       hot_rank=hot.get(code, {}).get('rank'), hot_change_pct=hot.get(code, {}).get('change_pct'))
         bucket.update({label + '_count': sum(label in r['sources'] for r in active) for label in 'yac'})
         buckets.append(bucket)
-    buckets.sort(key=lambda r: (-r['active_count'], -(r['amount_yuan'] if r['amount_yuan'] is not None else -1), r['plate_code']))
-    return dict(stocks=stocks, buckets=buckets, market_amount_yuan=market_amount,
+    buckets.sort(key=lambda r: ((-r['score'],) if sort_by == 'score' else ()) + (-r['active_count'], -(r['amount_yuan'] if r['amount_yuan'] is not None else -1), r['plate_code']))
+    return dict(bucket_version=BUCKET_VERSION, stocks=stocks, buckets=buckets, market_amount_yuan=market_amount,
                 overlap_note='一股可能属于多个板块，板块汇总不可相加。')
 
 
 def render_active_bucket_html(view):
     def cell(value):
         return escape('未知' if value is None else str(value))
-    parts = ['<h1>竞价强弱</h1><p>' + cell(view['overlap_note']) + '</p>']
-    for key, title, fields in (
-        ('buckets', '板块', ('name', 'plate_code', 'non_theme_reason', 'active_count', 'y_count', 'a_count', 'c_count', 'member_count', 'active_share', 'mean_change_bp', 'amount_yuan', 'amount_share', 'limit_up_count', 'limit_down_count', 'limit_unknown_count', 'leaders', 'leaders_status', 'yesterday_reason_hit_count', 'hot_rank', 'hot_change_pct')),
-        ('stocks', '个股', ('symbol', 'name', 'plate_codes', 'change_bp', 'amount_yuan', 'sources', 'price_missing', 'yesterday_reason_plate_codes'))):
-        parts.append('<h2>' + title + '</h2><table><thead><tr>' + ''.join('<th>' + cell(f) + '</th>' for f in fields) + '</tr></thead><tbody>')
-        for row in view[key]:
-            parts.append('<tr>' + ''.join('<td>' + cell(row.get(f)) + '</td>' for f in fields) + '</tr>')
-        parts.append('</tbody></table>')
+    columns = (('板块', 'name'), ('活跃数 (昨/额/幅)', None), ('成员数', 'member_count'),
+               ('活跃占比', 'active_share'), ('score', 'score'), ('活跃股平均涨幅', 'mean_change_bp'),
+               ('涨停', 'limit_up_count'), ('跌停', 'limit_down_count'), ('竞价额占比', 'amount_share'),
+               ('昨日涨停原因命中', 'yesterday_reason_hit_count'), ('热板rank', 'hot_rank'), ('龙头', None))
+    parts = ['<h1>竞价强弱</h1><p>' + cell(view['overlap_note']) + '</p>', '<h2>板块</h2><table><thead><tr>',
+             ''.join('<th>' + cell(label) + '</th>' for label, _ in columns), '</tr></thead><tbody>']
+    for row in view['buckets']:
+        name = cell(row['name'])
+        if row['non_theme_reason']:
+            name += ' <span style="color:gray">' + cell(row['non_theme_reason']) + '</span>'
+        counts = f"{row['active_count']} ({row['y_count']}/{row['a_count']}/{row['c_count']})"
+        leaders = '、'.join(cell(r['name']) + ' (' + (f"{r['change_bp']/100:+.2f}%" if r['change_bp'] is not None else '未知') + ')' for r in row['leaders'])
+        values = [name, cell(counts)] + [cell(row.get(key)) for _, key in columns[2:-1]] + [leaders]
+        parts.append('<tr>' + ''.join('<td>' + value + '</td>' for value in values) + '</tr>')
+    fields = ('symbol', 'name', 'plate_codes', 'change_bp', 'amount_yuan', 'sources', 'price_missing', 'yesterday_reason_plate_codes')
+    parts.append('</tbody></table><h2>个股</h2><table><thead><tr>' + ''.join('<th>' + cell(f) + '</th>' for f in fields) + '</tr></thead><tbody>')
+    for row in view['stocks']:
+        parts.append('<tr>' + ''.join('<td>' + cell(row.get(f)) + '</td>' for f in fields) + '</tr>')
+    parts.append('</tbody></table>')
     return ''.join(parts)
