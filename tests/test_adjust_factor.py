@@ -384,3 +384,58 @@ def test_bootstrap_counts_delisted_and_skips_existing(monkeypatch):
         assert code == 0
         assert reply['detail']['delisted_included'] == 1
     assert calls == ['301139']
+
+
+def test_incremental_backfills_unprocessed_real_listing(monkeypatch):
+    import ast
+    import gzip
+    from engine_core.data_pipeline import adjust_factor as module
+
+    root = Path(__file__).parent / 'fixtures/real'
+    td = (root / 'c1333/td.log').read_text().splitlines()
+    listing = dict(ast.literal_eval(td[0].split(' ', 1)[1]))
+    assert td[3] == 'FACTOR_FIRST 688827 2026-11-10 []'
+    rows = [ast.literal_eval((root / 'c1333/baostock.log').read_text().splitlines()[1][4:])]
+    bars = (root / 'c1333/bars.log').read_text().splitlines()
+    previous_close = float(bars[0].split()[3])
+    current_pre_close = float(bars[1].split()[5])
+    with gzip.open(root / 'core_artifacts/c522/daily_kline/2026-10-23/formal/rows.jsonl.gz', 'rt') as stream:
+        previous_normal = next(json.loads(line) for line in stream if '"600519"' in line)
+    current_normal = next(row for row in json.loads((root / 'wencai_daily_kline_2026-10-26_2109.json').read_text())['rows'] if row['code'] == '600519')
+
+    class Store:
+        def __init__(self, missing): self.missing, self.writes = missing, {}
+        def ensure_schema(self): pass
+        def previous_day(self, day): return '2026-11-10'
+        def read_day_rows(self, day):
+            if day == '2026-11-10': return {'688827': {'close': previous_close}, '600519': previous_normal}
+            return {'688827': {'pre_close': current_pre_close}, '600519': {'pre_close': current_normal['前收盘价:不复权[20261026]']}}
+        def listing_symbols(self, day, include_delisted=True): return set(self.missing) | {'600519'}, 'stock_listing'
+        def read_events(self, symbol): return ([], 'UNPROCESSED') if symbol in self.missing else (rows, 'FORMAL')
+        def replace_snapshot(self, symbol, events, version): self.writes[symbol] = events
+        def invalidate_day_marker(self, day): pass
+        def write_day_marker(self, *args): pass
+    class Lease:
+        def acquire(self): return True
+        def renew(self): return True
+        def release(self): pass
+    def execute(store):
+        calls = []
+        def fetch(symbol): calls.append(symbol); return rows
+        code, reply = module.run({'trade_date': '2026-11-11', 'args': {'mode': 'incremental'}}, '.', store=store, fetcher=fetch, sleep=lambda _: None, lease_factory=lambda *_: Lease())
+        assert code == 0
+        return calls, reply['detail']
+
+    store = Store({'688827'})
+    calls, detail = execute(store)
+    assert calls == ['688827']
+    assert factor_for(store.writes['688827'], '2026-11-11') == (1.0, 'FORMAL')
+    assert detail['suspected_total'] == 0
+    assert (detail['unprocessed_total'], detail['unprocessed_deferred']) == (1, 0)
+
+    monkeypatch.setattr(module, 'MAX_INCREMENTAL_UNPROCESSED', 1)
+    assert '001381' in listing
+    store = Store({'688827', '001381'})
+    calls, detail = execute(store)
+    assert calls == ['001381']
+    assert (detail['unprocessed_total'], detail['unprocessed_deferred']) == (2, 1)
