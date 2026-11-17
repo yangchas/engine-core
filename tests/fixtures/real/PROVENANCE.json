@@ -2730,6 +2730,15 @@
     "selection": "10 original sample rows and 23 page summaries; pagination tests replay copies, not captured pages",
     "trade_date": "2026-11-17"
   },
+  "_c1374": {
+    "file": "c1374/plate_names.json",
+    "sha256": "8c8f159db96bc9aa703cf8eb2f53cc6270be098e66a609483c0b70cb539de8c5",
+    "source": "/home/exedev/fw/evidence/C1349/all_plates.json",
+    "source_sha256": "023094483f610d3a36d7912e1644b1b9d3145b6647c1a75c7b6c7e0d5fbbccee",
+    "selection": "all name fields from the 2026-11-17 C1349 real plate snapshot",
+    "name_count": 704,
+    "trade_date": "2026-11-17"
+  },
   "_c1367": {
     "file": "c1367/inputs.json",
     "sha256": "c490cd386b5b96e51a8ae8fbace6f1f20d99b6c804a185a9c7e2b6b02a5830e7",
