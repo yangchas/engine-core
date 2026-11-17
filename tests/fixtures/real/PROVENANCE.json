@@ -2711,5 +2711,15 @@
  "selection": "THEME rows matching plate_code or code in c1332 plate_members",
  "row_count": 400,
  "snapshot_sha256": "829e689b94cb2d83ac3a23d4aa8a6551362f78dabba322abe64e32855584c8bf"
+},
+ "_c1356": {
+ "file": "c1356/inputs.json",
+ "sha256": "3c1a3df4714f638fb522d3b5504c8d1581ee043f7be0847c347c8e7406366759",
+ "source": "/home/exedev/fw/evidence/C1352/inputs.json",
+ "source_sha256": "292029ac7c761cd08926e40649a9bec80db3b6af1bcd9a401fd0a132348b5e68",
+ "selection": "2026-11-17 C1352 input excerpt: complete index codes, registry names, static boards and listings, auction 0925, hot, seal, calendar",
+ "fetched_at": "2026-11-17T06:33:29.923582+00:00",
+ "index_symbols": 5886,
+ "auction_rows": 5214
 }
 }
