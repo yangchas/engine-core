@@ -1,0 +1,4048 @@
+{
+  "V3 k=2": {
+    "stocks": {
+      "000533": {
+        "name": "顺钠股份",
+        "theme": "智能电网",
+        "source": "limit_reason",
+        "plates": [
+          "储能",
+          "家电",
+          "阿里巴巴概念"
+        ],
+        "cover": true
+      },
+      "000707": {
+        "name": "双环科技",
+        "theme": "农业",
+        "source": "active_membership",
+        "plates": [
+          "储能",
+          "化工",
+          "农业"
+        ],
+        "cover": true
+      },
+      "000819": {
+        "name": "岳阳兴长",
+        "theme": "化工",
+        "source": "limit_reason",
+        "plates": [
+          "光伏",
+          "化工",
+          "聚丙烯"
+        ],
+        "cover": true
+      },
+      "000826": {
+        "name": "*ST启环",
+        "theme": "碳中和",
+        "source": "active_membership",
+        "plates": [
+          "碳中和",
+          "电力",
+          "环保"
+        ],
+        "cover": true
+      },
+      "001358": {
+        "name": "兴欣新材",
+        "theme": "碳中和",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "化工",
+          "碳中和"
+        ],
+        "cover": true
+      },
+      "002046": {
+        "name": "国机精工",
+        "theme": "核电",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "机器人概念",
+          "光伏"
+        ],
+        "cover": true
+      },
+      "002086": {
+        "name": "东方海洋",
+        "theme": "海洋经济",
+        "source": "active_membership",
+        "plates": [
+          "海洋经济",
+          "医疗器械",
+          "农业"
+        ],
+        "cover": true
+      },
+      "002148": {
+        "name": "北纬科技",
+        "theme": "游戏",
+        "source": "limit_reason",
+        "plates": [
+          "芯片",
+          "机器人概念",
+          "通信"
+        ],
+        "cover": true
+      },
+      "002187": {
+        "name": "广百股份",
+        "theme": "零售",
+        "source": "limit_reason",
+        "plates": [
+          "网红经济",
+          "创投",
+          "谷子经济"
+        ],
+        "cover": true
+      },
+      "002242": {
+        "name": "九阳股份",
+        "theme": "家电",
+        "source": "active_membership",
+        "plates": [
+          "机器人概念",
+          "家电",
+          "电力"
+        ],
+        "cover": true
+      },
+      "002384": {
+        "name": "东山精密",
+        "theme": "CPO/MPO",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "光伏",
+          "通信"
+        ],
+        "cover": true
+      },
+      "002419": {
+        "name": "天虹股份",
+        "theme": "零售",
+        "source": "limit_reason",
+        "plates": [
+          "AI应用",
+          "电力",
+          "新零售"
+        ],
+        "cover": true
+      },
+      "002451": {
+        "name": "摩恩电气",
+        "theme": "创投",
+        "source": "active_membership",
+        "plates": [
+          "机器人概念",
+          "光伏",
+          "军工"
+        ],
+        "cover": true
+      },
+      "002535": {
+        "name": "林州重机",
+        "theme": "蚂蚁概念",
+        "source": "active_membership",
+        "plates": [
+          "机器人概念",
+          "军工",
+          "储能"
+        ],
+        "cover": true
+      },
+      "002625": {
+        "name": "光启技术",
+        "theme": "新材料概念",
+        "source": "active_membership",
+        "plates": [
+          "机器人概念",
+          "军工",
+          "新材料概念"
+        ],
+        "cover": true
+      },
+      "002685": {
+        "name": "华东重机",
+        "theme": "GPU",
+        "source": "limit_reason",
+        "plates": [
+          "芯片",
+          "机器人概念",
+          "光伏"
+        ],
+        "cover": true
+      },
+      "002696": {
+        "name": "百洋股份",
+        "theme": "海洋经济",
+        "source": "active_membership",
+        "plates": [
+          "海洋经济",
+          "环保",
+          "食品饮料"
+        ],
+        "cover": true
+      },
+      "002724": {
+        "name": "海洋王",
+        "theme": "核电",
+        "source": "active_membership",
+        "plates": [
+          "AI应用",
+          "军工",
+          "核电"
+        ],
+        "cover": true
+      },
+      "002905": {
+        "name": "金逸影视",
+        "theme": "文化传媒",
+        "source": "limit_reason",
+        "plates": [
+          "文化传媒",
+          "影视院线",
+          "粤港澳"
+        ],
+        "cover": true
+      },
+      "002912": {
+        "name": "中新赛克",
+        "theme": "云计算",
+        "source": "active_membership",
+        "plates": [
+          "AI应用",
+          "智能驾驶",
+          "云计算"
+        ],
+        "cover": true
+      },
+      "002959": {
+        "name": "小熊电器",
+        "theme": "家电",
+        "source": "limit_reason",
+        "plates": [
+          "字节概念",
+          "家电",
+          "网红经济"
+        ],
+        "cover": true
+      },
+      "300308": {
+        "name": "中际旭创",
+        "theme": "CPO/MPO",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "通信",
+          "CPO/MPO"
+        ],
+        "cover": true
+      },
+      "300394": {
+        "name": "天孚通信",
+        "theme": "CPO/MPO",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "通信",
+          "CPO/MPO"
+        ],
+        "cover": true
+      },
+      "300502": {
+        "name": "新易盛",
+        "theme": "CPO/MPO",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "通信",
+          "CPO/MPO"
+        ],
+        "cover": true
+      },
+      "300530": {
+        "name": "领湃科技",
+        "theme": "磷酸铁锂",
+        "source": "active_membership",
+        "plates": [
+          "储能",
+          "磷酸铁锂",
+          "高压快充"
+        ],
+        "cover": true
+      },
+      "300553": {
+        "name": "集智股份",
+        "theme": "液冷",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "机器人概念",
+          "军工"
+        ],
+        "cover": true
+      },
+      "300779": {
+        "name": "惠城环保",
+        "theme": "环保",
+        "source": "active_membership",
+        "plates": [
+          "化工",
+          "环保",
+          "聚丙烯"
+        ],
+        "cover": true
+      },
+      "300916": {
+        "name": "朗特智能",
+        "theme": "家电",
+        "source": "active_membership",
+        "plates": [
+          "机器人概念",
+          "通信",
+          "家电"
+        ],
+        "cover": true
+      },
+      "301697": {
+        "name": "贝特利",
+        "theme": "面板",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "光伏",
+          "化工"
+        ],
+        "cover": true
+      },
+      "600183": {
+        "name": "生益科技",
+        "theme": "5G",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "通信",
+          "5G"
+        ],
+        "cover": true
+      },
+      "600261": {
+        "name": "阳光照明",
+        "theme": "核电",
+        "source": "active_membership",
+        "plates": [
+          "核电",
+          "跨境电商",
+          "参股券商"
+        ],
+        "cover": true
+      },
+      "600327": {
+        "name": "大东方",
+        "theme": "网红经济",
+        "source": "active_membership",
+        "plates": [
+          "军工",
+          "网红经济",
+          "谷子经济"
+        ],
+        "cover": true
+      },
+      "600410": {
+        "name": "华胜天成",
+        "theme": "字节概念",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "机器人概念",
+          "AI应用"
+        ],
+        "cover": true
+      },
+      "600519": {
+        "name": "贵州茅台",
+        "theme": "白酒",
+        "source": "active_membership",
+        "plates": [
+          "白酒",
+          "酿酒",
+          "乡村振兴"
+        ],
+        "cover": true
+      },
+      "600715": {
+        "name": "文投控股",
+        "theme": "文化传媒",
+        "source": "limit_reason",
+        "plates": [
+          "AI应用",
+          "文化传媒",
+          "短剧"
+        ],
+        "cover": true
+      },
+      "600802": {
+        "name": "福建水泥",
+        "theme": "核电",
+        "source": "active_membership",
+        "plates": [
+          "核电",
+          "基础建设",
+          "参股券商"
+        ],
+        "cover": true
+      },
+      "600881": {
+        "name": "亚泰集团",
+        "theme": "参股券商",
+        "source": "active_membership",
+        "plates": [
+          "基础建设",
+          "参股券商",
+          "医疗器械"
+        ],
+        "cover": true
+      },
+      "600892": {
+        "name": "大晟文化",
+        "theme": "文化传媒",
+        "source": "active_membership",
+        "plates": [
+          "AI应用",
+          "文化传媒",
+          "字节概念"
+        ],
+        "cover": true
+      },
+      "601138": {
+        "name": "工业富联",
+        "theme": "CPO/MPO",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "机器人概念",
+          "通信"
+        ],
+        "cover": true
+      },
+      "601599": {
+        "name": "浙文影业",
+        "theme": "文化传媒",
+        "source": "active_membership",
+        "plates": [
+          "AI应用",
+          "文化传媒",
+          "短剧"
+        ],
+        "cover": true
+      },
+      "603103": {
+        "name": "横店影视",
+        "theme": "文化传媒",
+        "source": "active_membership",
+        "plates": [
+          "AI应用",
+          "文化传媒",
+          "字节概念"
+        ],
+        "cover": true
+      },
+      "603258": {
+        "name": "电魂网络",
+        "theme": "文化传媒",
+        "source": "active_membership",
+        "plates": [
+          "AI应用",
+          "文化传媒",
+          "短剧"
+        ],
+        "cover": true
+      },
+      "603366": {
+        "name": "日出东方",
+        "theme": "文化传媒",
+        "source": "active_membership",
+        "plates": [
+          "光伏",
+          "文化传媒",
+          "储能"
+        ],
+        "cover": true
+      },
+      "603381": {
+        "name": "永臻股份",
+        "theme": "液冷",
+        "source": "active_membership",
+        "plates": [
+          "机器人概念",
+          "光伏",
+          "储能"
+        ],
+        "cover": true
+      },
+      "603396": {
+        "name": "金辰股份",
+        "theme": "太空光伏",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "光伏",
+          "专精特新"
+        ],
+        "cover": true
+      },
+      "603706": {
+        "name": "东方环宇",
+        "theme": "天然气",
+        "source": "active_membership",
+        "plates": [
+          "天然气"
+        ],
+        "cover": true
+      },
+      "603986": {
+        "name": "兆易创新",
+        "theme": "存储",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "机器人概念",
+          "光伏"
+        ],
+        "cover": true
+      },
+      "605166": {
+        "name": "聚合顺",
+        "theme": "杭州",
+        "source": "active_membership",
+        "plates": [
+          "化工",
+          "杭州",
+          "新材料概念"
+        ],
+        "cover": true
+      },
+      "605378": {
+        "name": "野马电池",
+        "theme": "电气设备",
+        "source": "active_membership",
+        "plates": [
+          "电气设备",
+          "生育概念",
+          "智能电网"
+        ],
+        "cover": true
+      },
+      "688244": {
+        "name": "永信至诚",
+        "theme": "信创",
+        "source": "active_membership",
+        "plates": [
+          "AI应用",
+          "军工",
+          "信创"
+        ],
+        "cover": true
+      },
+      "688256": {
+        "name": "寒武纪",
+        "theme": "阿里巴巴概念",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "阿里巴巴概念",
+          "东数西算"
+        ],
+        "cover": true
+      },
+      "688309": {
+        "name": "恒誉科技",
+        "theme": "碳中和",
+        "source": "active_membership",
+        "plates": [
+          "碳中和",
+          "环保",
+          "专精特新"
+        ],
+        "cover": true
+      },
+      "688347": {
+        "name": "华虹宏力",
+        "theme": "存储",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "存储",
+          "MCU"
+        ],
+        "cover": true
+      },
+      "688825": {
+        "name": "长鑫科技",
+        "theme": "字节概念",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "字节概念",
+          "阿里巴巴概念"
+        ],
+        "cover": true
+      }
+    },
+    "cards": [
+      {
+        "code": "801676",
+        "name": "地产链",
+        "members": 398,
+        "auction": 394,
+        "active": 3,
+        "mean_pct": -0.576,
+        "rank": 1,
+        "noise": false
+      },
+      {
+        "code": "801346",
+        "name": "智能电网",
+        "members": 504,
+        "auction": 489,
+        "active": 3,
+        "mean_pct": -0.611,
+        "rank": 2,
+        "noise": false
+      },
+      {
+        "code": "801045",
+        "name": "医药",
+        "members": 696,
+        "auction": 675,
+        "active": 3,
+        "mean_pct": -0.594,
+        "rank": 3,
+        "noise": false
+      },
+      {
+        "code": "801027",
+        "name": "银行",
+        "members": 42,
+        "auction": 42,
+        "active": 0,
+        "mean_pct": -0.124,
+        "rank": 5,
+        "noise": false
+      },
+      {
+        "code": "801039",
+        "name": "机场航空",
+        "members": 24,
+        "auction": 24,
+        "active": 0,
+        "mean_pct": -0.235,
+        "rank": 6,
+        "noise": false
+      },
+      {
+        "code": "801117",
+        "name": "港口",
+        "members": 22,
+        "auction": 22,
+        "active": 0,
+        "mean_pct": -0.251,
+        "rank": 7,
+        "noise": false
+      },
+      {
+        "code": "801467",
+        "name": "REITs",
+        "members": 40,
+        "auction": 40,
+        "active": 1,
+        "mean_pct": -0.249,
+        "rank": 8,
+        "noise": false
+      },
+      {
+        "code": "801137",
+        "name": "醋酸",
+        "members": 5,
+        "auction": 5,
+        "active": 0,
+        "mean_pct": -0.434,
+        "rank": 9,
+        "noise": false
+      },
+      {
+        "code": "801071",
+        "name": "保险",
+        "members": 8,
+        "auction": 7,
+        "active": 0,
+        "mean_pct": -0.331,
+        "rank": 10,
+        "noise": false
+      },
+      {
+        "code": "801733",
+        "name": "中特估",
+        "members": 103,
+        "auction": 103,
+        "active": 0,
+        "mean_pct": -0.302,
+        "rank": 11,
+        "noise": false
+      },
+      {
+        "code": "801081",
+        "name": "证券",
+        "members": 48,
+        "auction": 48,
+        "active": 0,
+        "mean_pct": -0.31,
+        "rank": 12,
+        "noise": false
+      },
+      {
+        "code": "801246",
+        "name": "水务",
+        "members": 23,
+        "auction": 23,
+        "active": 0,
+        "mean_pct": -0.33,
+        "rank": 14,
+        "noise": false
+      },
+      {
+        "code": "801636",
+        "name": "露营经济",
+        "members": 41,
+        "auction": 40,
+        "active": 1,
+        "mean_pct": -0.406,
+        "rank": 17,
+        "noise": false
+      },
+      {
+        "code": "801662",
+        "name": "火电灵活改造",
+        "members": 13,
+        "auction": 13,
+        "active": 0,
+        "mean_pct": -0.433,
+        "rank": 19,
+        "noise": false
+      },
+      {
+        "code": "801234",
+        "name": "航运",
+        "members": 61,
+        "auction": 59,
+        "active": 0,
+        "mean_pct": -0.422,
+        "rank": 20,
+        "noise": false
+      },
+      {
+        "code": "801243",
+        "name": "宠物经济",
+        "members": 112,
+        "auction": 106,
+        "active": 0,
+        "mean_pct": -0.482,
+        "rank": 21,
+        "noise": false
+      },
+      {
+        "code": "801973",
+        "name": "保健品",
+        "members": 91,
+        "auction": 89,
+        "active": 0,
+        "mean_pct": -0.498,
+        "rank": 23,
+        "noise": false
+      },
+      {
+        "code": "801956",
+        "name": "卫生护理",
+        "members": 11,
+        "auction": 11,
+        "active": 0,
+        "mean_pct": -0.468,
+        "rank": 24,
+        "noise": false
+      },
+      {
+        "code": "801773",
+        "name": "热力",
+        "members": 27,
+        "auction": 27,
+        "active": 0,
+        "mean_pct": -0.451,
+        "rank": 25,
+        "noise": false
+      },
+      {
+        "code": "801092",
+        "name": "铅酸电池",
+        "members": 10,
+        "auction": 10,
+        "active": 0,
+        "mean_pct": -0.471,
+        "rank": 26,
+        "noise": false
+      },
+      {
+        "code": "801471",
+        "name": "免税",
+        "members": 42,
+        "auction": 42,
+        "active": 2,
+        "mean_pct": -0.471,
+        "rank": 27,
+        "noise": false
+      },
+      {
+        "code": "801040",
+        "name": "造纸",
+        "members": 30,
+        "auction": 30,
+        "active": 0,
+        "mean_pct": -0.498,
+        "rank": 29,
+        "noise": false
+      },
+      {
+        "code": "801391",
+        "name": "美容护理",
+        "members": 50,
+        "auction": 49,
+        "active": 0,
+        "mean_pct": -0.535,
+        "rank": 30,
+        "noise": false
+      },
+      {
+        "code": "801580",
+        "name": "发电机",
+        "members": 41,
+        "auction": 41,
+        "active": 0,
+        "mean_pct": -0.509,
+        "rank": 31,
+        "noise": false
+      },
+      {
+        "code": "801200",
+        "name": "互联网医疗",
+        "members": 59,
+        "auction": 56,
+        "active": 0,
+        "mean_pct": -0.524,
+        "rank": 32,
+        "noise": false
+      },
+      {
+        "code": "801184",
+        "name": "包装印刷",
+        "members": 80,
+        "auction": 75,
+        "active": 0,
+        "mean_pct": -0.552,
+        "rank": 35,
+        "noise": false
+      },
+      {
+        "code": "801825",
+        "name": "烟花爆竹",
+        "members": 8,
+        "auction": 8,
+        "active": 0,
+        "mean_pct": -0.456,
+        "rank": 36,
+        "noise": false
+      },
+      {
+        "code": "801654",
+        "name": "眼科医疗",
+        "members": 47,
+        "auction": 46,
+        "active": 0,
+        "mean_pct": -0.575,
+        "rank": 38,
+        "noise": false
+      },
+      {
+        "code": "801332",
+        "name": "大麻",
+        "members": 58,
+        "auction": 58,
+        "active": 0,
+        "mean_pct": -0.576,
+        "rank": 39,
+        "noise": false
+      },
+      {
+        "code": "801100",
+        "name": "生育概念",
+        "members": 231,
+        "auction": 223,
+        "active": 3,
+        "mean_pct": -0.578,
+        "rank": 40,
+        "noise": false
+      },
+      {
+        "code": "801210",
+        "name": "操作系统",
+        "members": 44,
+        "auction": 44,
+        "active": 2,
+        "mean_pct": -0.749,
+        "rank": 43,
+        "noise": false
+      },
+      {
+        "code": "801128",
+        "name": "国产软件",
+        "members": 209,
+        "auction": 205,
+        "active": 3,
+        "mean_pct": -0.594,
+        "rank": 45,
+        "noise": false
+      },
+      {
+        "code": "801035",
+        "name": "酿酒",
+        "members": 87,
+        "auction": 86,
+        "active": 2,
+        "mean_pct": -0.54,
+        "rank": 47,
+        "noise": false
+      },
+      {
+        "code": "801220",
+        "name": "食品饮料",
+        "members": 227,
+        "auction": 218,
+        "active": 4,
+        "mean_pct": -0.64,
+        "rank": 52,
+        "noise": false
+      },
+      {
+        "code": "801069",
+        "name": "家电",
+        "members": 184,
+        "auction": 169,
+        "active": 5,
+        "mean_pct": -0.704,
+        "rank": 64,
+        "noise": false
+      },
+      {
+        "code": "801408",
+        "name": "智能家居",
+        "members": 180,
+        "auction": 170,
+        "active": 2,
+        "mean_pct": -0.69,
+        "rank": 66,
+        "noise": false
+      },
+      {
+        "code": "801148",
+        "name": "碳中和",
+        "members": 297,
+        "auction": 291,
+        "active": 5,
+        "mean_pct": -0.732,
+        "rank": 85,
+        "noise": false
+      },
+      {
+        "code": "801284",
+        "name": "举牌",
+        "members": 92,
+        "auction": 92,
+        "active": 2,
+        "mean_pct": -0.479,
+        "rank": 89,
+        "noise": false
+      },
+      {
+        "code": "801076",
+        "name": "乡村振兴",
+        "members": 243,
+        "auction": 226,
+        "active": 2,
+        "mean_pct": -0.774,
+        "rank": 101,
+        "noise": false
+      },
+      {
+        "code": "801437",
+        "name": "传感器",
+        "members": 185,
+        "auction": 174,
+        "active": 2,
+        "mean_pct": -0.752,
+        "rank": 106,
+        "noise": false
+      },
+      {
+        "code": "801132",
+        "name": "粤港澳",
+        "members": 256,
+        "auction": 247,
+        "active": 3,
+        "mean_pct": -0.839,
+        "rank": 119,
+        "noise": false
+      },
+      {
+        "code": "801301",
+        "name": "体育产业",
+        "members": 213,
+        "auction": 207,
+        "active": 2,
+        "mean_pct": -0.756,
+        "rank": 123,
+        "noise": false
+      },
+      {
+        "code": "801399",
+        "name": "智慧城市",
+        "members": 202,
+        "auction": 191,
+        "active": 3,
+        "mean_pct": -0.848,
+        "rank": 124,
+        "noise": false
+      },
+      {
+        "code": "801177",
+        "name": "无人机",
+        "members": 383,
+        "auction": 372,
+        "active": 4,
+        "mean_pct": -0.869,
+        "rank": 127,
+        "noise": false
+      },
+      {
+        "code": "801146",
+        "name": "阿里巴巴概念",
+        "members": 284,
+        "auction": 275,
+        "active": 5,
+        "mean_pct": -0.897,
+        "rank": 132,
+        "noise": false
+      },
+      {
+        "code": "801153",
+        "name": "创投",
+        "members": 274,
+        "auction": 271,
+        "active": 5,
+        "mean_pct": -0.812,
+        "rank": 134,
+        "noise": false
+      },
+      {
+        "code": "801182",
+        "name": "雄安新区",
+        "members": 118,
+        "auction": 117,
+        "active": 2,
+        "mean_pct": -0.841,
+        "rank": 138,
+        "noise": false
+      },
+      {
+        "code": "801075",
+        "name": "自主可控",
+        "members": 59,
+        "auction": 58,
+        "active": 2,
+        "mean_pct": -0.913,
+        "rank": 140,
+        "noise": false
+      },
+      {
+        "code": "801632",
+        "name": "新型城镇化",
+        "members": 215,
+        "auction": 208,
+        "active": 2,
+        "mean_pct": -0.839,
+        "rank": 142,
+        "noise": false
+      },
+      {
+        "code": "801375",
+        "name": "新材料概念",
+        "members": 279,
+        "auction": 274,
+        "active": 4,
+        "mean_pct": -0.888,
+        "rank": 146,
+        "noise": false
+      },
+      {
+        "code": "801306",
+        "name": "深圳",
+        "members": 269,
+        "auction": 269,
+        "active": 4,
+        "mean_pct": -0.89,
+        "rank": 148,
+        "noise": false
+      },
+      {
+        "code": "801719",
+        "name": "腾讯概念",
+        "members": 214,
+        "auction": 209,
+        "active": 3,
+        "mean_pct": -1.046,
+        "rank": 166,
+        "noise": false
+      },
+      {
+        "code": "801553",
+        "name": "元宇宙",
+        "members": 363,
+        "auction": 355,
+        "active": 3,
+        "mean_pct": -1.063,
+        "rank": 167,
+        "noise": false
+      },
+      {
+        "code": "801637",
+        "name": "文创产品",
+        "members": 148,
+        "auction": 144,
+        "active": 4,
+        "mean_pct": -1.086,
+        "rank": 170,
+        "noise": false
+      },
+      {
+        "code": "801196",
+        "name": "LED",
+        "members": 36,
+        "auction": 36,
+        "active": 2,
+        "mean_pct": -1.102,
+        "rank": 173,
+        "noise": false
+      },
+      {
+        "code": "801169",
+        "name": "VR/AR/MR",
+        "members": 270,
+        "auction": 266,
+        "active": 4,
+        "mean_pct": -1.172,
+        "rank": 177,
+        "noise": false
+      },
+      {
+        "code": "801371",
+        "name": "垃圾分类",
+        "members": 25,
+        "auction": 23,
+        "active": 2,
+        "mean_pct": -1.749,
+        "rank": 193,
+        "noise": false
+      },
+      {
+        "code": "801074",
+        "name": "核电",
+        "members": 386,
+        "auction": 374,
+        "active": 5,
+        "mean_pct": -0.722,
+        "rank": 195,
+        "noise": false
+      },
+      {
+        "code": "801439",
+        "name": "网红经济",
+        "members": 272,
+        "auction": 267,
+        "active": 5,
+        "mean_pct": -1.068,
+        "rank": 201,
+        "noise": false
+      },
+      {
+        "code": "801631",
+        "name": "次新股",
+        "members": 159,
+        "auction": 84,
+        "active": 2,
+        "mean_pct": -0.721,
+        "rank": 202,
+        "noise": false
+      },
+      {
+        "code": "801059",
+        "name": "字节概念",
+        "members": 198,
+        "auction": 193,
+        "active": 6,
+        "mean_pct": -1.248,
+        "rank": 204,
+        "noise": false
+      },
+      {
+        "code": "801248",
+        "name": "智能驾驶",
+        "members": 580,
+        "auction": 551,
+        "active": 5,
+        "mean_pct": -0.828,
+        "rank": 205,
+        "noise": false
+      },
+      {
+        "code": "801080",
+        "name": "煤炭",
+        "members": 78,
+        "auction": 78,
+        "active": 1,
+        "mean_pct": -0.787,
+        "rank": 206,
+        "noise": false
+      },
+      {
+        "code": "801314",
+        "name": "ST板块",
+        "members": 193,
+        "auction": 188,
+        "active": 1,
+        "mean_pct": -0.955,
+        "rank": 207,
+        "noise": false
+      },
+      {
+        "code": "801950",
+        "name": "中欧概念",
+        "members": 62,
+        "auction": 61,
+        "active": 1,
+        "mean_pct": -0.939,
+        "rank": 208,
+        "noise": false
+      },
+      {
+        "code": "801579",
+        "name": "垃圾发电",
+        "members": 34,
+        "auction": 34,
+        "active": 1,
+        "mean_pct": -0.957,
+        "rank": 209,
+        "noise": false
+      },
+      {
+        "code": "801216",
+        "name": "PCB概念",
+        "members": 248,
+        "auction": 242,
+        "active": 3,
+        "mean_pct": -1.119,
+        "rank": 210,
+        "noise": false
+      },
+      {
+        "code": "801120",
+        "name": "电力",
+        "members": 383,
+        "auction": 381,
+        "active": 5,
+        "mean_pct": -0.675,
+        "rank": 211,
+        "noise": false
+      },
+      {
+        "code": "801932",
+        "name": "海洋经济",
+        "members": 298,
+        "auction": 289,
+        "active": 5,
+        "mean_pct": -0.89,
+        "rank": 212,
+        "noise": false
+      },
+      {
+        "code": "801657",
+        "name": "减速器",
+        "members": 120,
+        "auction": 111,
+        "active": 0,
+        "mean_pct": -1.016,
+        "rank": 213,
+        "noise": false
+      },
+      {
+        "code": "801660",
+        "name": "通信",
+        "members": 755,
+        "auction": 731,
+        "active": 9,
+        "mean_pct": -1.014,
+        "rank": 214,
+        "noise": false
+      },
+      {
+        "code": "801178",
+        "name": "储能",
+        "members": 800,
+        "auction": 774,
+        "active": 7,
+        "mean_pct": -0.738,
+        "rank": 215,
+        "noise": false
+      },
+      {
+        "code": "801053",
+        "name": "零售",
+        "members": 210,
+        "auction": 210,
+        "active": 4,
+        "mean_pct": -0.624,
+        "rank": 216,
+        "noise": false
+      },
+      {
+        "code": "801046",
+        "name": "医疗器械",
+        "members": 314,
+        "auction": 298,
+        "active": 3,
+        "mean_pct": -0.615,
+        "rank": 217,
+        "noise": false
+      },
+      {
+        "code": "801522",
+        "name": "专精特新",
+        "members": 807,
+        "auction": 629,
+        "active": 5,
+        "mean_pct": -0.884,
+        "rank": 218,
+        "noise": false
+      },
+      {
+        "code": "801787",
+        "name": "实控人变更",
+        "members": 235,
+        "auction": 233,
+        "active": 2,
+        "mean_pct": -0.799,
+        "rank": 219,
+        "noise": false
+      },
+      {
+        "code": "801087",
+        "name": "风电",
+        "members": 333,
+        "auction": 319,
+        "active": 2,
+        "mean_pct": -0.768,
+        "rank": 220,
+        "noise": false
+      },
+      {
+        "code": "801088",
+        "name": "有色金属",
+        "members": 241,
+        "auction": 233,
+        "active": 0,
+        "mean_pct": -0.877,
+        "rank": 221,
+        "noise": false
+      },
+      {
+        "code": "801656",
+        "name": "热泵",
+        "members": 38,
+        "auction": 38,
+        "active": 1,
+        "mean_pct": -0.831,
+        "rank": 222,
+        "noise": false
+      },
+      {
+        "code": "801067",
+        "name": "面板",
+        "members": 245,
+        "auction": 243,
+        "active": 3,
+        "mean_pct": -0.945,
+        "rank": 223,
+        "noise": false
+      },
+      {
+        "code": "801086",
+        "name": "玻璃",
+        "members": 29,
+        "auction": 29,
+        "active": 0,
+        "mean_pct": -0.946,
+        "rank": 224,
+        "noise": false
+      },
+      {
+        "code": "801418",
+        "name": "民营医院",
+        "members": 56,
+        "auction": 56,
+        "active": 1,
+        "mean_pct": -0.956,
+        "rank": 225,
+        "noise": false
+      },
+      {
+        "code": "801493",
+        "name": "光储充一体化",
+        "members": 27,
+        "auction": 27,
+        "active": 0,
+        "mean_pct": -1.021,
+        "rank": 226,
+        "noise": false
+      },
+      {
+        "code": "801321",
+        "name": "广电网",
+        "members": 22,
+        "auction": 21,
+        "active": 0,
+        "mean_pct": -1.894,
+        "rank": 227,
+        "noise": false
+      },
+      {
+        "code": "801235",
+        "name": "化工",
+        "members": 755,
+        "auction": 713,
+        "active": 6,
+        "mean_pct": -0.706,
+        "rank": 228,
+        "noise": false
+      },
+      {
+        "code": "801062",
+        "name": "军工",
+        "members": 739,
+        "auction": 709,
+        "active": 10,
+        "mean_pct": -0.889,
+        "rank": 229,
+        "noise": false
+      },
+      {
+        "code": "801093",
+        "name": "天然气",
+        "members": 127,
+        "auction": 118,
+        "active": 1,
+        "mean_pct": -0.985,
+        "rank": 230,
+        "noise": false
+      },
+      {
+        "code": "801052",
+        "name": "环保",
+        "members": 397,
+        "auction": 383,
+        "active": 5,
+        "mean_pct": -0.778,
+        "rank": 231,
+        "noise": false
+      },
+      {
+        "code": "801464",
+        "name": "农业",
+        "members": 369,
+        "auction": 349,
+        "active": 3,
+        "mean_pct": -0.653,
+        "rank": 232,
+        "noise": false
+      },
+      {
+        "code": "803014",
+        "name": "海峡两岸",
+        "members": 304,
+        "auction": 297,
+        "active": 2,
+        "mean_pct": -0.853,
+        "rank": 234,
+        "noise": false
+      },
+      {
+        "code": "801057",
+        "name": "石油石化",
+        "members": 68,
+        "auction": 67,
+        "active": 1,
+        "mean_pct": -1.178,
+        "rank": 235,
+        "noise": false
+      },
+      {
+        "code": "801270",
+        "name": "基础建设",
+        "members": 519,
+        "auction": 505,
+        "active": 5,
+        "mean_pct": -0.65,
+        "rank": 236,
+        "noise": false
+      },
+      {
+        "code": "801001",
+        "name": "芯片",
+        "members": 1147,
+        "auction": 1110,
+        "active": 18,
+        "mean_pct": -0.933,
+        "rank": 237,
+        "noise": false
+      },
+      {
+        "code": "801159",
+        "name": "机器人概念",
+        "members": 1323,
+        "auction": 1269,
+        "active": 13,
+        "mean_pct": -0.834,
+        "rank": 238,
+        "noise": false
+      },
+      {
+        "code": "801016",
+        "name": "稀土永磁",
+        "members": 80,
+        "auction": 76,
+        "active": 1,
+        "mean_pct": -1.251,
+        "rank": 239,
+        "noise": false
+      },
+      {
+        "code": "801095",
+        "name": "游戏",
+        "members": 96,
+        "auction": 95,
+        "active": 4,
+        "mean_pct": -1.932,
+        "rank": 240,
+        "noise": false
+      },
+      {
+        "code": "801031",
+        "name": "文化传媒",
+        "members": 245,
+        "auction": 242,
+        "active": 7,
+        "mean_pct": -1.483,
+        "rank": 241,
+        "noise": false
+      },
+      {
+        "code": "801070",
+        "name": "光伏",
+        "members": 680,
+        "auction": 657,
+        "active": 10,
+        "mean_pct": -0.831,
+        "rank": 242,
+        "noise": false
+      },
+      {
+        "code": "803023",
+        "name": "AI应用",
+        "members": 733,
+        "auction": 718,
+        "active": 10,
+        "mean_pct": -0.857,
+        "rank": 243,
+        "noise": false
+      },
+      {
+        "code": "801003",
+        "name": "5G",
+        "members": 352,
+        "auction": 344,
+        "active": 6,
+        "mean_pct": -1.099,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801017",
+        "name": "苹果概念",
+        "members": 139,
+        "auction": 137,
+        "active": 2,
+        "mean_pct": -1.109,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801026",
+        "name": "水泥",
+        "members": 41,
+        "auction": 41,
+        "active": 2,
+        "mean_pct": -0.406,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801037",
+        "name": "养殖业",
+        "members": 43,
+        "auction": 43,
+        "active": 2,
+        "mean_pct": -1.313,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801064",
+        "name": "无人驾驶",
+        "members": 368,
+        "auction": 350,
+        "active": 3,
+        "mean_pct": -0.834,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801065",
+        "name": "注册制次新股",
+        "members": 84,
+        "auction": 84,
+        "active": 2,
+        "mean_pct": -0.721,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801073",
+        "name": "网络安全",
+        "members": 138,
+        "auction": 136,
+        "active": 3,
+        "mean_pct": -0.806,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801107",
+        "name": "小米概念",
+        "members": 263,
+        "auction": 256,
+        "active": 3,
+        "mean_pct": -0.907,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801134",
+        "name": "工业互联网",
+        "members": 260,
+        "auction": 253,
+        "active": 3,
+        "mean_pct": -0.808,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801141",
+        "name": "水产品",
+        "members": 11,
+        "auction": 11,
+        "active": 2,
+        "mean_pct": -2.747,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801142",
+        "name": "蚂蚁概念",
+        "members": 101,
+        "auction": 100,
+        "active": 2,
+        "mean_pct": -0.86,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801152",
+        "name": "OLED",
+        "members": 147,
+        "auction": 146,
+        "active": 2,
+        "mean_pct": -0.962,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801158",
+        "name": "网络直播",
+        "members": 144,
+        "auction": 140,
+        "active": 2,
+        "mean_pct": -1.031,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801160",
+        "name": "跨境电商",
+        "members": 232,
+        "auction": 217,
+        "active": 4,
+        "mean_pct": -0.72,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801161",
+        "name": "白酒",
+        "members": 54,
+        "auction": 53,
+        "active": 2,
+        "mean_pct": -0.491,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801175",
+        "name": "聚丙烯",
+        "members": 20,
+        "auction": 20,
+        "active": 2,
+        "mean_pct": -2.147,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801181",
+        "name": "物联网",
+        "members": 268,
+        "auction": 243,
+        "active": 2,
+        "mean_pct": -0.709,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801185",
+        "name": "MCU",
+        "members": 63,
+        "auction": 61,
+        "active": 2,
+        "mean_pct": -0.713,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801206",
+        "name": "光模块",
+        "members": 128,
+        "auction": 124,
+        "active": 5,
+        "mean_pct": -1.379,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801207",
+        "name": "专用设备",
+        "members": 180,
+        "auction": 157,
+        "active": 2,
+        "mean_pct": -0.795,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801245",
+        "name": "污水处理",
+        "members": 181,
+        "auction": 176,
+        "active": 2,
+        "mean_pct": -0.74,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801252",
+        "name": "预制菜",
+        "members": 81,
+        "auction": 77,
+        "active": 3,
+        "mean_pct": -0.872,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801256",
+        "name": "贬值受益",
+        "members": 342,
+        "auction": 296,
+        "active": 3,
+        "mean_pct": -0.725,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801260",
+        "name": "云计算",
+        "members": 203,
+        "auction": 197,
+        "active": 4,
+        "mean_pct": -0.835,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801403",
+        "name": "固废处理",
+        "members": 103,
+        "auction": 102,
+        "active": 2,
+        "mean_pct": -1.068,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801412",
+        "name": "新零售",
+        "members": 178,
+        "auction": 178,
+        "active": 4,
+        "mean_pct": -0.661,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801421",
+        "name": "汽车电子",
+        "members": 250,
+        "auction": 238,
+        "active": 2,
+        "mean_pct": -0.864,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801428",
+        "name": "参股券商",
+        "members": 122,
+        "auction": 122,
+        "active": 3,
+        "mean_pct": -0.544,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801446",
+        "name": "异质结电池",
+        "members": 67,
+        "auction": 65,
+        "active": 2,
+        "mean_pct": -1.074,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801447",
+        "name": "华为鲲鹏",
+        "members": 111,
+        "auction": 103,
+        "active": 2,
+        "mean_pct": -0.564,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801454",
+        "name": "磷酸铁锂",
+        "members": 60,
+        "auction": 59,
+        "active": 2,
+        "mean_pct": -0.79,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801499",
+        "name": "光伏设备",
+        "members": 36,
+        "auction": 36,
+        "active": 2,
+        "mean_pct": -1.466,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801542",
+        "name": "工业母机",
+        "members": 121,
+        "auction": 116,
+        "active": 2,
+        "mean_pct": -0.922,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801562",
+        "name": "电气设备",
+        "members": 227,
+        "auction": 223,
+        "active": 3,
+        "mean_pct": -0.553,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801564",
+        "name": "绿色电力",
+        "members": 346,
+        "auction": 345,
+        "active": 4,
+        "mean_pct": -0.723,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801565",
+        "name": "海工装备",
+        "members": 249,
+        "auction": 240,
+        "active": 3,
+        "mean_pct": -0.834,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801616",
+        "name": "东数西算",
+        "members": 120,
+        "auction": 116,
+        "active": 3,
+        "mean_pct": -0.825,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801619",
+        "name": "土壤修复",
+        "members": 48,
+        "auction": 48,
+        "active": 2,
+        "mean_pct": -1.086,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801638",
+        "name": "猴痘概念",
+        "members": 72,
+        "auction": 72,
+        "active": 2,
+        "mean_pct": -0.481,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801643",
+        "name": "比亚迪产业链",
+        "members": 321,
+        "auction": 297,
+        "active": 3,
+        "mean_pct": -0.851,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801658",
+        "name": "先进封装",
+        "members": 205,
+        "auction": 200,
+        "active": 3,
+        "mean_pct": -1.008,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801663",
+        "name": "信创",
+        "members": 301,
+        "auction": 290,
+        "active": 4,
+        "mean_pct": -0.691,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801665",
+        "name": "芯片设计",
+        "members": 51,
+        "auction": 51,
+        "active": 2,
+        "mean_pct": -0.855,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801678",
+        "name": "物业服务",
+        "members": 116,
+        "auction": 116,
+        "active": 2,
+        "mean_pct": -0.567,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801681",
+        "name": "数字芯片",
+        "members": 36,
+        "auction": 36,
+        "active": 2,
+        "mean_pct": -0.817,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801695",
+        "name": "CPO/MPO",
+        "members": 209,
+        "auction": 207,
+        "active": 6,
+        "mean_pct": -1.262,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801700",
+        "name": "高压快充",
+        "members": 80,
+        "auction": 78,
+        "active": 2,
+        "mean_pct": -0.633,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801716",
+        "name": "光芯片",
+        "members": 35,
+        "auction": 35,
+        "active": 2,
+        "mean_pct": -1.306,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801722",
+        "name": "存储",
+        "members": 223,
+        "auction": 221,
+        "active": 4,
+        "mean_pct": -1.01,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801725",
+        "name": "数据要素",
+        "members": 345,
+        "auction": 330,
+        "active": 3,
+        "mean_pct": -0.842,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801730",
+        "name": "液冷",
+        "members": 242,
+        "auction": 235,
+        "active": 5,
+        "mean_pct": -1.066,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801774",
+        "name": "英伟达概念",
+        "members": 84,
+        "auction": 84,
+        "active": 4,
+        "mean_pct": -1.276,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801775",
+        "name": "数据安全",
+        "members": 124,
+        "auction": 121,
+        "active": 2,
+        "mean_pct": -0.761,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801785",
+        "name": "变压器",
+        "members": 57,
+        "auction": 56,
+        "active": 2,
+        "mean_pct": -0.284,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801786",
+        "name": "影视院线",
+        "members": 24,
+        "auction": 24,
+        "active": 4,
+        "mean_pct": -2.82,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801801",
+        "name": "互动影游",
+        "members": 23,
+        "auction": 23,
+        "active": 3,
+        "mean_pct": -3.475,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801803",
+        "name": "短剧",
+        "members": 94,
+        "auction": 93,
+        "active": 5,
+        "mean_pct": -2.153,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801808",
+        "name": "GPU",
+        "members": 23,
+        "auction": 23,
+        "active": 2,
+        "mean_pct": -0.162,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801857",
+        "name": "PPP概念",
+        "members": 190,
+        "auction": 190,
+        "active": 2,
+        "mean_pct": -0.857,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801872",
+        "name": "谷子经济",
+        "members": 137,
+        "auction": 133,
+        "active": 4,
+        "mean_pct": -1.077,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801886",
+        "name": "杭州",
+        "members": 218,
+        "auction": 217,
+        "active": 4,
+        "mean_pct": -0.923,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801975",
+        "name": "可控核聚变",
+        "members": 117,
+        "auction": 113,
+        "active": 2,
+        "mean_pct": -0.803,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "803018",
+        "name": "光纤概念",
+        "members": 126,
+        "auction": 121,
+        "active": 2,
+        "mean_pct": -1.26,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "803022",
+        "name": "太空光伏",
+        "members": 30,
+        "auction": 30,
+        "active": 2,
+        "mean_pct": -1.147,
+        "rank": null,
+        "noise": false
+      }
+    ],
+    "covered": 54,
+    "sources": {
+      "limit_reason": 9,
+      "active_membership": 45
+    },
+    "noise": [],
+    "required": {
+      "光模块": true,
+      "CPO": false,
+      "算力": false,
+      "芯片": true,
+      "影视院线": true,
+      "短剧": true,
+      "游戏": true,
+      "机器人概念": true
+    },
+    "ranks": {
+      "1-40": 30,
+      "41-203": 30,
+      "204-243": 39,
+      "unranked": 64,
+      "min": 1,
+      "median": 146,
+      "max": 243
+    }
+  },
+  "V3 k=3": {
+    "stocks": {
+      "000533": {
+        "name": "顺钠股份",
+        "theme": "智能电网",
+        "source": "limit_reason",
+        "plates": [
+          "储能",
+          "家电",
+          "阿里巴巴概念"
+        ],
+        "cover": true
+      },
+      "000707": {
+        "name": "双环科技",
+        "theme": "农业",
+        "source": "active_membership",
+        "plates": [
+          "储能",
+          "化工",
+          "农业"
+        ],
+        "cover": true
+      },
+      "000819": {
+        "name": "岳阳兴长",
+        "theme": "化工",
+        "source": "limit_reason",
+        "plates": [
+          "光伏",
+          "化工",
+          "石油石化"
+        ],
+        "cover": true
+      },
+      "000826": {
+        "name": "*ST启环",
+        "theme": "碳中和",
+        "source": "active_membership",
+        "plates": [
+          "碳中和",
+          "电力",
+          "环保"
+        ],
+        "cover": true
+      },
+      "001358": {
+        "name": "兴欣新材",
+        "theme": "碳中和",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "化工",
+          "碳中和"
+        ],
+        "cover": true
+      },
+      "002046": {
+        "name": "国机精工",
+        "theme": "核电",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "机器人概念",
+          "光伏"
+        ],
+        "cover": true
+      },
+      "002086": {
+        "name": "东方海洋",
+        "theme": "海洋经济",
+        "source": "active_membership",
+        "plates": [
+          "海洋经济",
+          "医疗器械",
+          "农业"
+        ],
+        "cover": true
+      },
+      "002148": {
+        "name": "北纬科技",
+        "theme": "游戏",
+        "source": "limit_reason",
+        "plates": [
+          "芯片",
+          "机器人概念",
+          "通信"
+        ],
+        "cover": true
+      },
+      "002187": {
+        "name": "广百股份",
+        "theme": "零售",
+        "source": "limit_reason",
+        "plates": [
+          "网红经济",
+          "创投",
+          "谷子经济"
+        ],
+        "cover": true
+      },
+      "002242": {
+        "name": "九阳股份",
+        "theme": "家电",
+        "source": "active_membership",
+        "plates": [
+          "机器人概念",
+          "家电",
+          "电力"
+        ],
+        "cover": true
+      },
+      "002384": {
+        "name": "东山精密",
+        "theme": "CPO/MPO",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "光伏",
+          "通信"
+        ],
+        "cover": true
+      },
+      "002419": {
+        "name": "天虹股份",
+        "theme": "零售",
+        "source": "limit_reason",
+        "plates": [
+          "AI应用",
+          "电力",
+          "新零售"
+        ],
+        "cover": true
+      },
+      "002451": {
+        "name": "摩恩电气",
+        "theme": "创投",
+        "source": "active_membership",
+        "plates": [
+          "机器人概念",
+          "光伏",
+          "军工"
+        ],
+        "cover": true
+      },
+      "002535": {
+        "name": "林州重机",
+        "theme": "煤炭",
+        "source": "active_membership",
+        "plates": [
+          "机器人概念",
+          "军工",
+          "储能"
+        ],
+        "cover": true
+      },
+      "002625": {
+        "name": "光启技术",
+        "theme": "新材料概念",
+        "source": "active_membership",
+        "plates": [
+          "机器人概念",
+          "军工",
+          "新材料概念"
+        ],
+        "cover": true
+      },
+      "002685": {
+        "name": "华东重机",
+        "theme": "信创",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "机器人概念",
+          "光伏"
+        ],
+        "cover": true
+      },
+      "002696": {
+        "name": "百洋股份",
+        "theme": "海洋经济",
+        "source": "active_membership",
+        "plates": [
+          "海洋经济",
+          "环保",
+          "食品饮料"
+        ],
+        "cover": true
+      },
+      "002724": {
+        "name": "海洋王",
+        "theme": "核电",
+        "source": "active_membership",
+        "plates": [
+          "AI应用",
+          "军工",
+          "核电"
+        ],
+        "cover": true
+      },
+      "002905": {
+        "name": "金逸影视",
+        "theme": "文化传媒",
+        "source": "limit_reason",
+        "plates": [
+          "文化传媒",
+          "影视院线",
+          "粤港澳"
+        ],
+        "cover": true
+      },
+      "002912": {
+        "name": "中新赛克",
+        "theme": "云计算",
+        "source": "active_membership",
+        "plates": [
+          "AI应用",
+          "智能驾驶",
+          "云计算"
+        ],
+        "cover": true
+      },
+      "002959": {
+        "name": "小熊电器",
+        "theme": "家电",
+        "source": "limit_reason",
+        "plates": [
+          "字节概念",
+          "家电",
+          "网红经济"
+        ],
+        "cover": true
+      },
+      "300308": {
+        "name": "中际旭创",
+        "theme": "CPO/MPO",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "通信",
+          "CPO/MPO"
+        ],
+        "cover": true
+      },
+      "300394": {
+        "name": "天孚通信",
+        "theme": "CPO/MPO",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "通信",
+          "CPO/MPO"
+        ],
+        "cover": true
+      },
+      "300502": {
+        "name": "新易盛",
+        "theme": "CPO/MPO",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "通信",
+          "CPO/MPO"
+        ],
+        "cover": true
+      },
+      "300530": {
+        "name": "领湃科技",
+        "theme": null,
+        "source": "UNKNOWN",
+        "plates": [
+          "储能"
+        ],
+        "cover": true
+      },
+      "300553": {
+        "name": "集智股份",
+        "theme": "液冷",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "机器人概念",
+          "军工"
+        ],
+        "cover": true
+      },
+      "300779": {
+        "name": "惠城环保",
+        "theme": "环保",
+        "source": "active_membership",
+        "plates": [
+          "化工",
+          "环保",
+          "稀土永磁"
+        ],
+        "cover": true
+      },
+      "300916": {
+        "name": "朗特智能",
+        "theme": "家电",
+        "source": "active_membership",
+        "plates": [
+          "机器人概念",
+          "通信",
+          "家电"
+        ],
+        "cover": true
+      },
+      "301697": {
+        "name": "贝特利",
+        "theme": "面板",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "光伏",
+          "化工"
+        ],
+        "cover": true
+      },
+      "600183": {
+        "name": "生益科技",
+        "theme": "5G",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "通信",
+          "5G"
+        ],
+        "cover": true
+      },
+      "600261": {
+        "name": "阳光照明",
+        "theme": "核电",
+        "source": "active_membership",
+        "plates": [
+          "核电",
+          "跨境电商",
+          "参股券商"
+        ],
+        "cover": true
+      },
+      "600327": {
+        "name": "大东方",
+        "theme": "网红经济",
+        "source": "active_membership",
+        "plates": [
+          "军工",
+          "网红经济",
+          "谷子经济"
+        ],
+        "cover": true
+      },
+      "600410": {
+        "name": "华胜天成",
+        "theme": "字节概念",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "机器人概念",
+          "AI应用"
+        ],
+        "cover": true
+      },
+      "600519": {
+        "name": "贵州茅台",
+        "theme": null,
+        "source": "UNKNOWN",
+        "plates": [],
+        "cover": false
+      },
+      "600715": {
+        "name": "文投控股",
+        "theme": "文化传媒",
+        "source": "limit_reason",
+        "plates": [
+          "AI应用",
+          "文化传媒",
+          "短剧"
+        ],
+        "cover": true
+      },
+      "600802": {
+        "name": "福建水泥",
+        "theme": "核电",
+        "source": "active_membership",
+        "plates": [
+          "核电",
+          "基础建设",
+          "参股券商"
+        ],
+        "cover": true
+      },
+      "600881": {
+        "name": "亚泰集团",
+        "theme": "参股券商",
+        "source": "active_membership",
+        "plates": [
+          "基础建设",
+          "参股券商",
+          "医疗器械"
+        ],
+        "cover": true
+      },
+      "600892": {
+        "name": "大晟文化",
+        "theme": "文化传媒",
+        "source": "active_membership",
+        "plates": [
+          "AI应用",
+          "文化传媒",
+          "字节概念"
+        ],
+        "cover": true
+      },
+      "601138": {
+        "name": "工业富联",
+        "theme": "CPO/MPO",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "机器人概念",
+          "通信"
+        ],
+        "cover": true
+      },
+      "601599": {
+        "name": "浙文影业",
+        "theme": "文化传媒",
+        "source": "active_membership",
+        "plates": [
+          "AI应用",
+          "文化传媒",
+          "短剧"
+        ],
+        "cover": true
+      },
+      "603103": {
+        "name": "横店影视",
+        "theme": "文化传媒",
+        "source": "active_membership",
+        "plates": [
+          "AI应用",
+          "文化传媒",
+          "字节概念"
+        ],
+        "cover": true
+      },
+      "603258": {
+        "name": "电魂网络",
+        "theme": "文化传媒",
+        "source": "active_membership",
+        "plates": [
+          "AI应用",
+          "文化传媒",
+          "短剧"
+        ],
+        "cover": true
+      },
+      "603366": {
+        "name": "日出东方",
+        "theme": "文化传媒",
+        "source": "active_membership",
+        "plates": [
+          "光伏",
+          "文化传媒",
+          "储能"
+        ],
+        "cover": true
+      },
+      "603381": {
+        "name": "永臻股份",
+        "theme": "液冷",
+        "source": "active_membership",
+        "plates": [
+          "机器人概念",
+          "光伏",
+          "储能"
+        ],
+        "cover": true
+      },
+      "603396": {
+        "name": "金辰股份",
+        "theme": "中欧概念",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "光伏",
+          "专精特新"
+        ],
+        "cover": true
+      },
+      "603706": {
+        "name": "东方环宇",
+        "theme": "天然气",
+        "source": "active_membership",
+        "plates": [
+          "天然气"
+        ],
+        "cover": true
+      },
+      "603986": {
+        "name": "兆易创新",
+        "theme": "存储",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "机器人概念",
+          "光伏"
+        ],
+        "cover": true
+      },
+      "605166": {
+        "name": "聚合顺",
+        "theme": "杭州",
+        "source": "active_membership",
+        "plates": [
+          "化工",
+          "杭州",
+          "新材料概念"
+        ],
+        "cover": true
+      },
+      "605378": {
+        "name": "野马电池",
+        "theme": "电气设备",
+        "source": "active_membership",
+        "plates": [
+          "电气设备",
+          "生育概念",
+          "智能电网"
+        ],
+        "cover": true
+      },
+      "688244": {
+        "name": "永信至诚",
+        "theme": "信创",
+        "source": "active_membership",
+        "plates": [
+          "AI应用",
+          "军工",
+          "信创"
+        ],
+        "cover": true
+      },
+      "688256": {
+        "name": "寒武纪",
+        "theme": "阿里巴巴概念",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "阿里巴巴概念",
+          "东数西算"
+        ],
+        "cover": true
+      },
+      "688309": {
+        "name": "恒誉科技",
+        "theme": "碳中和",
+        "source": "active_membership",
+        "plates": [
+          "碳中和",
+          "环保",
+          "专精特新"
+        ],
+        "cover": true
+      },
+      "688347": {
+        "name": "华虹宏力",
+        "theme": "存储",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "存储"
+        ],
+        "cover": true
+      },
+      "688825": {
+        "name": "长鑫科技",
+        "theme": "字节概念",
+        "source": "active_membership",
+        "plates": [
+          "芯片",
+          "字节概念",
+          "阿里巴巴概念"
+        ],
+        "cover": true
+      }
+    },
+    "cards": [
+      {
+        "code": "801676",
+        "name": "地产链",
+        "members": 398,
+        "auction": 394,
+        "active": 3,
+        "mean_pct": -0.576,
+        "rank": 1,
+        "noise": false
+      },
+      {
+        "code": "801346",
+        "name": "智能电网",
+        "members": 504,
+        "auction": 489,
+        "active": 3,
+        "mean_pct": -0.611,
+        "rank": 2,
+        "noise": false
+      },
+      {
+        "code": "801045",
+        "name": "医药",
+        "members": 696,
+        "auction": 675,
+        "active": 3,
+        "mean_pct": -0.594,
+        "rank": 3,
+        "noise": false
+      },
+      {
+        "code": "801027",
+        "name": "银行",
+        "members": 42,
+        "auction": 42,
+        "active": 0,
+        "mean_pct": -0.124,
+        "rank": 5,
+        "noise": false
+      },
+      {
+        "code": "801039",
+        "name": "机场航空",
+        "members": 24,
+        "auction": 24,
+        "active": 0,
+        "mean_pct": -0.235,
+        "rank": 6,
+        "noise": false
+      },
+      {
+        "code": "801117",
+        "name": "港口",
+        "members": 22,
+        "auction": 22,
+        "active": 0,
+        "mean_pct": -0.251,
+        "rank": 7,
+        "noise": false
+      },
+      {
+        "code": "801467",
+        "name": "REITs",
+        "members": 40,
+        "auction": 40,
+        "active": 1,
+        "mean_pct": -0.249,
+        "rank": 8,
+        "noise": false
+      },
+      {
+        "code": "801137",
+        "name": "醋酸",
+        "members": 5,
+        "auction": 5,
+        "active": 0,
+        "mean_pct": -0.434,
+        "rank": 9,
+        "noise": false
+      },
+      {
+        "code": "801071",
+        "name": "保险",
+        "members": 8,
+        "auction": 7,
+        "active": 0,
+        "mean_pct": -0.331,
+        "rank": 10,
+        "noise": false
+      },
+      {
+        "code": "801733",
+        "name": "中特估",
+        "members": 103,
+        "auction": 103,
+        "active": 0,
+        "mean_pct": -0.302,
+        "rank": 11,
+        "noise": false
+      },
+      {
+        "code": "801081",
+        "name": "证券",
+        "members": 48,
+        "auction": 48,
+        "active": 0,
+        "mean_pct": -0.31,
+        "rank": 12,
+        "noise": false
+      },
+      {
+        "code": "801246",
+        "name": "水务",
+        "members": 23,
+        "auction": 23,
+        "active": 0,
+        "mean_pct": -0.33,
+        "rank": 14,
+        "noise": false
+      },
+      {
+        "code": "801636",
+        "name": "露营经济",
+        "members": 41,
+        "auction": 40,
+        "active": 1,
+        "mean_pct": -0.406,
+        "rank": 17,
+        "noise": false
+      },
+      {
+        "code": "801662",
+        "name": "火电灵活改造",
+        "members": 13,
+        "auction": 13,
+        "active": 0,
+        "mean_pct": -0.433,
+        "rank": 19,
+        "noise": false
+      },
+      {
+        "code": "801234",
+        "name": "航运",
+        "members": 61,
+        "auction": 59,
+        "active": 0,
+        "mean_pct": -0.422,
+        "rank": 20,
+        "noise": false
+      },
+      {
+        "code": "801243",
+        "name": "宠物经济",
+        "members": 112,
+        "auction": 106,
+        "active": 0,
+        "mean_pct": -0.482,
+        "rank": 21,
+        "noise": false
+      },
+      {
+        "code": "801973",
+        "name": "保健品",
+        "members": 91,
+        "auction": 89,
+        "active": 0,
+        "mean_pct": -0.498,
+        "rank": 23,
+        "noise": false
+      },
+      {
+        "code": "801956",
+        "name": "卫生护理",
+        "members": 11,
+        "auction": 11,
+        "active": 0,
+        "mean_pct": -0.468,
+        "rank": 24,
+        "noise": false
+      },
+      {
+        "code": "801773",
+        "name": "热力",
+        "members": 27,
+        "auction": 27,
+        "active": 0,
+        "mean_pct": -0.451,
+        "rank": 25,
+        "noise": false
+      },
+      {
+        "code": "801092",
+        "name": "铅酸电池",
+        "members": 10,
+        "auction": 10,
+        "active": 0,
+        "mean_pct": -0.471,
+        "rank": 26,
+        "noise": false
+      },
+      {
+        "code": "801471",
+        "name": "免税",
+        "members": 42,
+        "auction": 42,
+        "active": 2,
+        "mean_pct": -0.471,
+        "rank": 27,
+        "noise": false
+      },
+      {
+        "code": "801040",
+        "name": "造纸",
+        "members": 30,
+        "auction": 30,
+        "active": 0,
+        "mean_pct": -0.498,
+        "rank": 29,
+        "noise": false
+      },
+      {
+        "code": "801391",
+        "name": "美容护理",
+        "members": 50,
+        "auction": 49,
+        "active": 0,
+        "mean_pct": -0.535,
+        "rank": 30,
+        "noise": false
+      },
+      {
+        "code": "801580",
+        "name": "发电机",
+        "members": 41,
+        "auction": 41,
+        "active": 0,
+        "mean_pct": -0.509,
+        "rank": 31,
+        "noise": false
+      },
+      {
+        "code": "801200",
+        "name": "互联网医疗",
+        "members": 59,
+        "auction": 56,
+        "active": 0,
+        "mean_pct": -0.524,
+        "rank": 32,
+        "noise": false
+      },
+      {
+        "code": "801184",
+        "name": "包装印刷",
+        "members": 80,
+        "auction": 75,
+        "active": 0,
+        "mean_pct": -0.552,
+        "rank": 35,
+        "noise": false
+      },
+      {
+        "code": "801825",
+        "name": "烟花爆竹",
+        "members": 8,
+        "auction": 8,
+        "active": 0,
+        "mean_pct": -0.456,
+        "rank": 36,
+        "noise": false
+      },
+      {
+        "code": "801654",
+        "name": "眼科医疗",
+        "members": 47,
+        "auction": 46,
+        "active": 0,
+        "mean_pct": -0.575,
+        "rank": 38,
+        "noise": false
+      },
+      {
+        "code": "801332",
+        "name": "大麻",
+        "members": 58,
+        "auction": 58,
+        "active": 0,
+        "mean_pct": -0.576,
+        "rank": 39,
+        "noise": false
+      },
+      {
+        "code": "801100",
+        "name": "生育概念",
+        "members": 231,
+        "auction": 223,
+        "active": 3,
+        "mean_pct": -0.578,
+        "rank": 40,
+        "noise": false
+      },
+      {
+        "code": "801128",
+        "name": "国产软件",
+        "members": 209,
+        "auction": 205,
+        "active": 3,
+        "mean_pct": -0.594,
+        "rank": 45,
+        "noise": false
+      },
+      {
+        "code": "801220",
+        "name": "食品饮料",
+        "members": 227,
+        "auction": 218,
+        "active": 4,
+        "mean_pct": -0.64,
+        "rank": 52,
+        "noise": false
+      },
+      {
+        "code": "801069",
+        "name": "家电",
+        "members": 184,
+        "auction": 169,
+        "active": 5,
+        "mean_pct": -0.704,
+        "rank": 64,
+        "noise": false
+      },
+      {
+        "code": "801148",
+        "name": "碳中和",
+        "members": 297,
+        "auction": 291,
+        "active": 5,
+        "mean_pct": -0.732,
+        "rank": 85,
+        "noise": false
+      },
+      {
+        "code": "801132",
+        "name": "粤港澳",
+        "members": 256,
+        "auction": 247,
+        "active": 3,
+        "mean_pct": -0.839,
+        "rank": 119,
+        "noise": false
+      },
+      {
+        "code": "801399",
+        "name": "智慧城市",
+        "members": 202,
+        "auction": 191,
+        "active": 3,
+        "mean_pct": -0.848,
+        "rank": 124,
+        "noise": false
+      },
+      {
+        "code": "801177",
+        "name": "无人机",
+        "members": 383,
+        "auction": 372,
+        "active": 4,
+        "mean_pct": -0.869,
+        "rank": 127,
+        "noise": false
+      },
+      {
+        "code": "801146",
+        "name": "阿里巴巴概念",
+        "members": 284,
+        "auction": 275,
+        "active": 5,
+        "mean_pct": -0.897,
+        "rank": 132,
+        "noise": false
+      },
+      {
+        "code": "801153",
+        "name": "创投",
+        "members": 274,
+        "auction": 271,
+        "active": 5,
+        "mean_pct": -0.812,
+        "rank": 134,
+        "noise": false
+      },
+      {
+        "code": "801375",
+        "name": "新材料概念",
+        "members": 279,
+        "auction": 274,
+        "active": 4,
+        "mean_pct": -0.888,
+        "rank": 146,
+        "noise": false
+      },
+      {
+        "code": "801306",
+        "name": "深圳",
+        "members": 269,
+        "auction": 269,
+        "active": 4,
+        "mean_pct": -0.89,
+        "rank": 148,
+        "noise": false
+      },
+      {
+        "code": "801719",
+        "name": "腾讯概念",
+        "members": 214,
+        "auction": 209,
+        "active": 3,
+        "mean_pct": -1.046,
+        "rank": 166,
+        "noise": false
+      },
+      {
+        "code": "801553",
+        "name": "元宇宙",
+        "members": 363,
+        "auction": 355,
+        "active": 3,
+        "mean_pct": -1.063,
+        "rank": 167,
+        "noise": false
+      },
+      {
+        "code": "801637",
+        "name": "文创产品",
+        "members": 148,
+        "auction": 144,
+        "active": 4,
+        "mean_pct": -1.086,
+        "rank": 170,
+        "noise": false
+      },
+      {
+        "code": "801169",
+        "name": "VR/AR/MR",
+        "members": 270,
+        "auction": 266,
+        "active": 4,
+        "mean_pct": -1.172,
+        "rank": 177,
+        "noise": false
+      },
+      {
+        "code": "801074",
+        "name": "核电",
+        "members": 386,
+        "auction": 374,
+        "active": 5,
+        "mean_pct": -0.722,
+        "rank": 195,
+        "noise": false
+      },
+      {
+        "code": "801439",
+        "name": "网红经济",
+        "members": 272,
+        "auction": 267,
+        "active": 5,
+        "mean_pct": -1.068,
+        "rank": 201,
+        "noise": false
+      },
+      {
+        "code": "801059",
+        "name": "字节概念",
+        "members": 198,
+        "auction": 193,
+        "active": 6,
+        "mean_pct": -1.248,
+        "rank": 204,
+        "noise": false
+      },
+      {
+        "code": "801248",
+        "name": "智能驾驶",
+        "members": 580,
+        "auction": 551,
+        "active": 5,
+        "mean_pct": -0.828,
+        "rank": 205,
+        "noise": false
+      },
+      {
+        "code": "801080",
+        "name": "煤炭",
+        "members": 78,
+        "auction": 78,
+        "active": 1,
+        "mean_pct": -0.787,
+        "rank": 206,
+        "noise": false
+      },
+      {
+        "code": "801314",
+        "name": "ST板块",
+        "members": 193,
+        "auction": 188,
+        "active": 1,
+        "mean_pct": -0.955,
+        "rank": 207,
+        "noise": false
+      },
+      {
+        "code": "801950",
+        "name": "中欧概念",
+        "members": 62,
+        "auction": 61,
+        "active": 1,
+        "mean_pct": -0.939,
+        "rank": 208,
+        "noise": false
+      },
+      {
+        "code": "801579",
+        "name": "垃圾发电",
+        "members": 34,
+        "auction": 34,
+        "active": 1,
+        "mean_pct": -0.957,
+        "rank": 209,
+        "noise": false
+      },
+      {
+        "code": "801216",
+        "name": "PCB概念",
+        "members": 248,
+        "auction": 242,
+        "active": 3,
+        "mean_pct": -1.119,
+        "rank": 210,
+        "noise": false
+      },
+      {
+        "code": "801120",
+        "name": "电力",
+        "members": 383,
+        "auction": 381,
+        "active": 5,
+        "mean_pct": -0.675,
+        "rank": 211,
+        "noise": false
+      },
+      {
+        "code": "801932",
+        "name": "海洋经济",
+        "members": 298,
+        "auction": 289,
+        "active": 5,
+        "mean_pct": -0.89,
+        "rank": 212,
+        "noise": false
+      },
+      {
+        "code": "801657",
+        "name": "减速器",
+        "members": 120,
+        "auction": 111,
+        "active": 0,
+        "mean_pct": -1.016,
+        "rank": 213,
+        "noise": false
+      },
+      {
+        "code": "801660",
+        "name": "通信",
+        "members": 755,
+        "auction": 731,
+        "active": 9,
+        "mean_pct": -1.014,
+        "rank": 214,
+        "noise": false
+      },
+      {
+        "code": "801178",
+        "name": "储能",
+        "members": 800,
+        "auction": 774,
+        "active": 7,
+        "mean_pct": -0.738,
+        "rank": 215,
+        "noise": false
+      },
+      {
+        "code": "801053",
+        "name": "零售",
+        "members": 210,
+        "auction": 210,
+        "active": 4,
+        "mean_pct": -0.624,
+        "rank": 216,
+        "noise": false
+      },
+      {
+        "code": "801046",
+        "name": "医疗器械",
+        "members": 314,
+        "auction": 298,
+        "active": 3,
+        "mean_pct": -0.615,
+        "rank": 217,
+        "noise": false
+      },
+      {
+        "code": "801522",
+        "name": "专精特新",
+        "members": 807,
+        "auction": 629,
+        "active": 5,
+        "mean_pct": -0.884,
+        "rank": 218,
+        "noise": false
+      },
+      {
+        "code": "801787",
+        "name": "实控人变更",
+        "members": 235,
+        "auction": 233,
+        "active": 2,
+        "mean_pct": -0.799,
+        "rank": 219,
+        "noise": false
+      },
+      {
+        "code": "801087",
+        "name": "风电",
+        "members": 333,
+        "auction": 319,
+        "active": 2,
+        "mean_pct": -0.768,
+        "rank": 220,
+        "noise": false
+      },
+      {
+        "code": "801088",
+        "name": "有色金属",
+        "members": 241,
+        "auction": 233,
+        "active": 0,
+        "mean_pct": -0.877,
+        "rank": 221,
+        "noise": false
+      },
+      {
+        "code": "801656",
+        "name": "热泵",
+        "members": 38,
+        "auction": 38,
+        "active": 1,
+        "mean_pct": -0.831,
+        "rank": 222,
+        "noise": false
+      },
+      {
+        "code": "801067",
+        "name": "面板",
+        "members": 245,
+        "auction": 243,
+        "active": 3,
+        "mean_pct": -0.945,
+        "rank": 223,
+        "noise": false
+      },
+      {
+        "code": "801086",
+        "name": "玻璃",
+        "members": 29,
+        "auction": 29,
+        "active": 0,
+        "mean_pct": -0.946,
+        "rank": 224,
+        "noise": false
+      },
+      {
+        "code": "801418",
+        "name": "民营医院",
+        "members": 56,
+        "auction": 56,
+        "active": 1,
+        "mean_pct": -0.956,
+        "rank": 225,
+        "noise": false
+      },
+      {
+        "code": "801493",
+        "name": "光储充一体化",
+        "members": 27,
+        "auction": 27,
+        "active": 0,
+        "mean_pct": -1.021,
+        "rank": 226,
+        "noise": false
+      },
+      {
+        "code": "801321",
+        "name": "广电网",
+        "members": 22,
+        "auction": 21,
+        "active": 0,
+        "mean_pct": -1.894,
+        "rank": 227,
+        "noise": false
+      },
+      {
+        "code": "801235",
+        "name": "化工",
+        "members": 755,
+        "auction": 713,
+        "active": 6,
+        "mean_pct": -0.706,
+        "rank": 228,
+        "noise": false
+      },
+      {
+        "code": "801062",
+        "name": "军工",
+        "members": 739,
+        "auction": 709,
+        "active": 10,
+        "mean_pct": -0.889,
+        "rank": 229,
+        "noise": false
+      },
+      {
+        "code": "801093",
+        "name": "天然气",
+        "members": 127,
+        "auction": 118,
+        "active": 1,
+        "mean_pct": -0.985,
+        "rank": 230,
+        "noise": false
+      },
+      {
+        "code": "801052",
+        "name": "环保",
+        "members": 397,
+        "auction": 383,
+        "active": 5,
+        "mean_pct": -0.778,
+        "rank": 231,
+        "noise": false
+      },
+      {
+        "code": "801464",
+        "name": "农业",
+        "members": 369,
+        "auction": 349,
+        "active": 3,
+        "mean_pct": -0.653,
+        "rank": 232,
+        "noise": false
+      },
+      {
+        "code": "803014",
+        "name": "海峡两岸",
+        "members": 304,
+        "auction": 297,
+        "active": 2,
+        "mean_pct": -0.853,
+        "rank": 234,
+        "noise": false
+      },
+      {
+        "code": "801057",
+        "name": "石油石化",
+        "members": 68,
+        "auction": 67,
+        "active": 1,
+        "mean_pct": -1.178,
+        "rank": 235,
+        "noise": false
+      },
+      {
+        "code": "801270",
+        "name": "基础建设",
+        "members": 519,
+        "auction": 505,
+        "active": 5,
+        "mean_pct": -0.65,
+        "rank": 236,
+        "noise": false
+      },
+      {
+        "code": "801001",
+        "name": "芯片",
+        "members": 1147,
+        "auction": 1110,
+        "active": 18,
+        "mean_pct": -0.933,
+        "rank": 237,
+        "noise": false
+      },
+      {
+        "code": "801159",
+        "name": "机器人概念",
+        "members": 1323,
+        "auction": 1269,
+        "active": 13,
+        "mean_pct": -0.834,
+        "rank": 238,
+        "noise": false
+      },
+      {
+        "code": "801016",
+        "name": "稀土永磁",
+        "members": 80,
+        "auction": 76,
+        "active": 1,
+        "mean_pct": -1.251,
+        "rank": 239,
+        "noise": false
+      },
+      {
+        "code": "801095",
+        "name": "游戏",
+        "members": 96,
+        "auction": 95,
+        "active": 4,
+        "mean_pct": -1.932,
+        "rank": 240,
+        "noise": false
+      },
+      {
+        "code": "801031",
+        "name": "文化传媒",
+        "members": 245,
+        "auction": 242,
+        "active": 7,
+        "mean_pct": -1.483,
+        "rank": 241,
+        "noise": false
+      },
+      {
+        "code": "801070",
+        "name": "光伏",
+        "members": 680,
+        "auction": 657,
+        "active": 10,
+        "mean_pct": -0.831,
+        "rank": 242,
+        "noise": false
+      },
+      {
+        "code": "803023",
+        "name": "AI应用",
+        "members": 733,
+        "auction": 718,
+        "active": 10,
+        "mean_pct": -0.857,
+        "rank": 243,
+        "noise": false
+      },
+      {
+        "code": "801003",
+        "name": "5G",
+        "members": 352,
+        "auction": 344,
+        "active": 6,
+        "mean_pct": -1.099,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801064",
+        "name": "无人驾驶",
+        "members": 368,
+        "auction": 350,
+        "active": 3,
+        "mean_pct": -0.834,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801073",
+        "name": "网络安全",
+        "members": 138,
+        "auction": 136,
+        "active": 3,
+        "mean_pct": -0.806,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801107",
+        "name": "小米概念",
+        "members": 263,
+        "auction": 256,
+        "active": 3,
+        "mean_pct": -0.907,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801134",
+        "name": "工业互联网",
+        "members": 260,
+        "auction": 253,
+        "active": 3,
+        "mean_pct": -0.808,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801160",
+        "name": "跨境电商",
+        "members": 232,
+        "auction": 217,
+        "active": 4,
+        "mean_pct": -0.72,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801206",
+        "name": "光模块",
+        "members": 128,
+        "auction": 124,
+        "active": 5,
+        "mean_pct": -1.379,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801252",
+        "name": "预制菜",
+        "members": 81,
+        "auction": 77,
+        "active": 3,
+        "mean_pct": -0.872,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801256",
+        "name": "贬值受益",
+        "members": 342,
+        "auction": 296,
+        "active": 3,
+        "mean_pct": -0.725,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801260",
+        "name": "云计算",
+        "members": 203,
+        "auction": 197,
+        "active": 4,
+        "mean_pct": -0.835,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801412",
+        "name": "新零售",
+        "members": 178,
+        "auction": 178,
+        "active": 4,
+        "mean_pct": -0.661,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801428",
+        "name": "参股券商",
+        "members": 122,
+        "auction": 122,
+        "active": 3,
+        "mean_pct": -0.544,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801562",
+        "name": "电气设备",
+        "members": 227,
+        "auction": 223,
+        "active": 3,
+        "mean_pct": -0.553,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801564",
+        "name": "绿色电力",
+        "members": 346,
+        "auction": 345,
+        "active": 4,
+        "mean_pct": -0.723,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801565",
+        "name": "海工装备",
+        "members": 249,
+        "auction": 240,
+        "active": 3,
+        "mean_pct": -0.834,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801616",
+        "name": "东数西算",
+        "members": 120,
+        "auction": 116,
+        "active": 3,
+        "mean_pct": -0.825,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801643",
+        "name": "比亚迪产业链",
+        "members": 321,
+        "auction": 297,
+        "active": 3,
+        "mean_pct": -0.851,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801658",
+        "name": "先进封装",
+        "members": 205,
+        "auction": 200,
+        "active": 3,
+        "mean_pct": -1.008,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801663",
+        "name": "信创",
+        "members": 301,
+        "auction": 290,
+        "active": 4,
+        "mean_pct": -0.691,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801695",
+        "name": "CPO/MPO",
+        "members": 209,
+        "auction": 207,
+        "active": 6,
+        "mean_pct": -1.262,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801722",
+        "name": "存储",
+        "members": 223,
+        "auction": 221,
+        "active": 4,
+        "mean_pct": -1.01,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801725",
+        "name": "数据要素",
+        "members": 345,
+        "auction": 330,
+        "active": 3,
+        "mean_pct": -0.842,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801730",
+        "name": "液冷",
+        "members": 242,
+        "auction": 235,
+        "active": 5,
+        "mean_pct": -1.066,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801774",
+        "name": "英伟达概念",
+        "members": 84,
+        "auction": 84,
+        "active": 4,
+        "mean_pct": -1.276,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801786",
+        "name": "影视院线",
+        "members": 24,
+        "auction": 24,
+        "active": 4,
+        "mean_pct": -2.82,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801801",
+        "name": "互动影游",
+        "members": 23,
+        "auction": 23,
+        "active": 3,
+        "mean_pct": -3.475,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801803",
+        "name": "短剧",
+        "members": 94,
+        "auction": 93,
+        "active": 5,
+        "mean_pct": -2.153,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801872",
+        "name": "谷子经济",
+        "members": 137,
+        "auction": 133,
+        "active": 4,
+        "mean_pct": -1.077,
+        "rank": null,
+        "noise": false
+      },
+      {
+        "code": "801886",
+        "name": "杭州",
+        "members": 218,
+        "auction": 217,
+        "active": 4,
+        "mean_pct": -0.923,
+        "rank": null,
+        "noise": false
+      }
+    ],
+    "covered": 53,
+    "sources": {
+      "limit_reason": 8,
+      "active_membership": 44,
+      "UNKNOWN": 2
+    },
+    "noise": [],
+    "required": {
+      "光模块": true,
+      "CPO": false,
+      "算力": false,
+      "芯片": true,
+      "影视院线": true,
+      "短剧": true,
+      "游戏": true,
+      "机器人概念": true
+    },
+    "ranks": {
+      "1-40": 30,
+      "41-203": 17,
+      "204-243": 39,
+      "unranked": 29,
+      "min": 1,
+      "median": 168.5,
+      "max": 243
+    }
+  },
+  "C1354 metrics": {
+    "智能电网": {
+      "auction_count": 489,
+      "strong_count": 3,
+      "middle_count": 479,
+      "weak_count": 7,
+      "mean_change_bp": -61.124744376278116,
+      "amount_yuan": 887165129
+    },
+    "医药": {
+      "auction_count": 675,
+      "strong_count": 1,
+      "middle_count": 660,
+      "weak_count": 14,
+      "mean_change_bp": -59.385185185185186,
+      "amount_yuan": 691295942
+    },
+    "地产链": {
+      "auction_count": 394,
+      "strong_count": 2,
+      "middle_count": 387,
+      "weak_count": 5,
+      "mean_change_bp": -57.55329949238579,
+      "amount_yuan": 346692518
+    }
+  }
+}
