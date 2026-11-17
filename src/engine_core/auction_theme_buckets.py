@@ -111,7 +111,7 @@ def build_theme_buckets(auction_rows, stock_plates, *, top_n=10, universe_count=
 
 def read_and_build(trade_date, store=None, redis_client=None):
     import json
-    from datetime import date
+    from datetime import date, datetime
     from .data_pipeline.auction_redis_view import read_auction_view, redis_client as make_redis
     from .data_pipeline.plate_stock_index import get_stock_plates
     from .data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
@@ -142,7 +142,28 @@ def read_and_build(trade_date, store=None, redis_client=None):
             raise ValueError('calendar_coverage_missing')
         # Names are optional and never sourced from the retired catalog.
         names = {}
-        names_source = 'unavailable'
+        registry_available = False
+        asof = datetime.fromisoformat(f'{day}T09:05:00+08:00')
+        try:
+            with ReferenceSnapshotStore() as ref:
+                snapshot = ref.read_as_of('plate_registry', asof.isoformat())
+                if not snapshot:
+                    snapshot = ref.read_latest('plate_registry')
+                    if snapshot:
+                        visible = datetime.fromisoformat(snapshot['available_at'].replace('Z', '+00:00'))
+                        if visible.tzinfo is None or visible > asof:
+                            snapshot = None
+            if snapshot:
+                for row in snapshot['rows']:
+                    if row.get('name'):
+                        for code in (row.get('plate_code'), row.get('code')):
+                            if code:
+                                names[code] = row['name']
+                registry_available = True
+        except Exception:
+            names = {}
+        registry_codes = set(names)
+        hot_codes = set()
         try:
             snapshots = []
             for key in client.scan_iter(match=f'core:cache:data:hot_plates:{day}:*', count=100):
@@ -153,15 +174,25 @@ def read_and_build(trade_date, store=None, redis_client=None):
                     snapshots.append(value)
             if snapshots:
                 latest = max(snapshots, key=lambda item: item['captured_at'])
-                names_source = 'hot_plates'
-                names = {r['plate_code']: r['name'] for r in latest['rows'] if r.get('plate_code') and r.get('name')}
+                for row in latest['rows']:
+                    code, name = row.get('plate_code'), row.get('name')
+                    if code and name and code not in names:
+                        names[code] = name
+                        hot_codes.add(code)
         except Exception:
-            names = {}
+            pass
         stage = 'build'
         result = build_theme_buckets(current + previous, plates, universe_count=len(current),
                                      names=names, listings=listings, trading_dates=dates)
         if result['status'] == 'available':
-            result['notes'][0] = result['notes'][0].replace('names_source=hot_plates', f'names_source={names_source}')
+            codes = {row['plate_code'] for row in result['themes']}
+            covered = len(codes & registry_codes)
+            supplemented = len(codes & hot_codes)
+            missing = len(codes - set(names))
+            result['notes'][0] = (f'names_source=plate_registry+hot_plates; coverage={covered + supplemented}/{len(codes)}; '
+                                  f'registry_coverage={covered}; hot_plates_supplement={supplemented}; missing={missing}')
+            if not registry_available:
+                result['notes'].append('registry_unavailable_at_asof')
         return result
     except Exception as exc:
         return {'status': 'unavailable', 'reason': f'{stage}:{type(exc).__name__}:{exc}'}
