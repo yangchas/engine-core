@@ -38,12 +38,18 @@ def _hypergeom_tail(population, successes, draws, hits):
 def build_auction_theme_view(auction_rows, stock_plates, hot_rows, seal_rows, pool_rows, reason_rows, *,
                              names=None, boards=None, listings=None, trading_dates=None, trade_date=None,
                              previous_trade_date=None, caps=None, top_n_hot=40, bottom_n_hot=40, k_active=2,
-                             size_cap=400, display_top=50, active_top_n=20, min_active=2, sort_by='p_value', group_jaccard=0.5):
+                             size_cap=400, display_top=50, active_top_n=20, min_active=2, sort_by='p_value', group_jaccard=None, group_contain=None, alpha=0.05):
     for key, value in (('top_n_hot', top_n_hot), ('bottom_n_hot', bottom_n_hot), ('k_active', k_active), ('size_cap', size_cap), ('display_top', display_top), ('active_top_n', active_top_n), ('min_active', min_active)):
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise ValueError('invalid_' + key)
-    if not isinstance(group_jaccard, (int, float)) or isinstance(group_jaccard, bool) or not 0 <= group_jaccard <= 1:
+    # group_jaccard is a deprecated alias for the leader containment threshold.
+    if group_jaccard is not None and (not isinstance(group_jaccard, (int, float)) or isinstance(group_jaccard, bool) or not 0 <= group_jaccard <= 1):
         raise ValueError('invalid_group_jaccard')
+    if group_contain is None:
+        group_contain = group_jaccard if group_jaccard is not None else 0.5
+    for key, value in (('group_contain', group_contain), ('alpha', alpha)):
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 1:
+            raise ValueError('invalid_' + key)
     if sort_by not in ('p_value', 'lift', 'active_count'):
         raise ValueError('invalid_sort_by')
     if not stock_plates:
@@ -207,36 +213,34 @@ def build_auction_theme_view(auction_rows, stock_plates, hot_rows, seal_rows, po
         return (p is None, p if p is not None else 0, lift is None, -(lift or 0),
                 -card['active_' + direction + '_count'], card['amount_yuan'] is None,
                 -(card['amount_yuan'] or 0), card['plate_code'])
-    up_cards, down_cards = (sorted((c for c in all_cards if c['active_' + d + '_count'] >= min_active),
-                                   key=lambda c: directional_key(c, d))[:display_top] for d in ('up', 'down'))
+    insignificant_cards = [c for c in cards if c['p_value'] is not None and c['p_value'] > alpha]
+    cards = [c for c in cards if c['p_value'] is not None and c['p_value'] <= alpha]
+    directional_ranked = {d: sorted((c for c in all_cards if c['active_' + d + '_count'] >= min_active),
+                                    key=lambda c: directional_key(c, d)) for d in ('up', 'down')}
+    insignificant = {d: [c for c in directional_ranked[d] if c['p_' + d] is not None and c['p_' + d] > alpha] for d in ('up', 'down')}
+    up_cards, down_cards = ([c for c in directional_ranked[d] if c['p_' + d] is not None and c['p_' + d] <= alpha][:display_top] for d in ('up', 'down'))
     def group_cards(ranked_cards, active_symbols, p_key):
-        sets = [members[c['plate_code']] & active_symbols for c in ranked_cards]
-        parents = list(range(len(ranked_cards)))
-        def root(i):
-            while parents[i] != i:
-                parents[i] = parents[parents[i]]
-                i = parents[i]
-            return i
-        for i in range(len(sets)):
-            for j in range(i):
-                union = sets[i] | sets[j]
-                if union and len(sets[i] & sets[j]) / len(union) >= group_jaccard:
-                    parents[root(i)] = root(j)
-        components = defaultdict(list)
-        for i, card in enumerate(ranked_cards):
-            components[root(i)].append(card)
         def key(c):
             p = c[p_key]
             return (p is None, p if p is not None else 0, c['plate_code'])
         groups = []
-        for component in components.values():
-            ordered = sorted(component, key=key)
-            groups.append({'head': ordered[0], 'others': ordered[1:]})
-        return sorted(groups, key=lambda g: key(g['head']))
+        for card in sorted(ranked_cards, key=key):
+            own = members[card['plate_code']] & active_symbols
+            choices = []
+            for group in groups:
+                head = group['head']
+                overlap = len(own & members[head['plate_code']]) / len(own) if own else 0
+                if own and overlap >= group_contain:
+                    choices.append((-overlap, key(head), group))
+            if choices:
+                min(choices, key=lambda x: (x[0], x[1]))[2]['others'].append(card)
+            else:
+                groups.append({'head': card, 'others': []})
+        return groups
     groups = group_cards(cards[:display_top], auction_active, 'p_value')
     up_groups = group_cards(up_cards, directional['up'], 'p_up')
     down_groups = group_cards(down_cards, directional['down'], 'p_down')
-    return {'status':'available', 'up_cards':up_cards, 'down_cards':down_cards, 'groups':groups, 'up_groups':up_groups, 'down_groups':down_groups, 'cards':cards, 'plates':all_cards, 'display_cards':cards[:display_top], 'more_cards':cards[display_top:], 'excluded':excluded, 'active_stocks':stocks,
+    return {'status':'available', 'insignificant_cards':insignificant_cards, 'up_insignificant_cards':insignificant['up'], 'down_insignificant_cards':insignificant['down'], 'up_cards':up_cards, 'down_cards':down_cards, 'groups':groups, 'up_groups':up_groups, 'down_groups':down_groups, 'cards':cards, 'plates':all_cards, 'display_cards':cards[:display_top], 'more_cards':cards[display_top:], 'excluded':excluded, 'active_stocks':stocks,
             'notes':['Stocks may appear in multiple themes; totals overlap.',
                      'excluded_non_theme=' + ','.join(f"{r['rank']}:{r['plate_code']}:{r['name']}:{r['non_theme_reason']}" for r in excluded)]}
 
@@ -304,9 +308,14 @@ def render_theme_cards_html(view):
             detail = '<details><summary>同组板块</summary><ul>' + names + '</ul></details>' if names else ''
             result.append('<tr>' + ''.join('<td>' + cell(card.get(key)) + (detail if key == 'name' else '') + '</td>' for _, key in columns) + '</tr>')
         return ''.join(result) + '</tbody></table>'
-    parts = ['<section><h2>上涨聚集榜</h2><p>活跃股聚集</p>', group_table(view['up_groups'], 'up'),
-             '<h2>下跌聚集榜</h2><p>活跃股聚集</p>', group_table(view['down_groups'], 'down'),
-             '<h2>热板卡片</h2>', table(view['display_cards']), '<details><summary>更多</summary>', table(view['more_cards']), '</details>']
+    def insignificant_section(cards, p_key):
+        return '<details><summary>不显著（折叠）</summary><ul>' + ''.join(
+            '<li>' + cell(c['name']) + '：' + cell(c[p_key]) + '</li>' for c in cards) + '</ul></details>'
+    parts = ['<section><h2>上涨聚集榜</h2><p>显著：活跃股聚集</p>', group_table(view['up_groups'], 'up'),
+             insignificant_section(view['up_insignificant_cards'], 'p_up'),
+             '<h2>下跌聚集榜</h2><p>显著：活跃股聚集</p>', group_table(view['down_groups'], 'down'),
+             insignificant_section(view['down_insignificant_cards'], 'p_down'),
+             '<h2>热板卡片</h2><p>显著：活跃股聚集</p>', table(view['display_cards']), '<details><summary>更多</summary>', table(view['more_cards']), '</details>', insignificant_section(view['insignificant_cards'], 'p_value')]
     parts.append('<h2>活跃个股</h2><table><thead><tr><th>代码</th><th>名称</th><th>涨跌(bp)</th><th>成交额</th><th>封单额</th><th>价格来源</th><th>主题材</th><th>证据</th><th>龙头地位板块</th><th>流通市值(亿元)</th><th>所属热板</th></tr></thead><tbody>')
     for stock in view['active_stocks']:
         values = [stock['symbol'], stock['name'], stock['change_bp'], stock['amount_yuan'], stock['seal_amount_yuan'], stock['price_source'], (stock['primary_theme'] or {}).get('name'), stock['theme_source'], '、'.join(p['name'] or p['plate_code'] for p in stock['anchor_themes']), round(stock['float_cap_yuan']/1e8, 2) if stock['float_cap_yuan'] is not None else None, '、'.join(p['name'] or p['plate_code'] for p in stock['hot_plates'])]

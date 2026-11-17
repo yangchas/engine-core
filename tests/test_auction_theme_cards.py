@@ -13,7 +13,7 @@ def data():
 def build(caps=None, top_n=243):
     from engine_core.auction_theme_cards import build_auction_theme_view
     a,b,_ = data()
-    return build_auction_theme_view(a['auction']+b['auction_0924'], a['index'], a['hot'], a['seal'], b['pool'], b['reason_rows'], names=a['names'], boards=a['boards'], listings=a['listings'], trading_dates=a['calendar'], trade_date='2026-11-17', previous_trade_date='2026-11-16', caps=caps, top_n_hot=top_n, min_active=0, sort_by='active_count')
+    return build_auction_theme_view(a['auction']+b['auction_0924'], a['index'], a['hot'], a['seal'], b['pool'], b['reason_rows'], names=a['names'], boards=a['boards'], listings=a['listings'], trading_dates=a['calendar'], trade_date='2026-11-17', previous_trade_date='2026-11-16', caps=caps, top_n_hot=top_n, min_active=0, sort_by='active_count', alpha=1)
 
 def test_real_vocabulary_metrics_hierarchy_and_exclusions():
     view=build()
@@ -128,7 +128,7 @@ def test_real_c1377_v3_vocabulary_and_display():
     a, b, _ = data()
     expected = json.loads((REAL / 'c1378/expected.json').read_text())
     def run(**kwargs):
-        return build_auction_theme_view(a['auction'] + b['auction_0924'], a['index'], a['hot'], a['seal'], b['pool'], b['reason_rows'], names=a['names'], listings=a['listings'], trading_dates=a['calendar'], trade_date='2026-11-17', previous_trade_date='2026-11-16', min_active=0, sort_by='active_count', **kwargs)
+        return build_auction_theme_view(a['auction'] + b['auction_0924'], a['index'], a['hot'], a['seal'], b['pool'], b['reason_rows'], names=a['names'], listings=a['listings'], trading_dates=a['calendar'], trade_date='2026-11-17', previous_trade_date='2026-11-16', min_active=0, sort_by='active_count', alpha=1, **kwargs)
     view = run()
     stocks = {s['symbol']: s for s in view['active_stocks']}
     assert len(stocks) == 54
@@ -156,7 +156,7 @@ def test_real_enrichment_and_cap_attribution():
     a, b, _ = data()
     caps = json.loads((REAL / 'c1380/caps.json').read_text())
     def run(**kwargs):
-        return build_auction_theme_view(a['auction'] + b['auction_0924'], a['index'], a['hot'], a['seal'], b['pool'], b['reason_rows'], names=a['names'], listings=a['listings'], trading_dates=a['calendar'], trade_date='2026-11-17', previous_trade_date='2026-11-16', caps=caps, **kwargs)
+        return build_auction_theme_view(a['auction'] + b['auction_0924'], a['index'], a['hot'], a['seal'], b['pool'], b['reason_rows'], names=a['names'], listings=a['listings'], trading_dates=a['calendar'], trade_date='2026-11-17', previous_trade_date='2026-11-16', caps=caps, alpha=1, **kwargs)
     view = run()
     cards = {c['name']: c for c in view['cards']}
     for name, count, total in [('机器人概念', 13, 1269), ('游戏', 4, 95), ('文化传媒', 7, 242)]:
@@ -211,24 +211,54 @@ def test_real_directional_enrichment_and_overlap_groups():
     assert '影视院线' in {c['name'] for c in view['down_cards']}
     assert '影视院线' not in {c['name'] for c in view['up_cards']}
     assert cards['影视院线']['p_up'] > 0.05
-    cinema_group = next(g for g in view['down_groups'] if '影视院线' in {c['name'] for c in [g['head']] + g['others']})
-    assert {'影视院线', '互动影游', '短剧', '文化传媒', '游戏'} <= {c['name'] for c in [cinema_group['head']] + cinema_group['others']}
-    optical_group = next(g for g in view['down_groups'] if '光模块' in {c['name'] for c in [g['head']] + g['others']})
-    assert {'光模块', 'CPO/MPO', '芯片', '光芯片'} <= {c['name'] for c in [optical_group['head']] + optical_group['others']}
     for cards_key, groups_key, direction, p in [('up_cards', 'up_groups', up, 'p_up'), ('down_cards', 'down_groups', down, 'p_down'), ('display_cards', 'groups', up | down | {s['symbol'] for s in view['active_stocks'] if s['change_bp'] == 0}, 'p_value')]:
         ranked = view[cards_key]
         groups = view[groups_key]
         assert sorted(c['plate_code'] for g in groups for c in [g['head']] + g['others']) == sorted(c['plate_code'] for c in ranked)
         membership = {c['plate_code']: {s for s, plates in a['index'].items() if any(str(x.get('plate_code') if isinstance(x, dict) else x) == c['plate_code'] for x in plates)} & direction for c in ranked}
-        group_index = {c['plate_code']: i for i, g in enumerate(groups) for c in [g['head']] + g['others']}
-        for c in ranked:
-            for d in ranked:
-                x, y = membership[c['plate_code']], membership[d['plate_code']]
-                if x | y and len(x & y) / len(x | y) >= .5:
-                    assert group_index[c['plate_code']] == group_index[d['plate_code']]
+        for g in groups:
+            head = membership[g['head']['plate_code']]
+            for card in g['others']:
+                own = membership[card['plate_code']]
+                assert own and len(own & head) / len(own) >= .5
         for g in groups:
             assert g['head'] == min([g['head']] + g['others'], key=lambda c: (c[p], c['plate_code']))
     assert view['groups'] == run(display_top=200)['groups']
     html = render_theme_cards_html(view)
     assert all(x in html for x in ('上涨聚集榜', '下跌聚集榜', '活跃上涨', '活跃下跌', 'p 值', '期望数', '倍数'))
     assert '预测' not in html and '延续' not in html
+
+
+def test_real_leader_assignment_and_significance():
+    from engine_core.auction_theme_cards import build_auction_theme_view, render_theme_cards_html
+    a, b, _ = data()
+    def run(**kwargs):
+        return build_auction_theme_view(a['auction'] + b['auction_0924'], a['index'], a['hot'], a['seal'], b['pool'], b['reason_rows'], names=a['names'], listings=a['listings'], trading_dates=a['calendar'], trade_date='2026-11-17', previous_trade_date='2026-11-16', display_top=200, **kwargs)
+    view = run()
+    assert view['up_cards'][0]['name'] == 'GPU'
+    for direction in ('up', 'down'):
+        cards, groups = view[direction + '_cards'], view[direction + '_groups']
+        assert all(c['p_' + direction] <= .05 for c in cards)
+        assert all(c['p_' + direction] > .05 for c in view[direction + '_insignificant_cards'])
+        active = {s['symbol'] for s in view['active_stocks'] if s['change_bp'] is not None and (s['change_bp'] > 0 if direction == 'up' else s['change_bp'] < 0)}
+        def membership(card):
+            return {s for s, plates in a['index'].items() if any(str(x.get('plate_code') if isinstance(x, dict) else x) == card['plate_code'] for x in plates)} & active
+        for group in groups:
+            head = membership(group['head'])
+            for card in group['others']:
+                own = membership(card)
+                assert own and len(own & head) / len(own) >= .5
+        for group in groups:
+            names = {c['name'] for c in [group['head']] + group['others']}
+            if group['head']['name'] == '东数西算':
+                assert not names & {'新零售', '深圳', '零售', '网红经济'}
+            if group['head']['name'] == 'LED':
+                assert not names & {'参股券商', '核电'}
+    cinema = next(g for g in view['down_groups'] if g['head']['name'] == '短剧')
+    assert {'影视院线', '互动影游', '短剧', '文化传媒', '游戏'} <= {c['name'] for c in [cinema['head']] + cinema['others']}
+    assert run(group_jaccard=.5)['down_groups'] == view['down_groups']
+    assert all(c['p_value'] <= .05 for c in view['cards'])
+    assert all(c['p_value'] > .05 for c in view['insignificant_cards'])
+    assert view['groups'] == run()['groups']
+    html = render_theme_cards_html(view)
+    assert '显著' in html and '不显著（折叠）' in html
