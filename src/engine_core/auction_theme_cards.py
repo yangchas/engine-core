@@ -8,6 +8,7 @@ from .theme_taxonomy import build_theme_cards
 STYLE_WORDS = ('可转债', '北交所', '破净', '高股息', '中字头', '超跌', '融资融券', '沪股通', '深股通', 'MSCI', '国有企业', '低价股', '股权转让')
 FINANCIAL_WORDS = ('中报', '三季报', '年报', '业绩', '预增', '预亏', '增长')
 PROVINCES = frozenset(('京', '津', '冀', '晋', '蒙', '辽', '吉', '黑', '沪', '苏', '浙', '皖', '闽', '赣', '鲁', '豫', '鄂', '湘', '粤', '桂', '琼', '渝', '川', '贵', '云', '藏', '陕', '甘', '青', '宁', '新'))
+PROVINCE_NAMES = frozenset(('北京', '天津', '河北', '山西', '内蒙古', '辽宁', '吉林', '黑龙江', '上海', '江苏', '浙江', '安徽', '福建', '江西', '山东', '河南', '湖北', '湖南', '广东', '广西', '海南', '重庆', '四川', '贵州', '云南', '西藏', '陕西', '甘肃', '青海', '宁夏', '新疆'))
 
 
 def non_theme_reason(name):
@@ -16,7 +17,9 @@ def non_theme_reason(name):
         return 'style_name'
     if any(word in name for word in FINANCIAL_WORDS):
         return 'financial_name'
-    if name in PROVINCES or name == '西部大开发' or any(word in name for word in ('省', '市', '自治区', '自贸区')):
+    geography_suffix = name.endswith(('省', '自治区', '自贸区', '特别行政区'))
+    three_char_city = len(name) == 3 and name.endswith('市')
+    if name in PROVINCES or name in PROVINCE_NAMES or name == '西部大开发' or geography_suffix or three_char_city:
         return 'geography_name'
     return None
 

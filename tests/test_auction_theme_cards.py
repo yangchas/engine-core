@@ -103,3 +103,17 @@ def test_real_name_filter_and_active_attribution():
             assert stock['primary_theme']['plate_code'] == membership[0]['plate_code']
         else:
             assert stock['theme_source'] == 'UNKNOWN' and stock['primary_theme'] is None
+
+
+def test_real_geography_filter_does_not_use_substring_matching():
+    from engine_core.auction_theme_cards import non_theme_reason
+    names = json.loads((REAL / 'c1374/plate_names.json').read_text())
+    assert len(names) >= 700
+    assert non_theme_reason('智慧城市') is None
+    assert non_theme_reason('节能环保') is None
+    for name in ('上海市', '北京市', '云南省', '西藏自治区', '天津自贸区', '西部大开发', '新疆', '浙江'):
+        assert non_theme_reason(name) == 'geography_name', name
+    filtered = [name for name in names if non_theme_reason(name) == 'geography_name']
+    assert '智慧城市' not in filtered
+    assert '节能环保' not in filtered
+    assert set(('上海市', '北京市', '云南省', '西藏自治区', '天津自贸区', '西部大开发', '新疆', '浙江')) <= set(filtered)
