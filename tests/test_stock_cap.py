@@ -1,10 +1,12 @@
 import json
 import shutil
+import requests
 import pytest
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import engine_core.data_pipeline.stock_cap as stock_cap
 from engine_core.data_pipeline.stock_cap import fetch_stock_caps, read_stock_caps
 from engine_core.data_pipeline.redis_day_view import expire_at
 
@@ -99,3 +101,17 @@ def test_incomplete_wrong_date_and_forbidden_never_publish():
 def test_missing_view_returns_reason():
     result = read_stock_caps(DAY, Redis())
     assert not result['rows'] and result['reason']
+
+
+def test_live_http_guard_restores_send_after_upstream_exception(monkeypatch):
+    original = requests.sessions.Session.send
+
+    def boom(*args, **kwargs):
+        raise RuntimeError('upstream failure')
+
+    monkeypatch.setattr(stock_cap, '_fetch_query', boom)
+    monkeypatch.setattr(stock_cap, '_read_cookie', lambda _: '')
+    result = fetch_stock_caps(DAY, universe=UNIVERSE)
+
+    assert result['error'] == 'upstream_error'
+    assert requests.sessions.Session.send is original
