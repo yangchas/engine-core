@@ -55,10 +55,13 @@ def run(trade_date, asof, *, reference_store=None, store=None, redis_client=None
     return (store or TwoLayerStore(redis_client or make_redis())).publish('plate_stock_index', day, rows, metadata)
 
 
-def get_stock_plates(symbols, trade_date, *, store=None, redis_client=None):
+def get_stock_plates(symbols, trade_date, *, store=None, redis_client=None, readonly=False):
     from .auction_redis_view import redis_client as make_redis
     from ..storage.two_layer import TwoLayerStore
-    return (store or TwoLayerStore(redis_client or make_redis())).get_stock_plates(trade_date, symbols)
+    selected = store or TwoLayerStore(redis_client or make_redis())
+    if readonly:
+        return read_stocks(selected, trade_date, symbols, restore=False)
+    return selected.get_stock_plates(trade_date, symbols)
 
 
 def _json(value):
@@ -111,7 +114,7 @@ def publish(store, day, rows, metadata):
         return StoreResult(status='FAILED', reason=type(exc).__name__)
 
 
-def read_stocks(store, day, symbols):
+def read_stocks(store, day, symbols, *, restore=True):
     import json
     from . import cold_archive
     from .redis_day_view_read import read_day_view
@@ -171,7 +174,8 @@ def read_stocks(store, day, symbols):
             raise ValueError('cold_index_version_mismatch')
         index = {r['symbol']: r['plates'] for r in value['rows']}
         try:
-            _write_view(store.redis, day, value)
+            if restore:
+                _write_view(store.redis, day, value)
         except Exception:
             pass
         return {s: ({'status': 'RESTORED_FROM_TD', 'plates': index[s], 'version': value['version']} if s in index

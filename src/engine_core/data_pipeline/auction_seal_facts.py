@@ -9,39 +9,50 @@ from zoneinfo import ZoneInfo
 from ..limit_price import limit_prices
 
 
-def build_facts(trade_date, auction, listings, trading_dates, fetch_ticks):
+def classify_limit(trade_date, symbol, quote, listing, trading_dates):
+    """Return limit side, unlimited, unknown_listing, unknown_price, or None."""
     date.fromisoformat(trade_date)
     dates = sorted(d for d in trading_dates if d <= trade_date)
     if trade_date not in dates or len(dates) < 5:
         raise ValueError('calendar_coverage_missing')
-    threshold = dates[-5]
+    try:
+        if not listing or date.fromisoformat(listing).isoformat() > trade_date:
+            return 'unknown_listing'
+    except (ValueError, TypeError):
+        return 'unknown_listing'
+    if listing >= dates[-5]:
+        return 'unlimited'
+    price, pre = quote.get('price_milli'), quote.get('pre_close_milli')
+    if price is None or pre is None:
+        return 'unknown_price'
+    limits = limit_prices(Decimal(pre) / 1000, symbol)
+    if not limits:
+        return 'unknown_price'
+    if Decimal(price) / 1000 == Decimal(str(limits[0])):
+        return 'limit_up'
+    if Decimal(price) / 1000 == Decimal(str(limits[1])):
+        return 'limit_down'
+    return None
+
+
+def build_facts(trade_date, auction, listings, trading_dates, fetch_ticks):
+    date.fromisoformat(trade_date)
+    trading_dates = sorted(d for d in trading_dates if d <= trade_date)[-5:]
+    if trade_date not in trading_dates or len(trading_dates) < 5:
+        raise ValueError('calendar_coverage_missing')
     rows, unknown, unlimited, unknown_prices = [], [], [], []
     for symbol, quote in sorted(auction.items()):
-        listing = listings.get(symbol)
-        if not listing:
+        side = classify_limit(trade_date, symbol, quote, listings.get(symbol), trading_dates)
+        if side == 'unknown_listing':
             unknown.append(symbol)
             continue
-        try:
-            date.fromisoformat(listing)
-        except (ValueError, TypeError):
-            unknown.append(symbol)
-            continue
-        if listing > trade_date:
-            unknown.append(symbol)
-            continue
-        if listing >= threshold:
+        if side == 'unlimited':
             unlimited.append(symbol)
             continue
+        if side == 'unknown_price':
+            unknown_prices.append(symbol)
+            continue
         price, pre = quote.get('price_milli'), quote.get('pre_close_milli')
-        if price is None or pre is None:
-            unknown_prices.append(symbol)
-            continue
-        limits = limit_prices(Decimal(pre) / 1000, symbol)
-        if not limits:
-            unknown_prices.append(symbol)
-            continue
-        side = ('limit_up' if Decimal(price) / 1000 == Decimal(str(limits[0])) else
-                'limit_down' if Decimal(price) / 1000 == Decimal(str(limits[1])) else None)
         if not side:
             continue
         ticks = sorted(fetch_ticks(symbol), key=lambda r: str(r['ts']))
