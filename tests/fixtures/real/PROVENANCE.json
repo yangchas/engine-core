@@ -1,4 +1,32 @@
 {
+  "_c1387": {
+    "file": "c1387/excerpt.json",
+    "sha256": "2814d24cf92a0c67d852c0519da0e4bcd202cbf04211e6dcdf98b10e96601ff4",
+    "bytes": 1610409,
+    "trade_date": "2026-11-17",
+    "sources": [
+      {
+        "path": "/home/exedev/fw/evidence/C1386/inputs.json",
+        "sha256": "0ab05feb5885ea0eb02116896486dea166b8d98f696b10fbc49f798edce93503"
+      },
+      {
+        "path": "/home/exedev/fw/evidence/C1386/results.json",
+        "sha256": "f6444079946dcedf3f877cfcb21772cc93340d5fd5bb61444f32da12d31327d8"
+      },
+      {
+        "path": "/home/exedev/fw/evidence/C1379/results.json",
+        "sha256": "71765669e04414f1ff1e7f2e68f8d7a388a9fff49480fba133867655f8b6ed77"
+      }
+    ],
+    "selection": "指定板块成员的0924/0925行、映射、上市日期和对应热板与流通市值；参考市场均值及板块结果保留作对照；交易日历用于限价判定。C1379市值源自C1376，不代表0925可用。",
+    "row_counts": {
+      "members": 4484,
+      "quotes_0924": 3294,
+      "quotes_0925": 3386,
+      "hot": 6,
+      "caps": 3450
+    }
+  },
   "_c1380": {
     "file": "c1380/caps.json",
     "sha256": "3f5d5fbb5e43a673ed49c45b90ed36f136c714b4e3f613335dbfe84d6e9e007b",
