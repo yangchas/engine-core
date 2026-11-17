@@ -2693,5 +2693,16 @@
   "stock_static": 300,
   "hot_plates": 243
  }
+},
+ "_c1342": {
+ "file": "c1342/plate_registry.json",
+ "sha256": "5573c9274c1e3ab6d796c0124c22817ee589a9f7d9cc8df1073ab55b733f0092",
+ "source": "core_data.plate_registry_latest via ReferenceSnapshotStore.read_latest (ACTIVE, integrity checked)",
+ "version": "20261117034444-fd5271f3177b",
+ "available_at": "2026-11-17T11:44:44.202280+08:00",
+ "fetched_at": "2026-11-17T11:47:39.217887+08:00",
+ "selection": "THEME rows matching plate_code or code in c1332 plate_members",
+ "row_count": 400,
+ "snapshot_sha256": "829e689b94cb2d83ac3a23d4aa8a6551362f78dabba322abe64e32855584c8bf"
 }
 }
