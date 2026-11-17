@@ -2635,5 +2635,23 @@
    "selection": "actual_src_counts, SAMPLE and read_and_build lines unchanged",
    "sha256": "bcb63a0e016cec1c1c51576fe191be1323988441b2f57e947d24811c74432488"
   }
- ]
+ ],
+  "_c1332": {
+    "file": "c1332/excerpt.json",
+    "sha256": "786fe3c8d48ced9322a92ad477a6e823e63e537962b4fac9575fe7a63ef47bae",
+    "fetched_at": "2026-11-17T10:58:41.429614+08:00",
+    "sources": [
+      "core:auction:full:2026-11-16:0925",
+      "core:auction:full:2026-11-16:0924",
+      "core_data.plate_members_latest"
+    ],
+    "version": "20261116010016-dce913bc3963",
+    "available_at": "2026-11-16T09:00:16.228934+08:00",
+    "selection": "300 symbols including all price-band candidates and first 40 indicative quotes, remainder in 0925 view order",
+    "rows": {
+      "auction_0925": 300,
+      "auction_0924": 299,
+      "plate_members": 6163
+    }
+  }
 }
