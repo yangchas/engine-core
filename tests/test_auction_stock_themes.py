@@ -72,3 +72,27 @@ def test_real_limit_counts_keep_unknowns_distinct():
         assert bucket['limit_down_count'] == (None if unknown else sum(s['limit_status'] == 'limit_down' for s in rows))
     assert any(b['limit_up_count'] is None for b in view['buckets'])
     assert any(b['limit_up_count'] is not None for b in view['buckets'])
+
+
+def test_real_smoothed_support_and_reason_priority():
+    base, mapping, names, counts, history = inputs()
+    view = assign_stock_themes(base['stocks'], mapping, names, counts, history)
+    stocks = {row['symbol']: row for row in view['stocks']}
+    support = Counter(str(p['plate_code']) for row in base['stocks'] for p in mapping.get(row['symbol'], ()))
+    assert counts[stocks['300308']['primary']['plate_code']] >= 50
+    assert view['theme_version'] == 'theme_v2'
+    for row in view['stocks']:
+        primary = row['primary']
+        if primary and counts[primary['plate_code']] < 50:
+            assert primary['source'] in ('reason', 'fallback')
+        if not primary or primary['source'] != 'support':
+            continue
+        candidates = [str(p['plate_code']) for p in mapping[row['symbol']]
+                      if 50 <= counts[str(p['plate_code'])] <= 800
+                      and support[str(p['plate_code'])] >= 2
+                      and not non_theme_reason(names.get(str(p['plate_code'])) or str(p['plate_code']))]
+        expected = min(candidates, key=lambda c: (-support[c] / (counts[c] + 20), -support[c], c))
+        assert primary['plate_code'] == expected
+        assert counts[primary['plate_code']] >= 50
+    for symbol in ('002187', '002685', '600715'):
+        assert stocks[symbol]['primary']['source'] == 'reason'
