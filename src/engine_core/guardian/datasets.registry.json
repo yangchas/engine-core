@@ -2736,6 +2736,50 @@
       }
     },
     {
+      "id": "stock_cap",
+      "redis_ttl_trade_days": 5,
+      "owner": "data_function",
+      "artifact": {
+        "catalog_dataset": null,
+        "source_dataset": "wencai",
+        "date_basis": "D"
+      },
+      "phases": ["POST_MARKET"],
+      "cadence": "on demand",
+      "rule": "A股流通市值与总市值",
+      "freshness": "UNKNOWN",
+      "retry": "UNKNOWN",
+      "degrade": [],
+      "lifecycle": {
+        "init": "on demand",
+        "force": "refetch",
+        "clear": "UNKNOWN"
+      },
+      "notes": "问财日视图，无事件",
+      "guardian_event": null,
+      "storage": [
+        {
+          "kind": "redis_view",
+          "name": "core:view:stock_cap:{date}",
+          "role": "authority",
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
+        }
+      ],
+      "fields": [
+        "symbol",
+        "float_cap_yuan",
+        "total_cap_yuan",
+        "a_total_cap_yuan",
+        "cap_as_of"
+      ]
+    },
+    {
       "id": "plate_stock_index",
       "redis_ttl_trade_days": 5,
       "owner": "data_function",
