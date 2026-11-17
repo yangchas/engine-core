@@ -72,6 +72,47 @@ def _manifest(catalog: ArtifactCatalog, dataset: str, day: str | None = None,
         return None
 
 
+def _read_hot_plates(catalog: ArtifactCatalog, day: str, *, asof: str) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    """Read the newest PIT-visible Redis snapshot, or the TD cold archive."""
+    from .data_pipeline.hot_plates_gaps import _snapshot_manifests
+    from .data_pipeline import cold_archive
+
+    cutoff = _pit_time(asof)
+    def eligible(value: Any) -> bool:
+        if not isinstance(value, dict):
+            return False
+        rows = value.get("rows")
+        available = _pit_time(value.get("available_at"))
+        quality = value.get("quality")
+        return (value.get("dataset") == "hot_plates" and value.get("trade_date") == day
+                and isinstance(value.get("version"), str) and bool(value["version"])
+                and isinstance(rows, list) and bool(rows) and all(isinstance(row, dict) for row in rows)
+                and value.get("row_count") == len(rows)
+                and not (isinstance(quality, dict) and quality.get("status") == "FAILED")
+                and available is not None and cutoff is not None and available <= cutoff)
+
+    snapshots = [value for value in _snapshot_manifests(catalog.root, day) if eligible(value)]
+    if snapshots:
+        value = max(snapshots, key=lambda item: (_pit_time(item["available_at"]), item["version"]))
+    else:
+        store = None
+        try:
+            store = cold_archive.TdStore()
+            version = store.latest_version("hot_plates", day)
+            value = json.loads(cold_archive.read_envelope("hot_plates", day, version, store=store)) if version else None
+            if not eligible(value) or value.get("version") != version:
+                return None
+        except Exception:
+            return None
+        finally:
+            if store is not None:
+                store.close()
+    rows = [dict(row) for row in value["rows"]]
+    for row in rows:
+        row.setdefault("available_at", value.get("available_at"))
+    return rows, value
+
+
 def _plate_members_snapshot(*, asof: str) -> dict[str, Any] | None:
     """Read the same verified ACTIVE snapshot published by the fill job."""
     from .data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
@@ -133,7 +174,9 @@ def _step(name: str, dataset: str, day: str | None, catalog: ArtifactCatalog,
                 "fallback_reason": meta.get("fallback_reason"), "provider": meta.get("provider"),
                 "quality": meta.get("quality"), "business_status": meta.get("business_status"),
                 "elapsed_ms": round((time.monotonic() - started) * 1000, 3)}
-    manifest = ((_plate_members_snapshot(asof=asof) if dataset == "plate_members" else
+    hot = _read_hot_plates(catalog, day, asof=asof) if dataset == "hot_plates" and day else None
+    manifest = ((hot[1] if hot else None) if dataset == "hot_plates" else
+                (_plate_members_snapshot(asof=asof) if dataset == "plate_members" else
                  _manifest(catalog, dataset, day, asof=asof)) if day else None)
     quality = manifest.get("quality") if manifest and isinstance(manifest.get("quality"), dict) else {}
     if manifest:
@@ -287,7 +330,7 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
     pool = (pool_rows, pool_meta) if pool_meta["status"] != "MISSING" else None
     if pool and pool_meta["status"] != "READY":
         diag.append("quality:limit_up_pool:" + (pool_meta.get("fallback_reason") or pool_meta["status"]))
-    hot = load("hot_plates", previous)
+    hot = _read_hot_plates(catalog, previous, asof=asof)
     cutoff = asof
     if hot:
         hot = (_pit_rows(hot[0], cutoff)[0], hot[1])
@@ -707,6 +750,8 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                 present = pool_meta.get("storage_source") == "redis" and pool_meta.get("status") != "MISSING"
             elif dataset == "plate_members":
                 present = _plate_members_snapshot(asof=asof)
+            elif dataset == "hot_plates":
+                present = _read_hot_plates(catalog, previous, asof=asof)
             else:
                 present = _manifest(catalog, dataset, previous, asof=asof)
             if not present:

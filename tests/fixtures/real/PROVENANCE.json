@@ -2610,5 +2610,14 @@
   "selection": "lines 3-4, unchanged",
   "row_count": 11,
   "trade_date": "2026-11-16"
+ },
+ "_c1324": {
+  "file": "c1324/hot_plates.json",
+  "source": "Redis GET core:cache:data:hot_plates:2026-11-16:sha256-1d3f8a4866ed4238",
+  "fetched_at": "2026-11-17T09:51:54.591613+08:00",
+  "bytes": 135455,
+  "rows": 243,
+  "sha256": "1d0c14a1c7d850f2fd13577b814c164637ed7bbd659cd666119232fca755aaa2",
+  "capture": "direct read-only Redis key"
  }
 }
