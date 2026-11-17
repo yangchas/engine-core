@@ -2721,5 +2721,13 @@
  "fetched_at": "2026-11-17T06:33:29.923582+00:00",
  "index_symbols": 5886,
  "auction_rows": 5214
-}
+},
+  "_c1365": {
+    "file": "c1365/wencai_excerpts.json",
+    "sha256": "6a245b37a8cabae22e7261eb4fffe8f02b12cc9cee6bb81506e0f59152e5fcf0",
+    "source": "/home/exedev/fw/evidence/C1364/probe.log",
+    "source_sha256": "a12d13b4e91e9e0e58b9a44ba359db3f947c49e2dcc60eba34197c802dbbe721",
+    "selection": "10 original sample rows and 23 page summaries; pagination tests replay copies, not captured pages",
+    "trade_date": "2026-11-17"
+  }
 }
