@@ -480,3 +480,51 @@ def test_successful_fill_rechecks_real_c1275_artifact_at_completion(tmp_path, mo
         report = prep.build_prep_report(tmp_path, "2026-11-16", write=True, asof=asof)
         step = next(s for s in report["steps"] if s["step"] == "limit_reasons")
         assert step["status"] == ("READY" if exit_code == 0 else "MISSING")
+
+
+def test_hot_plates_redis_then_cold_archive_real_snapshot(tmp_path, monkeypatch):
+    from datetime import datetime
+    from types import SimpleNamespace
+    import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline import cold_archive, hot_plates_gaps
+    from examples import core_guardian
+
+    snapshot = json.loads((Path(__file__).parent / 'fixtures/real/c1324/hot_plates.json').read_bytes())
+    day, asof = '2026-11-16', '2026-11-17T08:31:59+08:00'
+    catalog = ArtifactCatalog(tmp_path)
+    state = {'redis': [snapshot], 'td': True, 'calls': 0}
+    monkeypatch.setattr(hot_plates_gaps, '_snapshot_manifests', lambda root, date: state['redis'])
+    class Store:
+        def latest_version(self, dataset, date):
+            state['calls'] += 1
+            return snapshot['version'] if state['td'] else None
+        def close(self):
+            pass
+    monkeypatch.setattr(cold_archive, 'TdStore', Store)
+    monkeypatch.setattr(cold_archive, 'read_envelope', lambda *a, **k: json.dumps(snapshot).encode())
+    def check():
+        step = prep._step('hot_plates', 'hot_plates', day, catalog, asof=asof)
+        report = {'status': 'PARTIAL', 'steps': [step], 'errors': [], 'error_steps': []}
+        monkeypatch.setattr(core_guardian.subprocess, 'run', lambda *a, **k: SimpleNamespace(
+            returncode=0, stdout=json.dumps(report), stderr=''))
+        handler = core_guardian._command_handler('premarket_data', SimpleNamespace(write=True), tmp_path)
+        event = SimpleNamespace(data_date_offset=0, timeout_seconds=10, args={})
+        try:
+            result = handler(event, datetime.fromisoformat(asof), {}, False)
+        except core_guardian.CoreError as exc:
+            result = str(exc)
+        return step, result
+    step, result = check()
+    assert step['status'] == 'READY' and step['version'] == snapshot['version']
+    assert 'PREP_CRITICAL_MISSING:hot_plates' not in result
+    assert state['calls'] == 0
+    rows, manifest = prep._read_hot_plates(catalog, day, asof=asof)
+    assert len(rows) == 243 and manifest['version'] == snapshot['version']
+    state['redis'] = []
+    step, result = check()
+    assert step['status'] == 'READY' and 'PREP_CRITICAL_MISSING:hot_plates' not in result
+    assert prep._read_hot_plates(catalog, day, asof=asof)[1]['version'] == snapshot['version']
+    state['td'] = False
+    step, result = check()
+    assert step['status'] == 'MISSING' and 'PREP_CRITICAL_MISSING:hot_plates' in result
+    assert prep._read_hot_plates(catalog, day, asof=asof) is None
