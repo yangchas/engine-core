@@ -1,4 +1,13 @@
 {
+  "_c1380": {
+    "file": "c1380/caps.json",
+    "sha256": "3f5d5fbb5e43a673ed49c45b90ed36f136c714b4e3f613335dbfe84d6e9e007b",
+    "source": "/home/exedev/fw/evidence/C1379/results.json",
+    "source_sha256": "71765669e04414f1ff1e7f2e68f8d7a388a9fff49480fba133867655f8b6ed77",
+    "selection": "complete stock cap rows captured in C1379 from C1376 stock_cap view",
+    "row_count": 5580,
+    "trade_date": "2026-11-17"
+  },
   "_c1378": {
     "file": "c1378/expected.json",
     "sources": {
