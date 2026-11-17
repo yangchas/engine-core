@@ -36,6 +36,13 @@ def load(prefix: str) -> dict:
 
 
 def test_every_real_fixture_has_matching_provenance():
+    excerpt = PROVENANCE['_c1356']
+    body = (REAL / excerpt['file']).read_bytes()
+    assert hashlib.sha256(body).hexdigest() == excerpt['sha256']
+    assert len(json.loads(body)['index']) == excerpt['index_symbols']
+    assert len(json.loads(body)['auction']) == excerpt['auction_rows']
+    assert excerpt['source'] and excerpt['source_sha256'] and excerpt['selection'] and excerpt['fetched_at']
+
     excerpt = PROVENANCE['_c1351']
     assert hashlib.sha256((REAL / excerpt['file']).read_bytes()).hexdigest() == excerpt['sha256']
     assert excerpt['source'] and excerpt['selection'] and excerpt['trade_date']
