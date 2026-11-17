@@ -1,6 +1,7 @@
 """Build an independent, point-in-time auction theme preview from supplied facts."""
 from collections import Counter, defaultdict
 from html import escape
+from datetime import datetime
 from statistics import mean
 
 from .theme_taxonomy import build_theme_cards
@@ -26,39 +27,62 @@ def non_theme_reason(name):
 
 def build_auction_theme_view(auction_rows, stock_plates, hot_rows, seal_rows, pool_rows, reason_rows, *,
                              names=None, boards=None, listings=None, trading_dates=None, trade_date=None,
-                             previous_trade_date=None, caps=None, top_n_hot=40):
-    if not isinstance(top_n_hot, int) or isinstance(top_n_hot, bool) or top_n_hot < 0:
-        raise ValueError('invalid_top_n_hot')
+                             previous_trade_date=None, caps=None, top_n_hot=40, bottom_n_hot=40, k_active=2,
+                             size_cap=400, display_top=50, active_top_n=20):
+    for key, value in (('top_n_hot', top_n_hot), ('bottom_n_hot', bottom_n_hot), ('k_active', k_active), ('size_cap', size_cap), ('display_top', display_top), ('active_top_n', active_top_n)):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError('invalid_' + key)
     if not stock_plates:
         return {'status': 'unavailable', 'reason': 'mapping_unavailable'}
     members = defaultdict(set)
     for symbol, plates in stock_plates.items():
         for plate in plates:
             members[str(plate.get('plate_code') if isinstance(plate, dict) else plate)].add(symbol)
+    if trade_date:
+        cutoff = datetime.fromisoformat(trade_date + 'T09:26:00+08:00')
+        hot_rows = [row for row in hot_rows if not row.get('available_at') or
+                    (datetime.fromisoformat(row['available_at'].replace('Z', '+00:00')).tzinfo is not None and
+                     datetime.fromisoformat(row['available_at'].replace('Z', '+00:00')) <= cutoff)]
     hot = {str(row['plate_code']): row for row in hot_rows}
     plate_names = dict(names or {})
     plate_names.update({c: r['name'] for c, r in hot.items() if r.get('name')})
     pool = {r['symbol']: r for r in pool_rows if r.get('symbol')}
     reasons = defaultdict(set)
     for symbol, row in pool.items():
-        code = row.get('main_reason_plate_code') or row.get('plate_code')
-        if code:
-            reasons[str(code)].add(symbol)
+        for code in (row.get('main_reason_plate_code'), row.get('plate_code')):
+            if code:
+                reasons[str(code)].add(symbol)
     for row in reason_rows:
         symbol = row.get('symbol')
         if symbol not in pool or (previous_trade_date and (row.get('event_date') or row.get('date')) != previous_trade_date):
             continue
-        code = row.get('main_reason_plate_code') or row.get('plate_code')
-        if code:
-            reasons[str(code)].add(symbol)
-    selected = sorted(hot_rows, key=lambda r: (r['rank'], str(r['plate_code'])))[:top_n_hot]
+        for code in (row.get('main_reason_plate_code'), row.get('plate_code')):
+            if code:
+                reasons[str(code)].add(symbol)
+    current = {r['symbol']: r for r in auction_rows if r.get('auction_tag', '0925') == '0925'}
+    active = {r['symbol'] for r in seal_rows if r.get('side') in ('limit_up', 'limit_down') and r.get('symbol')}
+    for field, descending in (('amount_yuan', True), ('change_bp', True), ('change_bp', False)):
+        eligible = [r for r in current.values() if r.get(field) is not None]
+        eligible.sort(key=lambda r: ((-r[field] if descending else r[field]), r['symbol']))
+        active.update(r['symbol'] for r in eligible[:active_top_n])
+    active_counts = {code: len(symbols & active) for code, symbols in members.items()}
+    ranked = sorted(hot_rows, key=lambda r: (r['rank'], str(r['plate_code'])))
+    selected_codes = {str(h['plate_code']) for h in ranked[:top_n_hot]}
+    if bottom_n_hot:
+        selected_codes.update(str(h['plate_code']) for h in ranked[-bottom_n_hot:])
+    selected_codes.update(code for code, symbols in members.items()
+                          if plate_names.get(code) and len(symbols) <= size_cap
+                          and active_counts[code] >= k_active)
+    def rank_key(code):
+        rank = hot.get(code, {}).get('rank')
+        return (rank if rank is not None else float('inf'), code)
+    ordered_codes = sorted(selected_codes, key=rank_key)
     plates = {}
-    for h in selected:
-        code = str(h['plate_code'])
+    for code in ordered_codes:
         symbols = sorted(members[code])
-        plates[code] = dict(plate_code=code, name=h.get('name') or plate_names.get(code),
-                            members=symbols, member_count=len(symbols),
-                            non_theme_reason=non_theme_reason(h.get('name') or plate_names.get(code)),
+        name = plate_names.get(code)
+        plates[code] = dict(plate_code=code, name=name, members=symbols,
+                            member_count=len(symbols), non_theme_reason=non_theme_reason(name),
                             is_broad=False, primary_parent=None)
     flat = dict(parameters={}, plates=plates,
                 orphans=[c for c, p in plates.items() if not p['non_theme_reason']])
@@ -89,7 +113,6 @@ def build_auction_theme_view(auction_rows, stock_plates, hot_rows, seal_rows, po
         card['anchors'] = anchors
         values = [a['change_bp'] for a in anchors if a['change_bp'] is not None]
         card['anchor_delta_bp'] = mean(values)-card['mean_change_bp'] if values and card['mean_change_bp'] is not None else None
-    ordered_codes = [str(h['plate_code']) for h in selected]
     valid = [c for c in ordered_codes if not plates[c]['non_theme_reason']]
     for code in valid:
         rows[code]['children'] = []
@@ -100,39 +123,31 @@ def build_auction_theme_view(auction_rows, stock_plates, hot_rows, seal_rows, po
         for symbol in members[code]:
             stock_hot[symbol].append(code)
     reason_by_stock = defaultdict(set)
-    for symbol, row in pool.items():
-        for code in [row.get('main_reason_plate_code'), row.get('plate_code')]:
-            if code and str(code) in valid_set:
-                reason_by_stock[symbol].add(str(code))
-    for row in reason_rows:
-        symbol = row.get('symbol')
-        event_date = row.get('event_date') or row.get('date')
-        if trade_date and event_date and event_date >= trade_date:
-            continue
-        for code in [row.get('main_reason_plate_code'), row.get('plate_code'), *(row.get('plate_codes') or [])]:
-            if symbol and code and str(code) in valid_set:
-                reason_by_stock[symbol].add(str(code))
-    active = {r['symbol'] for r in seal_rows if r.get('side') in ('limit_up', 'limit_down') and r.get('symbol')}
-    for field, descending in (('amount_yuan', True), ('change_bp', True), ('change_bp', False)):
-        eligible = [r for r in current.values() if r.get(field) is not None]
-        eligible.sort(key=lambda r: ((-r[field] if descending else r[field]), r['symbol']))
-        active.update(r['symbol'] for r in eligible[:20])
+    for code, symbols in reasons.items():
+        if code in valid_set:
+            for symbol in symbols & members[code]:
+                reason_by_stock[symbol].add(code)
     seals = {r['symbol']: r for r in seal_rows}
-    rank_order = {code: i for i, code in enumerate(valid)}
+    def choice_key(code):
+        return (-active_counts[code], len(members[code]), *rank_key(code))
     stocks = []
     for symbol in sorted(active):
         q, seal = current.get(symbol, {}), seals.get(symbol, {})
-        choices = sorted(reason_by_stock[symbol], key=rank_order.get)
-        fallback = stock_hot[symbol]
-        code = choices[0] if choices else (fallback[0] if fallback else None)
+        choices = sorted(reason_by_stock[symbol], key=choice_key)
+        fallback = sorted(stock_hot[symbol], key=choice_key)
+        eligible = [c for c in fallback if len(members[c]) <= size_cap]
+        code = choices[0] if choices else (eligible[0] if eligible else None)
         stocks.append(dict(symbol=symbol, name=q.get('name') or pool.get(symbol, {}).get('name') or seal.get('name') or (names or {}).get(symbol),
                            change_bp=q.get('change_bp'), amount_yuan=q.get('amount_yuan'),
                            seal_amount_yuan=seal.get('seal_amount_yuan'), price_source=seal.get('price_source') or q.get('src'),
                            side=seal.get('side'), primary_theme=({'plate_code':code, 'name':plates[code]['name']} if code else None),
-                           theme_source='limit_reason' if choices else ('hot_membership' if code else 'UNKNOWN'),
+                           theme_source='limit_reason' if choices else ('active_membership' if code else 'UNKNOWN'),
                            hot_plates=[{'plate_code': c, 'name': plates[c]['name'], 'rank': rows[c]['rank']} for c in fallback[:5]]))
     cards = [rows[c] for c in valid]
-    return {'status':'available', 'cards':cards, 'plates':cards, 'excluded':excluded, 'active_stocks':stocks,
+    for card in cards:
+        card['active_count'] = active_counts.get(card['plate_code'], 0)
+    cards.sort(key=lambda c: (-c['active_count'], c['amount_yuan'] is None, -(c['amount_yuan'] or 0), c['plate_code']))
+    return {'status':'available', 'cards':cards, 'plates':cards, 'display_cards':cards[:display_top], 'more_cards':cards[display_top:], 'excluded':excluded, 'active_stocks':stocks,
             'notes':['Stocks may appear in multiple themes; totals overlap.',
                      'excluded_non_theme=' + ','.join(f"{r['rank']}:{r['plate_code']}:{r['name']}:{r['non_theme_reason']}" for r in excluded)]}
 
@@ -175,7 +190,7 @@ def render_theme_cards_html(view):
     def cell(value):
         return escape(str(value)) if value is not None else '—'
     def table(cards):
-        columns = [('排名','rank'), ('板块','name'), ('竞价只数','auction_count'),
+        columns = [('排名','rank'), ('板块','name'), ('活跃股数','active_count'), ('竞价只数','auction_count'),
                    ('强只数','strong_count'), ('强占比','strong_share'), ('中只数','middle_count'),
                    ('中占比','middle_share'), ('弱只数','weak_count'), ('弱占比','weak_share'),
                    ('涨停','limit_up_count'), ('跌停','limit_down_count'), ('均值(bp)','mean_change_bp'),
@@ -190,7 +205,7 @@ def render_theme_cards_html(view):
         return '<table><thead><tr>'+head+'</tr></thead><tbody>'+body+'</tbody></table>'
     if view.get('status') != 'available':
         return '<p>数据不可用：'+cell(view.get('reason'))+'</p>'
-    parts = ['<section><h2>热板卡片</h2>', table(view['cards'])]
+    parts = ['<section><h2>热板卡片</h2>', table(view['display_cards']), '<details><summary>更多</summary>', table(view['more_cards']), '</details>']
     parts.append('<h2>活跃个股</h2><table><thead><tr><th>代码</th><th>名称</th><th>涨跌(bp)</th><th>成交额</th><th>封单额</th><th>价格来源</th><th>主题材</th><th>证据</th><th>所属热板</th></tr></thead><tbody>')
     for stock in view['active_stocks']:
         values = [stock['symbol'], stock['name'], stock['change_bp'], stock['amount_yuan'], stock['seal_amount_yuan'], stock['price_source'], (stock['primary_theme'] or {}).get('name'), stock['theme_source'], '、'.join(p['name'] or p['plate_code'] for p in stock['hot_plates'])]

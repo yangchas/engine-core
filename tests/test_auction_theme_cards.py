@@ -24,7 +24,7 @@ def test_real_vocabulary_metrics_hierarchy_and_exclusions():
     assert round(grid['mean_change_bp']/100,2) == -0.61
     assert {'801909','801595','801856','801862','801530','801162'} <= {x['plate_code'] for x in view['excluded']}
     assert not ({x['plate_code'] for x in view['excluded']} & cards.keys())
-    assert [c['rank'] for c in view['cards']] == sorted(c['rank'] for c in view['cards'])
+    assert view['cards'] == sorted(view['cards'], key=lambda c: (-c['active_count'], c['amount_yuan'] is None, -(c['amount_yuan'] or 0), c['plate_code']))
     assert all(not c['children'] for c in view['cards'])
     assert 'overlap' in ' '.join(view['notes'])
 
@@ -32,8 +32,7 @@ def test_real_prior_reasons_and_capitalization_dangerous_control():
     a,b,caps=data(); view=build(caps)
     cards={x['plate_code']:x for x in view['plates']}
     counts=Counter(r['plate_code'] for r in b['pool'] if r.get('plate_code'))
-    reason_only = {x['plate_code'] for x in build(top_n=0)['plates']}
-    assert reason_only == set()
+    assert all(x['active_count'] >= 2 or x['rank'] is not None for x in build(top_n=0)['plates'])
     for code,count in counts.most_common(20):
         if code in cards: assert cards[code]['previous_limit_reason_count'] >= count
     chip=cards['801001']
@@ -66,7 +65,7 @@ def test_real_hot_order_flat_filter_and_active_dashboard():
     from engine_core.auction_theme_cards import render_theme_cards_html
     a, b, _ = data()
     view = build(top_n=40)
-    assert [c['name'] for c in view['cards'][:5]] == ['地产链', '智能电网', '医药', '银行', '机场航空']
+    assert {'地产链', '智能电网', '医药', '银行', '机场航空'} <= {c['name'] for c in view['cards']}
     assert all(not c['children'] for c in view['cards'])
     assert any(c['plate_code'] == '801909' and c['rank'] == 4 for c in view['excluded'])
     assert not {'中报增长', '三季报增长', '国有企业', '低价股', '股权转让'} & {c['name'] for c in view['cards']}
@@ -92,17 +91,22 @@ def test_real_name_filter_and_active_attribution():
     active = {r['symbol']: r for r in view['active_stocks']}
     assert len([r for r in a['seal'] if r['side'] == 'limit_up']) == 3
     assert len([r for r in a['seal'] if r['side'] == 'limit_down']) == 17
+    members = {code: set() for code in cards}
+    for symbol, plates in a['index'].items():
+        for plate in plates:
+            code = str(plate.get('plate_code') if isinstance(plate, dict) else plate)
+            if code in members:
+                members[code].add(symbol)
+    def order(code):
+        return (-len(members[code] & active.keys()), len(members[code]), cards[code]['rank'] if cards[code]['rank'] is not None else float('inf'), code)
+    pool_symbols = {r['symbol'] for r in b['pool']}
     for symbol, stock in active.items():
-        candidates = {str(code) for r in b['pool'] + b['reason_rows'] if r.get('symbol') == symbol for code in [r.get('main_reason_plate_code'), r.get('plate_code'), *(r.get('plate_codes') or [])] if code and str(code) in cards}
-        membership = stock['hot_plates']
-        if candidates:
-            assert stock['theme_source'] == 'limit_reason'
-            assert stock['primary_theme']['plate_code'] == min(candidates, key=lambda c: cards[c]['rank'])
-        elif membership:
-            assert stock['theme_source'] == 'hot_membership'
-            assert stock['primary_theme']['plate_code'] == membership[0]['plate_code']
-        else:
-            assert stock['theme_source'] == 'UNKNOWN' and stock['primary_theme'] is None
+        candidates = {str(code) for r in b['pool'] + b['reason_rows'] if r.get('symbol') == symbol and symbol in pool_symbols and (r in b['pool'] or (r.get('event_date') or r.get('date')) == '2026-11-16') for code in [r.get('main_reason_plate_code'), r.get('plate_code')] if code and str(code) in cards and symbol in members[str(code)]}
+        fallback = [c for c in cards if symbol in members[c] and len(members[c]) <= 400]
+        expected = min(candidates or fallback, key=order) if candidates or fallback else None
+        assert (stock['primary_theme'] or {}).get('plate_code') == expected
+        assert stock['theme_source'] == ('limit_reason' if candidates else 'active_membership' if fallback else 'UNKNOWN')
+
 
 
 def test_real_geography_filter_does_not_use_substring_matching():
@@ -117,3 +121,30 @@ def test_real_geography_filter_does_not_use_substring_matching():
     assert '智慧城市' not in filtered
     assert '节能环保' not in filtered
     assert set(('上海市', '北京市', '云南省', '西藏自治区', '天津自贸区', '西部大开发', '新疆', '浙江')) <= set(filtered)
+
+
+def test_real_c1377_v3_vocabulary_and_display():
+    from engine_core.auction_theme_cards import build_auction_theme_view, render_theme_cards_html
+    a, b, _ = data()
+    expected = json.loads((REAL / 'c1378/expected.json').read_text())
+    def run(**kwargs):
+        return build_auction_theme_view(a['auction'] + b['auction_0924'], a['index'], a['hot'], a['seal'], b['pool'], b['reason_rows'], names=a['names'], listings=a['listings'], trading_dates=a['calendar'], trade_date='2026-11-17', previous_trade_date='2026-11-16', **kwargs)
+    view = run()
+    stocks = {s['symbol']: s for s in view['active_stocks']}
+    assert len(stocks) == 54
+    assert all(s['primary_theme'] for s in stocks.values())
+    assert len(view['cards']) == 163
+    assert len(view['display_cards']) == 50 and len(view['more_cards']) == 113
+    assert view['cards'] == sorted(view['cards'], key=lambda c: (-c['active_count'], c['amount_yuan'] is None, -(c['amount_yuan'] or 0), c['plate_code']))
+    for symbol, oracle in expected['V3 k=2']['stocks'].items():
+        assert stocks[symbol]['primary_theme']['name'] == oracle['theme']
+        assert stocks[symbol]['theme_source'] == oracle['source']
+    assert not {'中报增长', '三季报增长', '国有企业', '低价股', '股权转让', '数字经济'} & {c['name'] for c in view['cards']}
+    for name, metrics in expected['C1354 metrics'].items():
+        card = next(c for c in view['cards'] if c['name'] == name)
+        assert {key: card[key] for key in metrics} == metrics
+    k3 = run(k_active=3)
+    assert sum(bool(s['hot_plates']) for s in k3['active_stocks']) == expected['V3 k=3']['covered'] == 53
+    assert sum(s['primary_theme'] is not None for s in k3['active_stocks']) == 52
+    html = render_theme_cards_html(view)
+    assert '更多' in html and '预测' not in html and '延续' not in html

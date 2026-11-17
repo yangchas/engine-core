@@ -1,4 +1,13 @@
 {
+  "_c1378": {
+    "file": "c1378/expected.json",
+    "sources": {
+      "/home/exedev/fw/evidence/C1377/results.json": "fbfd9bf16126935bd2486d3bb241d953e26787d6a7bcab0a36e88670f9dfafa6",
+      "/home/exedev/fw/evidence/C1354/results.json": "6c049da775e6a9196b7721a0c0645ae3ae190281e6f9d522e7dca39a4b0bfba7"
+    },
+    "selection": "V3 k=2 and k=3 result excerpts and six unchanged C1354 metrics for three plates",
+    "sha256": "9051d2a944a9300384c9fb55a2e4fd31b8290561237aec68889d1666cbd130d8"
+  },
   "_c1351": {
     "file": "c1351/excerpt.json",
     "sha256": "d505dee182ff11e6dc4d74b67a503039ab691577d9e2579757cbe9f1c5383d44",
