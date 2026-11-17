@@ -12,8 +12,8 @@ def build_auction_plate_view(auction_rows, stock_plates, *, tag, names=None, cap
                              hot_rows=None, previous_rows=None, listings=None,
                              trading_dates=None, trade_date=None, min_members=10,
                              top_n=15, pool_rows=None, reason_rows=None,
-                             hide_non_theme=False, min_limit_lift=2.0):
-    for key, value in (('min_members', min_members), ('top_n', top_n)):
+                             hide_non_theme=True, min_limit_lift=2.0, min_limit_count=2):
+    for key, value in (('min_members', min_members), ('top_n', top_n), ('min_limit_count', min_limit_count)):
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise ValueError('invalid_' + key)
     if isinstance(min_limit_lift, bool) or not isinstance(min_limit_lift, (int, float)) or not isfinite(min_limit_lift) or min_limit_lift < 0:
@@ -92,17 +92,22 @@ def build_auction_plate_view(auction_rows, stock_plates, *, tag, names=None, cap
     falling = sorted(eligible, key=lambda r: (r['r_bp'], r['plate_code']))[:top_n]
     rankings = {}
     filtered = {}
+    notes = {}
     for side in ('up', 'down'):
         candidates = [r for r in eligible if (r['limit_' + side + '_count'] or 0) > 0]
-        qualified = [r for r in candidates if r['lift_limit_' + side] is not None and r['lift_limit_' + side] >= min_limit_lift]
+        market_count = sum(v == 'limit_' + side for v in limits.values())
+        insufficient = limit_available and market_count < min_limit_count
+        notes[side] = f'样本不足：全市场{market_count}只，至少需要{min_limit_count}只' if insufficient else ''
+        qualified = [r for r in candidates if not insufficient and r['limit_' + side + '_count'] >= min_limit_count and r['lift_limit_' + side] is not None and r['lift_limit_' + side] >= min_limit_lift]
         filtered[side] = len(candidates) - len(qualified)
-        rankings[side] = sorted(qualified, key=lambda r: (-r['limit_' + side + '_count'], -r['lift_limit_' + side], -r['r_bp'] if side == 'up' else r['r_bp'], r['plate_code']))[:top_n]
+        rankings[side] = sorted(qualified, key=lambda r: (-r['lift_limit_' + side], -r['limit_' + side + '_count'], -r['r_bp'] if side == 'up' else r['r_bp'], r['plate_code']))[:top_n]
     indicative = sum(r.get('src') == 'indicative_bid_ask_mid' for r in priced.values())
     share = indicative/len(priced) if priced else None
     note = '指示价，终局会变' if tag in ('0920', '0924') else (f'指示买卖中间价来源占有价股票 {share:.1%}' if tag == '0925' and indicative else '')
     return dict(tag=tag, price_note=note, indicative_share=share, market_bp=market,
                 market_count=len(valid), market_amount_yuan=market_amount if market_amount_complete else None,
                 market_limit_up_ratio=market_ratios['up'], market_limit_down_ratio=market_ratios['down'],
+                limit_up_note=notes['up'], limit_down_note=notes['down'],
                 limit_up_filtered_count=filtered['up'], limit_down_filtered_count=filtered['down'],
                 plates=result, rising=rising, falling=falling, limit_up=rankings['up'], limit_down=rankings['down'])
 
@@ -114,6 +119,8 @@ def render_auction_plate_html(view):
     for key, title in (('rising', '涨幅榜'), ('limit_up', '涨停榜'), ('falling', '跌幅榜'), ('limit_down', '跌停榜')):
         side = key.removeprefix('limit_') if key.startswith('limit_') else None
         extra = '<th>占比</th><th>倍数</th>' if side else ''
+        if side and view.get(key + '_note'):
+            parts.append(f'<p>{cell(view[key + "_note"])}</p>')
         parts.append(f'<h2>{title}</h2><table><thead><tr><th>板块</th><th>板块相对大盘平均涨幅</th><th>涨停只数</th><th>跌停只数</th>{extra}</tr></thead><tbody>')
         for row in view.get(key, []):
             fields = ('name', 'r_bp', 'limit_up_count', 'limit_down_count') + (('limit_' + side + '_ratio', 'lift_limit_' + side) if side else ())

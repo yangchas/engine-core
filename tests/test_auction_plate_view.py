@@ -33,7 +33,7 @@ def test_reference_values_and_dangerous_limit_contrast():
     assert actual['801786']['limit_down_count'] == 2
     assert '801786' in [r['plate_code'] for r in view['limit_down']]
     assert '801786' not in [r['plate_code'] for r in view['limit_up']]
-    assert [r['limit_up_count'] for r in view['limit_up']] == sorted((r['limit_up_count'] for r in view['limit_up']), reverse=True)
+    assert [r['lift_limit_up'] for r in view['limit_up']] == sorted((r['lift_limit_up'] for r in view['limit_up']), reverse=True)
 
 
 def test_optional_data_and_anchors():
@@ -73,10 +73,10 @@ def test_limit_lift_filter_on_real_excerpt():
     view = build()
     down = view['limit_down']
     assert '中报增长' not in [row['name'] for row in down]
-    assert [row['name'] for row in down] == ['短剧', '游戏', '影视院线']
-    assert [row['limit_down_count'] for row in down] == [4, 3, 2]
-    assert next(row for row in build(min_limit_lift=0)['limit_down'] if row['name'] == '中报增长')
-    assert view['limit_down_filtered_count'] == 2
+    assert [row['name'] for row in down] == ['影视院线', '短剧', '游戏']
+    assert [row['limit_down_count'] for row in down] == [2, 4, 3]
+    assert next(row for row in build(min_limit_lift=0, hide_non_theme=False)['limit_down'] if row['name'] == '中报增长')
+    assert view['limit_down_filtered_count'] == 1
     assert view['market_limit_down_ratio'] == pytest.approx(8 / 3386)
     for side in ('up', 'down'):
         for row in view['limit_' + side]:
@@ -89,3 +89,37 @@ def test_limit_lift_filter_on_real_excerpt():
     assert all(row['lift_limit_up'] is None for row in without_limits['plates'])
     html = render_auction_plate_html(view)
     assert '占比' in html and '倍数' in html
+
+
+def test_default_hides_marked_real_plates_and_opt_out_restores_them():
+    view = build()
+    marked = [r for r in view['plates'] if r['name'] in {'低价股', '股权转让', '国有企业', '中报增长'}]
+    assert marked and all(r['non_theme_reason'] for r in marked)
+    for key in ('rising', 'falling', 'limit_up', 'limit_down'):
+        assert all(not r['non_theme_reason'] for r in view[key])
+    unhidden = build(hide_non_theme=False, min_limit_lift=0)
+    assert any(r['name'] == '中报增长' for r in unhidden['rising'])
+    assert any(r['name'] == '中报增长' for r in unhidden['limit_down'])
+
+
+def test_limit_count_lift_order_and_insufficient_market_note_real_excerpt():
+    view = build(hide_non_theme=False, min_limit_lift=0)
+    for side in ('up', 'down'):
+        rows = view['limit_' + side]
+        assert all(r['limit_' + side + '_count'] >= 2 for r in rows)
+        assert rows == sorted(rows, key=lambda r: (-r['lift_limit_' + side], -r['limit_' + side + '_count'], -r['r_bp'] if side == 'up' else r['r_bp'], r['plate_code']))
+    assert next(r for r in view['plates'] if r['name'] == '智能电网')['limit_up_count'] == 1
+    assert all(r['name'] != '智能电网' for r in view['limit_up'])
+    assert view['limit_down'][0]['name'] == '影视院线'
+    from engine_core.data_pipeline.auction_seal_facts import classify_limit
+    quotes = DATA['quotes']['0925']
+    limit_symbols = [r['symbol'] for r in quotes if r.get('price_milli') is not None and classify_limit('2026-11-17', r['symbol'], r, DATA['listings'].get(r['symbol']), DATA['calendar']) == 'limit_up']
+    assert len(limit_symbols) > 1
+    one_limit = [r for r in quotes if r['symbol'] not in limit_symbols[1:]]
+    single = build_auction_plate_view(one_limit, MAPPING, tag='0925', names=DATA['names'], listings=DATA['listings'], trading_dates=DATA['calendar'], trade_date='2026-11-17')
+    assert single['limit_up'] == [] and '样本不足' in single['limit_up_note']
+    insufficient = build(min_limit_count=len(DATA['quotes']['0925']) + 1)
+    assert insufficient['limit_up'] == [] and '样本不足' in insufficient['limit_up_note']
+    assert insufficient['limit_down'] == [] and '样本不足' in insufficient['limit_down_note']
+    assert insufficient['limit_up_note'] in render_auction_plate_html(insufficient)
+    assert insufficient['limit_down_note'] in render_auction_plate_html(insufficient)
