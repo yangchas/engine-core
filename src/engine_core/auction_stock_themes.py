@@ -1,12 +1,14 @@
 """Pure, partitioned attribution of active auction stocks to current themes."""
 from collections import Counter, defaultdict
 from html import escape
+from fractions import Fraction
 from math import log
 from statistics import mean
 
 from .auction_theme_cards import non_theme_reason
 
-THEME_VERSION = 'theme_v1'
+THEME_VERSION = 'theme_v2'
+MIN_SPECIFIC_MEMBERS = 50
 
 
 def assign_stock_themes(active_stocks, stock_plates, plate_names, plate_member_counts,
@@ -51,14 +53,18 @@ def assign_stock_themes(active_stocks, stock_plates, plate_names, plate_member_c
                 return (0, -int(max(hits[c]).replace('-', '')), -len(hits[c]), c)
             n = plate_member_counts.get(c)
             eligible = not non_theme_reason(plate_names.get(c) or c) and n is not None and 0 < n <= big_plate_members
-            return (1 if eligible and support_count(c) else 2 if eligible else 3,
-                    -specificity(c), -support_count(c), c)
+            if eligible and n >= MIN_SPECIFIC_MEMBERS and support_count(c):
+                return (1, -Fraction(support.get(c, 0), n + 20), -support.get(c, 0), c)
+            return (2 if eligible else 3, -specificity(c), -support_count(c), c)
         ordered = sorted(current, key=key)
         choices = []
         for rank, c in enumerate(ordered[:1 + secondary], 1):
             tier = key(c)[0]
+            source = ('reason', 'support', 'specific', 'fallback')[tier]
+            if tier == 2 and plate_member_counts[c] < MIN_SPECIFIC_MEMBERS:
+                source = 'fallback' if rank == 1 else 'specific_small'
             choices.append({'plate_code': c, 'name': plate_names.get(c) or c,
-                            'source': ('reason', 'support', 'specific', 'fallback')[tier], 'rank': rank})
+                            'source': source, 'rank': rank})
         stocks.append({**stock, 'primary': choices[0] if choices else None,
                        'secondary': choices[1:], 'status': 'assigned' if choices else 'no_plate'})
     groups = defaultdict(list)
