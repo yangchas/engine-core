@@ -22,6 +22,11 @@
    "reason": "process lock file (lock whitelist; Redis lease is the long-term target, design/31 B13)"
   },
   {
+   "file": "src/engine_core/data_pipeline/limit_pool_hot_view.py",
+   "function": "pool_lock",
+   "reason": "runtime lock for limit-up pool writers (initialize the lock directory and flock its inode)"
+  },
+  {
    "file": "src/engine_core/execution_ledger.py",
    "function": "ExecutionLedger.record",
    "reason": "execution ledger (append-only audit trail)"
