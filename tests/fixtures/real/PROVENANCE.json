@@ -1,4 +1,13 @@
 {
+  "_c1417": {
+    "file": "c1417/excerpt.json",
+    "sha256": "2cc330378560c93ab5d241132e1de6b0fde57294b6f170320ebc133c64d28669",
+    "bytes": 3639930,
+    "fetched_at": "2026-11-18T14:15:48.778798+08:00",
+    "source": "Redis SCAN/GET; TD latest_version; core-data catalog.json",
+    "selection": "All hot_plates 2026-11-17 Redis envelopes; 2000-01-01 empty Redis and TD; catalog 2026-11-16 index",
+    "key_count": 25
+  },
   "_c1387": {
     "file": "c1387/excerpt.json",
     "sha256": "2814d24cf92a0c67d852c0519da0e4bcd202cbf04211e6dcdf98b10e96601ff4",
