@@ -1,0 +1,30 @@
+{
+  "auction": {
+    "price_milli": 28140,
+    "pre_close_milli": 35180,
+    "change_bp": -2001,
+    "amount_yuan": 619080,
+    "bid_amount_yuan": 0,
+    "rank_amount": 1795,
+    "src": "indicative_bid_ask_mid",
+    "ask_amount_yuan": 42210,
+    "tick_ts_ms": 1794878697000,
+    "symbol": "300553",
+    "auction_tag": "0925",
+    "auction_amount_yuan": 619080,
+    "source_rank_amount": 1795,
+    "snapshot_cutoff": "2026-11-17T09:25:06+08:00",
+    "source": "redis_auction_full"
+  },
+  "seal": {
+    "basis": "pre_0924_57",
+    "pre_close": 35.18,
+    "price": 28.14,
+    "price_source": "indicative_bid_ask_mid",
+    "seal_amount_yuan": 42210.0,
+    "seal_volume": 1500,
+    "side": "limit_down",
+    "source_tick_ts": "2026-11-17T09:24:57+08:00",
+    "symbol": "300553"
+  }
+}

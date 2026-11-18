@@ -6,14 +6,22 @@ from statistics import mean
 from .auction_theme_cards import non_theme_reason
 from .data_pipeline.auction_seal_facts import classify_limit
 
-BUCKET_VERSION = 'bucket_v1'
+BUCKET_VERSION = 'bucket_v2'
 SMOOTH_K = 20
 
 
 def build_active_bucket_view(auction_rows, stock_plates, yesterday_limit_up_symbols,
-                             yesterday_reason_rows, *, names, top_amount=100,
+                             yesterday_reason_rows, *, names, top_amount=None,
                              top_abs_change=100, plate_names, hot_rows=None, caps=None,
-                             trade_date=None, listings=None, trading_dates=None, sort_by='score'):
+                             trade_date=None, listings=None, trading_dates=None, sort_by='score',
+                             rule='v2', min_abs_change_bp=500, min_amount_for_change=5000000,
+                             sealed_symbols=None):
+    if rule not in ('v1', 'v2'):
+        raise ValueError('invalid_rule')
+    if top_amount is None:
+        top_amount = 100 if rule == 'v1' else 200
+    if min_abs_change_bp < 0 or min_amount_for_change < 0:
+        raise ValueError('invalid_change_threshold')
     if sort_by not in ('score', 'active_count'):
         raise ValueError('invalid_sort_by')
     for key, n in (('top_amount', top_amount), ('top_abs_change', top_abs_change)):
@@ -24,11 +32,21 @@ def build_active_bucket_view(auction_rows, stock_plates, yesterday_limit_up_symb
     sources = defaultdict(set)
     for symbol in yesterday_limit_up_symbols:
         sources[symbol].add('y')
-    for label, field, n, magnitude in (('a', 'amount_yuan', top_amount, False), ('c', 'change_bp', top_abs_change, True)):
+    arms = [('a', 'amount_yuan', top_amount, False)]
+    if rule == 'v1':
+        arms.append(('c', 'change_bp', top_abs_change, True))
+    for label, field, n, magnitude in arms:
         eligible = [r for r in priced.values() if r.get(field) is not None]
         eligible.sort(key=lambda r: (-(abs(r[field]) if magnitude else r[field]), r['symbol']))
         for r in eligible[:n]:
             sources[r['symbol']].add(label)
+    if rule == 'v2':
+        for r in priced.values():
+            if (r.get('change_bp') is not None and abs(r['change_bp']) >= min_abs_change_bp
+                    and r.get('amount_yuan') is not None and r['amount_yuan'] >= min_amount_for_change):
+                sources[r['symbol']].add('c')
+        for symbol in sealed_symbols or ():
+            sources[symbol].add('s')
     reasons = defaultdict(set)
     for row in yesterday_reason_rows:
         symbol = row.get('symbol')
@@ -51,7 +69,7 @@ def build_active_bucket_view(auction_rows, stock_plates, yesterday_limit_up_symb
         q = priced.get(symbol, {})
         stocks.append(dict(symbol=symbol, name=names.get(symbol, symbol), plate_codes=stock_codes.get(symbol, []),
                            change_bp=q.get('change_bp'), amount_yuan=q.get('amount_yuan'),
-                           sources=[x for x in 'yac' if x in sources[symbol]], price_missing=symbol not in priced,
+                           sources=[x for x in ('yac' if rule == 'v1' else 'yacs') if x in sources[symbol]], price_missing=symbol not in priced,
                            yesterday_reason_plate_codes=sorted(reasons[symbol]), limit_status=limits.get(symbol)))
     by_symbol = {r['symbol']: r for r in stocks}
     amounts = [r.get('amount_yuan') for r in priced.values()]
@@ -89,9 +107,11 @@ def build_active_bucket_view(auction_rows, stock_plates, yesterday_limit_up_symb
                       yesterday_reason_hit_count=sum(code in reasons[r['symbol']] for r in active),
                       hot_rank=hot.get(code, {}).get('rank'), hot_change_pct=hot.get(code, {}).get('change_pct'))
         bucket.update({label + '_count': sum(label in r['sources'] for r in active) for label in 'yac'})
+        if rule == 'v2':
+            bucket['s_count'] = sum('s' in r['sources'] for r in active)
         buckets.append(bucket)
     buckets.sort(key=lambda r: ((-r['score'],) if sort_by == 'score' else ()) + (-r['active_count'], -(r['amount_yuan'] if r['amount_yuan'] is not None else -1), r['plate_code']))
-    return dict(bucket_version=BUCKET_VERSION, stocks=stocks, buckets=buckets, market_amount_yuan=market_amount,
+    return dict(bucket_version='bucket_v1' if rule == 'v1' else BUCKET_VERSION, stocks=stocks, buckets=buckets, market_amount_yuan=market_amount,
                 overlap_note='一股可能属于多个板块，板块汇总不可相加。')
 
 

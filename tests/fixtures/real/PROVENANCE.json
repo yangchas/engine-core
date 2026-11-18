@@ -2794,5 +2794,17 @@
     },
     "selection": "C1350 pool rows and reason rows; C1352 0924 auction rows; unchanged original records",
     "trade_date": "2026-11-17"
-  }
+  },
+  "_c1414": {
+  "file": "c1414/300553.json",
+  "sha256": "a198f8c3fc73aaa0d853d1bca1679a2806670e678a8bbd2fc281b4356dbe087d",
+  "trade_date": "2026-11-17",
+  "fetched_at": "2026-11-18T00:44:26.196987+00:00",
+  "sources": [
+    "c1398/excerpt.json original 0925 quote",
+    "Redis core:view:auction_seal_facts:2026-11-17 symbol 300553, read-only; evidence/C1414/preview.log"
+  ],
+  "selection": "unchanged 300553 quote and published seal row",
+  "row_count": 2
+}
 }
