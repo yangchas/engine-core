@@ -3,6 +3,7 @@ from html import escape
 from statistics import mean
 
 AMOUNT_CONTEXT_VERSION = 'amount_v1'
+MIN_RANK_STOCKS = 3
 
 
 def amount_status(relative_ratio, r_bp, *, surge=1.2, shrink=0.8, strong_bp=50):
@@ -76,3 +77,27 @@ def render_bucket_amount_html(view):
             sections.append('<tr>' + ''.join('<td>' + escape(str(v)) + '</td>' for v in values) + '</tr>')
         sections.append('</tbody></table>')
     return ''.join(sections)
+
+
+def rank_relative_amount(view, kind='active'):
+    """Rank only buckets with enough comparable stocks and a valid ratio."""
+    eligible = (b for b in view['buckets'] if b[kind]['count'] >= MIN_RANK_STOCKS and b[kind]['relative_ratio'] is not None)
+    return sorted(eligible, key=lambda b: (-b[kind]['relative_ratio'], b['plate_code']))
+
+
+def render_bucket_board_md(view):
+    def fmt(value, scale=1, suffix=''):
+        return '未知' if value is None else f'{value / scale:.2f}{suffix}'
+    def label(ratio):
+        return '未知' if ratio is None else '放量' if ratio >= 1.2 else '缩量' if ratio <= 0.8 else '平量'
+    market = view['market']
+    history = '、'.join(f"{d} {fmt(v, 1e8)}亿 比值 {fmt(market['today_yuan'] / v if market['today_yuan'] is not None and v else None)}（{label(market['today_yuan'] / v if market['today_yuan'] is not None and v else None)}）" for d, v in sorted(market['prior_yuan'].items()))
+    lines = [f"市场：今日竞价额 {fmt(market['today_yuan'], 1e8)}亿；前几日 {history}；market_ratio {fmt(market['ratio'])}（{label(market['ratio'])}）", '',
+             '| 主题材 | 活跃只数(仅主/主加次) | 有效只数 | 昨涨停 | 今日竞价额(亿) | 前几日均值(亿) | 放量倍数 | 相对放量 | 状态 | 平均涨幅(仅主/主加次)% | 去掉最高1只后% | 涨停/跌停 | 偏移 | 龙头 |',
+             '| ' + ' | '.join(['---'] * 14) + ' |']
+    for b in view['buckets']:
+        a = b['active']
+        leaders = '、'.join(x['name'] + ' ' + fmt(x.get('change_bp'), 100, '%') for x in b['leaders'])
+        values = (b['name'], f"{b['active_count']}/{b['pps_count']}", str(a['count']), str(b['yesterday_count']), fmt(a['today_yuan'], 1e8), fmt(a['prior_mean_yuan'], 1e8), fmt(a['ratio']), fmt(a['relative_ratio']), a['label'] or '未知', fmt(b['mean_change_bp'], 100, '%') + '/' + fmt(b['pps_mean_change_bp'], 100, '%'), fmt(b['mean_ex_top1_bp'], 100, '%'), f"{b['limit_up_count'] if b['limit_up_count'] is not None else '未知'}/{b['limit_down_count'] if b['limit_down_count'] is not None else '未知'}", '、'.join(b['drift_reasons']) or '—', leaders)
+        lines.append('| ' + ' | '.join(str(v).replace('|', '\\|').replace('\n', ' ') for v in values) + ' |')
+    return '\n'.join(lines) + '\n'

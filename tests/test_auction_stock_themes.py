@@ -96,3 +96,17 @@ def test_real_smoothed_support_and_reason_priority():
         assert counts[primary['plate_code']] >= 50
     for symbol in ('002187', '002685', '600715'):
         assert stocks[symbol]['primary']['source'] == 'reason'
+
+
+def test_real_primary_secondary_drift():
+    base, mapping, names, counts, history = inputs()
+    view = assign_stock_themes(base['stocks'], mapping, names, counts, history)
+    for bucket in view['buckets']:
+        code = bucket['plate_code']
+        members = {s['symbol']: s for s in view['stocks'] if any(p and p['plate_code'] == code for p in [s['primary'], *s['secondary']])}
+        assert bucket['pps_count'] == len(members) >= bucket['active_count']
+    sign = next(b for b in view['buckets'] if b['name'] == '家电')
+    assert sign['drift_flag'] and 'sign' in sign['drift_reasons']
+    ratio = next(b for b in view['buckets'] if b['name'] == 'CPO/MPO')
+    assert ratio['drift_flag'] and 'ratio' in ratio['drift_reasons']
+    assert '偏移' in render_stock_themes_html(view)
