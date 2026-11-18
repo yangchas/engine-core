@@ -168,3 +168,32 @@ def test_plate_members_snapshot_of_another_day_or_empty_fails(tmp_path, monkeypa
     _td_snapshots(monkeypatch, {**MARKER, "row_count": 0})     # derived from the real record: only row_count changed
     assert validate_handler_postcondition("kaipan_fetch", MARKER["trade_date"], tmp_path, ["plate_members"]) == (
         False, "plate_members_missing_or_empty")
+
+
+def test_hot_plates_postcondition_replays_real_redis_and_empty_sources(tmp_path, monkeypatch):
+    import fnmatch
+    import shutil
+    from engine_core.data_pipeline import cold_archive, limit_pool_hot_view
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+
+    captured = json.loads((Path(__file__).parent / 'fixtures/real/c1417/excerpt.json').read_text())
+    shutil.copytree(Path.home() / 'core-data/trade_calendar', tmp_path / 'trade_calendar')
+    class RedisReplay:
+        def scan_iter(self, match, count=100):
+            return iter(k for k in captured['snapshots'] if fnmatch.fnmatch(k, match))
+        def get(self, key):
+            return json.dumps(captured['snapshots'][key])
+    class EmptyTD:
+        def latest_version(self, dataset, day):
+            assert (dataset, day) == ('hot_plates', captured['empty_date'])
+            return captured['empty_td_latest_version']
+        def close(self):
+            pass
+    monkeypatch.setattr(limit_pool_hot_view, '_client', lambda: RedisReplay())
+    monkeypatch.setattr(cold_archive, 'TdStore', EmptyTD)
+    assert not captured['catalog_2026_11_16']
+    assert validate_handler_postcondition('kaipan_fetch', captured['data_date'], tmp_path, ['hot_plates']) == (True, '')
+    monkeypatch.setattr(ArtifactCatalog, 'locate', lambda *args: (_ for _ in ()).throw(AssertionError('catalog consulted')))
+    assert validate_handler_postcondition('kaipan_fetch', captured['data_date'], tmp_path, ['hot_plates']) == (True, '')
+    assert captured['empty_redis_key_count'] == 0
+    assert validate_handler_postcondition('kaipan_fetch', captured['empty_date'], tmp_path, ['hot_plates']) == (False, 'hot_plates_missing_or_empty')

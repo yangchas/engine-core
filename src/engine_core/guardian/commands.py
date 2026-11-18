@@ -236,6 +236,11 @@ def validate_handler_postcondition(name: str, day: str, root: str | Path,
         datasets = ("daily_kline",)
     for dataset in datasets:
         target = day
+        if name == "kaipan_fetch" and dataset == "hot_plates":
+            from ..prep_trade_day import _read_hot_plates
+            if not _read_hot_plates(catalog, day, asof=datetime.now().astimezone().isoformat()):
+                return False, dataset + "_missing_or_empty"
+            continue
         if name == "kaipan_fetch" and dataset in snapshot_datasets() and os.environ.get("TD_CONFIG"):
             # C618: reference snapshots live in TD (latest only); they have no per-date catalog partition.
             problem = _snapshot_problem(dataset, day)
