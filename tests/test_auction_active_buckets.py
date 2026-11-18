@@ -15,7 +15,7 @@ def test_real_universe_and_unfiltered_membership():
     # The missing quote is a real pool stock omitted from this input window.
     absent = next(r['symbol'] for r in pool if r['symbol'] in {q['symbol'] for q in quotes})
     quotes = [q for q in quotes if q['symbol'] != absent]
-    view = build_active_bucket_view(quotes, FACTS['index'], yesterday, FACTS['reason_rows'], names={}, plate_names=FACTS['plate_names'], top_amount=100, top_abs_change=100, sort_by='active_count')
+    view = build_active_bucket_view(quotes, FACTS['index'], yesterday, FACTS['reason_rows'], names={}, plate_names=FACTS['plate_names'], top_amount=100, top_abs_change=100, rule='v1', sort_by='active_count')
     stocks = {r['symbol']: r for r in view['stocks']}
     assert yesterday <= stocks.keys()
     assert stocks[absent]['price_missing'] and stocks[absent]['sources'] == ['y']
@@ -38,7 +38,7 @@ def test_real_price_limit_and_missing_contrast():
     quotes = DATA['quotes']['0925']
     view = build_active_bucket_view(quotes, FACTS['index'], [], [], names={}, plate_names=FACTS['plate_names'], top_amount=100, top_abs_change=100, trade_date='2026-11-17', listings=DATA['listings'], trading_dates=DATA['calendar'])
     assert any(r['limit_up_count'] or r['limit_down_count'] for r in view['buckets'])
-    bare = build_active_bucket_view(quotes, FACTS['index'], [], [], names={}, plate_names=FACTS['plate_names'], top_amount=100, top_abs_change=100)
+    bare = build_active_bucket_view(quotes, FACTS['index'], [], [], names={}, plate_names=FACTS['plate_names'], top_amount=100, top_abs_change=100, rule='v1')
     assert all(r['limit_up_count'] is None and r['limit_down_count'] is None for r in bare['buckets'])
 
 
@@ -46,11 +46,11 @@ def test_bucket_v1_real_full_mapping():
     full = json.loads((ROOT / 'c1398/excerpt.json').read_text())
     args = (full['auction'], {s: row['plates'] for s, row in full['index'].items()}, {r['symbol'] for r in FACTS['pool']['rows']}, FACTS['reason_rows'])
     kwargs = dict(names=DATA['names'], plate_names=FACTS['plate_names'], caps=DATA['caps'])
-    view = build_active_bucket_view(*args, **kwargs)
+    view = build_active_bucket_view(*args, **kwargs, rule='v1')
     ranks = {row['name']: i for i, row in enumerate(view['buckets'])}
     assert all(ranks['文化传媒'] < ranks[name] for name in ('中报增长', '三季报增长', '人工智能', '芯片'))
     assert view['bucket_version'] == 'bucket_v1'
-    old = build_active_bucket_view(*args, **kwargs, sort_by='active_count')['buckets']
+    old = build_active_bucket_view(*args, **kwargs, sort_by='active_count', rule='v1')['buckets']
     assert old == sorted(old, key=lambda r: (-r['active_count'], -(r['amount_yuan'] if r['amount_yuan'] is not None else -1), r['plate_code']))
     bucket = next(r for r in view['buckets'] if len(r['leaders']) == 3)
     assert bucket['leaders_status'] == 'caps_ok'
