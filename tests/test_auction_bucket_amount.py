@@ -29,3 +29,17 @@ def test_status_boundaries():
     assert amount_status(0.8, -50) == '缩量偏弱'
     assert amount_status(1.2, -50) == '放量偏弱'
     assert amount_status(0.8, 50) == '缩量偏强'
+
+
+def test_real_board_and_small_bucket_ranking():
+    from test_auction_stock_themes import inputs
+    from engine_core.auction_stock_themes import assign_stock_themes
+    from engine_core.auction_bucket_amount import rank_relative_amount, render_bucket_board_md
+    base, mapping, names, counts, history = inputs()
+    themes = assign_stock_themes(base['stocks'], mapping, names, counts, history)
+    prior = {d: DATA[d] for d in ('2026-11-12', '2026-11-13', '2026-11-16')}
+    view = add_bucket_amount_context(themes, DATA['2026-11-17'], prior, mapping)
+    assert all(b['active']['count'] >= 3 for b in rank_relative_amount(view))
+    assert not rank_relative_amount(view)
+    board = render_bucket_board_md(view)
+    assert all(s in board for s in ('市场', '主题材', '活跃只数', '昨涨停', '今日竞价额', '前几日均值', '放量倍数', '相对放量', '状态', '平均涨幅', '去掉最高1只后', '涨停/跌停', '偏移', '龙头', '%'))

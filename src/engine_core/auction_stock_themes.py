@@ -8,6 +8,8 @@ from statistics import mean
 from .auction_theme_cards import non_theme_reason
 
 THEME_VERSION = 'theme_v2'
+DRIFT_VERSION = 'drift_v1'
+THEME_DRIFT_RATIO = 2.0
 MIN_SPECIFIC_MEMBERS = 50
 
 
@@ -69,10 +71,13 @@ def assign_stock_themes(active_stocks, stock_plates, plate_names, plate_member_c
                        'secondary': choices[1:], 'status': 'assigned' if choices else 'no_plate'})
     groups = defaultdict(list)
     secondary_counts = Counter()
+    combined = defaultdict(dict)
     for row in stocks:
         if row['primary']:
             groups[row['primary']['plate_code']].append(row)
         secondary_counts.update(x['plate_code'] for x in row['secondary'])
+        for choice in ([row['primary']] if row['primary'] else []) + row['secondary']:
+            combined[choice['plate_code']][row['symbol']] = row
     cap_rows = (caps.get('rows', caps) if caps else {})
     def cap(symbol):
         v = cap_rows.get(symbol)
@@ -87,19 +92,31 @@ def assign_stock_themes(active_stocks, stock_plates, plate_names, plate_member_c
         else:
             leaders = sorted((r for r in rows if r.get('amount_yuan') is not None), key=lambda r: (-r['amount_yuan'], r['symbol']))
         statuses = [r.get('limit_status') for r in rows]
+        pps = list(combined[c].values())
+        pps_changes = [r['change_bp'] for r in pps if r.get('change_bp') is not None]
+        pps_mean = mean(pps_changes) if pps_changes else None
+        primary_mean = mean(changes) if changes else None
+        reasons = []
+        if secondary_counts[c] / len(rows) >= THEME_DRIFT_RATIO:
+            reasons.append('ratio')
+        if primary_mean is not None and pps_mean is not None and primary_mean * pps_mean < 0:
+            reasons.append('sign')
         buckets.append({'plate_code': c, 'name': plate_names.get(c) or c, 'active_count': len(rows),
                         'yesterday_count': sum('y' in r.get('sources', ()) for r in rows),
-                        'mean_change_bp': mean(changes) if changes else None,
+                        'mean_change_bp': primary_mean,
+                        'pps_count': len(pps), 'pps_mean_change_bp': pps_mean,
+                        'pps_amount_yuan': sum(r['amount_yuan'] for r in pps) if all(r.get('amount_yuan') is not None for r in pps) else None,
+                        'drift_flag': bool(reasons), 'drift_reasons': reasons,
                         'mean_ex_top1_bp': mean(changes[1:]) if len(changes) > 1 else None,
                         'mean_ex_top3_bp': mean(changes[3:]) if len(changes) > 3 else None,
                         'amount_yuan': sum(amounts) if all(x is not None for x in amounts) else None,
                         'limit_up_count': sum(x == 'limit_up' for x in statuses) if limit_available and not any(x in ('unknown_listing', 'unknown_price') or r.get('price_missing') for x, r in zip(statuses, rows)) else None,
                         'limit_down_count': sum(x == 'limit_down' for x in statuses) if limit_available and not any(x in ('unknown_listing', 'unknown_price') or r.get('price_missing') for x, r in zip(statuses, rows)) else None,
-                        'leaders': [{'symbol': r['symbol'], 'name': r.get('name') or r['symbol']} for r in leaders[:3]],
+                        'leaders': [{'symbol': r['symbol'], 'name': r.get('name') or r['symbol'], 'change_bp': r.get('change_bp')} for r in leaders[:3]],
                         'leaders_status': 'float_cap' if has_caps else 'amount_fallback',
                         'member_count': plate_member_counts.get(c), 'secondary_count': secondary_counts[c]})
     buckets.sort(key=lambda r: (-r['active_count'], -(r['amount_yuan'] if r['amount_yuan'] is not None else -1), r['plate_code']))
-    return {'theme_version': THEME_VERSION, 'stocks': stocks, 'buckets': buckets, 'ignored_reason_count': ignored}
+    return {'theme_version': THEME_VERSION, 'drift_version': DRIFT_VERSION, 'stocks': stocks, 'buckets': buckets, 'ignored_reason_count': ignored}
 
 
 def render_stock_themes_html(view):
@@ -107,7 +124,7 @@ def render_stock_themes_html(view):
         return escape('未知' if v is None else str(v))
     def table(headers, rows):
         return '<table><thead><tr>' + ''.join('<th>' + cell(x) + '</th>' for x in headers) + '</tr></thead><tbody>' + ''.join('<tr>' + ''.join('<td>' + cell(x) + '</td>' for x in row) + '</tr>' for row in rows) + '</tbody></table>'
-    fields = ('name', 'active_count', 'yesterday_count', 'mean_change_bp', 'amount_yuan', 'limit_up_count', 'limit_down_count', 'member_count', 'secondary_count', 'mean_ex_top1_bp', 'mean_ex_top3_bp')
+    fields = ('name', 'active_count', 'yesterday_count', 'mean_change_bp', 'amount_yuan', 'limit_up_count', 'limit_down_count', 'member_count', 'secondary_count', 'pps_count', 'pps_mean_change_bp', 'drift_reasons', 'mean_ex_top1_bp', 'mean_ex_top3_bp')
     bucket_rows = ([*(r.get(k) for k in fields), '、'.join(x['name'] for x in r['leaders']), r['leaders_status']] for r in view['buckets'])
     stock_rows = ([r.get('name'), r.get('symbol'), r.get('change_bp'), (r['primary'] or {}).get('name'), '、'.join(x['name'] + '(' + x['source'] + ')' for x in r['secondary']), (r['primary'] or {}).get('source', 'no_plate')] for r in view['stocks'])
-    return '<h1>竞价强弱</h1><h2>桶表</h2>' + table(('板块','主题材活跃只数','昨日涨停只数','平均涨幅bp','竞价额','涨停','跌停','成员数','次题材命中','去最高1均值bp','去前3均值bp','龙头','龙头来源'), bucket_rows) + '<h2>个股表</h2>' + table(('名称','代码','涨幅bp','主题材','次题材','来源'), stock_rows)
+    return '<h1>竞价强弱</h1><h2>桶表</h2>' + table(('板块','主题材活跃只数','昨日涨停只数','平均涨幅bp','竞价额','涨停','跌停','成员数','次题材命中','主加次只数','主加次平均涨幅bp','偏移','去最高1均值bp','去前3均值bp','龙头','龙头来源'), bucket_rows) + '<h2>个股表</h2>' + table(('名称','代码','涨幅bp','主题材','次题材','来源'), stock_rows)
