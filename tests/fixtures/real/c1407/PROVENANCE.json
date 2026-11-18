@@ -1,0 +1,10 @@
+{
+  "source": "read_auction_view Redis 0925, unmodified rows for selected symbols",
+  "capture_date": "2026-11-18",
+  "sha256": "426cd1a633b1472a1bfd855c80ed412cf691b87d6c204b7c28e9178c551b5070",
+  "symbols": [
+    "000001",
+    "000002",
+    "002883"
+  ]
+}
