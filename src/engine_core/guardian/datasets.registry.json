@@ -2736,6 +2736,51 @@
       }
     },
     {
+      "id": "auction_theme_board",
+      "redis_ttl_trade_days": 5,
+      "owner": "data_function",
+      "artifact": {
+        "catalog_dataset": null,
+        "source_dataset": "derived",
+        "date_basis": "D"
+      },
+      "phases": [
+        "AUCTION_END"
+      ],
+      "cadence": "daily",
+      "rule": "竞价题材榜纯装配",
+      "freshness": "UNKNOWN",
+      "retry": "UNKNOWN",
+      "degrade": [],
+      "lifecycle": {
+        "init": "on demand",
+        "force": "refetch",
+        "clear": "UNKNOWN"
+      },
+      "notes": "竞价题材榜日视图",
+      "guardian_event": null,
+      "storage": [
+        {
+          "kind": "redis_view",
+          "name": "core:view:auction_theme_board:{date}",
+          "role": "authority",
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
+        }
+      ],
+      "fields": [
+        "digest_md",
+        "board_md",
+        "summary_json",
+        "buckets_json"
+      ]
+    },
+    {
       "id": "stock_cap",
       "redis_ttl_trade_days": 5,
       "owner": "data_function",
