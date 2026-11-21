@@ -728,8 +728,10 @@ def test_today_pool_real_view_cold_restore_missing_and_unknown(monkeypatch):
     monkeypatch.setattr(redis_day_view, 'hot_view_expire_at', lambda day: 2000000000)
     redis = Redis()
     result = reader.load_dataset('limit_up_pool_today', '2026-11-13', redis=redis)
-    assert result.status == 'READY' and result.discovered_by == 'td'
+    assert result.status == 'DEGRADED' and result.discovered_by == 'td'
     assert result.rows == json.loads(raw)['rows']
+    assert redis.data == {}
+    reader._restore_today_pool('2026-11-13', redis, raw)
     assert reader.load_dataset('limit_up_pool_today', '2026-11-13', redis=redis).discovered_by == 'redis'
     monkeypatch.setattr(Store, 'latest_version', lambda *args: None)
     assert reader.load_dataset('limit_up_pool_today', '2026-11-13', redis=Redis()).status == 'MISSING'
@@ -740,4 +742,4 @@ def test_today_pool_real_view_cold_restore_missing_and_unknown(monkeypatch):
     from engine_core.guardian.presence import resolve_presence
     monkeypatch.setattr(Store, 'latest_version', lambda *args: version)
     assert resolve_presence('limit_up_pool_today', '2026-11-13', redis_client=Redis(),
-                            cold_store=Store()) == 'RESTORED_FROM_TD'
+                            cold_store=Store()) == 'DEGRADED'
