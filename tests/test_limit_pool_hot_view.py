@@ -239,8 +239,11 @@ def test_pool_producer_publishes_hot_view(day, tmp_path, monkeypatch):
     for raw in (None, '{', json.dumps({**value, 'rows_sha256': 'bad'})):
         redis.writes[key] = raw
         fallback_rows, fallback = hot.read(day, cutoff, redis_client=redis, td_store=store)
-        assert fallback_rows and fallback['status'] == 'DEGRADED' and fallback['storage_source'] == 'td'
+        expected_status = 'DEGRADED' if raw is None else 'CORRUPT'
+        assert fallback_rows and fallback['status'] == expected_status and fallback['storage_source'] == 'td'
         assert fallback['fallback_reason'] and fallback['version'] == value['version']
+        if raw is not None:
+            assert fallback['cold_status'] == 'DEGRADED' and fallback['fallback_reason'] == 'redis_corrupt'
     redis.fail = True
     fallback_rows, fallback = hot.read(day, cutoff, redis_client=redis, td_store=store)
     assert fallback_rows and fallback['fallback_reason'] == 'redis_ConnectionError'
@@ -250,7 +253,8 @@ def test_pool_producer_publishes_hot_view(day, tmp_path, monkeypatch):
     symbol = next(iter(physical))
     old_version = physical[symbol]['version']
     physical[symbol]['version'] = 'different'
-    assert hot.read(day, cutoff, redis_client=redis, td_store=store)[1]['status'] == 'MISSING'
+    corrupt_meta = hot.read(day, cutoff, redis_client=redis, td_store=store)[1]
+    assert corrupt_meta['status'] == 'CORRUPT' and corrupt_meta['reason'] == 'td_row_version_mismatch'
     physical[symbol]['version'] = old_version
     for physical_row in physical.values():
         physical_row['version'] = 'metadata-for-other-version'
@@ -258,7 +262,8 @@ def test_pool_producer_publishes_hot_view(day, tmp_path, monkeypatch):
     for physical_row in physical.values():
         physical_row['version'] = old_version
     early = '2026-10-26T15:00:00+08:00'
-    assert hot.read(day, early, redis_client=redis, td_store=store)[1]['reason'] == 'late_visible'
+    early_meta = hot.read(day, early, redis_client=redis, td_store=store)[1]
+    assert {'status': 'NOT_VISIBLE', 'reason': 'late_visible'} in early_meta['selection_failures']
     late_rows, late_meta = hot.read(day, early, redis_client=redis, td_store=store, late_rebuild=True,
                                      late_asof=cutoff)
     assert late_rows and late_meta['late_visible'] and late_meta['status'] == 'PARTIAL'

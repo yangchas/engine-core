@@ -174,6 +174,13 @@ class TDColdClient:
                              "AND chunk_no=-1 ORDER BY available_at DESC, ts DESC LIMIT 1", fetch=True)
         return str(rows[0][0]) if rows else None
 
+    def list_versions(self, dataset, day):
+        _table(dataset, day, '')
+        stable = f'{self.database}.cold_{dataset}_archive'
+        rows = self._execute(f"SELECT version FROM {stable} WHERE trade_date={_quote(day)} "
+                             "AND chunk_no=-1 ORDER BY available_at DESC, ts DESC", fetch=True)
+        return list(dict.fromkeys(str(row[0]) for row in rows))
+
     def read(self, dataset, day, version):
         table = f'{self.database}.{_table(dataset, day, version)}'
         rows = self._execute(f'SELECT chunk_no,chunk_count,sha256,payload FROM {table}', fetch=True)

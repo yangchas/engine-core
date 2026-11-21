@@ -193,7 +193,7 @@ def _result(value, storage, reason, asof, late_rebuild, late_asof):
         raise ValueError('late_visible')
     quality = value['quality']
     partial = quality.get('partial') or quality.get('status') == 'PARTIAL' or value['business_status'] == 'PARTIAL'
-    degraded = storage == 'td' or value['degraded'] or value['business_status'] in {'PROVISIONAL', 'DEGRADED'} or quality.get('status') == 'DEGRADED'
+    degraded = storage in ('td', 'cold') or value['degraded'] or value['business_status'] in {'PROVISIONAL', 'DEGRADED'} or quality.get('status') == 'DEGRADED'
     status = 'PARTIAL' if partial or late else 'DEGRADED' if degraded else 'READY'
     meta = {key: value.get(key) for key in ('source', 'provider', 'version', 'available_at', 'quality', 'business_status', 'degraded', 'trade_date', 'row_count')}
     meta.update(status=status, storage_source=storage, fallback_reason=reason, late_visible=late)
@@ -220,26 +220,111 @@ def _td_value(day, store):
     return envelope(day, rows, manifest)
 
 
-def read(day, asof, *, redis_client=None, td_store=None, prefix='core:view:limit_up_pool', late_rebuild=False, late_asof=None):
-    """Read hot first, then explicitly fallback to physical TD rows of one verified version."""
+def read(day, asof, *, redis_client=None, td_store=None, cold_store=None, prefix='core:view:limit_up_pool', late_rebuild=False, late_asof=None):
+    """Select a visible pool without writing; preserve failures alongside fallback data."""
+    from . import cold_archive
+    if _instant(asof) is None:
+        return [], {'status': 'UNKNOWN', 'reason': 'invalid_asof', 'trade_date': day}
+    failures = []
+    client = None
+    owned_client = redis_client is None
     try:
         client = redis_client if redis_client is not None else _client()
         raw = client.get(_key(day, prefix))
         if raw is None:
-            raise ValueError('redis_missing')
-        value = _validate(json.loads(raw), day)
-        return _result(value, 'redis', None, asof, late_rebuild, late_asof)
+            failures.append(('MISSING', 'redis_missing'))
+        else:
+            try:
+                value = _validate(json.loads(raw), day)
+                return _result(value, 'redis', None, asof, late_rebuild, late_asof)
+            except (ValueError, TypeError, KeyError, UnicodeError) as exc:
+                reason = str(exc) or type(exc).__name__
+                failures.append(('NOT_VISIBLE', reason) if reason == 'late_visible' else ('CORRUPT', 'redis_corrupt'))
     except Exception as exc:
-        reason = str(exc) if isinstance(exc, ValueError) else 'redis_' + type(exc).__name__
+        failures.append(('UNKNOWN', 'redis_' + type(exc).__name__))
+    finally:
+        if owned_client and client is not None:
+            try: client.close()
+            except Exception: pass
+
+    def selected(value, source):
+        rows, meta = _result(value, source, failures[0][1], asof, late_rebuild, late_asof)
+        meta['cold_recoverable'] = True
+        if failures[0] == ('CORRUPT', 'redis_corrupt'):
+            meta['cold_status'] = meta['status']
+            meta['status'] = 'CORRUPT'
+        meta['selection_failures'] = [{'status': status, 'reason': reason} for status, reason in failures]
+        meta['selection_uncertain'] = any(status in ('UNKNOWN', 'CORRUPT') for status, _ in failures)
+        return rows, meta
+
+    candidates = []
     store = None
     try:
         store = td_store if td_store is not None else _td_store()
         value = _td_value(day, store)
-        return _result(value, 'td', reason, asof, late_rebuild, late_asof)
+        _result(value, 'td', None, asof, late_rebuild, late_asof)
+        candidates.append((value, 'td', None))
     except Exception as exc:
-        problem = str(exc) if isinstance(exc, ValueError) else 'td_' + type(exc).__name__
-        return [], {'status': 'MISSING', 'storage_source': 'td', 'fallback_reason': reason,
-                    'reason': problem, 'trade_date': day, 'quality': {'partial': True}}
+        reason = str(exc) if isinstance(exc, ValueError) else 'td_' + type(exc).__name__
+        status = ('MISSING' if reason == 'td_missing' else 'NOT_VISIBLE' if reason == 'late_visible'
+                  else 'CORRUPT' if isinstance(exc, (ValueError, TypeError, KeyError)) else 'UNKNOWN')
+        failures.append((status, reason))
     finally:
         if store is not None and td_store is None:
-            store.close()
+            try: store.close()
+            except Exception: pass
+
+    store = None
+    try:
+        if cold_store is None:
+            if not cold_archive._enabled():
+                raise RuntimeError('cold_archive_disabled')
+            store = cold_archive.TdStore()
+        else:
+            store = cold_store
+        if hasattr(store, 'list_versions'):
+            versions = store.list_versions(DATASET, day)
+        else:
+            version = store.latest_version(DATASET, day)
+            versions = [version] if version is not None else []
+        if not versions:
+            failures.append(('MISSING', 'cold_missing'))
+        for version in versions:
+            try:
+                raw = cold_archive.read_envelope(DATASET, day, version, store=store)
+                value = _validate(json.loads(raw), day)
+                hashed = value['version'] + ':' + hashlib.sha256(raw).hexdigest()[:16]
+                if version not in (value['version'], hashed):
+                    raise cold_archive.CorruptArchive('cold_archive_version_mismatch')
+                _result(value, 'cold', None, asof, late_rebuild, late_asof)
+                candidates.append((value, 'cold', version))
+            except Exception as exc:
+                reason = str(exc) if isinstance(exc, (ValueError, TypeError, KeyError)) else 'cold_' + type(exc).__name__
+                status = ('NOT_VISIBLE' if reason == 'late_visible' else
+                          'CORRUPT' if isinstance(exc, (ValueError, TypeError, KeyError)) else 'UNKNOWN')
+                failures.append((status, reason))
+    except Exception as exc:
+        reason = str(exc) if isinstance(exc, (ValueError, TypeError, KeyError)) else 'cold_' + type(exc).__name__
+        status = ('NOT_VISIBLE' if reason == 'late_visible' else
+                  'CORRUPT' if isinstance(exc, (ValueError, TypeError, KeyError)) else 'UNKNOWN')
+        failures.append((status, reason))
+    finally:
+        if store is not None and cold_store is None:
+            try: store.close()
+            except Exception: pass
+    if candidates:
+        value, source, archive_version = max(candidates, key=lambda item: priority(item[0]))
+        rows, meta = selected(value, source)
+        if archive_version is not None:
+            meta['archive_version'] = archive_version
+        if meta['selection_uncertain']:
+            meta['reason'] = 'selection_uncertain'
+        return rows, meta
+    # A concrete corruption is retained even if another source is unavailable.
+    status = next((kind for kind in ('CORRUPT', 'UNKNOWN', 'NOT_VISIBLE', 'MISSING')
+                   if any(item[0] == kind for item in failures)), 'UNKNOWN')
+    reason = next(reason for kind, reason in failures if kind == status)
+    return [], {'status': status, 'reason': reason, 'trade_date': day,
+                'fallback_reason': failures[0][1], 'quality': {'partial': True},
+                'selection_failures': [{'status': kind, 'reason': detail} for kind, detail in failures],
+                'selection_uncertain': status in ('UNKNOWN', 'CORRUPT')}

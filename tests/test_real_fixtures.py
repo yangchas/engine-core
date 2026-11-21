@@ -471,16 +471,20 @@ def test_hot_rank_real_snapshot_two_layer(tmp_path, monkeypatch):
     key = "core:view:hot_rank:2026-10-23"
     del redis.values[key]
     restored = store.get("hot_rank", "2026-10-23")
+    assert restored.status == "DEGRADED" and len(restored.rows) == len(rows)
+    assert redis.get(key) is None
+    restored = store.restore("hot_rank", "2026-10-23")
     assert restored.status == "RESTORED_FROM_TD" and len(restored.rows) == len(rows)
+    assert restored.version == archives[0][2]
     assert hot_rank_view.validate(redis.get(key), "2026-10-23")["rows"] == restored.rows
     assert redis.last_set == (key, {"exat": 2000000000, "nx": True})
     del redis.values[key]
-    assert store.presence("hot_rank", "2026-10-23").status == "RESTORED_FROM_TD"
-    assert redis.get(key) is not None
-    del redis.values[key]
+    assert store.presence("hot_rank", "2026-10-23").status == "DEGRADED"
+    assert redis.get(key) is None
     original_set = redis.set
     monkeypatch.setattr(redis, "set", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("restore_failed")))
-    assert store.get("hot_rank", "2026-10-23").status == "RESTORED_FROM_TD"
+    assert store.get("hot_rank", "2026-10-23").status == "DEGRADED"
+    assert redis.get(key) is None
     monkeypatch.setattr(redis, "set", original_set)
     redis.set(key, archives[0][3])
     value = store.get("hot_rank", "2026-10-23")
@@ -636,7 +640,7 @@ def test_hot_rank_guardian_presence_ignores_catalog_real_snapshot(tmp_path, monk
     class ArchivedCold:
         def latest_version(self, dataset, date): return archives[0][2]
     monkeypatch.setattr(cold_archive, 'read_envelope', lambda *args, **kwargs: archives[0][3])
-    assert resolve('hot_rank', day, redis_client=redis, cold_store=ArchivedCold()) == 'RESTORED_FROM_TD'
+    assert resolve('hot_rank', day, redis_client=redis, cold_store=ArchivedCold()) == 'DEGRADED'
     assert not redis.values
     redis.values['core:view:hot_rank:' + day] = raw
     assert stale_items(now, empty, [item], trade_date=day)[0]['status'] == 'OK'

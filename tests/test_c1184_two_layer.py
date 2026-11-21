@@ -11,10 +11,15 @@ def test_presence_is_read_only_and_distinguishes_missing_and_outage(monkeypatch)
     redis, cold = Redis(), Cold()
     store = TwoLayerStore(redis, cold)
     store._dataset('plate_stock_index')
-    assert store.presence('limit_up_pool', DAY).status == 'RESTORED_FROM_TD'
+    # C1500: read-only presence reports a recoverable cold copy, not a completed restore.
+    presence = store.presence('limit_up_pool', DAY)
+    assert presence.status == 'DEGRADED'
+    assert presence.metadata['cold_recoverable'] is True
     assert redis.writes == 0
-    assert TwoLayerStore(Redis(), Cold(False)).presence('limit_up_pool', DAY).status == 'MISSING'
-    assert TwoLayerStore(Redis(fail=True), cold).presence('limit_up_pool', DAY).status == 'UNKNOWN'
+    assert TwoLayerStore(Redis(), Cold(False)).presence('limit_up_pool', DAY).status == 'UNKNOWN'
+    outage = TwoLayerStore(Redis(fail=True), cold).presence('limit_up_pool', DAY)
+    assert outage.status == 'DEGRADED'
+    assert outage.metadata['cold_recoverable'] is True
 
 
 def test_get_restores_real_envelope_and_rejects_corruption(monkeypatch):
@@ -22,8 +27,9 @@ def test_get_restores_real_envelope_and_rejects_corruption(monkeypatch):
     monkeypatch.setattr('engine_core.data_pipeline.redis_day_view.hot_view_expire_at', lambda _: 2000000000)
     redis, cold = Redis(), Cold()
     store = TwoLayerStore(redis, cold)
-    result = store.get('limit_up_pool', DAY)
+    result = store.restore('limit_up_pool', DAY)
     assert result.status == 'RESTORED_FROM_TD'
+    assert redis.writes == 1
     assert result.rows == json.loads(RAW)['rows']
     assert store.get('limit_up_pool', DAY).status == 'PRESENT_REDIS'
     bad = Cold()
@@ -59,7 +65,7 @@ def test_corrupt_real_envelope_reports_reason_and_plans_fetch(monkeypatch):
     redis.values['core:view:limit_up_pool:' + DAY] = RAW[:-10]
     result = TwoLayerStore(redis, Cold()).presence('limit_up_pool', DAY)
     assert result.status == 'CORRUPT' and result.reason
-    assert TwoLayerStore(redis, Cold()).get('limit_up_pool', DAY).rows == []
+    assert TwoLayerStore(redis, Cold()).get('limit_up_pool', DAY).rows == json.loads(RAW)['rows']
     monkeypatch.setattr(startup, '_calendar', lambda *_: (None, {'prev': DAY}))
     monkeypatch.setattr('engine_core.guardian.presence.resolve_presence', lambda *_: 'CORRUPT')
     import tempfile
