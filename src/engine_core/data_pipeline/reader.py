@@ -33,7 +33,6 @@ def _read_today_pool(trade_date: str | None, client: Any = None, cold_store: Any
     """Read a point snapshot from Redis or its verified cold copy, never catalog."""
     import hashlib
     from . import cold_archive
-    from .redis_day_view import hot_view_expire_at
 
     name = "limit_up_pool_today"
     owned_client = client is None
@@ -69,24 +68,7 @@ def _read_today_pool(trade_date: str | None, client: Any = None, cold_store: Any
         version = value['version']
         if archive_version not in (version, version + ':' + hashlib.sha256(raw).hexdigest()[:16]):
             raise cold_archive.CorruptArchive('cold_archive_version_mismatch')
-        deadline = hot_view_expire_at(trade_date)
-        version_key = f"core:cache:data:{name}:{trade_date}:{version}"
-        if not client.set(version_key, raw, exat=deadline, nx=True):
-            existing = client.get(version_key)
-            existing_bytes = existing.encode('utf-8') if isinstance(existing, str) else existing
-            if existing_bytes != raw:
-                raise cold_archive.CorruptArchive('redis_version_conflict')
-        restored_pointer = json.dumps({'trade_date': trade_date, 'version': version,
-                                       'as_of': value.get('as_of')})
-        if not client.set(key, restored_pointer, exat=deadline, nx=True):
-            current = _checked_pool_value(json.loads, client.get(key))
-            current_day, current_version = _checked_pool_value(lambda p: (p['trade_date'], p['version']), current)
-            current_raw = client.get(f"core:cache:data:{name}:{current_day}:{current_version}")
-            if current_raw is None:
-                raise cold_archive.CorruptArchive('current_version_missing')
-            value = _checked_pool_value(_validate_today_view, current_raw, trade_date, current_version)
-            return DatasetRead(value['rows'], value, 'redis', 'READY')
-        return DatasetRead(value['rows'], value, 'td', 'READY')
+        return DatasetRead(value['rows'], value, 'td', 'DEGRADED')
     except cold_archive.CorruptArchive as exc:
         import logging
         reason = str(exc) or type(exc).__name__
@@ -105,6 +87,38 @@ def _read_today_pool(trade_date: str | None, client: Any = None, cold_store: Any
                 client.close()
             except Exception:
                 pass
+
+
+def _restore_today_pool(trade_date: str, client: Any, raw: bytes) -> DatasetRead:
+    """Explicitly restore a verified view, without overwriting existing Redis keys."""
+    from . import cold_archive
+    from .redis_day_view import hot_view_expire_at
+
+    value = _checked_pool_value(_validate_today_view, raw, trade_date, None)
+    version = value['version']
+    name = 'limit_up_pool_today'
+    key = f'core:cache:data:{name}:{trade_date}'
+    version_key = f'{key}:{version}'
+    deadline = hot_view_expire_at(trade_date)
+    client.set(version_key, raw, exat=deadline, nx=True)
+    existing = client.get(version_key)
+    existing_bytes = existing.encode('utf-8') if isinstance(existing, str) else existing
+    if existing_bytes != raw:
+        raise cold_archive.CorruptArchive('redis_version_conflict')
+    pointer = json.dumps({'trade_date': trade_date, 'version': version,
+                          'as_of': value.get('as_of')})
+    inserted = client.set(key, pointer, exat=deadline, nx=True)
+    current = _checked_pool_value(json.loads, client.get(key))
+    current_day, current_version = _checked_pool_value(lambda p: (p['trade_date'], p['version']), current)
+    if current_day != trade_date:
+        raise cold_archive.CorruptArchive('pointer_trade_date_mismatch')
+    current_raw = client.get(f'core:cache:data:{name}:{current_day}:{current_version}')
+    if current_raw is None:
+        raise cold_archive.CorruptArchive('current_version_missing')
+    current_value = _checked_pool_value(_validate_today_view, current_raw, trade_date, current_version)
+    if inserted and current_version != version:
+        raise cold_archive.CorruptArchive('pointer_version_mismatch')
+    return DatasetRead(current_value['rows'], current_value, 'redis', 'READY')
 
 
 def _validate_today_view(raw: Any, day: str, version: str | None) -> dict[str, Any]:
@@ -139,8 +153,8 @@ def load_dataset(name: str, trade_date: str | None = None, *, prefer: str = "red
             if client is None:
                 client = _client()
             result = TwoLayerStore(client).get(name, trade_date, asof=now)
-            source = {'PRESENT_REDIS': 'redis', 'RESTORED_FROM_TD': 'td'}.get(result.status, 'none')
-            status = 'READY' if source != 'none' else result.status
+            source = {'PRESENT_REDIS': 'redis', 'DEGRADED': 'td'}.get(result.status, 'none')
+            status = 'READY' if result.status == 'PRESENT_REDIS' else result.status
             return DatasetRead(result.rows, result.metadata, source, status)
         except Exception:
             return DatasetRead([], {}, 'none', 'UNKNOWN')

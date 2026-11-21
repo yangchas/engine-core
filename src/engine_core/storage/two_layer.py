@@ -9,13 +9,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
-import logging
 from typing import Any, Protocol
 
 from ..data_pipeline import cold_archive, limit_pool_hot_view
-from ..guardian.presence import resolve_presence
-
-_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -34,18 +30,6 @@ class Store(Protocol):
     def list_versions(self, dataset: str, partition_range: Any, *, asof: str | None = None) -> Any: ...
     def presence(self, dataset: str, partition: str, *, asof: str | None = None, requirements: Any = None) -> StoreResult: ...
     def advance(self, dataset: str, partition: str, version: str, *, expected_previous: str | None = None) -> Any: ...
-
-
-class _ReadOnlyRedis:
-    """Allow the existing resolver to validate a cold candidate without writing it."""
-    def __init__(self, client):
-        self.client = client
-
-    def get(self, key):
-        return self.client.get(key)
-
-    def set(self, key, value, **kwargs):
-        return True
 
 
 class TwoLayerStore:
@@ -119,33 +103,136 @@ class TwoLayerStore:
             raise NotImplementedError('exact version selection is not implemented')
         if dataset == 'hot_rank':
             return self._hot_rank_get(partition, asof=asof)
-        status = resolve_presence(dataset, partition, redis_client=self.redis, cold_store=self.cold)
-        if status not in ('PRESENT_REDIS', 'RESTORED_FROM_TD'):
-            return StoreResult(status=status, reason=getattr(status, 'reason', None) or ('resolver did not expose cause' if status == 'UNKNOWN' else None))
+        cutoff = asof or datetime.now(timezone.utc).isoformat()
+        rows, meta = limit_pool_hot_view.read(partition, cutoff, redis_client=self.redis, cold_store=self.cold)
+        status = meta['status']
+        if rows and meta.get('storage_source') == 'redis' and status == 'READY':
+            status = 'PRESENT_REDIS'
+        return StoreResult(status=status, rows=rows, metadata=meta,
+                           version=meta.get('version'), reason=meta.get('reason'))
+
+    def restore(self, dataset, partition):
+        """Explicitly restore a validated missing hot pool, then verify the write."""
+        if dataset == 'hot_rank':
+            return self._restore_hot_rank(partition)
+        if dataset != 'limit_up_pool':
+            raise NotImplementedError('restore only supports limit_up_pool')
+        result = self.get(dataset, partition)
+        rows, meta, status = result.rows, dict(result.metadata), result.status
+        cutoff = datetime.now(timezone.utc).isoformat()
+        if rows and meta.get('storage_source') in ('cold', 'td') and meta.get('fallback_reason') == 'redis_missing':
+            archive = None
+            owned = False
+            try:
+                if meta['storage_source'] == 'cold':
+                    archive = self.cold
+                    owned = archive is None
+                    if owned:
+                        if not cold_archive._enabled():
+                            raise RuntimeError('cold_archive_disabled')
+                        archive = cold_archive.TdStore()
+                    version = meta['archive_version']
+                    raw = cold_archive.read_envelope(dataset, partition, version, store=archive)
+                    value = limit_pool_hot_view._validate(json.loads(raw), partition)
+                    hashed = value['version'] + ':' + hashlib.sha256(raw).hexdigest()[:16]
+                    if version not in (value['version'], hashed):
+                        raise ValueError('restore_candidate_changed')
+                else:
+                    archive = limit_pool_hot_view._td_store()
+                    owned = True
+                    value = limit_pool_hot_view._td_value(partition, archive)
+                    raw = json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                     separators=(',', ':'), allow_nan=False).encode()
+                candidate_rows, candidate_meta = limit_pool_hot_view._result(value, meta['storage_source'], None, cutoff, False, None)
+                if (value['version'] != meta['version'] or candidate_rows != rows or
+                        candidate_meta['quality'] != meta['quality'] or
+                        candidate_meta['available_at'] != meta['available_at'] or
+                        candidate_meta['business_status'] != meta['business_status'] or
+                        candidate_meta['degraded'] != meta['degraded'] or
+                        candidate_meta['source'] != meta['source'] or
+                        candidate_meta['provider'] != meta['provider']):
+                    raise ValueError('restore_candidate_changed')
+                from ..data_pipeline.redis_day_view import hot_view_expire_at
+                key = limit_pool_hot_view._key(partition, 'core:view:limit_up_pool')
+                written = self.redis.set(key, raw, exat=hot_view_expire_at(partition), nx=True)
+                observed = self.redis.get(key)
+                observed_value = limit_pool_hot_view._validate(json.loads(observed), partition)
+                observed_rows, observed_meta = limit_pool_hot_view._result(observed_value, 'redis', None, cutoff, False, None)
+                if written and observed == raw:
+                    meta['restore_status'] = 'RESTORED_FROM_TD'
+                    if (status == 'DEGRADED' and meta['quality'].get('status') == 'READY' and
+                            not meta['quality'].get('partial') and meta['business_status'] == 'FORMAL' and
+                            not meta['degraded']):
+                        status = 'RESTORED_FROM_TD'
+                elif not written:
+                    rows, meta = observed_rows, observed_meta
+                    meta['restore_status'] = 'PRESENT_REDIS'
+                    status = 'PRESENT_REDIS' if meta['status'] == 'READY' else meta['status']
+                else:
+                    rows, meta = observed_rows, observed_meta
+                    meta['restore_status'] = 'PRESENT_REDIS'
+                    status = 'PRESENT_REDIS' if meta['status'] == 'READY' else meta['status']
+            except Exception as exc:
+                meta['restore_status'] = 'UNKNOWN'
+                meta['reason'] = 'restore_' + type(exc).__name__
+                meta['selection_uncertain'] = True
+            finally:
+                if owned and archive is not None:
+                    try: archive.close()
+                    except Exception: pass
+        return StoreResult(status=status, rows=rows, metadata=meta,
+                           version=meta.get('version'), reason=meta.get('reason'))
+
+    def _restore_hot_rank(self, partition):
+        from ..data_pipeline import hot_rank_view
+        result = self._hot_rank_get(partition)
+        if result.status != 'DEGRADED':
+            return result
+        meta = dict(result.metadata)
+        archive = self.cold
+        owned = False
         try:
-            raw = self.redis.get(limit_pool_hot_view._key(partition, 'core:view:limit_up_pool'))
-            from ..guardian.presence import _validate_pool
-            value = _validate_pool(raw, partition, limit_pool_hot_view)
-            cutoff = asof or datetime.now(timezone.utc).isoformat()
-            rows, meta = limit_pool_hot_view._result(value, 'td' if status == 'RESTORED_FROM_TD' else 'redis',
-                                                      None, cutoff, False, None)
-            return StoreResult(status=status, rows=rows, metadata=meta, version=value['version'])
-        except cold_archive.CorruptArchive as exc:
-            return StoreResult(status='CORRUPT', reason=str(exc) or type(exc).__name__)
-        except Exception:
-            return StoreResult(status='UNKNOWN', reason='read, validation or asof failed')
+            if archive is None:
+                archive = cold_archive.TdStore()
+                owned = True
+            version = archive.latest_version('hot_rank', partition)
+            raw = cold_archive.read_envelope('hot_rank', partition, version, store=archive)
+            value = hot_rank_view.validate(raw, partition)
+            if version != result.version or value != result.metadata:
+                raise ValueError('restore_candidate_changed')
+            key = f'core:view:hot_rank:{partition}'
+            written = self.redis.set(key, raw, exat=hot_rank_view.hot_view_expire_at(partition), nx=True)
+            observed = self.redis.get(key)
+            observed_value = hot_rank_view.validate(observed, partition)
+            if written and (observed.encode() if isinstance(observed, str) else observed) == (raw.encode() if isinstance(raw, str) else raw):
+                return StoreResult(status='RESTORED_FROM_TD', rows=value['rows'], metadata=value, version=version)
+            if not written:
+                return StoreResult(status='PRESENT_REDIS', rows=observed_value['rows'],
+                                   metadata=observed_value, version=observed_value['version'])
+            raise ValueError('restore_readback_mismatch')
+        except Exception as exc:
+            meta['restore_status'] = 'UNKNOWN'
+            meta['reason'] = 'restore_' + type(exc).__name__
+            meta['selection_uncertain'] = True
+            return StoreResult(status=result.status, rows=result.rows, metadata=meta,
+                               version=result.version, reason=meta['reason'])
+        finally:
+            if owned and archive is not None:
+                try: archive.close()
+                except Exception: pass
 
     def presence(self, dataset, partition, *, asof=None, requirements=None):
         self._dataset(dataset)
         if dataset in ('auction_seal_facts', 'plate_stock_index'):
             raise NotImplementedError('dataset presence is not implemented')
-        if asof is not None or requirements is not None:
+        if requirements is not None or (asof is not None and dataset != 'limit_up_pool'):
             raise NotImplementedError('presence asof and requirements are not implemented')
         if dataset == 'hot_rank':
             result = self._hot_rank_get(partition)
             return StoreResult(status=result.status, reason=result.reason)
-        status = resolve_presence(dataset, partition, redis_client=_ReadOnlyRedis(self.redis), cold_store=self.cold)
-        return StoreResult(status=status, reason=getattr(status, 'reason', None) or ('resolver did not expose cause' if status == 'UNKNOWN' else None))
+        result = self.get(dataset, partition, asof=asof)
+        return StoreResult(status=result.status, metadata=result.metadata,
+                           version=result.version, reason=result.reason)
 
     def _hot_rank_get(self, partition, asof=None):
         from ..data_pipeline import hot_rank_view
@@ -164,22 +251,15 @@ class TwoLayerStore:
                 if version is None:
                     return StoreResult(status='MISSING')
                 raw = cold_archive.read_envelope('hot_rank', partition, version, store=store)
-                status = 'RESTORED_FROM_TD'
+                status = 'DEGRADED'
             value = hot_rank_view.validate(raw, partition)
-            if status == 'RESTORED_FROM_TD' and value['version'] != version:
+            if status == 'DEGRADED' and value['version'] != version:
                 raise ValueError('cold_archive_version_mismatch')
             if asof is not None and datetime.fromisoformat(hot_rank_view._instant(value['available_at'])) > datetime.fromisoformat(hot_rank_view._instant(asof)):
                 return StoreResult(status='MISSING', reason='late_visible')
-            if status == 'RESTORED_FROM_TD':
-                try:
-                    if not self.redis.set(f'core:view:hot_rank:{partition}', raw,
-                                          exat=hot_rank_view.hot_view_expire_at(partition), nx=True):
-                        _LOG.warning('hot_rank_restore_not_written trade_date=%s', partition)
-                except Exception:
-                    _LOG.warning('hot_rank_restore_failed trade_date=%s', partition, exc_info=True)
             return StoreResult(status=status, rows=value['rows'], metadata=value, version=value['version'])
-        except (ValueError, KeyError, TypeError, cold_archive.CorruptArchive) as exc:
-            return StoreResult(status='CORRUPT', reason=str(exc))
+        except (ValueError, KeyError, TypeError, cold_archive.CorruptArchive):
+            return StoreResult(status='CORRUPT', reason='invalid_hot_rank_or_archive')
         except Exception as exc:
             if cold_archive.is_missing_table_error(exc):
                 return StoreResult(status='MISSING')
