@@ -146,7 +146,7 @@ class Loader:
 
     def _stored_kaipan(self, day: str) -> dict[str, Any] | None:
         rows, meta = limit_pool_hot_view.read(day, self.when.isoformat())
-        if meta.get("status") == "MISSING":
+        if meta.get("status") in ("MISSING", "UNKNOWN") or not rows:
             return None
         business_status = (meta["status"] if meta.get("status") in {"DEGRADED", "PARTIAL"}
                            else meta.get("business_status"))

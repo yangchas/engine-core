@@ -326,9 +326,9 @@ def render_auction_email_digest(product: Mapping[str, Any], quickbrief: Mapping[
                 tb_text_lines.append(f"{t.get('name') or t.get('plate_code')} 成员{t_members}；额{t_amount}·占比{t_share}；均涨{t_mean_plain}；{t_limits}")
             tb_head = ("热点题材(开盘竞价)", "成员有效/总数", "竞价额·占比", "平均涨幅", "涨/跌停")
             tb_table = '<table role="table" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;table-layout:fixed;font-size:10px"><thead><tr>' + ''.join(_th(label) for label in tb_head) + '</tr></thead><tbody>' + ''.join(tb_rows) + '</tbody></table>'
-            tb_html_block = f'<h2>③ 热点题材竞价分桶</h2>{tb_table}'
+            tb_html_block = f'<h2>③ 热点题材竞价分桶 <span style="font-size:10px;font-weight:normal;color:#667085">[热榜成份股×盘前映射]</span></h2>{tb_table}'
         elif tb.get("status"):
-            tb_html_block = f'<h2>③ 热点题材竞价分桶</h2><p style="font-size:10px;color:#7c2d12">热点题材分桶未就绪: {_esc(tb.get("status"))}</p>'
+            tb_html_block = f'<h2>③ 热点题材竞价分桶 <span style="font-size:10px;font-weight:normal;color:#667085">[热榜成份股×盘前映射]</span></h2><p style="font-size:10px;color:#7c2d12">热点题材分桶未就绪: {_esc(tb.get("status"))}</p>'
             tb_text_lines.append(f"热点题材分桶未就绪({tb.get('status')})")
 
     html = ('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -338,7 +338,7 @@ def render_auction_email_digest(product: Mapping[str, Any], quickbrief: Mapping[
         f'<h1 style="font-size:16px;margin:0 0 5px">竞价速览卡 · {_esc(date)} · {_esc(asof)} · {status}</h1>{replay_pill}{degraded_html}{cards_html}'
         f'<div style="padding:7px;background:#f4f7fb;margin:8px 0"><b>昨日整批统计 / 市场整体</b><br>{aggregate_html}</div>'
         f'<div style="margin:5px 0">{_esc(next((line.split(":",1)[1].strip() for line in lines if line.startswith("结论:")), "结论待核实"))}</div>'
-        f'<div style="font-size:10px;color:#667085">{_esc(threshold)}</div><h2>① 题材横向对比</h2>{plate_table}'
+        f'<div style="font-size:10px;color:#667085">{_esc(threshold)}</div><h2>① 题材横向对比 <span style="font-size:10px;font-weight:normal;color:#667085">[开盘啦全景板块]</span></h2>{plate_table}'
         f'<h2>② 昨日涨停×题材 接力意愿</h2>{bucket_table}{tb_html_block}'
         f'<h2>高标与封单极值</h2><p style="font-size:10px">高标（昨≥2板）</p><div>{highboard_html}</div><p>{market_extremes_html}</p>'
         '<p style="font-size:10px;color:#667085">完整明细已存档于 Core 报告目录；个股点名仅用于极值、封单和高标。缺失不补0。</p>'
@@ -347,10 +347,10 @@ def render_auction_email_digest(product: Mapping[str, Any], quickbrief: Mapping[
     html = html.replace('</body>', '<div>' + '<br>'.join(_esc(line) for line in extra) + '</div></body>')
     plain_blocks = [f"09:26竞价速览 | {date} {asof} {('历史回放样本,非当时实时信号' if replay else '')}\n" + "\n".join(extra),
         f"昨日整批统计 / 市场整体：{whole_batch}",
-        "①题材横向对比：" + ("\n".join(plate_text) or "无可展示题材"),
+        "①题材横向对比[开盘啦全景板块]：" + ("\n".join(plate_text) or "无可展示题材"),
         "②昨日涨停×题材接力意愿：" + ("\n".join(bucket_text) or "无可展示题材")]
     if tb_text_lines:
-        plain_blocks.append("③热点题材竞价分桶：" + ("\n".join(tb_text_lines) or "无可展示题材"))
+        plain_blocks.append("③热点题材竞价分桶[热榜成份股×盘前映射]：" + ("\n".join(tb_text_lines) or "无可展示题材"))
     plain_blocks.append("高标与封单极值：" + highboard_text + "；" + market_extreme_text + f"；{threshold}；完整明细已存档于 Core 报告目录")
     return html, "\n\n".join(plain_blocks)
 
@@ -421,6 +421,13 @@ def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
     feedback_summary = (f"昨日池最弱：{worst_text}；全市场已核实封单 {global_verified_n if global_verified_n is not None else '—'} 只、合计 {_money(seal_sum)}；"
                         f"昨日涨停池内已核实封单 {verified_n if verified_n is not None else '—'} 只、合计 {_money(verified_sum)}，占全市场 {_fmt(pool_seal_share * 100 if pool_seal_share is not None else None, 1, '%')}")
     summaries = [pool_summary, bias_summary, feedback_summary, *_streak_and_hot_conclusions(product)]
+    prh = product.get("plate_reference_health")
+    if isinstance(prh, Mapping):
+        prh_status = prh.get("status", "—")
+        prh_cov = prh.get("coverage")
+        cov_text = f"{prh_cov * 100:.1f}%" if isinstance(prh_cov, (int, float)) else "—"
+        prh_n = prh.get("plate_count", "—")
+        summaries.append(f"板块映射：{prh_status} · 板块 {prh_n} 个 · 覆盖率 {cov_text}")
     cards_html = '<table role="presentation" width="100%"><tr>' + ''.join(
         f'<td style="width:50%;padding:4px;vertical-align:top"><div style="background:#f6f8fb;border:1px solid #e4e7ec;padding:9px">'
         f'<div style="font-size:10px;color:#667085">{_esc(label)}</div><strong style="display:block;padding-top:3px;font-size:13px">{_esc(value)}</strong></div></td>'
@@ -489,17 +496,46 @@ def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
                           f"；本层占比 {_fmt((bucket.get('layer_amount_share') or 0) * 100 if bucket.get('layer_amount_share') is not None else None, 1, '%')}")
             ladder_text.append(f"昨{level}板 · {bucket.get('reason') or '原因待核实'} · {bucket.get('count', '—')}只；竞价额 {_money(bucket.get('auction_amount_yuan'))}{share_text}；中位 {_fmt(bucket.get('median_pct'), 2, '%')}；{promotion_text}；真实封单额 {_money(bucket.get('verified_seal_amount_yuan'))}\n" + "\n".join(_stock_text(stock) for stock in stocks if isinstance(stock, Mapping)))
     ladder_table = f'<table style="{_table_style()}" role="table"><thead><tr>{_th("昨日板高·原因桶", "42%")}{_th("个股明细（全部昨日涨停股）")}</tr></thead><tbody>{"".join(ladder_rows)}</tbody></table>'
+    tb = product.get("theme_buckets")
+    tb_html_block = ""
+    tb_text_lines = []
+    if isinstance(tb, Mapping):
+        if tb.get("status") in ("available", "OK"):
+            top_themes = (tb.get("top_amount") or tb.get("themes") or [])[:5]
+            tb_rows = []
+            for t in top_themes:
+                t_name = _esc(t.get("name") or t.get("plate_code") or "—")
+                t_members = f"{t.get('auction_count', '—')}/{t.get('member_count', '—')}"
+                t_amount = _money(t.get("amount_yuan"))
+                share_val = t.get("market_amount_share")
+                t_share = _fmt(share_val * 100, 1, "%") if isinstance(share_val, (int, float)) else "—"
+                mean_bp = t.get("mean_change_bp")
+                t_mean = _pct_cell(mean_bp / 100) if isinstance(mean_bp, (int, float)) else "—"
+                t_mean_plain = _fmt(mean_bp / 100, 2, "%") if isinstance(mean_bp, (int, float)) else "—"
+                t_limits = f"涨停{t.get('limit_up_count', 0)} / 跌停{t.get('limit_down_count', 0)}"
+                cells = [t_name, t_members, f"{t_amount}<br>{t_share}", t_mean, t_limits]
+                tb_rows.append("<tr>" + "".join(_td(cell) for cell in cells) + "</tr>")
+                tb_text_lines.append(f"{t.get('name') or t.get('plate_code')} 成员{t_members}；额{t_amount}·占比{t_share}；均涨{t_mean_plain}；{t_limits}")
+            tb_head = ("热点题材(开盘竞价)", "成员有效/总数", "竞价额·占比", "平均涨幅", "涨/跌停")
+            tb_table = f'<table style="{_table_style()}" role="table"><thead><tr>' + ''.join(_th(label) for label in tb_head) + '</tr></thead><tbody>' + ''.join(tb_rows) + '</tbody></table>'
+            tb_html_block = f'<h2 style="font-size:16px;margin:18px 0 7px">③ 热点题材竞价分桶 <span style="font-size:11px;font-weight:normal;color:#667085">[热榜成份股×盘前映射]</span></h2>{tb_table}'
+        elif tb.get("status"):
+            tb_html_block = f'<h2 style="font-size:16px;margin:18px 0 7px">③ 热点题材竞价分桶 <span style="font-size:11px;font-weight:normal;color:#667085">[热榜成份股×盘前映射]</span></h2><p style="font-size:11px;color:#7c2d12">热点题材分桶未就绪: {_esc(tb.get("status"))}</p>'
+            tb_text_lines.append(f"热点题材分桶未就绪({tb.get('status')})")
+    tb_text_section = ("\n\n③ 热点题材竞价分桶 [热榜成份股×盘前映射]\n" + "\n".join(tb_text_lines)) if tb_text_lines else ""
     text = (f"竞价全景 V6 | {product.get('trade_date', '日期待核实')} | {product.get('asof', '时点待核实')}\n"
-        + " | ".join(f"{label}：{value}" for label, value in cards) + f"\n规则一句话：{rule_sentence}\n" + "\n".join(summaries) + f"\n{hot_note}\n{hot_coverage_note}\n\n① 板块竞价全景\n"
+        + " | ".join(f"{label}：{value}" for label, value in cards) + f"\n规则一句话：{rule_sentence}\n" + "\n".join(summaries) + f"\n{hot_note}\n{hot_coverage_note}\n\n① 板块竞价全景 [开盘啦全景板块]\n"
         + "\n\n".join(plate_text) + "\n\n② 昨日连板梯队×涨停原因\n" + "\n\n".join(ladder_text)
+        + tb_text_section
         + "\n\n缺失字段留白或待核实；名次为全市场口径。")
     document = (f'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
         f'<title>竞价全景 V6</title></head><body style="margin:0;padding:10px;background:#eef2f6;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;color:#26364a">'
         f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center"><table role="presentation" width="100%" style="max-width:760px;background:#fff">'
         f'<tr><td style="padding:12px 14px;background:#172b43;color:#fff"><div style="font-size:16px;font-weight:700">竞价全景 V6　·　{_esc(product.get("trade_date", "日期待核实"))}　·　{_esc(product.get("asof", "时点待核实"))}　·　{_esc(overview.get("status", "PARTIAL"))}</div></td></tr>'
         f'<tr><td style="padding:10px">{cards_html}<div style="margin:6px 0;font-size:11px">{"<br>".join(_esc(line) for line in summaries)}</div><div style="margin:6px 0;color:#7a4b00;font-size:11px">{_esc(hot_note)}</div>'
-        f'<h2 style="font-size:16px;margin:18px 0 7px">① 板块竞价全景</h2>{plate_table}'
+        f'<h2 style="font-size:16px;margin:18px 0 7px">① 板块竞价全景 <span style="font-size:11px;font-weight:normal;color:#667085">[开盘啦全景板块]</span></h2>{plate_table}'
         f'<h2 style="font-size:16px;margin:18px 0 7px">② 昨日连板梯队×涨停原因</h2>{ladder_table}'
+        f'{tb_html_block}'
         f'<div style="font-size:10px;color:#667085;margin-top:12px">{_esc(hot_coverage_note)} 缺失字段留白或待核实；名次为全市场口径。</div></td></tr></table></td></tr></table></body></html>')
     quickbrief = product.get("quickbrief")
     if isinstance(quickbrief, Mapping) and isinstance(quickbrief.get("lines"), list):

@@ -222,7 +222,7 @@ def _products(day: str, item: str, root: Path, snapshots, ticks, *, source_catal
         if previous_day:
             pool, pool_meta = read_pool(previous_day, cutoff_dt.isoformat(), late_rebuild=not live,
                                         late_asof=None if live else datetime.now(cutoff_dt.tzinfo).isoformat())
-            if pool_meta["status"] == "MISSING":
+            if pool_meta.get("status") in ("MISSING", "UNKNOWN") or not pool:
                 pool = None
         else:
             pool, pool_meta = None, {"status": "MISSING", "reason": "previous_trade_date_unavailable"}
