@@ -28,6 +28,8 @@ def build_shadow_auction_report(
     observation_time_ms: int,
     recoveries: Mapping[str, Mapping[str, Any]] = {},
     previous_pool: Optional[DataResult] = None,
+    theme_buckets: Optional[Mapping[str, Any]] = None,
+    plate_reference_health: Optional[Mapping[str, Any]] = None,
     data_origin: str = "LIVE_REDIS_READ_ONLY",
     event_id: str = "AUCTION_0925",
     source_id: str = "redis_q2_shadow",
@@ -77,10 +79,28 @@ def build_shadow_auction_report(
     else:
         notes.append("previous-day pool not supplied")
     extremes = derive_stock_extremes(patched, trade_date=trade_date, top_n=top_n)
+    if theme_buckets is None:
+        try:
+            from .auction_theme_buckets import read_and_build_hot
+            tb = read_and_build_hot(trade_date)
+            if tb and tb.get("status") in ("available", "OK"):
+                theme_buckets = tb
+        except Exception:
+            theme_buckets = None
+    if plate_reference_health is None:
+        try:
+            from .data_pipeline.plate_stock_index import verify_plate_reference
+            prh = verify_plate_reference(trade_date, auto_heal=False)
+            if prh and prh.get("status") in ("OK", "READY"):
+                plate_reference_health = prh
+        except Exception:
+            plate_reference_health = None
     return build_market_auction_report(
         trade_date=trade_date, event_id=event_id, data_origin=data_origin,
         market_summary=summary, previous_limit_structure=structure,
-        previous_limit_feedback=feedback, stock_extremes=extremes, top_n=top_n, notes=notes,
+        previous_limit_feedback=feedback, theme_buckets=theme_buckets,
+        plate_reference_health=plate_reference_health, stock_extremes=extremes,
+        top_n=top_n, notes=notes,
     )
 
 

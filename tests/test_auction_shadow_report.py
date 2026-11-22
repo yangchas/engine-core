@@ -33,3 +33,27 @@ def test_report_notes_collecting_phase_before_0925():
     )
     assert "observed before 09:25:00" in early.text
     assert "observed before 09:25:00" not in late.text
+
+
+def test_report_with_theme_buckets_and_plate_reference_health():
+    report = build_shadow_auction_report(
+        trade_date="2026-10-12",
+        quotes={},
+        observation_time_ms=local_datetime_ms("2026-10-12", "09:25:30"),
+        theme_buckets={
+            "status": "available",
+            "themes": [{"name": "AI算力", "plate_code": "880001", "amount_yuan": 50000000.0, "mean_change_bp": 120.0}]
+        },
+        plate_reference_health={
+            "status": "OK",
+            "plate_count": 1500,
+            "stock_count": 5200,
+            "coverage": 1.0,
+        }
+    )
+    assert "竞价题材分桶与归因" in report.text
+    assert "AI算力" in report.text
+    assert "板块与个股映射健康度" in report.text
+    assert report.component_status["theme_buckets"] == "READY"
+    assert report.component_status["plate_reference"] == "READY"
+

@@ -409,7 +409,7 @@ def _td_count(day: str, root: Path) -> Any:
         connection.close()
 
 
-def _health_probes(root: Path) -> dict[str, Any]:
+def _health_probes(root: Path, trade_date: str | None = None, auto_heal: bool = True) -> dict[str, Any]:
     probes: dict[str, Any] = {}
     try:
         # connect + LAST(ts) on stock_tick_v2 and auction_snapshot_v2 takes about 3-6 s on the shared TD; the 5 s default
@@ -436,6 +436,14 @@ def _health_probes(root: Path) -> dict[str, Any]:
         probes["catalog"] = {"status": "ok", "datasets": len(catalog.get("datasets", {}))}
     except Exception as exc:
         probes["catalog"] = {"status": "failed", "reason": type(exc).__name__}
+    if trade_date:
+        try:
+            from ..data_pipeline.plate_stock_index import verify_plate_reference
+            res = verify_plate_reference(trade_date, auto_heal=auto_heal)
+            res_status = "ok" if res.get("status") == "OK" else "degraded" if res.get("status") == "DEGRADED" else "failed"
+            probes["plate_reference"] = {"status": res_status, **res}
+        except Exception as exc:
+            probes["plate_reference"] = {"status": "failed", "reason": type(exc).__name__}
     return probes
 
 
@@ -467,7 +475,13 @@ def boot_data_health(trade_date: str, prev_trade_date: str | None, root: str | P
                      probes: dict[str, Any] | None = None) -> dict[str, Any]:
     root = Path(root).expanduser()
     clock = _now(now, trade_date)
-    probe_results = _health_probes(root) if probes is None else probes
+    if probes is not None:
+        probe_results = probes
+    else:
+        try:
+            probe_results = _health_probes(root, trade_date, not dry_run)
+        except TypeError:
+            probe_results = _health_probes(root)
     try:
         _, calendar = _calendar(root, trade_date)
         calendar_status = "ok"
@@ -491,7 +505,8 @@ def boot_data_health(trade_date: str, prev_trade_date: str | None, root: str | P
                           for status in ("OK", "PENDING", "UNKNOWN", "MISSING", "CORRUPT", "OVERDUE", "STALE")}}
     failed = any(x.get("status") == "failed" for x in probe_results.values()) or calendar_status != "ok"
     bad_items = any(x.get("status") in {"OVERDUE", "MISSING", "CORRUPT", "STALE"} for x in item_results)
-    status = "degraded" if failed or bad_items else "ok"
+    degraded_probes = any(x.get("status") == "degraded" for x in probe_results.values())
+    status = "degraded" if failed or bad_items or degraded_probes else "ok"
     detail["status"] = status
     if not dry_run:
         from ..data_pipeline.storage import _atomic_write

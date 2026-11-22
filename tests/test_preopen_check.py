@@ -32,6 +32,7 @@ def manifest(status="FORMAL", rows=47, available="2026-10-27T08:32:05.697525+08:
 CHECKS = {"limit_up_pool": {"statuses": ["FORMAL", "READY"], "min_rows": 1},
           "hot_plates": {"statuses": ["READY", "FORMAL", "PROVISIONAL"], "min_rows": 1,
                          "captured_after": "08:15:00"},
+          "plate_reference": {"auto_heal": True, "min_coverage": 0.95, "min_rows": 1000},
           "daily_kline": {"coverage_threshold": 0.995, "total_timeout_seconds": 1200}}
 HISTORY_DONE = "2026-10-27T08:15:30+08:00"
 
@@ -39,7 +40,7 @@ HISTORY_DONE = "2026-10-27T08:15:30+08:00"
 @pytest.fixture(autouse=True)
 def previous_day(monkeypatch):
     import engine_core.prep_trade_day as prep
-    from engine_core.data_pipeline import limit_pool_hot_view as hot
+    from engine_core.data_pipeline import limit_pool_hot_view as hot, plate_stock_index
 
     class Redis:
         value = None
@@ -51,6 +52,15 @@ def previous_day(monkeypatch):
     monkeypatch.setattr(prep, "previous_trade_date", lambda _root, _day: DAY)
     monkeypatch.setattr(hot, "_client", lambda: Redis())
     monkeypatch.setattr(hot, "_td_store", lambda: (_ for _ in ()).throw(RuntimeError("no TD")))
+    monkeypatch.setattr(
+        plate_stock_index,
+        "verify_plate_reference",
+        lambda day, auto_heal=False, min_coverage=0.95, min_rows=1000: {
+            "status": "OK", "trade_date": day, "plate_count": 1522, "stock_count": 5868,
+            "stock_static_count": 5224, "unnamed_plate_count": 2, "coverage": 1.0,
+            "healed": False, "reasons": []
+        }
+    )
 
 
 def run(tmp_path, datasets, fill, checks=CHECKS, dry_run=False):
@@ -91,7 +101,7 @@ def healthy():
 def test_everything_present_is_ok_and_names_the_checked_day(tmp_path):
     code, payload = run(tmp_path, healthy(), complete_fill)
     assert (code, payload["status"]) == (0, "ok")
-    assert payload["detail"]["checked_day"] == DAY and [r["status"] for r in payload["detail"]["results"]] == ["OK"] * 3
+    assert payload["detail"]["checked_day"] == DAY and [r["status"] for r in payload["detail"]["results"]] == ["OK"] * 4
     assert payload["detail"]["results"][0]["detail"]["storage_source"] == "redis"
     assert payload["detail"]["results"][0]["detail"]["version"] == "fixture-subset-47-sha256-396734dca9e888b2"
 
@@ -186,7 +196,7 @@ def test_schedule_event_runs_before_the_heavy_cutoff_after_every_producer_it_che
     assert check["handler"] == "boot_data_health" and check["calendar"] == "trading_day"
     assert events["hot_plates_history_0815"]["deadline"] <= check["at"]          # the history fetch is finished
     assert check["late_until"] <= schedule["global"]["heavy_cutoffs"]["PRE_MARKET"] <= "09:10:00"
-    assert set(check["args"]["checks"]) == {"limit_up_pool", "hot_plates", "daily_kline"}
+    assert set(check["args"]["checks"]) == {"limit_up_pool", "hot_plates", "plate_reference", "daily_kline"}
     for key in ("fill_max_consecutive_failures", "fill_max_failure_ratio", "lease_ttl_seconds"):
         assert key in check["args"]
 

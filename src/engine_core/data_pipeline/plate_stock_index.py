@@ -319,7 +319,20 @@ def verify_plate_reference(trade_date, *, redis_client=None, data_dir=None,
     from .auction_redis_view import redis_client as make_redis
 
     day = date.fromisoformat(trade_date).isoformat()
-    client = redis_client or make_redis()
+    try:
+        client = redis_client or make_redis()
+    except Exception as exc:
+        return {
+            "status": "MISSING",
+            "trade_date": day,
+            "plate_count": 0,
+            "stock_count": 0,
+            "stock_static_count": 0,
+            "unnamed_plate_count": 0,
+            "coverage": 0.0,
+            "healed": False,
+            "reasons": [f"redis_client_error:{type(exc).__name__}"]
+        }
     healed = False
 
     def _inspect():
@@ -350,7 +363,20 @@ def verify_plate_reference(trade_date, *, redis_client=None, data_dir=None,
         both_present = bool(reg_raw and stock_count > 0 and static_raw)
         return reg_rows, stock_count, static_rows, both_present
 
-    reg_rows, stock_count, static_rows, both_present = _inspect()
+    try:
+        reg_rows, stock_count, static_rows, both_present = _inspect()
+    except Exception as exc:
+        return {
+            "status": "MISSING",
+            "trade_date": day,
+            "plate_count": 0,
+            "stock_count": 0,
+            "stock_static_count": 0,
+            "unnamed_plate_count": 0,
+            "coverage": 0.0,
+            "healed": healed,
+            "reasons": [f"redis_error:{type(exc).__name__}"]
+        }
 
     if (not both_present or len(reg_rows) < min_rows or not stock_count or not static_rows) and auto_heal:
         try:

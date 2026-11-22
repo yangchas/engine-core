@@ -358,7 +358,12 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
         unique_reasons[key] = row
     reasons = list(unique_reasons.values())
     if not pool:
-        diag.append("limit_up_pool:" + _why_unavailable(catalog, "limit_up_pool", previous, asof))
+        why = _why_unavailable(catalog, "limit_up_pool", previous, asof)
+        redis_reason = pool_meta.get("reason")
+        if redis_reason and redis_reason != why:
+            diag.append(f"limit_up_pool:{why} | redis:{redis_reason}")
+        else:
+            diag.append(f"limit_up_pool:{why}")
     if not registry:
         diag.append(f"plate_registry:no_version_on_or_before_{trade_date}_available_at_or_before_asof")
     if not reasons:

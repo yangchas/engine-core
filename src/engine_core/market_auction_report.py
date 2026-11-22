@@ -223,7 +223,11 @@ def build_market_auction_report(
                     _show(row["value"]), stock_extremes.units.get(key, "")))
     if theme_buckets is not None:
         tb_status = theme_buckets.get("status", "OK")
-        components["theme_buckets"] = FactStatus.READY if tb_status in ("OK", "available") else FactStatus.DEGRADED
+        components["theme_buckets"] = (
+            FactStatus.READY if tb_status in ("OK", "available")
+            else FactStatus.PARTIAL if tb_status == "DEGRADED"
+            else FactStatus.MISSING
+        )
         themes = theme_buckets.get("themes", [])
         lines += [
             "",
@@ -248,7 +252,11 @@ def build_market_auction_report(
                 )
     if plate_reference_health is not None:
         pr_status = plate_reference_health.get("status", "OK")
-        components["plate_reference"] = FactStatus.READY if pr_status == "OK" else FactStatus.DEGRADED
+        components["plate_reference"] = (
+            FactStatus.READY if pr_status == "OK"
+            else FactStatus.PARTIAL if pr_status == "DEGRADED"
+            else FactStatus.MISSING
+        )
         lines += [
             "",
             "## 板块与个股映射健康度",

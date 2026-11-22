@@ -184,8 +184,21 @@ def run(request: Mapping[str, Any], root: str | Path, *, dry_run: bool = False,
             auto_heal = bool(rule.get("auto_heal", True)) and not dry_run
             min_cov = float(rule.get("min_coverage", 0.95))
             min_rows = int(rule.get("min_rows", 1000))
-            check_res = verify_plate_reference(check_day, auto_heal=auto_heal,
-                                               min_coverage=min_cov, min_rows=min_rows)
+            try:
+                check_res = verify_plate_reference(check_day, auto_heal=auto_heal,
+                                                   min_coverage=min_cov, min_rows=min_rows)
+            except Exception as exc:
+                check_res = {
+                    "status": "MISSING",
+                    "trade_date": check_day,
+                    "plate_count": 0,
+                    "stock_count": 0,
+                    "stock_static_count": 0,
+                    "unnamed_plate_count": 0,
+                    "coverage": 0.0,
+                    "healed": False,
+                    "reasons": [f"check_error:{type(exc).__name__}"]
+                }
             results.append({"id": dataset, "day": check_day, "status": check_res["status"],
                             "detail": check_res})
         else:

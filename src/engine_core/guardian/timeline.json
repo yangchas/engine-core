@@ -1012,6 +1012,11 @@
             "min_rows": 1,
             "captured_after": "08:15:00"
           },
+          "plate_reference": {
+            "auto_heal": true,
+            "min_coverage": 0.95,
+            "min_rows": 1000
+          },
           "daily_kline": {
             "coverage_threshold": 0.995,
             "total_timeout_seconds": 1200
