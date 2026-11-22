@@ -55,12 +55,12 @@ def run(trade_date, asof, *, reference_store=None, store=None, redis_client=None
     return (store or TwoLayerStore(redis_client or make_redis())).publish('plate_stock_index', day, rows, metadata)
 
 
-def get_stock_plates(symbols, trade_date, *, store=None, redis_client=None, readonly=False):
+def get_stock_plates(symbols, trade_date, *, store=None, redis_client=None, readonly=False, hot_only=False):
     from .auction_redis_view import redis_client as make_redis
     from ..storage.two_layer import TwoLayerStore
     selected = store or TwoLayerStore(redis_client or make_redis())
     if readonly:
-        return read_stocks(selected, trade_date, symbols, restore=False)
+        return read_stocks(selected, trade_date, symbols, restore=False, hot_only=hot_only)
     return selected.get_stock_plates(trade_date, symbols)
 
 
@@ -114,7 +114,7 @@ def publish(store, day, rows, metadata):
         return StoreResult(status='FAILED', reason=type(exc).__name__)
 
 
-def read_stocks(store, day, symbols, *, restore=True):
+def read_stocks(store, day, symbols, *, restore=True, hot_only=False):
     import json
     from . import cold_archive
     from .redis_day_view_read import read_day_view
@@ -163,6 +163,10 @@ def read_stocks(store, day, symbols, *, restore=True):
         if meta and len(hot_rows) == len(symbols):
             return {s: {'status': 'PRESENT_REDIS', 'plates': hot_rows[s]['plates'],
                         'version': meta['version']} for s in symbols}
+        if hot_only:
+            return {s: ({'status': 'PRESENT_REDIS', 'plates': hot_rows[s]['plates'], 'version': meta['version']}
+                        if s in hot_rows and meta else {'status': 'MISSING' if meta else 'UNKNOWN', 'version': meta.get('version'),
+                                                        'reason': 'hot_index_missing' if meta else 'hot_index_unavailable'}) for s in symbols}
         value = load_cold()
         if value is None:
             if meta:
@@ -187,3 +191,40 @@ def read_stocks(store, day, symbols, *, restore=True):
     finally:
         if cold is not None and store.cold is None:
             cold.close()
+
+
+def publish_reference_view(redis, dataset, snapshot):
+    """Publish a complete reference snapshot atomically as one Redis value."""
+    if dataset not in ('plate_registry', 'stock_static'):
+        raise ValueError('invalid_reference_dataset')
+    rows = snapshot['rows']
+    if not isinstance(rows, list) or not rows or not snapshot.get('version'):
+        raise ValueError('invalid_reference_snapshot')
+    stamp = datetime.fromisoformat(snapshot['available_at'].replace('Z', '+00:00'))
+    if stamp.tzinfo is None:
+        raise ValueError('invalid_reference_available_at')
+    day = date.fromisoformat(snapshot['trade_date']).isoformat()
+    payload = dict(snapshot, dataset=dataset, trade_date=day, row_count=len(rows))
+    redis.set(f'core:view:{dataset}:{day}', _json(payload))
+
+
+def read_reference_view(redis, dataset, day, asof):
+    """Read a complete, point-in-time visible reference snapshot from Redis only."""
+    import json
+    if dataset not in ('plate_registry', 'stock_static'):
+        raise ValueError('invalid_reference_dataset')
+    date.fromisoformat(day)
+    cutoff = datetime.fromisoformat(asof.replace('Z', '+00:00'))
+    if cutoff.tzinfo is None:
+        raise ValueError('invalid_asof')
+    raw = redis.get(f'core:view:{dataset}:{day}')
+    if raw is None:
+        return None
+    value = json.loads(raw)
+    stamp = datetime.fromisoformat(value['available_at'].replace('Z', '+00:00'))
+    if (stamp.tzinfo is None or stamp > cutoff or value.get('dataset') != dataset
+            or value.get('trade_date', '') > day or not value.get('version')
+            or not isinstance(value.get('rows'), list) or not value['rows']
+            or value.get('row_count') != len(value['rows'])):
+        return None
+    return value
