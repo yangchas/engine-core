@@ -228,3 +228,62 @@ def read_reference_view(redis, dataset, day, asof):
             or value.get('row_count') != len(value['rows'])):
         return None
     return value
+
+
+def preload_canonical_reference(trade_date, *, data_dir=None, redis_client=None, available_at=None):
+    """Directly preload canonical plate registry and stock plate membership CSVs into Redis views."""
+    import csv
+    from pathlib import Path
+    from .auction_redis_view import redis_client as make_redis
+    from .redis_day_view import write_day_view
+
+    day = date.fromisoformat(trade_date).isoformat()
+    client = redis_client or make_redis()
+    root = Path(data_dir) if data_dir else (Path(__file__).parent.parent.parent.parent / "plate/data")
+
+    reg_file = root / "plate_registry.csv"
+    mem_file = root / "stock_plate_membership.csv"
+    if not reg_file.is_file() or not mem_file.is_file():
+        raise FileNotFoundError(f"canonical_reference_missing:{reg_file}:{mem_file}")
+
+    stamp = available_at or f"{day}T09:00:00+08:00"
+
+    with open(reg_file, "r", encoding="utf-8") as f:
+        reg_rows = list(csv.DictReader(f))
+    for r in reg_rows:
+        r["trade_date"] = day
+        r["available_at"] = stamp
+        if "size" in r and r["size"]:
+            r["size"] = int(r["size"])
+
+    publish_reference_view(client, "plate_registry", {
+        "dataset": "plate_registry",
+        "trade_date": day,
+        "version": f"{day.replace('-', '')}090000-canonical",
+        "available_at": stamp,
+        "rows": reg_rows
+    })
+
+    classes_by_code = {r["plate_code"]: r.get("class", "THEME") for r in reg_rows}
+    index = {}
+    with open(mem_file, "r", encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            s = r["symbol"].strip().zfill(6)
+            c = r["plate_code"].strip()
+            if s and c:
+                index.setdefault(s, []).append({
+                    "plate_code": c,
+                    "plate_class": classes_by_code.get(c, "THEME"),
+                    "plate_member_label": ""
+                })
+    for plates in index.values():
+        plates.sort(key=lambda item: item["plate_code"])
+
+    rows = {s: {"plates": plates, "member_version": f"{day.replace('-', '')}090000-canonical"}
+            for s, plates in sorted(index.items())}
+    write_day_view(client, "plate_stock_index", day, rows, source="canonical_csv",
+                   version=f"{day.replace('-', '')}090000-canonical", available_at=stamp,
+                   fields=("plates", "member_version"))
+
+    return {"plate_registry_rows": len(reg_rows), "plate_stock_symbols": len(rows), "status": "READY"}
+

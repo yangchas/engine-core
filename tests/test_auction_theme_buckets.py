@@ -225,3 +225,49 @@ def test_hot_index_miss_does_not_open_cold_store(monkeypatch):
     result = plate_stock_index.read_stocks(Store(), '2026-11-16', [symbol], restore=False, hot_only=True)
     assert result[symbol]['status'] == 'UNKNOWN'
     assert result[symbol]['reason'] == 'hot_index_unavailable'
+
+
+def test_preload_canonical_reference_and_direct_read(tmp_path, monkeypatch):
+    import csv
+    from engine_core.data_pipeline.plate_stock_index import preload_canonical_reference, read_reference_view
+    from engine_core.data_pipeline import redis_day_view
+
+    monkeypatch.setattr(redis_day_view, "expire_at", lambda *a, **k: 1800000000)
+
+    reg_file = tmp_path / "plate_registry.csv"
+    mem_file = tmp_path / "stock_plate_membership.csv"
+    with open(reg_file, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["plate_code", "name", "parent_code", "parent_name", "class", "size"])
+        w.writeheader()
+        w.writerow({"plate_code": "801003", "name": "5G", "parent_code": "801660", "parent_name": "通信", "class": "THEME", "size": "10"})
+    with open(mem_file, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["symbol", "plate_code"])
+        w.writeheader()
+        w.writerow({"symbol": "000001", "plate_code": "801003"})
+
+    class MockPipeline:
+        def __init__(self, storage): self.storage = storage
+        def hset(self, key, mapping): self.storage[key] = mapping; return self
+        def expireat(self, *a): return self
+        def set(self, key, val, *a, **k): self.storage[key] = val; return self
+        def execute(self): return [True]
+
+    class MockRedis:
+        def __init__(self): self.storage = {}
+        def set(self, key, val, *a, **k): self.storage[key] = val
+        def get(self, key): return self.storage.get(key)
+        def delete(self, key): self.storage.pop(key, None)
+        def pipeline(self): return MockPipeline(self.storage)
+        def hlen(self, key): return len(self.storage.get(key, {}))
+
+    r = MockRedis()
+    res = preload_canonical_reference("2026-11-20", data_dir=tmp_path, redis_client=r)
+    assert res["status"] == "READY"
+    assert res["plate_registry_rows"] == 1
+    assert res["plate_stock_symbols"] == 1
+
+    snap = read_reference_view(r, "plate_registry", "2026-11-20", "2026-11-20T09:05:00+08:00")
+    assert snap is not None
+    assert snap["rows"][0]["name"] == "5G"
+    assert snap["rows"][0]["parent_name"] == "通信"
+
