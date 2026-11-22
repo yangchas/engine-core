@@ -179,6 +179,15 @@ def run(request: Mapping[str, Any], root: str | Path, *, dry_run: bool = False,
                         (threshold is None or (available is not None and available >= threshold)))
             results.append({"id": dataset, "day": day, "status": "OK" if accepted else
                             "MISSING" if not rows else "DEGRADED", "detail": meta})
+        elif dataset == "plate_reference":
+            from ..data_pipeline.plate_stock_index import verify_plate_reference
+            auto_heal = bool(rule.get("auto_heal", True)) and not dry_run
+            min_cov = float(rule.get("min_coverage", 0.95))
+            min_rows = int(rule.get("min_rows", 1000))
+            check_res = verify_plate_reference(check_day, auto_heal=auto_heal,
+                                               min_coverage=min_cov, min_rows=min_rows)
+            results.append({"id": dataset, "day": check_day, "status": check_res["status"],
+                            "detail": check_res})
         else:
             results.append(check_catalog_dataset(catalog, dataset, day, rule, check_day))
     if "daily_kline" in checks:

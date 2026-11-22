@@ -49,3 +49,47 @@ def test_unavailable_summary_renders_metrics_as_unavailable_not_zero():
     )
     assert "- stock_count: unavailable" in report.text
     assert "- auction_amount_yuan: unavailable" in report.text
+
+
+def test_market_auction_report_with_theme_buckets_and_plate_health():
+    theme_buckets = {
+        "status": "available",
+        "themes": [
+            {
+                "plate_code": "801007",
+                "name": "芯片",
+                "parent_name": "电子信息",
+                "amount_yuan": 1602000000,
+                "mean_change_bp": -249.0
+            },
+            {
+                "plate_code": "801015",
+                "name": "算力",
+                "parent_name": "计算机",
+                "amount_yuan": 1453000000,
+                "mean_change_bp": -282.0
+            }
+        ]
+    }
+    plate_health = {
+        "status": "OK",
+        "plate_count": 1522,
+        "stock_count": 5868,
+        "coverage": 1.0
+    }
+    report = build_market_auction_report(
+        trade_date="2026-11-20",
+        event_id="AUCTION_0925",
+        data_origin="TEST",
+        theme_buckets=theme_buckets,
+        plate_reference_health=plate_health
+    )
+    assert report.status == "READY"
+    assert "## 竞价题材分桶与归因 (09:25)" in report.text
+    assert "芯片 (801007)" in report.text
+    assert "父板块: 电子信息" in report.text
+    assert "## 板块与个股映射健康度" in report.text
+    assert "plate_count: 1522" in report.text
+    assert report.component_status["theme_buckets"] == "READY"
+    assert report.component_status["plate_reference"] == "READY"
+

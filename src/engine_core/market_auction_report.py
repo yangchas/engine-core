@@ -79,6 +79,8 @@ def build_market_auction_report(
     previous_limit_structure: Optional[PreviousDayLimitStructureFact] = None,
     previous_limit_feedback: Optional[PreviousDayLimitFeedbackFact] = None,
     theme_facts: Sequence[ThemeAuctionDeltaFact] = (),
+    theme_buckets: Optional[Mapping[str, Any]] = None,
+    plate_reference_health: Optional[Mapping[str, Any]] = None,
     stock_extremes: Optional[StockExtremes] = None,
     top_n: int = 10,
     notes: Sequence[str] = (),
@@ -219,6 +221,44 @@ def build_market_auction_report(
                 lines.append("%d. %s %s | %s %s" % (
                     row["rank"], row["symbol"], row.get("name") or "",
                     _show(row["value"]), stock_extremes.units.get(key, "")))
+    if theme_buckets is not None:
+        tb_status = theme_buckets.get("status", "OK")
+        components["theme_buckets"] = FactStatus.READY if tb_status in ("OK", "available") else FactStatus.DEGRADED
+        themes = theme_buckets.get("themes", [])
+        lines += [
+            "",
+            "## 竞价题材分桶与归因 (09:25)",
+            "- status: %s | total_themes: %d" % (_status_value(components["theme_buckets"]), len(themes)),
+        ]
+        top_themes = sorted(themes, key=lambda t: t.get("amount_yuan") or 0, reverse=True)[:top_n]
+        if top_themes:
+            lines.append("### 竞价成交沉淀 Top%d 题材" % len(top_themes))
+            for rank, t in enumerate(top_themes, 1):
+                p_info = (" | 父板块: %s" % t["parent_name"]) if t.get("parent_name") else ""
+                lines.append(
+                    "%d. %s (%s) | amount=%s | bp=%s%s"
+                    % (
+                        rank,
+                        t.get("name") or "未命名",
+                        t.get("plate_code") or t.get("code") or "-",
+                        _show(t.get("amount_yuan")),
+                        _show(t.get("mean_change_bp")),
+                        p_info,
+                    )
+                )
+    if plate_reference_health is not None:
+        pr_status = plate_reference_health.get("status", "OK")
+        components["plate_reference"] = FactStatus.READY if pr_status == "OK" else FactStatus.DEGRADED
+        lines += [
+            "",
+            "## 板块与个股映射健康度",
+            "- status: %s | plate_count: %s | stock_count: %s | coverage: %s" % (
+                _status_value(components["plate_reference"]),
+                _show(plate_reference_health.get("plate_count")),
+                _show(plate_reference_health.get("stock_count")),
+                _show(plate_reference_health.get("coverage")),
+            ),
+        ]
     if notes:
         lines += ["", "## 备注"] + ["- %s" % str(item) for item in notes]
     if components:
