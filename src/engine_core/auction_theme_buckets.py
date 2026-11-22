@@ -281,7 +281,7 @@ def read_and_build_hot(trade_date, store=None, redis_client=None, top_n_hot=40):
     from datetime import date, datetime
     from pathlib import Path
     from .data_pipeline.auction_redis_view import read_auction_view, redis_client as make_redis
-    from .data_pipeline.plate_stock_index import get_stock_plates
+    from .data_pipeline.plate_stock_index import get_stock_plates, read_reference_view
     from .data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
     from .data_pipeline.trade_calendar import TradeCalendarStore
     notes, stage = [], 'trade_date'
@@ -306,14 +306,19 @@ def read_and_build_hot(trade_date, store=None, redis_client=None, top_n_hot=40):
         current = read_auction_view(client, day, '0925')
         previous = read_auction_view(client, day, '0924')
         stage = 'mapping'
-        mapping = get_stock_plates([r['symbol'] for r in current], day, store=store, redis_client=client, readonly=True)
+        mapping = get_stock_plates([r['symbol'] for r in current], day, store=store, redis_client=client, readonly=True, hot_only=True)
         if not mapping or len(mapping) != len(current) or any(v.get('status') not in ('PRESENT_REDIS','RESTORED_FROM_TD','MISSING') or (v.get('status') == 'MISSING' and not v.get('version')) for v in mapping.values()):
             raise ValueError('mapping_incomplete')
         plates = {s:v['plates'] for s,v in mapping.items() if v.get('status') != 'MISSING'}
         stage = 'reference_snapshots'
-        with ReferenceSnapshotStore() as ref:
-            registry = ref.read_as_of('plate_registry', cutoff.isoformat())
-            static = ref.read_as_of('stock_static', cutoff.isoformat())
+        registry = read_reference_view(client, 'plate_registry', day, cutoff.isoformat())
+        static = read_reference_view(client, 'stock_static', day, cutoff.isoformat())
+        if not registry or not static:
+            with ReferenceSnapshotStore() as ref:
+                if not registry:
+                    registry = ref.read_as_of('plate_registry', cutoff.isoformat())
+                if not static:
+                    static = ref.read_as_of('stock_static', cutoff.isoformat())
         if not registry:
             raise ValueError('plate_registry_unavailable_at_cutoff')
         if not static or not static.get('trade_date') or static['trade_date'] > day:
