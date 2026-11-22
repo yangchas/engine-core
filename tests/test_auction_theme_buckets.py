@@ -84,7 +84,7 @@ def test_read_and_build_reports_snapshot_and_mapping_failures(monkeypatch):
         def __enter__(self): return self
         def __exit__(self, *args): pass
         def read_as_of(self, *args): return None
-    monkeypatch.setattr(reference_snapshot_td, 'ReferenceSnapshotStore', NoSnapshot)
+    monkeypatch.setattr(plate_stock_index, 'read_reference_view', lambda *args: None)
     result = read_and_build('2026-11-16', store=object(), redis_client=object())
     assert result['status'] == 'unavailable' and 'stock_static' in result['reason']
 
@@ -120,7 +120,15 @@ def test_registry_names_and_point_in_time_fallback_from_real_excerpts(monkeypatc
             if self.mode == 'error': raise RuntimeError('read failure')
             return registry if self.mode == 'visible' else None
         def read_latest(self, dataset): return registry
-    monkeypatch.setattr(reference_snapshot_td, 'ReferenceSnapshotStore', Ref)
+    def read_reference(client, dataset, day, asof):
+        ref = Ref()
+        snapshot = ref.read_as_of(dataset, asof)
+        if snapshot is None and dataset == 'plate_registry':
+            candidate = ref.read_latest(dataset)
+            if candidate['available_at'] <= asof:
+                return candidate
+        return snapshot
+    monkeypatch.setattr(plate_stock_index, 'read_reference_view', read_reference)
     hot = {r['plate_code']: r['name'] for r in excerpt['hot_plates'] if r.get('name')}
     rows = registry['rows']
     named = next(r for r in rows if r.get('name') and r['code'] not in hot)
@@ -192,3 +200,28 @@ def test_hot_seal_assignments_use_real_evidence_and_unknown():
     assert assignments['002685']['primary_theme']['id'] == '801808'
     assert assignments['603396']['source'] == 'REASON_LATEST'
     assert assignments['300779']['source'] == 'UNKNOWN'
+
+
+def test_registry_parent_name_from_recorded_registry():
+    from engine_core.plate_registry import build_registry
+    recorded = json.loads((Path(__file__).parent / 'fixtures/real/c1342/plate_registry.json').read_text())['rows']
+    names = {r['code']: r['name'] for r in recorded}
+    parents = {r['code']: r['parent'] for r in recorded if r.get('parent')}
+    child = next(r for r in recorded if r.get('parent') and names.get(r['parent']))
+    registry = {r['code']: r for r in build_registry({}, names, parents)['plates']}
+    assert registry[child['code']]['parent_name'] == names[child['parent']]
+
+
+def test_hot_index_miss_does_not_open_cold_store(monkeypatch):
+    from engine_core.data_pipeline import cold_archive, plate_stock_index, redis_day_view_read
+    data = json.loads((Path(__file__).parent / 'fixtures/real/c1332/excerpt.json').read_text())
+    symbol = data['auction_0925'][0]['symbol']
+    monkeypatch.setattr(redis_day_view_read, 'read_day_view', lambda *a, **k: {
+        'source': 'td_fallback', 'rows': {}, 'meta': {}})
+    monkeypatch.setattr(cold_archive, 'TdStore', lambda: (_ for _ in ()).throw(AssertionError('TD_ACCESS')))
+    class Store:
+        redis = object()
+        cold = None
+    result = plate_stock_index.read_stocks(Store(), '2026-11-16', [symbol], restore=False, hot_only=True)
+    assert result[symbol]['status'] == 'UNKNOWN'
+    assert result[symbol]['reason'] == 'hot_index_unavailable'

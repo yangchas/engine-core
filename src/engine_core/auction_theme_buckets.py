@@ -113,8 +113,7 @@ def read_and_build(trade_date, store=None, redis_client=None):
     import json
     from datetime import date, datetime
     from .data_pipeline.auction_redis_view import read_auction_view, redis_client as make_redis
-    from .data_pipeline.plate_stock_index import get_stock_plates
-    from .data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+    from .data_pipeline.plate_stock_index import get_stock_plates, read_reference_view
     from .data_pipeline.trade_calendar import TradeCalendarStore
     stage = 'trade_date'
     try:
@@ -124,15 +123,14 @@ def read_and_build(trade_date, store=None, redis_client=None):
         current = read_auction_view(client, day, '0925')
         previous = read_auction_view(client, day, '0924')
         stage = 'mapping'
-        mapping = get_stock_plates([r['symbol'] for r in current], day, store=store, redis_client=client, readonly=True)
+        mapping = get_stock_plates([r['symbol'] for r in current], day, store=store, redis_client=client, readonly=True, hot_only=True)
         if (not mapping or len(mapping) != len(current) or any(
                 v.get('status') not in ('PRESENT_REDIS', 'RESTORED_FROM_TD', 'MISSING')
                 or (v.get('status') == 'MISSING' and not v.get('version')) for v in mapping.values())):
             raise ValueError('mapping_incomplete')
         plates = {symbol: value['plates'] for symbol, value in mapping.items() if value.get('status') != 'MISSING'}
         stage = 'stock_static'
-        with ReferenceSnapshotStore() as ref:
-            snapshot = ref.read_as_of('stock_static', f'{day}T23:59:59+08:00')
+        snapshot = read_reference_view(client, 'stock_static', day, f'{day}T09:05:00+08:00')
         if not snapshot or not snapshot.get('trade_date') or snapshot['trade_date'] > day:
             raise ValueError('stock_static_unavailable')
         listings = {r['symbol']: r.get('listing_date') for r in snapshot['rows']}
@@ -143,18 +141,15 @@ def read_and_build(trade_date, store=None, redis_client=None):
         # Names are optional and never sourced from the retired catalog.
         names = {}
         registry_available = False
+        registry_rows = {}
         asof = datetime.fromisoformat(f'{day}T09:05:00+08:00')
         try:
-            with ReferenceSnapshotStore() as ref:
-                snapshot = ref.read_as_of('plate_registry', asof.isoformat())
-                if not snapshot:
-                    snapshot = ref.read_latest('plate_registry')
-                    if snapshot:
-                        visible = datetime.fromisoformat(snapshot['available_at'].replace('Z', '+00:00'))
-                        if visible.tzinfo is None or visible > asof:
-                            snapshot = None
+            snapshot = read_reference_view(client, 'plate_registry', day, asof.isoformat())
             if snapshot:
                 for row in snapshot['rows']:
+                    code = row.get('plate_code') or row.get('code')
+                    if code:
+                        registry_rows[str(code)] = row
                     if row.get('name'):
                         for code in (row.get('plate_code'), row.get('code')):
                             if code:
@@ -185,6 +180,11 @@ def read_and_build(trade_date, store=None, redis_client=None):
         result = build_theme_buckets(current + previous, plates, universe_count=len(current),
                                      names=names, listings=listings, trading_dates=dates)
         if result['status'] == 'available':
+            for theme in result['themes']:
+                record = registry_rows.get(str(theme['plate_code']), {})
+                parent = record.get('parent')
+                theme['parent'] = parent
+                theme['parent_name'] = record.get('parent_name') or names.get(str(parent)) if parent else None
             codes = {row['plate_code'] for row in result['themes']}
             covered = len(codes & registry_codes)
             supplemented = len(codes & hot_codes)

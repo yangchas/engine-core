@@ -118,6 +118,7 @@ def build_registry(
             "size": size,
             "class": plate_class,
             "parent": parent_map.get(code),
+            "parent_name": (names.get(parent_map.get(code)) or _VERIFIED_PLATE_NAMES.get(parent_map.get(code))),
             "children": children,
             "family": family_by_code.get(code, code),
             "flags": flags,
