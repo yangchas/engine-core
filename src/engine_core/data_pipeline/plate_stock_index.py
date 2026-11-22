@@ -285,7 +285,29 @@ def preload_canonical_reference(trade_date, *, data_dir=None, redis_client=None,
                    version=f"{day.replace('-', '')}090000-canonical", available_at=stamp,
                    fields=("plates", "member_version"))
 
-    return {"plate_registry_rows": len(reg_rows), "plate_stock_symbols": len(rows), "status": "READY"}
+    static_file = root / "stock_static.csv"
+    static_rows = []
+    if static_file.is_file():
+        with open(static_file, "r", encoding="utf-8") as f:
+            static_rows = list(csv.DictReader(f))
+        for r in static_rows:
+            r["trade_date"] = day
+            r["available_at"] = stamp
+            r["is_st"] = str(r.get("is_st", "")).lower() in ("true", "1")
+        publish_reference_view(client, "stock_static", {
+            "dataset": "stock_static",
+            "trade_date": day,
+            "version": f"{day.replace('-', '')}090000-canonical",
+            "available_at": stamp,
+            "rows": static_rows
+        })
+
+    return {
+        "plate_registry_rows": len(reg_rows),
+        "plate_stock_symbols": len(rows),
+        "stock_static_rows": len(static_rows),
+        "status": "READY"
+    }
 
 
 def verify_plate_reference(trade_date, *, redis_client=None, data_dir=None,
@@ -315,20 +337,31 @@ def verify_plate_reference(trade_date, *, redis_client=None, data_dir=None,
             idx_meta, idx_rows = read_day_view(client, "plate_stock_index", day)
         except Exception:
             idx_meta, idx_rows = None, None
-        return reg_rows, idx_rows, bool(reg_raw and idx_meta)
 
-    reg_rows, idx_rows, both_present = _inspect()
+        static_raw = client.get(f"core:view:stock_static:{day}")
+        static_rows = []
+        if static_raw:
+            try:
+                static_obj = json.loads(static_raw) if isinstance(static_raw, (str, bytes)) else static_raw
+                static_rows = static_obj.get("rows", [])
+            except Exception:
+                static_rows = []
 
-    if (not both_present or len(reg_rows) < min_rows or not idx_rows) and auto_heal:
+        return reg_rows, idx_rows, static_rows, bool(reg_raw and idx_meta)
+
+    reg_rows, idx_rows, static_rows, both_present = _inspect()
+
+    if (not both_present or len(reg_rows) < min_rows or not idx_rows or not static_rows) and auto_heal:
         try:
             preload_canonical_reference(day, data_dir=data_dir, redis_client=client)
             healed = True
-            reg_rows, idx_rows, both_present = _inspect()
+            reg_rows, idx_rows, static_rows, both_present = _inspect()
         except Exception:
             pass
 
     plate_count = len(reg_rows)
     stock_count = len(idx_rows) if idx_rows else 0
+    static_count = len(static_rows)
     unnamed_count = sum(1 for r in reg_rows if not r.get("name"))
 
     if not both_present and not plate_count and not stock_count:
@@ -337,6 +370,7 @@ def verify_plate_reference(trade_date, *, redis_client=None, data_dir=None,
             "trade_date": day,
             "plate_count": 0,
             "stock_count": 0,
+            "stock_static_count": 0,
             "unnamed_plate_count": 0,
             "coverage": 0.0,
             "healed": healed,
@@ -352,6 +386,8 @@ def verify_plate_reference(trade_date, *, redis_client=None, data_dir=None,
         reasons.append(f"coverage_below_min:{coverage:.3f}<{min_coverage:.3f}")
     if unnamed_count > max(10, int(plate_count * 0.05)):
         reasons.append(f"unnamed_plates_excessive:{unnamed_count}")
+    if not static_count:
+        reasons.append("stock_static_missing")
 
     status = "OK" if not reasons else "DEGRADED"
 
@@ -360,6 +396,7 @@ def verify_plate_reference(trade_date, *, redis_client=None, data_dir=None,
         "trade_date": day,
         "plate_count": plate_count,
         "stock_count": stock_count,
+        "stock_static_count": static_count,
         "unnamed_plate_count": unnamed_count,
         "coverage": round(coverage, 4),
         "healed": healed,
