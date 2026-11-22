@@ -256,6 +256,7 @@ def test_plate_reference_preopen_check_and_auto_heal(tmp_path, monkeypatch):
         'verify_plate_reference',
         lambda day, auto_heal=False, min_coverage=0.95, min_rows=1000: {
             'status': 'OK', 'trade_date': day, 'plate_count': 1522, 'stock_count': 5868,
+            'stock_static_count': 5224,
             'unnamed_plate_count': 2, 'coverage': 1.0, 'healed': False, 'reasons': []
         }
     )
@@ -269,6 +270,7 @@ def test_plate_reference_preopen_check_and_auto_heal(tmp_path, monkeypatch):
     assert res['id'] == 'plate_reference'
     assert res['status'] == 'OK'
     assert res['detail']['plate_count'] == 1522
+    assert res['detail']['stock_static_count'] == 5224
 
     # 2. Test when plate_reference is MISSING and fails
     monkeypatch.setattr(

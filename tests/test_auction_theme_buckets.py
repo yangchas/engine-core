@@ -236,6 +236,7 @@ def test_preload_canonical_reference_and_direct_read(tmp_path, monkeypatch):
 
     reg_file = tmp_path / "plate_registry.csv"
     mem_file = tmp_path / "stock_plate_membership.csv"
+    static_file = tmp_path / "stock_static.csv"
     with open(reg_file, "w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["plate_code", "name", "parent_code", "parent_name", "class", "size"])
         w.writeheader()
@@ -244,6 +245,10 @@ def test_preload_canonical_reference_and_direct_read(tmp_path, monkeypatch):
         w = csv.DictWriter(f, fieldnames=["symbol", "plate_code"])
         w.writeheader()
         w.writerow({"symbol": "000001", "plate_code": "801003"})
+    with open(static_file, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["symbol", "name", "listing_date", "exchange", "market_board", "is_st"])
+        w.writeheader()
+        w.writerow({"symbol": "000001", "name": "平安银行", "listing_date": "1991-04-03", "exchange": "SZ", "market_board": "MAIN", "is_st": "false"})
 
     class MockPipeline:
         def __init__(self, storage): self.storage = storage
@@ -265,9 +270,15 @@ def test_preload_canonical_reference_and_direct_read(tmp_path, monkeypatch):
     assert res["status"] == "READY"
     assert res["plate_registry_rows"] == 1
     assert res["plate_stock_symbols"] == 1
+    assert res["stock_static_rows"] == 1
 
     snap = read_reference_view(r, "plate_registry", "2026-11-20", "2026-11-20T09:05:00+08:00")
     assert snap is not None
     assert snap["rows"][0]["name"] == "5G"
     assert snap["rows"][0]["parent_name"] == "通信"
+
+    snap_static = read_reference_view(r, "stock_static", "2026-11-20", "2026-11-20T09:05:00+08:00")
+    assert snap_static is not None
+    assert snap_static["rows"][0]["symbol"] == "000001"
+    assert snap_static["rows"][0]["listing_date"] == "1991-04-03"
 
