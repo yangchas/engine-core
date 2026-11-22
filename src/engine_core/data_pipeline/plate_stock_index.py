@@ -287,3 +287,82 @@ def preload_canonical_reference(trade_date, *, data_dir=None, redis_client=None,
 
     return {"plate_registry_rows": len(reg_rows), "plate_stock_symbols": len(rows), "status": "READY"}
 
+
+def verify_plate_reference(trade_date, *, redis_client=None, data_dir=None,
+                           auto_heal: bool = False, min_coverage: float = 0.95,
+                           min_rows: int = 1000):
+    """Decoupled pure data function to inspect and optionally heal plate reference views."""
+    import json
+    from datetime import date
+    from .auction_redis_view import redis_client as make_redis
+    from .redis_day_view import read_day_view
+
+    day = date.fromisoformat(trade_date).isoformat()
+    client = redis_client or make_redis()
+    healed = False
+
+    def _inspect():
+        reg_raw = client.get(f"core:view:plate_registry:{day}")
+        reg_rows = []
+        if reg_raw:
+            try:
+                reg_obj = json.loads(reg_raw) if isinstance(reg_raw, (str, bytes)) else reg_raw
+                reg_rows = reg_obj.get("rows", [])
+            except Exception:
+                reg_rows = []
+
+        try:
+            idx_meta, idx_rows = read_day_view(client, "plate_stock_index", day)
+        except Exception:
+            idx_meta, idx_rows = None, None
+        return reg_rows, idx_rows, bool(reg_raw and idx_meta)
+
+    reg_rows, idx_rows, both_present = _inspect()
+
+    if (not both_present or len(reg_rows) < min_rows or not idx_rows) and auto_heal:
+        try:
+            preload_canonical_reference(day, data_dir=data_dir, redis_client=client)
+            healed = True
+            reg_rows, idx_rows, both_present = _inspect()
+        except Exception:
+            pass
+
+    plate_count = len(reg_rows)
+    stock_count = len(idx_rows) if idx_rows else 0
+    unnamed_count = sum(1 for r in reg_rows if not r.get("name"))
+
+    if not both_present and not plate_count and not stock_count:
+        return {
+            "status": "MISSING",
+            "trade_date": day,
+            "plate_count": 0,
+            "stock_count": 0,
+            "unnamed_plate_count": 0,
+            "coverage": 0.0,
+            "healed": healed,
+            "reasons": ["views_not_found"]
+        }
+
+    expected_stocks = 5000
+    coverage = min(1.0, stock_count / expected_stocks) if stock_count else 0.0
+    reasons = []
+    if plate_count < min_rows:
+        reasons.append(f"plate_count_below_min:{plate_count}<{min_rows}")
+    if coverage < min_coverage:
+        reasons.append(f"coverage_below_min:{coverage:.3f}<{min_coverage:.3f}")
+    if unnamed_count > max(10, int(plate_count * 0.05)):
+        reasons.append(f"unnamed_plates_excessive:{unnamed_count}")
+
+    status = "OK" if not reasons else "DEGRADED"
+
+    return {
+        "status": status,
+        "trade_date": day,
+        "plate_count": plate_count,
+        "stock_count": stock_count,
+        "unnamed_plate_count": unnamed_count,
+        "coverage": round(coverage, 4),
+        "healed": healed,
+        "reasons": reasons
+    }
+

@@ -242,3 +242,44 @@ def test_real_hot_plates_redis_version_without_catalog(tmp_path, monkeypatch):
     monkeypatch.setattr(cold_archive, 'read_envelope', lambda *_a, **_k: json.dumps(real))
     code, payload = preopen_check.run(request, tmp_path, catalog=StubCatalog(tmp_path, {}))
     assert code == 0 and payload['detail']['results'][0]['detail']['storage_source'] == 'td'
+
+
+def test_plate_reference_preopen_check_and_auto_heal(tmp_path, monkeypatch):
+    import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline import plate_stock_index
+
+    monkeypatch.setattr(prep, 'previous_trade_date', lambda *_: '2026-11-19')
+
+    # 1. Test when plate_reference returns OK
+    monkeypatch.setattr(
+        plate_stock_index,
+        'verify_plate_reference',
+        lambda day, auto_heal=False, min_coverage=0.95, min_rows=1000: {
+            'status': 'OK', 'trade_date': day, 'plate_count': 1522, 'stock_count': 5868,
+            'unnamed_plate_count': 2, 'coverage': 1.0, 'healed': False, 'reasons': []
+        }
+    )
+    request = {
+        'trade_date': '2026-11-20',
+        'args': {'checks': {'plate_reference': {'auto_heal': True, 'min_coverage': 0.95, 'min_rows': 1000}}}
+    }
+    code, payload = preopen_check.run(request, tmp_path, catalog=StubCatalog(tmp_path, {}))
+    assert code == 0, payload
+    res = payload['detail']['results'][0]
+    assert res['id'] == 'plate_reference'
+    assert res['status'] == 'OK'
+    assert res['detail']['plate_count'] == 1522
+
+    # 2. Test when plate_reference is MISSING and fails
+    monkeypatch.setattr(
+        plate_stock_index,
+        'verify_plate_reference',
+        lambda day, auto_heal=False, min_coverage=0.95, min_rows=1000: {
+            'status': 'MISSING', 'trade_date': day, 'plate_count': 0, 'stock_count': 0,
+            'unnamed_plate_count': 0, 'coverage': 0.0, 'healed': False, 'reasons': ['views_not_found']
+        }
+    )
+    code, payload = preopen_check.run(request, tmp_path, catalog=StubCatalog(tmp_path, {}))
+    assert code == 75
+    assert 'plate_reference' in payload['detail']['failed']
+
