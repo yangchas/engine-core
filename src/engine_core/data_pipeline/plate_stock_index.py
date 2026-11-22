@@ -317,7 +317,6 @@ def verify_plate_reference(trade_date, *, redis_client=None, data_dir=None,
     import json
     from datetime import date
     from .auction_redis_view import redis_client as make_redis
-    from .redis_day_view import read_day_view
 
     day = date.fromisoformat(trade_date).isoformat()
     client = redis_client or make_redis()
@@ -333,10 +332,11 @@ def verify_plate_reference(trade_date, *, redis_client=None, data_dir=None,
             except Exception:
                 reg_rows = []
 
+        stock_count = 0
         try:
-            idx_meta, idx_rows = read_day_view(client, "plate_stock_index", day)
+            stock_count = int(client.hlen(f"core:view:plate_stock_index:{day}") or 0)
         except Exception:
-            idx_meta, idx_rows = None, None
+            stock_count = 0
 
         static_raw = client.get(f"core:view:stock_static:{day}")
         static_rows = []
@@ -347,20 +347,20 @@ def verify_plate_reference(trade_date, *, redis_client=None, data_dir=None,
             except Exception:
                 static_rows = []
 
-        return reg_rows, idx_rows, static_rows, bool(reg_raw and idx_meta)
+        both_present = bool(reg_raw and stock_count > 0 and static_raw)
+        return reg_rows, stock_count, static_rows, both_present
 
-    reg_rows, idx_rows, static_rows, both_present = _inspect()
+    reg_rows, stock_count, static_rows, both_present = _inspect()
 
-    if (not both_present or len(reg_rows) < min_rows or not idx_rows or not static_rows) and auto_heal:
+    if (not both_present or len(reg_rows) < min_rows or not stock_count or not static_rows) and auto_heal:
         try:
             preload_canonical_reference(day, data_dir=data_dir, redis_client=client)
             healed = True
-            reg_rows, idx_rows, static_rows, both_present = _inspect()
+            reg_rows, stock_count, static_rows, both_present = _inspect()
         except Exception:
             pass
 
     plate_count = len(reg_rows)
-    stock_count = len(idx_rows) if idx_rows else 0
     static_count = len(static_rows)
     unnamed_count = sum(1 for r in reg_rows if not r.get("name"))
 
