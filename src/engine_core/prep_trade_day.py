@@ -327,7 +327,7 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
 
     from .data_pipeline.limit_pool_hot_view import read as read_pool
     pool_rows, pool_meta = read_pool(previous, asof)
-    pool = (pool_rows, pool_meta) if pool_meta["status"] != "MISSING" else None
+    pool = (pool_rows, pool_meta) if pool_meta["status"] not in ("MISSING", "UNKNOWN", "CORRUPT") and pool_rows else None
     if pool and pool_meta["status"] != "READY":
         diag.append("quality:limit_up_pool:" + (pool_meta.get("fallback_reason") or pool_meta["status"]))
     hot = _read_hot_plates(catalog, previous, asof=asof)
@@ -358,7 +358,7 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
         unique_reasons[key] = row
     reasons = list(unique_reasons.values())
     if not pool:
-        diag.append("limit_up_pool:" + str(pool_meta.get("reason") or pool_meta.get("fallback_reason")))
+        diag.append("limit_up_pool:" + _why_unavailable(catalog, "limit_up_pool", previous, asof))
     if not registry:
         diag.append(f"plate_registry:no_version_on_or_before_{trade_date}_available_at_or_before_asof")
     if not reasons:

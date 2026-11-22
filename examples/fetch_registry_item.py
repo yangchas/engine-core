@@ -38,7 +38,7 @@ def _load(catalog, dataset, day):
 def _load_pool_hot(day, asof):
     from engine_core.data_pipeline.limit_pool_hot_view import read
     rows, metadata = read(day, asof)
-    return None if metadata.get("status") == "MISSING" else (rows, metadata)
+    return None if metadata.get("status") in ("MISSING", "UNKNOWN", "CORRUPT", "NOT_VISIBLE") or not rows else (rows, metadata)
 
 
 def _previous(root, day):
