@@ -2324,6 +2324,19 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 panorama["quickbrief"] = quickbrief
                 payload["auction_quickbrief"] = quickbrief
                 panorama["lineage"]["hot_rank_basis"] = hot_ranks.get("basis", "UNKNOWN")
+                try:
+                    from .auction_theme_buckets import read_and_build_hot
+                    from .data_pipeline.plate_stock_index import verify_plate_reference
+                    tb = read_and_build_hot(trade_date, redis_client=src.redis)
+                    if tb and tb.get("status") in ("available", "OK"):
+                        panorama["theme_buckets"] = tb
+                        payload["theme_buckets"] = tb
+                    prh = verify_plate_reference(trade_date, redis_client=src.redis, auto_heal=False)
+                    if prh:
+                        panorama["plate_reference_health"] = prh
+                        payload["plate_reference_health"] = prh
+                except Exception:
+                    pass
                 store_auction_panorama(panorama, redis=src.redis, artifact_root=_dry_run_artifact_root(out_root, dry_run))
                 auction_panorama_artifact = panorama
                 payload["auction_panorama"] = panorama
