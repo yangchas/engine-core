@@ -880,10 +880,18 @@ def load_close_catalog_inputs(catalog: Any, trade_date: str,
                 if catalog_path and catalog_path.is_file():
                     try:
                         catalog_meta = json.loads(catalog_path.read_text(encoding="utf-8"))
-                        catalog_rows = catalog.read_rows(catalog_path)
-                        meta = dict(catalog_meta)
-                        meta.setdefault("status", "READY")
-                        rows = catalog_rows
+                        available_at = catalog_meta.get("available_at") or catalog_meta.get("as_of")
+                        if available_at and available_at > cutoff.isoformat():
+                            meta = {"status": "MISSING", "reason": "catalog_not_visible_at_asof",
+                                    "available_at": available_at, "asof": cutoff.isoformat(),
+                                    "trade_date": source_date, "storage_source": "catalog"}
+                            rows = []
+                        else:
+                            catalog_rows = catalog.read_rows(catalog_path)
+                            meta = dict(catalog_meta)
+                            meta["status"] = catalog_meta.get("status") or "READY"
+                            meta["storage_source"] = "catalog"
+                            rows = catalog_rows
                     except Exception:
                         pass
                 elif not source_date or (hasattr(catalog, "locate") and catalog.locate(dataset, source_date) is None):
