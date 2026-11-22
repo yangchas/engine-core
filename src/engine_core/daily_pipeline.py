@@ -875,8 +875,21 @@ def load_close_catalog_inputs(catalog: Any, trade_date: str,
             from .data_pipeline.limit_pool_hot_view import read as read_pool
             rows, meta = (read_pool(source_date, cutoff.isoformat()) if source_date else
                           ([], {"status": "MISSING", "reason": "previous_trade_date_unavailable"}))
+            if meta.get("status") not in ("READY", "PARTIAL"):
+                catalog_path = catalog.locate(dataset, source_date) if source_date and hasattr(catalog, "locate") else None
+                if catalog_path and catalog_path.is_file():
+                    try:
+                        catalog_meta = json.loads(catalog_path.read_text(encoding="utf-8"))
+                        catalog_rows = catalog.read_rows(catalog_path)
+                        meta = dict(catalog_meta)
+                        meta.setdefault("status", "READY")
+                        rows = catalog_rows
+                    except Exception:
+                        pass
+                elif not source_date or (hasattr(catalog, "locate") and catalog.locate(dataset, source_date) is None):
+                    meta = {"status": "MISSING", "reason": "catalog_and_view_missing", "trade_date": source_date}
             provenance[dataset] = dict(meta)
-            if meta["status"] != "MISSING":
+            if meta.get("status") != "MISSING":
                 selected[dataset] = {"manifest": meta, "path": None, "rows": rows}
             continue
         manifest_path = catalog.locate(dataset, source_date) if source_date else None
@@ -2332,15 +2345,14 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                         panorama["theme_buckets"] = tb
                         payload["theme_buckets"] = tb
                     elif tb:
-                        degraded.append(f"THEME_BUCKETS_STATUS_{tb.get('status')}")
+                        payload["theme_buckets_degraded"] = f"THEME_BUCKETS_STATUS_{tb.get('status')}"
                     prh = verify_plate_reference(trade_date, redis_client=src.redis, auto_heal=False)
                     if prh:
                         panorama["plate_reference_health"] = prh
                         payload["plate_reference_health"] = prh
                         if prh.get("status") not in ("OK", "READY"):
-                            degraded.append(f"PLATE_REF_{prh.get('status')}")
+                            payload["plate_reference_degraded"] = f"PLATE_REF_{prh.get('status')}"
                 except Exception as exc:
-                    degraded.append(f"THEME_BUCKETS_ATTACH_FAILED:{type(exc).__name__}")
                     payload["theme_buckets_attach_error"] = f"{type(exc).__name__}: {exc}"
                 store_auction_panorama(panorama, redis=src.redis, artifact_root=_dry_run_artifact_root(out_root, dry_run))
                 auction_panorama_artifact = panorama

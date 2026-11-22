@@ -266,7 +266,7 @@ def read(day, asof, *, redis_client=None, td_store=None, cold_store=None, prefix
         candidates.append((value, 'td', None))
     except Exception as exc:
         reason = str(exc) if isinstance(exc, ValueError) else 'td_' + type(exc).__name__
-        status = ('MISSING' if reason == 'td_missing' else 'NOT_VISIBLE' if reason == 'late_visible'
+        status = ('MISSING' if reason in ('td_missing', 'td_unavailable') else 'NOT_VISIBLE' if reason == 'late_visible'
                   else 'CORRUPT' if isinstance(exc, (ValueError, TypeError, KeyError)) else 'UNKNOWN')
         failures.append((status, reason))
     finally:
@@ -276,19 +276,22 @@ def read(day, asof, *, redis_client=None, td_store=None, cold_store=None, prefix
 
     store = None
     try:
+        versions = []
         if cold_store is None:
             if not cold_archive._enabled():
-                raise RuntimeError('cold_archive_disabled')
-            store = cold_archive.TdStore()
+                failures.append(('MISSING', 'cold_archive_disabled'))
+            else:
+                store = cold_archive.TdStore()
         else:
             store = cold_store
-        if hasattr(store, 'list_versions'):
-            versions = store.list_versions(DATASET, day)
-        else:
-            version = store.latest_version(DATASET, day)
-            versions = [version] if version is not None else []
-        if not versions:
-            failures.append(('MISSING', 'cold_missing'))
+        if store is not None:
+            if hasattr(store, 'list_versions'):
+                versions = store.list_versions(DATASET, day)
+            else:
+                version = store.latest_version(DATASET, day)
+                versions = [version] if version is not None else []
+            if not versions:
+                failures.append(('MISSING', 'cold_missing'))
         for version in versions:
             try:
                 raw = cold_archive.read_envelope(DATASET, day, version, store=store)
@@ -321,10 +324,13 @@ def read(day, asof, *, redis_client=None, td_store=None, cold_store=None, prefix
             meta['reason'] = 'selection_uncertain'
         return rows, meta
     # A concrete corruption is retained even if another source is unavailable.
-    status = next((kind for kind in ('CORRUPT', 'UNKNOWN', 'NOT_VISIBLE', 'MISSING')
+    status = next((kind for kind in ('CORRUPT', 'NOT_VISIBLE', 'UNKNOWN', 'MISSING')
                    if any(item[0] == kind for item in failures)), 'UNKNOWN')
-    reason = next(reason for kind, reason in failures if kind == status)
-    return [], {'status': status, 'reason': reason, 'trade_date': day,
+    reason = next((r for k, r in failures if k == status and r != 'redis_missing'),
+                  next(r for k, r in failures if k == status))
+    status_out = 'MISSING' if status == 'NOT_VISIBLE' else status
+    return [], {'status': status_out, 'reason': reason, 'trade_date': day,
+                'storage_source': 'td',
                 'fallback_reason': failures[0][1], 'quality': {'partial': True},
                 'selection_failures': [{'status': kind, 'reason': detail} for kind, detail in failures],
                 'selection_uncertain': status in ('UNKNOWN', 'CORRUPT')}

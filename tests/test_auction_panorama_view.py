@@ -257,7 +257,8 @@ def test_render_auction_email_digest_with_theme_buckets_and_plate_health():
     html, plain = render_auction_email_digest(product, quickbrief, completeness="READY")
     assert html.count('role="table"') == 3
     assert "③ 热点题材竞价分桶" in html
-    assert "③热点题材竞价分桶：" in plain
+    assert "③热点题材竞价分桶[热榜成份股×盘前映射]：" in plain
+    assert "①题材横向对比[开盘啦全景板块]：" in plain
     assert "银行" in html and "银行" in plain
     assert "板块映射:OK(1522板块/覆盖100.0%)" in html
     assert "板块映射:OK(1522板块/覆盖100.0%)" in plain
@@ -278,4 +279,50 @@ def test_render_auction_email_digest_with_degraded_theme_buckets():
     html, plain = render_auction_email_digest(product, quickbrief)
     assert "热点题材分桶未就绪: unavailable" in html
     assert "热点题材分桶未就绪(unavailable)" in plain
+
+
+def test_render_auction_panorama_with_theme_buckets_and_plate_health():
+    product = {
+        "trade_date": "2026-10-16",
+        "asof": "2026-10-16T09:26:00+08:00",
+        "overview": {
+            "auction_amount_yi": 10,
+            "amount_multiple_64d": {"sample_n": 64, "window_n": 64, "status": "READY"},
+            "up_ratio": {"numerator": 2500, "denominator": 5000, "ratio": 0.5},
+            "market_median_pct": 0,
+            "yesterday_limit_high_open": {"numerator": 10, "denominator": 20},
+            "yesterday_vs_market_pp": 0,
+            "verified_seal_sum_yuan": 100000000,
+            "verified_seal_scope": "5/5",
+        },
+        "plates": [],
+        "yesterday_ladder": [],
+        "theme_buckets": {
+            "status": "available",
+            "top_amount": [
+                {
+                    "name": "银行", "plate_code": "881155", "auction_count": 42,
+                    "member_count": 42, "amount_yuan": 155184800, "market_amount_share": 0.05,
+                    "mean_change_bp": 35.0, "limit_up_count": 1, "limit_down_count": 0
+                }
+            ],
+            "themes": []
+        },
+        "plate_reference_health": {
+            "status": "OK",
+            "plate_count": 1522,
+            "coverage": 1.0,
+            "healed": False
+        }
+    }
+    html, plain = render_auction_panorama(product)
+    assert html.count('role="table"') == 3
+    assert "③ 热点题材竞价分桶" in html
+    assert "[开盘啦全景板块]" in html and "[热榜成份股×盘前映射]" in html
+    assert "[开盘啦全景板块]" in plain and "[热榜成份股×盘前映射]" in plain
+    assert "③ 热点题材竞价分桶 [热榜成份股×盘前映射]" in plain
+    assert "银行" in html and "银行" in plain
+    assert "板块映射：OK · 板块 1522 个 · 覆盖率 100.0%" in html
+    assert "板块映射：OK · 板块 1522 个 · 覆盖率 100.0%" in plain
+
 

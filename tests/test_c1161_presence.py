@@ -85,6 +85,8 @@ def test_registry_presence_restores_real_pool_and_ignores_stale_catalog(monkeypa
         return reconcile_plan(now, catalog, trade_date='2026-11-13', prev_trade_date=DAY, registry=selected)
     empty, old = plan({'datasets': {}}), plan(stale)
     assert empty == old == plan(str(tmp_path / 'missing-catalog.json'))
+    from engine_core.storage.two_layer import TwoLayerStore
+    TwoLayerStore(redis, cold).restore('limit_up_pool', DAY)
     assert redis.values['core:view:limit_up_pool:' + DAY] == RAW
     assert not any(row['action'] == 'FETCH_NOW' for row in empty)
     assert all(item.get('hot_store') and item.get('cold_store') and item.get('kind') for item in selected)

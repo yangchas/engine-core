@@ -327,6 +327,18 @@ class SliceProviders:
                 return _result(request, [], source="none", status="MISSING",
                                reason="PREVIOUS_TRADE_DATE_MISSING", lineage=[{"dataset": dataset}])
             rows, meta = read(day, request.asof, redis_client=self.redis)
+            if (not rows or meta.get("status") in ("MISSING", "UNKNOWN")) and self.catalog is not None:
+                manifest_path = self.catalog.locate(dataset, day) if hasattr(self.catalog, "locate") else None
+                if manifest_path is not None and manifest_path.is_file():
+                    try:
+                        catalog_meta = json.loads(manifest_path.read_text(encoding="utf-8"))
+                        catalog_rows = self.catalog.read_rows(manifest_path)
+                        rows = catalog_rows
+                        meta = dict(catalog_meta)
+                        meta.setdefault("status", "READY")
+                        meta["storage_source"] = "catalog"
+                    except Exception:
+                        pass
             lineage = [{"dataset": dataset, "requested_date": request.trade_date, "used_date": day, **meta}]
             result = _result(request, rows, source=meta.get("storage_source", "none"),
                              status=meta["status"], reason=meta.get("reason") or meta.get("fallback_reason"),
