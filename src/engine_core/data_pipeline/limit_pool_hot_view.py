@@ -266,8 +266,10 @@ def read(day, asof, *, redis_client=None, td_store=None, cold_store=None, prefix
         candidates.append((value, 'td', None))
     except Exception as exc:
         reason = str(exc) if isinstance(exc, ValueError) else 'td_' + type(exc).__name__
-        status = ('MISSING' if reason in ('td_missing', 'td_unavailable') else 'NOT_VISIBLE' if reason == 'late_visible'
-                  else 'CORRUPT' if isinstance(exc, (ValueError, TypeError, KeyError)) else 'UNKNOWN')
+        status = ('MISSING' if reason == 'td_missing' else
+                  'MISSING' if reason == 'td_unavailable' and isinstance(exc, ValueError) else
+                  'NOT_VISIBLE' if reason == 'late_visible' else
+                  'CORRUPT' if isinstance(exc, (ValueError, TypeError, KeyError)) else 'UNKNOWN')
         failures.append((status, reason))
     finally:
         if store is not None and td_store is None:
@@ -328,9 +330,13 @@ def read(day, asof, *, redis_client=None, td_store=None, cold_store=None, prefix
                    if any(item[0] == kind for item in failures)), 'UNKNOWN')
     reason = next((r for k, r in failures if k == status and r != 'redis_missing'),
                   next(r for k, r in failures if k == status))
+
     status_out = 'MISSING' if status == 'NOT_VISIBLE' else status
+    storage_source = ('td' if reason.startswith('td_') or reason in ('td_missing', 'td_unavailable') else
+                      'cold' if reason.startswith('cold_') else
+                      'redis' if reason.startswith('redis_') else 'td')
     return [], {'status': status_out, 'reason': reason, 'trade_date': day,
-                'storage_source': 'td',
+                'storage_source': storage_source,
                 'fallback_reason': failures[0][1], 'quality': {'partial': True},
                 'selection_failures': [{'status': kind, 'reason': detail} for kind, detail in failures],
                 'selection_uncertain': status in ('UNKNOWN', 'CORRUPT')}

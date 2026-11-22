@@ -62,7 +62,7 @@ def resolve_presence(dataset, trade_date, *, redis_client=None, cold_store=None)
             return Presence('CORRUPT', reason)
         if (result.metadata.get('fallback_reason') or '').startswith('redis_') and result.metadata.get('fallback_reason') != 'redis_missing':
             return Presence('UNKNOWN', result.reason or result.metadata['fallback_reason'])
-        if result.status == 'UNKNOWN' and cold_store is not None and not getattr(cold_store, 'rows', True):
+        if result.status == 'UNKNOWN' and any(f.get('reason') == 'cold_missing' for f in result.metadata.get('selection_failures', [])):
             return Presence('MISSING', 'cold_missing')
         return Presence(result.status, result.reason)
     except Exception:

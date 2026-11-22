@@ -145,6 +145,49 @@ def _streak_and_hot_conclusions(product: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _render_theme_buckets_section(tb: Mapping[str, Any] | None, *, for_email: bool = False) -> tuple[str, list[str]]:
+    """Render Table ③ Theme Buckets block for email digest or full panorama report."""
+    if not isinstance(tb, Mapping):
+        return "", []
+    tb_html_block = ""
+    tb_text_lines = []
+    h2_style = "" if for_email else ' style="font-size:16px;margin:18px 0 7px"'
+    subtitle_size = "10px" if for_email else "11px"
+    subtitle_span = f' <span style="font-size:{subtitle_size};font-weight:normal;color:#667085">[热榜成份股×盘前映射]</span>'
+
+    if tb.get("status") in ("available", "OK"):
+        top_themes = (tb.get("top_amount") or tb.get("themes") or [])[:5]
+        tb_rows = []
+        for t in top_themes:
+            t_name = _esc(t.get("name") or t.get("plate_code") or "—")
+            t_members = f"{t.get('auction_count', '—')}/{t.get('member_count', '—')}"
+            t_amount = _money(t.get("amount_yuan"))
+            share_val = t.get("market_amount_share")
+            t_share = _fmt(share_val * 100, 1, "%") if isinstance(share_val, (int, float)) else "—"
+            mean_bp = t.get("mean_change_bp")
+            t_mean = _pct_cell(mean_bp / 100) if isinstance(mean_bp, (int, float)) else "—"
+            t_mean_plain = _fmt(mean_bp / 100, 2, "%") if isinstance(mean_bp, (int, float)) else "—"
+            t_limits = f"涨停{t.get('limit_up_count', 0)} / 跌停{t.get('limit_down_count', 0)}"
+            cells = [t_name, t_members, f"{t_amount}<br>{t_share}", t_mean, t_limits]
+            if for_email:
+                row_tds = "".join(f'<td style="padding:5px;border-bottom:1px solid #eaecf0;vertical-align:top">{cell}</td>' for cell in cells)
+            else:
+                row_tds = "".join(_td(cell) for cell in cells)
+            tb_rows.append(f"<tr>{row_tds}</tr>")
+            tb_text_lines.append(f"{t.get('name') or t.get('plate_code')} 成员{t_members}；额{t_amount}·占比{t_share}；均涨{t_mean_plain}；{t_limits}")
+        tb_head = ("热点题材(开盘竞价)", "成员有效/总数", "竞价额·占比", "平均涨幅", "涨/跌停")
+        if for_email:
+            tb_table = '<table role="table" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;table-layout:fixed;font-size:10px"><thead><tr>' + ''.join(_th(label) for label in tb_head) + '</tr></thead><tbody>' + ''.join(tb_rows) + '</tbody></table>'
+        else:
+            tb_table = f'<table style="{_table_style()}" role="table"><thead><tr>' + ''.join(_th(label) for label in tb_head) + '</tr></thead><tbody>' + ''.join(tb_rows) + '</tbody></table>'
+        tb_html_block = f'<h2{h2_style}>③ 热点题材竞价分桶{subtitle_span}</h2>{tb_table}'
+    elif tb.get("status"):
+        msg_style = 'style="font-size:10px;color:#7c2d12"' if for_email else 'style="font-size:11px;color:#7c2d12"'
+        tb_html_block = f'<h2{h2_style}>③ 热点题材竞价分桶{subtitle_span}</h2><p {msg_style}>热点题材分桶未就绪: {_esc(tb.get("status"))}</p>'
+        tb_text_lines.append(f"热点题材分桶未就绪({tb.get('status')})")
+    return tb_html_block, tb_text_lines
+
+
 def render_auction_email_digest(product: Mapping[str, Any], quickbrief: Mapping[str, Any], *,
                                 completeness: str = "PARTIAL", degraded_note: str = "") -> tuple[str, str]:
     """Render compact theme comparisons from product-layer statistics."""
@@ -304,32 +347,7 @@ def render_auction_email_digest(product: Mapping[str, Any], quickbrief: Mapping[
     replay_pill = '<span style="background:#fff4e5;color:#7a4b00;padding:3px 7px;border-radius:10px">历史回放样本·非实时信号</span>' if replay else ""
     degraded_html = f'<div style="color:#7c2d12;font-size:10px">{_esc(degraded_note)}</div>' if status != "READY" and degraded_note else ""
     aggregate_html = _esc(whole_batch)
-    tb = product.get("theme_buckets")
-    tb_html_block = ""
-    tb_text_lines = []
-    if isinstance(tb, Mapping):
-        if tb.get("status") in ("available", "OK"):
-            top_themes = (tb.get("top_amount") or tb.get("themes") or [])[:5]
-            tb_rows = []
-            for t in top_themes:
-                t_name = _esc(t.get("name") or t.get("plate_code") or "—")
-                t_members = f"{t.get('auction_count', '—')}/{t.get('member_count', '—')}"
-                t_amount = _money(t.get("amount_yuan"))
-                share_val = t.get("market_amount_share")
-                t_share = _fmt(share_val * 100, 1, "%") if isinstance(share_val, (int, float)) else "—"
-                mean_bp = t.get("mean_change_bp")
-                t_mean = _pct_cell(mean_bp / 100) if isinstance(mean_bp, (int, float)) else "—"
-                t_mean_plain = _fmt(mean_bp / 100, 2, "%") if isinstance(mean_bp, (int, float)) else "—"
-                t_limits = f"涨停{t.get('limit_up_count', 0)} / 跌停{t.get('limit_down_count', 0)}"
-                cells = [t_name, t_members, f"{t_amount}<br>{t_share}", t_mean, t_limits]
-                tb_rows.append("<tr>" + "".join(f'<td style="padding:5px;border-bottom:1px solid #eaecf0;vertical-align:top">{cell}</td>' for cell in cells) + "</tr>")
-                tb_text_lines.append(f"{t.get('name') or t.get('plate_code')} 成员{t_members}；额{t_amount}·占比{t_share}；均涨{t_mean_plain}；{t_limits}")
-            tb_head = ("热点题材(开盘竞价)", "成员有效/总数", "竞价额·占比", "平均涨幅", "涨/跌停")
-            tb_table = '<table role="table" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;table-layout:fixed;font-size:10px"><thead><tr>' + ''.join(_th(label) for label in tb_head) + '</tr></thead><tbody>' + ''.join(tb_rows) + '</tbody></table>'
-            tb_html_block = f'<h2>③ 热点题材竞价分桶 <span style="font-size:10px;font-weight:normal;color:#667085">[热榜成份股×盘前映射]</span></h2>{tb_table}'
-        elif tb.get("status"):
-            tb_html_block = f'<h2>③ 热点题材竞价分桶 <span style="font-size:10px;font-weight:normal;color:#667085">[热榜成份股×盘前映射]</span></h2><p style="font-size:10px;color:#7c2d12">热点题材分桶未就绪: {_esc(tb.get("status"))}</p>'
-            tb_text_lines.append(f"热点题材分桶未就绪({tb.get('status')})")
+    tb_html_block, tb_text_lines = _render_theme_buckets_section(product.get("theme_buckets"), for_email=True)
 
     html = ('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
         '<style>@media(max-width:700px){table{font-size:9px!important}td{padding:3px!important}}</style></head>'
@@ -496,32 +514,7 @@ def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
                           f"；本层占比 {_fmt((bucket.get('layer_amount_share') or 0) * 100 if bucket.get('layer_amount_share') is not None else None, 1, '%')}")
             ladder_text.append(f"昨{level}板 · {bucket.get('reason') or '原因待核实'} · {bucket.get('count', '—')}只；竞价额 {_money(bucket.get('auction_amount_yuan'))}{share_text}；中位 {_fmt(bucket.get('median_pct'), 2, '%')}；{promotion_text}；真实封单额 {_money(bucket.get('verified_seal_amount_yuan'))}\n" + "\n".join(_stock_text(stock) for stock in stocks if isinstance(stock, Mapping)))
     ladder_table = f'<table style="{_table_style()}" role="table"><thead><tr>{_th("昨日板高·原因桶", "42%")}{_th("个股明细（全部昨日涨停股）")}</tr></thead><tbody>{"".join(ladder_rows)}</tbody></table>'
-    tb = product.get("theme_buckets")
-    tb_html_block = ""
-    tb_text_lines = []
-    if isinstance(tb, Mapping):
-        if tb.get("status") in ("available", "OK"):
-            top_themes = (tb.get("top_amount") or tb.get("themes") or [])[:5]
-            tb_rows = []
-            for t in top_themes:
-                t_name = _esc(t.get("name") or t.get("plate_code") or "—")
-                t_members = f"{t.get('auction_count', '—')}/{t.get('member_count', '—')}"
-                t_amount = _money(t.get("amount_yuan"))
-                share_val = t.get("market_amount_share")
-                t_share = _fmt(share_val * 100, 1, "%") if isinstance(share_val, (int, float)) else "—"
-                mean_bp = t.get("mean_change_bp")
-                t_mean = _pct_cell(mean_bp / 100) if isinstance(mean_bp, (int, float)) else "—"
-                t_mean_plain = _fmt(mean_bp / 100, 2, "%") if isinstance(mean_bp, (int, float)) else "—"
-                t_limits = f"涨停{t.get('limit_up_count', 0)} / 跌停{t.get('limit_down_count', 0)}"
-                cells = [t_name, t_members, f"{t_amount}<br>{t_share}", t_mean, t_limits]
-                tb_rows.append("<tr>" + "".join(_td(cell) for cell in cells) + "</tr>")
-                tb_text_lines.append(f"{t.get('name') or t.get('plate_code')} 成员{t_members}；额{t_amount}·占比{t_share}；均涨{t_mean_plain}；{t_limits}")
-            tb_head = ("热点题材(开盘竞价)", "成员有效/总数", "竞价额·占比", "平均涨幅", "涨/跌停")
-            tb_table = f'<table style="{_table_style()}" role="table"><thead><tr>' + ''.join(_th(label) for label in tb_head) + '</tr></thead><tbody>' + ''.join(tb_rows) + '</tbody></table>'
-            tb_html_block = f'<h2 style="font-size:16px;margin:18px 0 7px">③ 热点题材竞价分桶 <span style="font-size:11px;font-weight:normal;color:#667085">[热榜成份股×盘前映射]</span></h2>{tb_table}'
-        elif tb.get("status"):
-            tb_html_block = f'<h2 style="font-size:16px;margin:18px 0 7px">③ 热点题材竞价分桶 <span style="font-size:11px;font-weight:normal;color:#667085">[热榜成份股×盘前映射]</span></h2><p style="font-size:11px;color:#7c2d12">热点题材分桶未就绪: {_esc(tb.get("status"))}</p>'
-            tb_text_lines.append(f"热点题材分桶未就绪({tb.get('status')})")
+    tb_html_block, tb_text_lines = _render_theme_buckets_section(product.get("theme_buckets"), for_email=False)
     tb_text_section = ("\n\n③ 热点题材竞价分桶 [热榜成份股×盘前映射]\n" + "\n".join(tb_text_lines)) if tb_text_lines else ""
     text = (f"竞价全景 V6 | {product.get('trade_date', '日期待核实')} | {product.get('asof', '时点待核实')}\n"
         + " | ".join(f"{label}：{value}" for label, value in cards) + f"\n规则一句话：{rule_sentence}\n" + "\n".join(summaries) + f"\n{hot_note}\n{hot_coverage_note}\n\n① 板块竞价全景 [开盘啦全景板块]\n"

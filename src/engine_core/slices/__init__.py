@@ -332,11 +332,18 @@ class SliceProviders:
                 if manifest_path is not None and manifest_path.is_file():
                     try:
                         catalog_meta = json.loads(manifest_path.read_text(encoding="utf-8"))
-                        catalog_rows = self.catalog.read_rows(manifest_path)
-                        rows = catalog_rows
-                        meta = dict(catalog_meta)
-                        meta.setdefault("status", "READY")
-                        meta["storage_source"] = "catalog"
+                        available_at = catalog_meta.get("available_at") or catalog_meta.get("as_of")
+                        if available_at and request.asof and available_at > request.asof:
+                            meta = {"status": "MISSING", "reason": "NOT_VISIBLE_AT_ASOF",
+                                    "available_at": available_at, "asof": request.asof,
+                                    "storage_source": "catalog"}
+                            rows = []
+                        else:
+                            catalog_rows = self.catalog.read_rows(manifest_path)
+                            rows = catalog_rows
+                            meta = dict(catalog_meta)
+                            meta["status"] = catalog_meta.get("status") or "READY"
+                            meta["storage_source"] = "catalog"
                     except Exception:
                         pass
             lineage = [{"dataset": dataset, "requested_date": request.trade_date, "used_date": day, **meta}]

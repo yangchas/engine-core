@@ -327,11 +327,11 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
 
     from .data_pipeline.limit_pool_hot_view import read as read_pool
     pool_rows, pool_meta = read_pool(previous, asof)
-    pool = (pool_rows, pool_meta) if pool_meta["status"] not in ("MISSING", "UNKNOWN", "CORRUPT") and pool_rows else None
+    pool = (pool_rows, pool_meta) if pool_meta.get("status") not in ("MISSING", "UNKNOWN", "CORRUPT") and pool_rows else None
     if not pool:
         pool = load("limit_up_pool", previous)
-    if pool and pool_meta["status"] != "READY":
-        diag.append("quality:limit_up_pool:" + (pool_meta.get("fallback_reason") or pool_meta["status"]))
+    if pool and pool_meta.get("status") != "READY":
+        diag.append("quality:limit_up_pool:" + (pool_meta.get("fallback_reason") or pool_meta.get("status") or "FALLBACK"))
     hot = _read_hot_plates(catalog, previous, asof=asof)
     cutoff = asof
     if hot:

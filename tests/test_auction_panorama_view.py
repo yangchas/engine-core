@@ -1,3 +1,4 @@
+import pytest
 from engine_core.auction_panorama_view import render_auction_email_digest, render_auction_panorama
 
 
@@ -212,8 +213,9 @@ def test_c1254_real_panorama_streak_and_seal_labels():
     assert '竞价跌停封单合计：UNKNOWN' in plain
 
 
-def test_render_auction_email_digest_with_theme_buckets_and_plate_health():
-    product = {
+@pytest.fixture
+def sample_theme_and_health_product():
+    return {
         "trade_date": "2026-10-16",
         "asof": "2026-10-16T09:26:00+08:00",
         "overview": {
@@ -224,16 +226,21 @@ def test_render_auction_email_digest_with_theme_buckets_and_plate_health():
             "yesterday_pool_median_pct": .8, "yesterday_limit_down": {"status": "UNVERIFIED"},
             "extreme_threshold_pp_v1": 3.0,
             "relay_thresholds_v1": {"min_n": 3, "strong_pp": 15, "weak_pp": -15},
-            "amount_multiple_64d": {"sample_n": 64, "window_n": 64},
+            "amount_multiple_64d": {"sample_n": 64, "window_n": 64, "status": "READY"},
             "market_extremes": {
                 "highest": {"name": "极值股", "symbol": "000001", "pct_change": 5, "auction_amount_yuan": 100000, "amount_rank": 1},
                 "lowest": None,
                 "verified_seal_max": None,
             },
+            "yesterday_limit_high_open": {"numerator": 10, "denominator": 20},
+            "yesterday_vs_market_pp": 0,
+            "verified_seal_sum_yuan": 100000000,
+            "verified_seal_scope": "5/5",
             "yesterday_pool_high_boards": [],
             "yesterday_reason_buckets": [],
         },
         "plates": [],
+        "yesterday_ladder": [],
         "theme_buckets": {
             "status": "available",
             "top_amount": [
@@ -252,6 +259,10 @@ def test_render_auction_email_digest_with_theme_buckets_and_plate_health():
             "healed": False
         }
     }
+
+
+def test_render_auction_email_digest_with_theme_buckets_and_plate_health(sample_theme_and_health_product):
+    product = sample_theme_and_health_product
     quickbrief = {"email_lines": ["结论:题材接力意愿分歧；高标暂无可核实高标"],
                   "metrics": {"market": {"auction_amount_yuan": 1_000_000_000}}}
     html, plain = render_auction_email_digest(product, quickbrief, completeness="READY")
@@ -281,40 +292,8 @@ def test_render_auction_email_digest_with_degraded_theme_buckets():
     assert "热点题材分桶未就绪(unavailable)" in plain
 
 
-def test_render_auction_panorama_with_theme_buckets_and_plate_health():
-    product = {
-        "trade_date": "2026-10-16",
-        "asof": "2026-10-16T09:26:00+08:00",
-        "overview": {
-            "auction_amount_yi": 10,
-            "amount_multiple_64d": {"sample_n": 64, "window_n": 64, "status": "READY"},
-            "up_ratio": {"numerator": 2500, "denominator": 5000, "ratio": 0.5},
-            "market_median_pct": 0,
-            "yesterday_limit_high_open": {"numerator": 10, "denominator": 20},
-            "yesterday_vs_market_pp": 0,
-            "verified_seal_sum_yuan": 100000000,
-            "verified_seal_scope": "5/5",
-        },
-        "plates": [],
-        "yesterday_ladder": [],
-        "theme_buckets": {
-            "status": "available",
-            "top_amount": [
-                {
-                    "name": "银行", "plate_code": "881155", "auction_count": 42,
-                    "member_count": 42, "amount_yuan": 155184800, "market_amount_share": 0.05,
-                    "mean_change_bp": 35.0, "limit_up_count": 1, "limit_down_count": 0
-                }
-            ],
-            "themes": []
-        },
-        "plate_reference_health": {
-            "status": "OK",
-            "plate_count": 1522,
-            "coverage": 1.0,
-            "healed": False
-        }
-    }
+def test_render_auction_panorama_with_theme_buckets_and_plate_health(sample_theme_and_health_product):
+    product = sample_theme_and_health_product
     html, plain = render_auction_panorama(product)
     assert html.count('role="table"') == 3
     assert "③ 热点题材竞价分桶" in html
