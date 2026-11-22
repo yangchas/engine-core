@@ -449,7 +449,7 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
         symbols = sorted({str(row.get("symbol", row.get("code", ""))).zfill(6)
                           for row in pool_rows if row.get("symbol") or row.get("code")})
         if not symbols:
-            raise RuntimeError("limit_up_pool_has_no_symbols:" + day)
+            raise CoreError("UPSTREAM_NOT_READY", "limit_up_pool_has_no_symbols:" + day)
         pool_source = str(pool_manifest.get("provider") or pool_manifest.get("source") or "").lower()
         has_kaipan_pool = "kaipan" in pool_source
         direct_symbols = ({str(row.get("symbol", row.get("code", ""))).zfill(6)

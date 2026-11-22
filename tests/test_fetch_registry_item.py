@@ -110,3 +110,10 @@ def test_theme_assignment_reads_pool_hot_view_when_catalog_missing(tmp_path, mon
     for key in ("provider", "source", "quality", "business_status", "available_at", "version"):
         assert meta[key] == manifest[key]
     assert cli._load_pool_hot(pool_day, "2026-10-27T09:08:22+08:00") is None
+
+    monkeypatch.setattr(hot, "read", lambda day, asof: ([], {"status": "UNKNOWN"}))
+    assert cli._load_pool_hot(pool_day, day + "T09:08:22+08:00") is None
+    monkeypatch.setattr(hot, "read", lambda day, asof: ([], {"status": "CORRUPT"}))
+    assert cli._load_pool_hot(pool_day, day + "T09:08:22+08:00") is None
+    monkeypatch.setattr(hot, "read", lambda day, asof: ([], {"status": "READY"}))
+    assert cli._load_pool_hot(pool_day, day + "T09:08:22+08:00") is None
