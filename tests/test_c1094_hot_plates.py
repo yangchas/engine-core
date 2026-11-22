@@ -50,6 +50,7 @@ def test_hot_plates_requires_redis_and_does_not_write_catalog(tmp_path, monkeypa
     from engine_core.data_pipeline.registry import get_dataset
     from engine_core.data_pipeline.redis_day_view import expire_at
     import time
+    monkeypatch.setattr(time, "time", lambda: expire_at(view['trade_date']) - 86400)
 
     class Redis:
         def __init__(self):
@@ -150,6 +151,8 @@ def test_hot_plate_postcondition_reports_missing_when_redis_read_fails(tmp_path,
 
 def test_history_execute_publishes_real_view_without_gap(tmp_path, monkeypatch):
     import sys
+    import time
+    from engine_core.data_pipeline.redis_day_view import expire_at
     from fnmatch import fnmatch
     from types import SimpleNamespace
     from engine_core.data_pipeline import limit_pool_hot_view
@@ -183,6 +186,7 @@ def test_history_execute_publishes_real_view_without_gap(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, 'redis', SimpleNamespace(
         Redis=SimpleNamespace(from_url=lambda *args, **kwargs: redis)))
     monkeypatch.setattr(limit_pool_hot_view, '_client', lambda: redis)
+    monkeypatch.setattr(time, "time", lambda: expire_at(view['trade_date']) - 86400)
     monkeypatch.setattr(TradeCalendarStore, 'all_trading_dates', lambda self: [view['trade_date']])
     monkeypatch.setattr(run_data_jobs, '_default_adapters', lambda *args, **kwargs: {
         'hot_plates': lambda day: {**view, 'expected_count': len(view['rows'])}})
