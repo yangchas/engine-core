@@ -210,3 +210,72 @@ def test_c1254_real_panorama_streak_and_seal_labels():
     assert '昨日热板溢价' in plain and 'UNKNOWN' in plain
     assert '竞价涨停封单合计：UNKNOWN' in plain
     assert '竞价跌停封单合计：UNKNOWN' in plain
+
+
+def test_render_auction_email_digest_with_theme_buckets_and_plate_health():
+    product = {
+        "trade_date": "2026-10-16",
+        "asof": "2026-10-16T09:26:00+08:00",
+        "overview": {
+            "auction_amount_yi": 10, "up_ratio": {"ratio": .5},
+            "market_median_pct": 0, "yesterday_pool_n": 4, "yesterday_pool_open_valid_n": 4,
+            "yesterday_pool_open_counts": {"high": 2, "flat": 1, "low": 1},
+            "yesterday_pool_high_open_gap_pp": 5, "yesterday_pool_market_share": .2,
+            "yesterday_pool_median_pct": .8, "yesterday_limit_down": {"status": "UNVERIFIED"},
+            "extreme_threshold_pp_v1": 3.0,
+            "relay_thresholds_v1": {"min_n": 3, "strong_pp": 15, "weak_pp": -15},
+            "amount_multiple_64d": {"sample_n": 64, "window_n": 64},
+            "market_extremes": {
+                "highest": {"name": "极值股", "symbol": "000001", "pct_change": 5, "auction_amount_yuan": 100000, "amount_rank": 1},
+                "lowest": None,
+                "verified_seal_max": None,
+            },
+            "yesterday_pool_high_boards": [],
+            "yesterday_reason_buckets": [],
+        },
+        "plates": [],
+        "theme_buckets": {
+            "status": "available",
+            "top_amount": [
+                {
+                    "name": "银行", "plate_code": "881155", "auction_count": 42,
+                    "member_count": 42, "amount_yuan": 155184800, "market_amount_share": 0.05,
+                    "mean_change_bp": 35.0, "limit_up_count": 1, "limit_down_count": 0
+                }
+            ],
+            "themes": []
+        },
+        "plate_reference_health": {
+            "status": "OK",
+            "plate_count": 1522,
+            "coverage": 1.0,
+            "healed": False
+        }
+    }
+    quickbrief = {"email_lines": ["结论:题材接力意愿分歧；高标暂无可核实高标"],
+                  "metrics": {"market": {"auction_amount_yuan": 1_000_000_000}}}
+    html, plain = render_auction_email_digest(product, quickbrief, completeness="READY")
+    assert html.count('role="table"') == 3
+    assert "③ 热点题材竞价分桶" in html
+    assert "③热点题材竞价分桶：" in plain
+    assert "银行" in html and "银行" in plain
+    assert "板块映射:OK(1522板块/覆盖100.0%)" in html
+    assert "板块映射:OK(1522板块/覆盖100.0%)" in plain
+    assert len(html.encode()) <= 30_000
+    assert len(plain.split("\n\n")) == 6
+
+
+def test_render_auction_email_digest_with_degraded_theme_buckets():
+    product = {
+        "trade_date": "2026-10-16",
+        "overview": {},
+        "plates": [],
+        "theme_buckets": {
+            "status": "unavailable"
+        }
+    }
+    quickbrief = {"email_lines": []}
+    html, plain = render_auction_email_digest(product, quickbrief)
+    assert "热点题材分桶未就绪: unavailable" in html
+    assert "热点题材分桶未就绪(unavailable)" in plain
+
