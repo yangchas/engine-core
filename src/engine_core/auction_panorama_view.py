@@ -184,6 +184,14 @@ def render_auction_email_digest(product: Mapping[str, Any], quickbrief: Mapping[
         f"竞价额占全市场 {_fmt(pool_amount_share * 100, 1, '%') if isinstance(pool_amount_share, (int, float)) else '—'}；"
         f"涨幅中位 {_fmt(overview.get('yesterday_pool_median_pct'), 2, '%')}；{down_text}")
     extremes = overview.get("market_extremes") if isinstance(overview.get("market_extremes"), Mapping) else {}
+    prh = product.get("plate_reference_health")
+    if isinstance(prh, Mapping):
+        prh_status = prh.get("status", "—")
+        prh_cov = prh.get("coverage")
+        cov_text = f"{prh_cov * 100:.1f}%" if isinstance(prh_cov, (int, float)) else "—"
+        prh_n = prh.get("plate_count", "—")
+        health_summary = f"板块映射:{prh_status}({prh_n}板块/覆盖{cov_text})"
+        whole_batch += f"；{health_summary}"
     def extreme_text(label: str, item: Any, amount_key: str = "auction_amount_yuan") -> str:
         if not isinstance(item, Mapping):
             return f"{label}待核实"
@@ -296,6 +304,33 @@ def render_auction_email_digest(product: Mapping[str, Any], quickbrief: Mapping[
     replay_pill = '<span style="background:#fff4e5;color:#7a4b00;padding:3px 7px;border-radius:10px">历史回放样本·非实时信号</span>' if replay else ""
     degraded_html = f'<div style="color:#7c2d12;font-size:10px">{_esc(degraded_note)}</div>' if status != "READY" and degraded_note else ""
     aggregate_html = _esc(whole_batch)
+    tb = product.get("theme_buckets")
+    tb_html_block = ""
+    tb_text_lines = []
+    if isinstance(tb, Mapping):
+        if tb.get("status") in ("available", "OK"):
+            top_themes = (tb.get("top_amount") or tb.get("themes") or [])[:5]
+            tb_rows = []
+            for t in top_themes:
+                t_name = _esc(t.get("name") or t.get("plate_code") or "—")
+                t_members = f"{t.get('auction_count', '—')}/{t.get('member_count', '—')}"
+                t_amount = _money(t.get("amount_yuan"))
+                share_val = t.get("market_amount_share")
+                t_share = _fmt(share_val * 100, 1, "%") if isinstance(share_val, (int, float)) else "—"
+                mean_bp = t.get("mean_change_bp")
+                t_mean = _pct_cell(mean_bp / 100) if isinstance(mean_bp, (int, float)) else "—"
+                t_mean_plain = _fmt(mean_bp / 100, 2, "%") if isinstance(mean_bp, (int, float)) else "—"
+                t_limits = f"涨停{t.get('limit_up_count', 0)} / 跌停{t.get('limit_down_count', 0)}"
+                cells = [t_name, t_members, f"{t_amount}<br>{t_share}", t_mean, t_limits]
+                tb_rows.append("<tr>" + "".join(f'<td style="padding:5px;border-bottom:1px solid #eaecf0;vertical-align:top">{cell}</td>' for cell in cells) + "</tr>")
+                tb_text_lines.append(f"{t.get('name') or t.get('plate_code')} 成员{t_members}；额{t_amount}·占比{t_share}；均涨{t_mean_plain}；{t_limits}")
+            tb_head = ("热点题材(开盘竞价)", "成员有效/总数", "竞价额·占比", "平均涨幅", "涨/跌停")
+            tb_table = '<table role="table" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;table-layout:fixed;font-size:10px"><thead><tr>' + ''.join(_th(label) for label in tb_head) + '</tr></thead><tbody>' + ''.join(tb_rows) + '</tbody></table>'
+            tb_html_block = f'<h2>③ 热点题材竞价分桶</h2>{tb_table}'
+        elif tb.get("status"):
+            tb_html_block = f'<h2>③ 热点题材竞价分桶</h2><p style="font-size:10px;color:#7c2d12">热点题材分桶未就绪: {_esc(tb.get("status"))}</p>'
+            tb_text_lines.append(f"热点题材分桶未就绪({tb.get('status')})")
+
     html = ('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
         '<style>@media(max-width:700px){table{font-size:9px!important}td{padding:3px!important}}</style></head>'
         '<body style="margin:0;padding:8px;color:#26364a;background:#eef2f6;font-family:Arial,sans-serif"><table role="presentation" width="100%"><tr><td align="center">'
@@ -304,7 +339,7 @@ def render_auction_email_digest(product: Mapping[str, Any], quickbrief: Mapping[
         f'<div style="padding:7px;background:#f4f7fb;margin:8px 0"><b>昨日整批统计 / 市场整体</b><br>{aggregate_html}</div>'
         f'<div style="margin:5px 0">{_esc(next((line.split(":",1)[1].strip() for line in lines if line.startswith("结论:")), "结论待核实"))}</div>'
         f'<div style="font-size:10px;color:#667085">{_esc(threshold)}</div><h2>① 题材横向对比</h2>{plate_table}'
-        f'<h2>② 昨日涨停×题材 接力意愿</h2>{bucket_table}'
+        f'<h2>② 昨日涨停×题材 接力意愿</h2>{bucket_table}{tb_html_block}'
         f'<h2>高标与封单极值</h2><p style="font-size:10px">高标（昨≥2板）</p><div>{highboard_html}</div><p>{market_extremes_html}</p>'
         '<p style="font-size:10px;color:#667085">完整明细已存档于 Core 报告目录；个股点名仅用于极值、封单和高标。缺失不补0。</p>'
         '</td></tr></table></td></tr></table></body></html>')
@@ -313,8 +348,10 @@ def render_auction_email_digest(product: Mapping[str, Any], quickbrief: Mapping[
     plain_blocks = [f"09:26竞价速览 | {date} {asof} {('历史回放样本,非当时实时信号' if replay else '')}\n" + "\n".join(extra),
         f"昨日整批统计 / 市场整体：{whole_batch}",
         "①题材横向对比：" + ("\n".join(plate_text) or "无可展示题材"),
-        "②昨日涨停×题材接力意愿：" + ("\n".join(bucket_text) or "无可展示题材"),
-        "高标与封单极值：" + highboard_text + "；" + market_extreme_text + f"；{threshold}；完整明细已存档于 Core 报告目录"]
+        "②昨日涨停×题材接力意愿：" + ("\n".join(bucket_text) or "无可展示题材")]
+    if tb_text_lines:
+        plain_blocks.append("③热点题材竞价分桶：" + ("\n".join(tb_text_lines) or "无可展示题材"))
+    plain_blocks.append("高标与封单极值：" + highboard_text + "；" + market_extreme_text + f"；{threshold}；完整明细已存档于 Core 报告目录")
     return html, "\n\n".join(plain_blocks)
 
 def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:

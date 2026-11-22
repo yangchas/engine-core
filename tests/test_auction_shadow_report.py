@@ -57,3 +57,17 @@ def test_report_with_theme_buckets_and_plate_reference_health():
     assert report.component_status["theme_buckets"] == "READY"
     assert report.component_status["plate_reference"] == "READY"
 
+
+def test_report_degraded_records_notes():
+    from unittest.mock import patch
+    with patch("engine_core.auction_theme_buckets.read_and_build_hot", side_effect=RuntimeError("redis timeout")), \
+         patch("engine_core.data_pipeline.plate_stock_index.verify_plate_reference", side_effect=ValueError("corrupt index")):
+        report = build_shadow_auction_report(
+            trade_date="2026-10-12",
+            quotes={},
+            observation_time_ms=local_datetime_ms("2026-10-12", "09:25:30"),
+        )
+    assert "theme_buckets failed: RuntimeError: redis timeout" in report.text
+    assert "plate_reference_health failed: ValueError: corrupt index" in report.text
+
+

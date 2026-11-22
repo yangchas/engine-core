@@ -85,7 +85,10 @@ def build_shadow_auction_report(
             tb = read_and_build_hot(trade_date)
             if tb and tb.get("status") in ("available", "OK"):
                 theme_buckets = tb
-        except Exception:
+            elif tb:
+                notes.append(f"theme_buckets degraded status: {tb.get('status')}")
+        except Exception as exc:
+            notes.append(f"theme_buckets failed: {type(exc).__name__}: {exc}")
             theme_buckets = None
     if plate_reference_health is None:
         try:
@@ -93,7 +96,10 @@ def build_shadow_auction_report(
             prh = verify_plate_reference(trade_date, auto_heal=False)
             if prh and prh.get("status") in ("OK", "READY"):
                 plate_reference_health = prh
-        except Exception:
+            elif prh:
+                notes.append(f"plate_reference_health degraded status: {prh.get('status')}")
+        except Exception as exc:
+            notes.append(f"plate_reference_health failed: {type(exc).__name__}: {exc}")
             plate_reference_health = None
     return build_market_auction_report(
         trade_date=trade_date, event_id=event_id, data_origin=data_origin,

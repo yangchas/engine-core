@@ -2331,12 +2331,17 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     if tb and tb.get("status") in ("available", "OK"):
                         panorama["theme_buckets"] = tb
                         payload["theme_buckets"] = tb
+                    elif tb:
+                        degraded.append(f"THEME_BUCKETS_STATUS_{tb.get('status')}")
                     prh = verify_plate_reference(trade_date, redis_client=src.redis, auto_heal=False)
                     if prh:
                         panorama["plate_reference_health"] = prh
                         payload["plate_reference_health"] = prh
-                except Exception:
-                    pass
+                        if prh.get("status") not in ("OK", "READY"):
+                            degraded.append(f"PLATE_REF_{prh.get('status')}")
+                except Exception as exc:
+                    degraded.append(f"THEME_BUCKETS_ATTACH_FAILED:{type(exc).__name__}")
+                    payload["theme_buckets_attach_error"] = f"{type(exc).__name__}: {exc}"
                 store_auction_panorama(panorama, redis=src.redis, artifact_root=_dry_run_artifact_root(out_root, dry_run))
                 auction_panorama_artifact = panorama
                 payload["auction_panorama"] = panorama
