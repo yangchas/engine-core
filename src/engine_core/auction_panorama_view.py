@@ -183,8 +183,9 @@ def _render_theme_buckets_section(tb: Mapping[str, Any] | None, *, for_email: bo
         tb_html_block = f'<h2{h2_style}>③ 热点题材竞价分桶{subtitle_span}</h2>{tb_table}'
     elif tb.get("status"):
         msg_style = 'style="font-size:10px;color:#7c2d12"' if for_email else 'style="font-size:11px;color:#7c2d12"'
-        tb_html_block = f'<h2{h2_style}>③ 热点题材竞价分桶{subtitle_span}</h2><p {msg_style}>热点题材分桶未就绪: {_esc(tb.get("status"))}</p>'
-        tb_text_lines.append(f"热点题材分桶未就绪({tb.get('status')})")
+        reason_text = f" [{tb.get('reason')}]" if tb.get("reason") else ""
+        tb_html_block = f'<h2{h2_style}>③ 热点题材竞价分桶{subtitle_span}</h2><p {msg_style}>热点题材分桶未就绪: {_esc(tb.get("status"))}{_esc(reason_text)}</p>'
+        tb_text_lines.append(f"热点题材分桶未就绪({tb.get('status')}{reason_text})")
     return tb_html_block, tb_text_lines
 
 

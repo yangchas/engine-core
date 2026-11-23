@@ -39,6 +39,10 @@ def read_auction_view(client, day: str, tag: str, *, prefix: str = 'core:auction
         raise ViewError('redis_error') from exc
     if payload is None or meta_bytes is None:
         raise ViewError('missing_key')
+    if isinstance(payload, str):
+        payload = payload.encode('utf-8')
+    if isinstance(meta_bytes, str):
+        meta_bytes = meta_bytes.encode('utf-8')
     if not isinstance(payload, bytes) or not isinstance(meta_bytes, bytes):
         raise ViewError('invalid_bytes')
     try:

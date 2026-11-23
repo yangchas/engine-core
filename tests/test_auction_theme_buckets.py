@@ -338,3 +338,26 @@ def test_read_and_build_hot_reads_redis_reference_views(monkeypatch):
     assert res["seals"][0]["symbol"] == "000001"
 
 
+def test_read_auction_view_with_decoded_string_client():
+    import hashlib
+    from engine_core.data_pipeline.auction_redis_view import read_auction_view
+
+    raw_dict = {"000001": {"amount_yuan": 1000, "price_milli": 10000, "pre_close_milli": 9500,
+                           "change_bp": 526, "bid_amount_yuan": 500, "rank_amount": 1, "src": "auction_match"}}
+    raw_str = json.dumps(raw_dict, separators=(",", ":"))
+    meta_str = json.dumps({"status": "COMPLETE", "rows": 1, "sha256": hashlib.sha256(raw_str.encode("utf-8")).hexdigest()},
+                          separators=(",", ":"))
+
+    class DecodedRedis:
+        def mget(self, keys):
+            # Returns str, simulating decode_responses=True
+            return [raw_str, meta_str]
+
+    rows = read_auction_view(DecodedRedis(), "2026-11-20", "0925")
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "000001"
+    assert rows[0]["price_milli"] == 10000
+    assert rows[0]["auction_tag"] == "0925"
+
+
+
