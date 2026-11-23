@@ -331,7 +331,7 @@ def test_render_auction_theme_buckets_top10_and_seals():
         "trade_date": "2026-11-23",
         "asof": "09:26",
         "overview": {},
-        "plates": [],
+        "plates": [{"plate_name": "题材1", "plate_id": "800001"}],
         "yesterday_ladder": [],
         "theme_buckets": {
             "status": "available",
@@ -352,7 +352,11 @@ def test_render_auction_theme_buckets_top10_and_seals():
     # Structure and seals
     assert "5强" in html and "15平" in html
     assert "德龙汇能" in html and "天然气" in html
-    assert "涨停封单" in html and "跌停封单" in html
+    # C1544 additions: behavior tags, resonance, and dual-side seal extreme comparison
+    assert "①共振" in html and "①全景共振" in plain
+    assert "龙头领涨" in html or "剧烈分化" in html
+    assert "🔴买方涨停极值" in html and "🟢卖方跌停核按钮" in html
+    assert "🔴买方涨停极值" in plain and "🟢卖方跌停核按钮" in plain
 
 
 
