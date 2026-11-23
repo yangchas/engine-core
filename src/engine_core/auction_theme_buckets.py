@@ -203,6 +203,7 @@ def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows,
                             previous_trade_date=None, pool_labels=None, reason_rows=(),
                             stock_names=None):
     """Aggregate PIT hot plates independently; overlapping members count in each plate."""
+    from .auction_theme_cards import non_theme_reason
     from .stock_theme_assignment import build_stock_theme_assignments
     if not isinstance(top_n_hot, int) or isinstance(top_n_hot, bool) or top_n_hot < 0:
         raise ValueError('invalid_top_n_hot')
@@ -248,6 +249,7 @@ def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows,
         ka_amount = hot.get('amount_yuan')
         n = len(priced)
         themes.append({'plate_code': code, 'name': hot.get('name'), 'class': registry[code],
+                       'non_theme_reason': non_theme_reason(hot.get('name')),
                        'member_count': len(symbols), 'auction_count': n, 'missing_price_count': len(symbols)-n,
                        'missing_change_count': n-len(changed), 'strong_count': strong, 'middle_count': middle, 'weak_count': weak,
                        'strong_share': strong/n if n else None, 'middle_share': middle/n if n else None, 'weak_share': weak/n if n else None,
@@ -272,8 +274,11 @@ def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows,
     seals = [dict(r, name=r.get('name') or (stock_names or {}).get(r['symbol']),
                   assignment=assigned.get(r['symbol']), hot_plates=members.get(r['symbol'], []))
              for r in seal_rows if r.get('side') in ('limit_up', 'limit_down')]
-    return {'status':'available', 'themes':themes, 'market':{'amount_yuan':market_amount}, 'seals':seals,
-            'notes':[f'category_missing={missing}; category_excluded={excluded}', 'Stocks in multiple hot plates are counted once in each; totals overlap.']}
+    curated_themes = [t for t in themes if not t.get('non_theme_reason')
+                      and (t.get('amount_yuan') or 0) >= 30_000_000
+                      and (t.get('auction_count') or 0) >= 5]
+    return {'status':'available', 'themes':themes, 'curated_themes':curated_themes, 'market':{'amount_yuan':market_amount}, 'seals':seals,
+            'notes':[f'category_missing={missing}; category_excluded={excluded}', f'curated_count={len(curated_themes)}/{len(themes)}', 'Stocks in multiple hot plates are counted once in each; totals overlap.']}
 
 
 def read_and_build_hot(trade_date, store=None, redis_client=None, top_n_hot=40):

@@ -183,7 +183,19 @@ def _render_theme_buckets_section(tb: Mapping[str, Any] | None, *, for_email: bo
     subtitle_span = f' <span style="font-size:{subtitle_size};font-weight:normal;color:#667085">[热榜成份股×盘前映射]</span>'
 
     if tb.get("status") in ("available", "OK"):
-        top_themes = (tb.get("top_amount") or tb.get("themes") or [])[:10]
+        curated = tb.get("curated_themes")
+        if not curated:
+            from .auction_theme_cards import non_theme_reason
+            raw = tb.get("top_amount") or tb.get("themes") or []
+            curated = [
+                t for t in raw
+                if not non_theme_reason(t.get("name") or "")
+                and (t.get("amount_yuan") or 0) >= 30_000_000
+                and (t.get("auction_count") or 0) >= 5
+            ]
+            if not curated:
+                curated = raw
+        top_themes = curated[:10]
         tb_rows = []
         cell_pad = "padding:5px 3px;" if for_email else "padding:6px 5px;"
         td_style = f"vertical-align:top;{cell_pad}border-bottom:1px solid #eaecf0;word-break:break-word;"

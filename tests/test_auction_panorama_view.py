@@ -359,4 +359,31 @@ def test_render_auction_theme_buckets_top10_and_seals():
     assert "🔴买方涨停极值" in plain and "🟢卖方跌停核按钮" in plain
 
 
+def test_render_auction_theme_buckets_curated_filters_geography():
+    themes = [
+        {"name": "商业航天", "plate_code": "801843", "rank": 1, "auction_count": 500, "member_count": 500, "amount_yuan": 17e8, "weighted_mean_change_bp": 120.0, "strong_count": 30, "middle_count": 400, "weak_count": 70},
+        {"name": "内蒙古自治区", "plate_code": "801742", "rank": 2, "auction_count": 23, "member_count": 23, "amount_yuan": 1.9e8, "weighted_mean_change_bp": 31.0, "strong_count": 3, "middle_count": 10, "weak_count": 10},
+        {"name": "天津自贸区", "plate_code": "801417", "rank": 3, "auction_count": 14, "member_count": 14, "amount_yuan": 6e6, "weighted_mean_change_bp": 66.0, "strong_count": 1, "middle_count": 5, "weak_count": 8},
+        {"name": "黄金", "plate_code": "801048", "rank": 4, "auction_count": 87, "member_count": 87, "amount_yuan": 6.7e8, "weighted_mean_change_bp": 110.0, "strong_count": 15, "middle_count": 60, "weak_count": 12},
+    ]
+    product = {
+        "trade_date": "2026-11-23",
+        "asof": "09:26",
+        "overview": {},
+        "plates": [],
+        "yesterday_ladder": [],
+        "theme_buckets": {
+            "status": "available",
+            "themes": themes,
+            "seals": []
+        }
+    }
+    quickbrief = {"email_lines": ["结论:热点活跃"], "metrics": {"market": {"auction_amount_yuan": 1_000_000_000}}}
+    html, plain = render_auction_email_digest(product, quickbrief, completeness="READY")
+    assert "商业航天" in html and "黄金" in html
+    assert "内蒙古自治区" not in html and "天津自贸区" not in html
+    assert "内蒙古自治区" not in plain and "天津自贸区" not in plain
+
+
+
 

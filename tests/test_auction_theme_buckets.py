@@ -360,4 +360,28 @@ def test_read_auction_view_with_decoded_string_client():
     assert rows[0]["auction_tag"] == "0925"
 
 
+def test_curated_theme_buckets_filters_geography_and_low_liquidity():
+    from engine_core.auction_theme_buckets import build_hot_theme_buckets
+    data = json.loads((Path(__file__).parent / 'fixtures/real/c1351/excerpt.json').read_text())
+    hot = next(h for h in data['hot'] if h['event_id'] == 'kaipan_hot_092520')
+    result = build_hot_theme_buckets(
+        data['auction_0925'] + data['auction_0924'], data['mapping'], hot['rows'],
+        data['registry']['rows'],
+        listings={r['symbol']: r['listing_date'] for r in data['stock_static']},
+        trading_dates=data['calendar'], top_n_hot=243
+    )
+    assert "curated_themes" in result
+    curated_names = {t["name"] for t in result["curated_themes"]}
+    assert "云南省" not in curated_names
+    assert "天津自贸区" not in curated_names
+    raw_by_name = {t["name"]: t for t in result["themes"]}
+    assert raw_by_name["云南省"]["non_theme_reason"] == "geography_name"
+    assert raw_by_name["天津自贸区"]["non_theme_reason"] == "geography_name"
+    assert "银行" in curated_names
+    assert all((t.get("amount_yuan") or 0) >= 30_000_000 for t in result["curated_themes"])
+    assert all((t.get("auction_count") or 0) >= 5 for t in result["curated_themes"])
+
+
+
+
 
