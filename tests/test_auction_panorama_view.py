@@ -305,3 +305,54 @@ def test_render_auction_panorama_with_theme_buckets_and_plate_health(sample_them
     assert "板块映射：OK · 板块 1522 个 · 覆盖率 100.0%" in plain
 
 
+def test_render_auction_theme_buckets_top10_and_seals():
+    themes = [
+        {
+            "name": f"题材{i}", "plate_code": f"80000{i}", "rank": i, "strength": 100 - i * 10,
+            "auction_count": 20 + i, "member_count": 25 + i, "amount_yuan": (15 - i) * 1e7,
+            "market_amount_share": 0.03, "weighted_mean_change_bp": 120.0 - i * 20,
+            "mean_change_bp": 50.0 - i * 10, "strong_count": 5, "middle_count": 15, "weak_count": i,
+            "limit_up_count": 1 if i <= 3 else 0, "limit_down_count": 1 if i >= 8 else 0,
+            "amount_top3_share": 0.35,
+        }
+        for i in range(1, 15)
+    ]
+    seals = [
+        {
+            "symbol": "000593", "name": "德龙汇能", "side": "limit_up", "seal_amount_yuan": 42140880.0,
+            "assignment": {"primary_theme": {"name": "天然气"}},
+        },
+        {
+            "symbol": "002420", "name": "大型科技", "side": "limit_down", "seal_amount_yuan": 33955133.0,
+            "assignment": {"primary_theme": {"name": "机器人概念"}},
+        }
+    ]
+    product = {
+        "trade_date": "2026-11-23",
+        "asof": "09:26",
+        "overview": {},
+        "plates": [],
+        "yesterday_ladder": [],
+        "theme_buckets": {
+            "status": "available",
+            "themes": themes,
+            "seals": seals
+        }
+    }
+    quickbrief = {"email_lines": ["结论:热点活跃"], "metrics": {"market": {"auction_amount_yuan": 1_000_000_000}}}
+    html, plain = render_auction_email_digest(product, quickbrief, completeness="READY")
+    assert html.count('role="table"') == 3
+    assert len(html.encode()) <= 30_000
+    assert len(plain.split("\n\n")) == 6
+    # Top 10 are present, 11th is truncated
+    assert "题材1" in html and "题材10" in html
+    assert "题材11" not in html
+    # Rank badges
+    assert "#1" in html and "#2" in html and "#3" in html
+    # Structure and seals
+    assert "5强" in html and "15平" in html
+    assert "德龙汇能" in html and "天然气" in html
+    assert "涨停封单" in html and "跌停封单" in html
+
+
+

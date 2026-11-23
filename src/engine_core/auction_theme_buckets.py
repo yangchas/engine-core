@@ -200,7 +200,8 @@ def read_and_build(trade_date, store=None, redis_client=None):
 
 def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows, *, top_n_hot=40,
                             listings=None, trading_dates=None, seal_rows=(), trade_date=None,
-                            previous_trade_date=None, pool_labels=None, reason_rows=()):
+                            previous_trade_date=None, pool_labels=None, reason_rows=(),
+                            stock_names=None):
     """Aggregate PIT hot plates independently; overlapping members count in each plate."""
     from .stock_theme_assignment import build_stock_theme_assignments
     if not isinstance(top_n_hot, int) or isinstance(top_n_hot, bool) or top_n_hot < 0:
@@ -268,7 +269,8 @@ def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows,
                     pool_labels={s:v for s,v in (pool_labels or {}).items() if s in seal_symbols},
                     reason_rows=[r for r in reason_rows if r.get('symbol') in seal_symbols],
                     static_themes={s: [] for s in seal_symbols}, trading_dates=trading_dates)
-    seals = [dict(r, assignment=assigned.get(r['symbol']), hot_plates=members.get(r['symbol'], []))
+    seals = [dict(r, name=r.get('name') or (stock_names or {}).get(r['symbol']),
+                  assignment=assigned.get(r['symbol']), hot_plates=members.get(r['symbol'], []))
              for r in seal_rows if r.get('side') in ('limit_up', 'limit_down')]
     return {'status':'available', 'themes':themes, 'market':{'amount_yuan':market_amount}, 'seals':seals,
             'notes':[f'category_missing={missing}; category_excluded={excluded}', 'Stocks in multiple hot plates are counted once in each; totals overlap.']}
@@ -370,9 +372,11 @@ def read_and_build_hot(trade_date, store=None, redis_client=None, top_n_hot=40):
                         candidates += by_name[name]
                     reasons.append({'symbol':r['symbol'], 'Date':r.get('event_date') or r.get('date'), 'ZSCode':candidates})
         stage = 'build'
+        stock_names = {r['symbol']: r.get('name') for r in static.get('rows', []) if r.get('symbol')}
         result = build_hot_theme_buckets(current+previous, plates, hot['rows'], registry['rows'], top_n_hot=top_n_hot,
             listings={r['symbol']:r.get('listing_date') for r in static['rows']}, trading_dates=dates,
-            seal_rows=seal['rows'], trade_date=day, previous_trade_date=prev_day, pool_labels=pool_labels, reason_rows=reasons)
+            seal_rows=seal['rows'], trade_date=day, previous_trade_date=prev_day, pool_labels=pool_labels, reason_rows=reasons,
+            stock_names=stock_names)
         result.setdefault('notes', []).extend(notes)
         return result
     except Exception as exc:
