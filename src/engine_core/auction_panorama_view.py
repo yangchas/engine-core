@@ -145,7 +145,34 @@ def _streak_and_hot_conclusions(product: Mapping[str, Any]) -> list[str]:
     return lines
 
 
-def _render_theme_buckets_section(tb: Mapping[str, Any] | None, *, for_email: bool = False) -> tuple[str, list[str]]:
+def _theme_behavior_tag(t: Mapping[str, Any]) -> tuple[str, str, str]:
+    """Return (label, badge_html, plain_text) indicating primary driver behavior."""
+    w_bp = t.get("weighted_mean_change_bp")
+    m_bp = t.get("mean_change_bp")
+    s_cnt = t.get("strong_count") or 0
+    w_cnt = t.get("weak_count") or 0
+    up_cnt = t.get("limit_up_count") or 0
+    down_cnt = t.get("limit_down_count") or 0
+    gap_bp = (w_bp - m_bp) if (isinstance(w_bp, (int, float)) and isinstance(m_bp, (int, float))) else 0
+
+    if w_bp is not None and m_bp is not None:
+        if (up_cnt > 0 and down_cnt > 0) or (s_cnt >= 2 and w_cnt >= 5):
+            return ("剧烈分化", '<span style="display:inline-block;padding:1px 3px;font-size:9px;background:#e6f4ff;color:#0958d9;border:1px solid #91caff;border-radius:2px">剧烈分化</span>', "[剧烈分化]")
+        elif w_bp > 0 and gap_bp >= 50:
+            return ("龙头领涨", '<span style="display:inline-block;padding:1px 3px;font-size:9px;background:#fff7e6;color:#d46b08;border:1px solid #ffd591;border-radius:2px;font-weight:700">龙头领涨</span>', "[龙头领涨]")
+        elif w_bp <= 0 and gap_bp >= 50:
+            return ("大票抗跌", '<span style="display:inline-block;padding:1px 3px;font-size:9px;background:#fffbe6;color:#b58900;border:1px solid #ffe58f;border-radius:2px">大票抗跌</span>', "[大票抗跌]")
+        elif gap_bp <= -50:
+            return ("大票拖累", '<span style="display:inline-block;padding:1px 3px;font-size:9px;background:#f9f0ff;color:#722ed1;border:1px solid #d3adf7;border-radius:2px">大票拖累</span>', "[大票拖累]")
+        elif w_bp >= 100 and m_bp >= 50 and s_cnt >= 3 and w_cnt == 0:
+            return ("共振走强", '<span style="display:inline-block;padding:1px 3px;font-size:9px;background:#fff1f0;color:#cf1322;border:1px solid #ffa39e;border-radius:2px;font-weight:700">共振走强</span>', "[共振走强]")
+        elif w_bp < -100 and m_bp < -100:
+            return ("承压走弱", '<span style="display:inline-block;padding:1px 3px;font-size:9px;background:#f6ffed;color:#389e0d;border:1px solid #b7eb8f;border-radius:2px">承压走弱</span>', "[承压走弱]")
+    return ("平稳分化", '<span style="display:inline-block;padding:1px 3px;font-size:9px;background:#f5f5f5;color:#595959;border-radius:2px">平稳分化</span>', "[平稳分化]")
+
+
+def _render_theme_buckets_section(tb: Mapping[str, Any] | None, *, for_email: bool = False,
+                                   table1_plates: set[str] | list[str] | None = None) -> tuple[str, list[str]]:
     """Render Table ③ Theme Buckets block for email digest or full panorama report."""
     if not isinstance(tb, Mapping):
         return "", []
@@ -162,7 +189,7 @@ def _render_theme_buckets_section(tb: Mapping[str, Any] | None, *, for_email: bo
         td_style = f"vertical-align:top;{cell_pad}border-bottom:1px solid #eaecf0;word-break:break-word;"
 
         for t in top_themes:
-            # 1. 题材名与热度排名 (Rank 徽章 + 名称 + 热度分值)
+            # 1. 题材名与热度排名 (Rank 徽章 + 名称 + 全景共振标 + 主力行为定性 + 热度分值)
             rank_val = t.get("rank")
             rank_badge = ""
             rank_plain = ""
@@ -177,11 +204,17 @@ def _render_theme_buckets_section(tb: Mapping[str, Any] | None, *, for_email: bo
                 else:
                     rank_badge = f'<span style="display:inline-block;padding:0 3px;font-size:9px;color:#595959;background:#f5f5f5;border-radius:2px;margin-right:2px">#{rank_val}</span>'
 
-            t_name = _esc(t.get("name") or t.get("plate_code") or "—")
+            t_name_raw = str(t.get("name") or t.get("plate_code") or "—")
+            t_name = _esc(t_name_raw)
+            is_resonance = t_name_raw in table1_plates if table1_plates else False
+            res_badge = ' <span style="display:inline-block;padding:0 3px;font-size:9px;background:#f6ffed;color:#389e0d;border:1px solid #b7eb8f;border-radius:2px;font-weight:700">①共振</span>' if is_resonance else ""
+            res_plain = " [①全景共振]" if is_resonance else ""
+
+            tag_name, tag_badge, tag_plain = _theme_behavior_tag(t)
             strength_val = t.get("strength")
-            strength_html = f'<br><span style="font-size:9px;color:#8c8c8c">强度{_esc(strength_val)}</span>' if strength_val is not None else ""
+            strength_html = f' <span style="font-size:9px;color:#8c8c8c">强度{_esc(strength_val)}</span>' if strength_val is not None else ""
             strength_plain = f"(强度{strength_val})" if strength_val is not None else ""
-            cell_theme = f'{rank_badge}<b>{t_name}</b>{strength_html}'
+            cell_theme = f'{rank_badge}<b>{t_name}</b>{res_badge}<br>{tag_badge}{strength_html}'
 
             # 2. 成员数 (有效竞价数 / 板块总成份股)
             t_members = f"{t.get('auction_count', '—')}/{t.get('member_count', '—')}"
@@ -241,56 +274,58 @@ def _render_theme_buckets_section(tb: Mapping[str, Any] | None, *, for_email: bo
             tb_rows.append(f"<tr>{row_tds}</tr>")
 
             rank_prefix = f"[{rank_plain}] " if rank_plain else ""
-            tb_text_lines.append(f"{rank_prefix}{t.get('name') or t.get('plate_code')}{strength_plain} 成员{t_members}；额{t_amount}·占比{t_share}；{mean_plain}；分布:{struct_plain}；{limits_plain}")
+            tb_text_lines.append(f"{rank_prefix}{t_name_raw}{res_plain} {tag_plain}{strength_plain} 成员{t_members}；额{t_amount}·占比{t_share}；{mean_plain}；分布:{struct_plain}；{limits_plain}")
 
         tb_head = ("热点题材(开盘竞价)", "有效/总数", "竞价额·占比", "加权/算术均涨", "强/平/弱分布", "涨跌停·龙头集中度")
         font_sz = "10px" if for_email else "11px"
         tb_table = f'<table role="table" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;table-layout:fixed;font-size:{font_sz}"><thead><tr>' + ''.join(_th(label) for label in tb_head) + '</tr></thead><tbody>' + ''.join(tb_rows) + '</tbody></table>'
 
-        # 挂载竞价大额极值封单明细与题材映射
+        # 挂载竞价极值封单多空双侧对照
         seals = tb.get("seals") or []
         seal_valid = [s for s in seals if isinstance(s, Mapping) and (s.get("seal_amount_yuan") or s.get("amount_yuan"))]
-        seal_valid.sort(key=lambda s: -(s.get("seal_amount_yuan") or s.get("amount_yuan") or 0))
-        top_seals = seal_valid[:5]
+        up_seals = [s for s in seal_valid if s.get("side") == "limit_up"]
+        down_seals = [s for s in seal_valid if s.get("side") == "limit_down"]
+        up_seals.sort(key=lambda s: -(s.get("seal_amount_yuan") or s.get("amount_yuan") or 0))
+        down_seals.sort(key=lambda s: -(s.get("seal_amount_yuan") or s.get("amount_yuan") or 0))
+        top_up = up_seals[:3]
+        top_down = down_seals[:3]
 
         seals_html = ""
-        if top_seals:
-            seal_items = []
-            for s in top_seals:
+        if top_up or top_down:
+            def _format_seal_item(s: Mapping[str, Any]) -> tuple[str, str]:
                 sym = s.get("symbol") or "—"
                 s_name = s.get("name") or sym
-                s_side = s.get("side")
-                is_up = s_side == "limit_up"
-                side_badge = ('<span style="display:inline-block;padding:1px 4px;font-size:9px;background:#fff1f0;color:#cf1322;border:1px solid #ffa39e;border-radius:2px;font-weight:700">涨停封单</span>'
-                              if is_up else
-                              '<span style="display:inline-block;padding:1px 4px;font-size:9px;background:#f6ffed;color:#389e0d;border:1px solid #b7eb8f;border-radius:2px;font-weight:700">跌停封单</span>')
                 s_amt = _money(s.get("seal_amount_yuan") or s.get("amount_yuan"))
                 assignment = s.get("assignment") if isinstance(s.get("assignment"), Mapping) else {}
                 primary_theme = assignment.get("primary_theme") if isinstance(assignment.get("primary_theme"), Mapping) else None
                 theme_name = primary_theme.get("name") if primary_theme else None
                 if not theme_name and s.get("hot_plates") and isinstance(s["hot_plates"], list):
                     theme_name = s["hot_plates"][0].get("name")
-                theme_tag = f' <span style="background:#e6f4ff;color:#0958d9;padding:1px 4px;border-radius:2px;font-size:9px">{_esc(theme_name)}</span>' if theme_name else ""
-                name_disp = f'<b>{_esc(s_name)}</b>' if s_name == sym else f'<b>{_esc(s_name)}</b> <small style="color:#667085">({_esc(sym)})</small>'
-                seal_items.append(f'{name_disp} {side_badge} <b>{_esc(s_amt)}</b>{theme_tag}')
+                theme_tag = f' <span style="background:#e6f4ff;color:#0958d9;padding:0 3px;border-radius:2px;font-size:9px">{_esc(theme_name)}</span>' if theme_name else ""
+                name_disp = f'<b>{_esc(s_name)}</b>' if s_name == sym else f'<b>{_esc(s_name)}</b><small style="color:#667085">({_esc(sym)})</small>'
+                html_snippet = f'{name_disp} <b>{_esc(s_amt)}</b>{theme_tag}'
+                theme_str = f"[{theme_name}]" if theme_name else ""
+                plain_snippet = f"{s_name}({sym}) {s_amt}{theme_str}"
+                return html_snippet, plain_snippet
 
-            seals_html = (f'<div style="margin-top:7px;padding:6px 8px;background:#f9fafb;border:1px solid #eaecf0;border-radius:4px;font-size:{font_sz}">'
-                          f'<b style="color:#344054">📌 竞价大额封单与核心题材映射：</b> '
-                          + " ； ".join(seal_items) + '</div>')
-            seal_plain_items = []
-            for s in top_seals:
-                sym = s.get("symbol") or "—"
-                s_name = s.get("name") or sym
-                s_side = "涨停封单" if s.get("side") == "limit_up" else "跌停封单"
-                s_amt = _money(s.get("seal_amount_yuan") or s.get("amount_yuan"))
-                assignment = s.get("assignment") if isinstance(s.get("assignment"), Mapping) else {}
-                primary = (assignment.get("primary_theme") or {}).get("name") if isinstance(assignment.get("primary_theme"), Mapping) else None
-                if not primary and s.get("hot_plates") and isinstance(s["hot_plates"], list):
-                    primary = s["hot_plates"][0].get("name")
-                theme_str = f"[{primary}]" if primary else ""
-                name_disp = s_name if s_name == sym else f"{s_name}({sym})"
-                seal_plain_items.append(f"{name_disp} {s_side}{s_amt}{theme_str}")
-            tb_text_lines.append("竞价大额封单映射：" + "；".join(seal_plain_items))
+            up_html_parts = [_format_seal_item(s)[0] for s in top_up]
+            down_html_parts = [_format_seal_item(s)[0] for s in top_down]
+            up_plain_parts = [_format_seal_item(s)[1] for s in top_up]
+            down_plain_parts = [_format_seal_item(s)[1] for s in top_down]
+
+            up_line_html = ('<span style="display:inline-block;padding:1px 4px;font-size:9px;background:#fff1f0;color:#cf1322;border:1px solid #ffa39e;border-radius:2px;font-weight:700">🔴买方涨停极值</span> '
+                            + " ； ".join(up_html_parts)) if top_up else ""
+            down_line_html = ('<span style="display:inline-block;padding:1px 4px;font-size:9px;background:#f6ffed;color:#389e0d;border:1px solid #b7eb8f;border-radius:2px;font-weight:700">🟢卖方跌停核按钮</span> '
+                              + " ； ".join(down_html_parts)) if top_down else ""
+
+            seals_content = "<br>".join(p for p in (up_line_html, down_line_html) if p)
+            seals_html = (f'<div style="margin-top:7px;padding:6px 8px;background:#f9fafb;border:1px solid #eaecf0;border-radius:4px;font-size:{font_sz};line-height:1.6">'
+                          f'{seals_content}</div>')
+
+            up_plain_str = "🔴买方涨停极值: " + "；".join(up_plain_parts) if top_up else ""
+            down_plain_str = "🟢卖方跌停核按钮: " + "；".join(down_plain_parts) if top_down else ""
+            plain_seals = " ｜ ".join(p for p in (up_plain_str, down_plain_str) if p)
+            tb_text_lines.append(f"竞价多空极值封单对照：{plain_seals}")
 
         tb_html_block = f'<h2{h2_style}>③ 热点题材竞价分桶{subtitle_span}</h2>{tb_table}{seals_html}'
     elif tb.get("status"):
@@ -460,7 +495,8 @@ def render_auction_email_digest(product: Mapping[str, Any], quickbrief: Mapping[
     replay_pill = '<span style="background:#fff4e5;color:#7a4b00;padding:3px 7px;border-radius:10px">历史回放样本·非实时信号</span>' if replay else ""
     degraded_html = f'<div style="color:#7c2d12;font-size:10px">{_esc(degraded_note)}</div>' if status != "READY" and degraded_note else ""
     aggregate_html = _esc(whole_batch)
-    tb_html_block, tb_text_lines = _render_theme_buckets_section(product.get("theme_buckets"), for_email=True)
+    table1_names = {p.get("plate_name") for p in plate_rows if isinstance(p, Mapping) and p.get("plate_name")}
+    tb_html_block, tb_text_lines = _render_theme_buckets_section(product.get("theme_buckets"), for_email=True, table1_plates=table1_names)
 
     html = ('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
         '<style>@media(max-width:700px){table{font-size:9px!important}td{padding:3px!important}}</style></head>'
@@ -627,7 +663,8 @@ def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
                           f"；本层占比 {_fmt((bucket.get('layer_amount_share') or 0) * 100 if bucket.get('layer_amount_share') is not None else None, 1, '%')}")
             ladder_text.append(f"昨{level}板 · {bucket.get('reason') or '原因待核实'} · {bucket.get('count', '—')}只；竞价额 {_money(bucket.get('auction_amount_yuan'))}{share_text}；中位 {_fmt(bucket.get('median_pct'), 2, '%')}；{promotion_text}；真实封单额 {_money(bucket.get('verified_seal_amount_yuan'))}\n" + "\n".join(_stock_text(stock) for stock in stocks if isinstance(stock, Mapping)))
     ladder_table = f'<table style="{_table_style()}" role="table"><thead><tr>{_th("昨日板高·原因桶", "42%")}{_th("个股明细（全部昨日涨停股）")}</tr></thead><tbody>{"".join(ladder_rows)}</tbody></table>'
-    tb_html_block, tb_text_lines = _render_theme_buckets_section(product.get("theme_buckets"), for_email=False)
+    table1_names = {p.get("plate_name") for p in plates if isinstance(p, Mapping) and p.get("plate_name")}
+    tb_html_block, tb_text_lines = _render_theme_buckets_section(product.get("theme_buckets"), for_email=False, table1_plates=table1_names)
     tb_text_section = ("\n\n③ 热点题材竞价分桶 [热榜成份股×盘前映射]\n" + "\n".join(tb_text_lines)) if tb_text_lines else ""
     text = (f"竞价全景 V6 | {product.get('trade_date', '日期待核实')} | {product.get('asof', '时点待核实')}\n"
         + " | ".join(f"{label}：{value}" for label, value in cards) + f"\n规则一句话：{rule_sentence}\n" + "\n".join(summaries) + f"\n{hot_note}\n{hot_coverage_note}\n\n① 板块竞价全景 [开盘啦全景板块]\n"
