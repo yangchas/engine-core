@@ -1039,3 +1039,49 @@ def test_shrink_live_report_trims_theme_buckets_and_quickbrief_rules():
     assert "theme_buckets.themes" in omitted_paths
     assert "auction_quickbrief.rules.plate_metrics" in omitted_paths
 
+
+
+def test_auction_panorama_uses_redis_hot_plates_without_catalog(tmp_path, monkeypatch):
+    from engine_core import auction_panorama
+    from engine_core.slices import SliceProviders, SliceReader, SliceResult
+    from test_auction_panorama import _facts
+
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path / "empty_core"))
+    monkeypatch.delenv("CORE_ALLOW_FILE_FALLBACK", raising=False)
+    key = "core:cache:data:hot_plates:2026-11-24:sha256-594970e05878c3e1"
+    available = "2026-11-24T10:30:08+08:00"
+    view = {"dataset": "hot_plates", "trade_date": "2026-11-24",
+            "version": "sha256-594970e05878c3e1", "available_at": available,
+            "business_status": "PROVISIONAL", "quality": {"partial": False}, "row_count": 1,
+            "rows": [{"plate_code": "801159", "name": "机器人概念", "strength": 20228,
+                      "change_pct": 2.654, "trade_date": "2026-11-24", "available_at": available}]}
+
+    class Redis(FakeRedis):
+        def scan_iter(self, match, count):
+            return iter([key] if match == "core:cache:data:hot_plates:2026-11-24:*" else [])
+
+        def get(self, requested):
+            return json.dumps(view) if requested == key else None
+
+    redis = Redis()
+    providers = SliceProviders(redis=redis).providers()
+
+    def facts_provider(reader, request):
+        return SliceResult.create(_facts()["rows"], {"slice_id": request.slice_id,
+            "status": "READY", "source": "fixture", "asof": request.asof,
+            "available_at": available, "quality": {}})
+
+    providers["auction_stock_facts"] = [facts_provider]
+    received = []
+    original = auction_panorama.build_auction_panorama
+
+    def capture(*args, **kwargs):
+        received.append(kwargs["hot_plate_ranks"])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(auction_panorama, "build_auction_panorama", capture)
+    assert not list(tmp_path.rglob("catalog.json"))
+    run_daily_pipeline(stage="auction", trade_date="2026-11-24", asof="10:31:00",
+                       out_root=tmp_path / "out", sources=DailySources(td=FakeTD(), redis=redis,
+                       slice_reader=SliceReader(providers)), dry_run=True)
+    assert received and received[0]["801159"]["hot_rank"] == 1

@@ -2314,15 +2314,13 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 ]
                 from .auction_panorama import (build_auction_panorama, store_auction_panorama,
                                                normalize_auction_stock_rows, normalize_hot_plates)
-                from .data_pipeline.storage import ArtifactCatalog
-                hot_catalog = ArtifactCatalog(os.environ.get("CORE_DATA_ROOT", "~/core-data")).locate(
-                    "hot_plates", str(stock_facts.get("trade_date")))
-                hot_rows, hot_ranks = [], {}
-                if hot_catalog and hot_catalog.is_file():
-                    hot_meta = json.loads(hot_catalog.read_text(encoding="utf-8"))
-                    hot_rows = ArtifactCatalog(os.environ.get("CORE_DATA_ROOT", "~/core-data")).read_rows(hot_catalog)
-                    hot_ranks = normalize_hot_plates(hot_rows, fetched_at=hot_meta["fetched_at"],
-                        available_at=hot_meta.get("available_at"),
+                hot_slice = slice_results.get("hot_plates_today")
+                hot_ranks = {}
+                if hot_slice and hot_slice.rows:
+                    available_at = hot_slice.meta.get("available_at")
+                    hot_ranks = normalize_hot_plates(hot_slice.rows,
+                        fetched_at=available_at or stock_facts["asof"],
+                        available_at=available_at,
                         asof=stock_facts["asof"], trade_date=stock_facts["trade_date"],
                         now=datetime.now(TZ).isoformat())
                 normalized_stock_rows = normalize_auction_stock_rows(stock_facts)
