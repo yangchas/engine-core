@@ -260,10 +260,22 @@ def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows,
         ordered = sorted(changed, key=lambda r: (-r['change_bp'], r['symbol']))
         deltas = [r['amount_yuan'] - previous[r['symbol']]['amount_yuan'] for r in priced
                   if r.get('amount_yuan') is not None and r['symbol'] in previous and previous[r['symbol']].get('amount_yuan') is not None]
+        sorted_by_amount = sorted((r for r in priced if r.get('amount_yuan') is not None),
+                                  key=lambda r: (-r['amount_yuan'], r['symbol']))
+        top1 = sorted_by_amount[0] if sorted_by_amount else None
+        top1_amount = top1['amount_yuan'] if top1 else None
+        up_count = sum(r['change_bp'] > 0 for r in changed)
         ka_amount = hot.get('amount_yuan')
         n = len(priced)
         themes.append({'plate_code': code, 'name': hot.get('name'), 'class': registry[code],
-                       'non_theme_reason': non_theme_reason(hot.get('name')),
+                       'non_theme_reason': non_theme_reason(hot.get('name'), extended=True),
+                       'up_count': up_count, 'down_count': sum(r['change_bp'] < 0 for r in changed),
+                       'flat_count': sum(r['change_bp'] == 0 for r in changed),
+                       'up_ratio': up_count / len(changed) if changed else 0.0,
+                       'top1_symbol': top1['symbol'] if top1 else None,
+                       'top1_name': ((stock_names or {}).get(top1['symbol']) or top1['symbol']) if top1 else None,
+                       'top1_amount_yuan': top1_amount, 'top1_share': top1_amount / amount if top1_amount is not None and amount else None,
+                       'top1_change_pct': top1['change_bp'] / 100 if top1 and top1.get('change_bp') is not None else None,
                        'member_count': len(symbols), 'auction_count': n, 'missing_price_count': len(symbols)-n,
                        'missing_change_count': n-len(changed), 'strong_count': strong, 'middle_count': middle, 'weak_count': weak,
                        'strong_share': strong/n if n else None, 'middle_share': middle/n if n else None, 'weak_share': weak/n if n else None,
@@ -307,12 +319,12 @@ def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows,
         for s, row in current.items():
             if s in stock_to_label and row.get('price_milli') is not None:
                 lbl = stock_to_label[s]
-                if not non_theme_reason(lbl):
+                if not non_theme_reason(lbl, extended=True):
                     buckets[lbl].append(row)
 
         members_by_label = defaultdict(set)
         for s, lbl in stock_to_label.items():
-            if not non_theme_reason(lbl):
+            if not non_theme_reason(lbl, extended=True):
                 members_by_label[lbl].add(s)
 
         theme_items = []
@@ -390,7 +402,8 @@ def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows,
     if not curated_themes:
         curated_themes = [t for t in themes if not t.get('non_theme_reason')
                           and (t.get('amount_yuan') or 0) >= 30_000_000
-                          and (t.get('auction_count') or 0) >= 5]
+                          and (t.get('auction_count') or 0) >= 5
+                          and (t.get('top1_share') or 0) < 0.80]
     return {'status':'available', 'themes':themes, 'curated_themes':curated_themes, 'market':{'amount_yuan':market_amount}, 'seals':seals,
             'notes':[f'category_missing={missing}; category_excluded={excluded}', f'curated_count={len(curated_themes)}/{len(themes)}', 'Stocks in multiple hot plates are counted once in each; totals overlap.']}
 

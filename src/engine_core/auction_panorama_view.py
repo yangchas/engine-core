@@ -141,7 +141,18 @@ def _streak_and_hot_conclusions(product: Mapping[str, Any]) -> list[str]:
     else:
         lines.append("短线赚钱效应：UNKNOWN（缺全市场或昨日连板有效竞价涨幅）")
     lines.append("【昨日热板溢价】UNKNOWN（缺昨日热板同版本成份股及全市场竞价平均涨幅）")
-    lines.append("竞价涨停封单合计：UNKNOWN；竞价跌停封单合计：UNKNOWN（缺逐股封单方向及终局盘口）")
+    tb = product.get("theme_buckets") or {}
+    seals = tb.get("seals") if isinstance(tb, Mapping) else None
+    valid = [s for s in (seals or []) if isinstance(s, Mapping)
+             and s.get("side") in ("limit_up", "limit_down")
+             and (s.get("seal_amount_yuan") or s.get("amount_yuan"))]
+    if valid:
+        up = [s for s in valid if s["side"] == "limit_up"]
+        down = [s for s in valid if s["side"] == "limit_down"]
+        total = lambda items: sum(s.get("seal_amount_yuan") or s.get("amount_yuan") for s in items)
+        lines.append(f"竞价涨停封单合计：{_money(total(up))}（{len(up)}只）；竞价跌停封单合计：{_money(total(down))}（{len(down)}只）")
+    else:
+        lines.append("竞价涨停封单合计：UNKNOWN；竞价跌停封单合计：UNKNOWN（缺逐股封单方向及终局盘口）")
     return lines
 
 
@@ -155,20 +166,28 @@ def _theme_behavior_tag(t: Mapping[str, Any]) -> tuple[str, str, str]:
     down_cnt = t.get("limit_down_count") or 0
     gap_bp = (w_bp - m_bp) if (isinstance(w_bp, (int, float)) and isinstance(m_bp, (int, float))) else 0
 
-    if w_bp is not None and m_bp is not None:
-        if (up_cnt > 0 and down_cnt > 0) or (s_cnt >= 2 and w_cnt >= 5):
-            return ("剧烈分化", '<span style="display:inline-block;padding:1px 3px;font-size:9px;background:#e6f4ff;color:#0958d9;border:1px solid #91caff;border-radius:2px">剧烈分化</span>', "[剧烈分化]")
-        elif w_bp > 0 and gap_bp >= 50:
-            return ("龙头领涨", '<span style="display:inline-block;padding:1px 3px;font-size:9px;background:#fff7e6;color:#d46b08;border:1px solid #ffd591;border-radius:2px;font-weight:700">龙头领涨</span>', "[龙头领涨]")
-        elif w_bp <= 0 and gap_bp >= 50:
-            return ("大票抗跌", '<span style="display:inline-block;padding:1px 3px;font-size:9px;background:#fffbe6;color:#b58900;border:1px solid #ffe58f;border-radius:2px">大票抗跌</span>', "[大票抗跌]")
-        elif gap_bp <= -50:
-            return ("大票拖累", '<span style="display:inline-block;padding:1px 3px;font-size:9px;background:#f9f0ff;color:#722ed1;border:1px solid #d3adf7;border-radius:2px">大票拖累</span>', "[大票拖累]")
-        elif w_bp >= 100 and m_bp >= 50 and s_cnt >= 3 and w_cnt == 0:
-            return ("共振走强", '<span style="display:inline-block;padding:1px 3px;font-size:9px;background:#fff1f0;color:#cf1322;border:1px solid #ffa39e;border-radius:2px;font-weight:700">共振走强</span>', "[共振走强]")
-        elif w_bp < -100 and m_bp < -100:
-            return ("承压走弱", '<span style="display:inline-block;padding:1px 3px;font-size:9px;background:#f6ffed;color:#389e0d;border:1px solid #b7eb8f;border-radius:2px">承压走弱</span>', "[承压走弱]")
-    return ("平稳分化", '<span style="display:inline-block;padding:1px 3px;font-size:9px;background:#f5f5f5;color:#595959;border-radius:2px">平稳分化</span>', "[平稳分化]")
+    n = t.get("auction_count") or 0
+    up_ratio = t.get("up_ratio") if isinstance(t.get("up_ratio"), (int, float)) else 0.0
+    if (up_cnt > 0 and down_cnt > 0) or (s_cnt >= 2 and w_cnt >= 5):
+        label = "剧烈分化"
+    elif isinstance(m_bp, (int, float)) and m_bp >= 250 and up_ratio >= .75 and (up_cnt >= 2 or (n > 0 and s_cnt / n >= .40)):
+        label = "共振主升"
+    elif up_cnt >= 4 and ((isinstance(m_bp, (int, float)) and m_bp >= 150) or up_ratio >= .65):
+        label = "涨停潮"
+    elif isinstance(w_bp, (int, float)) and w_bp > 0 and gap_bp >= 150:
+        label = "大票领涨"
+    elif isinstance(m_bp, (int, float)) and m_bp >= 150 and up_ratio >= .70:
+        label = "普涨活跃"
+    elif isinstance(w_bp, (int, float)) and w_bp <= 0 and gap_bp >= 100:
+        label = "大票抗跌"
+    elif gap_bp <= -100:
+        label = "大票拖累"
+    elif isinstance(w_bp, (int, float)) and isinstance(m_bp, (int, float)) and w_bp < -100 and m_bp < -100:
+        label = "承压走弱"
+    else:
+        label = "平稳分化"
+    badge = f'<span style="display:inline-block;padding:1px 3px;font-size:9px;background:#f5f5f5;color:#595959;border-radius:2px">{label}</span>'
+    return label, badge, f"[{label}]"
 
 
 def _render_theme_buckets_section(tb: Mapping[str, Any] | None, *, for_email: bool = False,
@@ -183,18 +202,19 @@ def _render_theme_buckets_section(tb: Mapping[str, Any] | None, *, for_email: bo
     subtitle_span = f' <span style="font-size:{subtitle_size};font-weight:normal;color:#667085">[热榜成份股×盘前映射]</span>'
 
     if tb.get("status") in ("available", "OK"):
+        from .auction_theme_cards import non_theme_reason
         curated = tb.get("curated_themes")
-        if not curated:
-            from .auction_theme_cards import non_theme_reason
+        if curated:
+            curated = [t for t in curated if not non_theme_reason(t.get("name") or "", extended=True)]
+        else:
             raw = tb.get("top_amount") or tb.get("themes") or []
             curated = [
                 t for t in raw
-                if not non_theme_reason(t.get("name") or "")
+                if not non_theme_reason(t.get("name") or "", extended=True)
                 and (t.get("amount_yuan") or 0) >= 30_000_000
                 and (t.get("auction_count") or 0) >= 5
+                and (t.get("top1_share") or 0) < 0.80
             ]
-            if not curated:
-                curated = raw
         top_themes = curated[:10]
         tb_rows = []
         cell_pad = "padding:5px 3px;" if for_email else "padding:6px 5px;"
