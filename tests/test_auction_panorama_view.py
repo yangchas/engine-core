@@ -514,3 +514,45 @@ def test_c1568_real_historical_render_and_size():
     for label in ('大票吸金', '④ 资金去向雷达', '中际旭创', '和林微纳', '炬光科技', '大东方', '好当家'):
         assert label in html and label in plain
     assert len(html.encode()) < 100_000
+
+
+def test_c1569_real_market_metrics():
+    import gzip
+    import json
+    from pathlib import Path
+    from engine_core.auction_panorama import build_auction_panorama
+    root = Path('/home/exedev/core-data')
+    path = next((root / 'auction_stock_facts/trade_date=2026-11-24').rglob('rows.jsonl.gz'))
+    with gzip.open(path, 'rt') as stream:
+        rows = [json.loads(line) for line in stream]
+    result = build_auction_panorama({'trade_date': '2026-11-24', 'asof': '2026-11-24T09:26:00+08:00', 'rows': rows}, plate_members=[], yesterday_pool=[])
+    distribution = result['overview']['market_distribution']
+    assert distribution['valid_n'] == sum(distribution[k] for k in distribution if k != 'valid_n')
+    assert result['overview']['board_style']['main_10cm']['n'] > 0
+    assert 0 < result['overview']['concentration']['top10_share'] < 1
+    weak = result['capital_flow']['weak_seals']
+    assert weak and all(r['seal_to_amount_ratio'] < .5 for r in weak)
+    assert [r['seal_to_amount_ratio'] for r in weak] == sorted(r['seal_to_amount_ratio'] for r in weak)
+
+
+def test_c1569_real_theme_partial_delta():
+    import json
+    from pathlib import Path
+    from engine_core.auction_theme_buckets import build_hot_theme_buckets
+    data = json.loads((Path(__file__).parent / 'fixtures/real/c1351/excerpt.json').read_text())
+    hot = next(h for h in data['hot'] if h['event_id'] == 'kaipan_hot_092520')
+    previous = {r['symbol']: r for r in data['auction_0924']}
+    registry = {str(r.get('plate_code') or r.get('code')): r.get('class', r.get('plate_class')) for r in data['registry']['rows']}
+    for plate in hot['rows']:
+        symbols = [r['symbol'] for r in data['auction_0925'] if r.get('price_milli') is not None and r['symbol'] in previous and any(str(p['plate_code']) == str(plate['plate_code']) for p in data['mapping'].get(r['symbol'], []))]
+        if registry.get(str(plate['plate_code'])) in ('THEME', 'NICHE') and len(symbols) >= 10:
+            symbols = symbols[:10]
+            break
+    current = [r for r in data['auction_0925'] if r['symbol'] in symbols]
+    prior = [previous[s] for s in symbols[:9]]
+    mapping = {s: data['mapping'][s] for s in symbols}
+    result = build_hot_theme_buckets(current + prior, mapping, [plate], data['registry']['rows'], plate_baselines={str(plate['plate_code']): 1.0})
+    theme = result['themes'][0]
+    assert theme['amount_delta_yuan'] == sum(r['amount_yuan'] - previous[r['symbol']]['amount_yuan'] for r in current if r['symbol'] in previous and r['symbol'] in symbols[:9])
+    assert theme['amount_delta_coverage'] == .9
+    assert theme['crowding_multiple'] == round(theme['amount_yuan'], 2)

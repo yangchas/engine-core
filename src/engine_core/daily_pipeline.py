@@ -2385,7 +2385,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     for code, members in relations.items() for symbol in members
                 ]
                 from .auction_panorama import (build_auction_panorama, store_auction_panorama,
-                                               normalize_auction_stock_rows, normalize_hot_plates)
+                                               normalize_auction_stock_rows, normalize_hot_plates,
+                                               load_short_term_context_td)
                 hot_slice = slice_results.get("hot_plates_today")
                 hot_ranks = {}
                 if hot_slice and hot_slice.rows:
@@ -2396,6 +2397,18 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                         asof=stock_facts["asof"], trade_date=stock_facts["trade_date"],
                         now=datetime.now(TZ).isoformat())
                 normalized_stock_rows = normalize_auction_stock_rows(stock_facts)
+                def _positive_value(row, key):
+                    try:
+                        value = float(row.get(key))
+                        return value if value > 0 else 0.0
+                    except (TypeError, ValueError):
+                        return 0.0
+                candidates = set(str(r.get('symbol') or r.get('code') or '').zfill(6) for r in yesterday_pool_rows)
+                candidates.update(sorted(normalized_stock_rows, key=lambda s: -_positive_value(normalized_stock_rows[s], 'auction_amount_yuan'))[:50])
+                candidates.update(sorted((s for s, r in normalized_stock_rows.items() if r.get('valid_price') is True and r.get('pct_change') is not None),
+                                         key=lambda s: -float(normalized_stock_rows[s]['pct_change']))[:30])
+                candidates.discard('000000')
+                prev_day_amounts, kline_positions = load_short_term_context_td(sorted(candidates), trade_date)
                 panorama = build_auction_panorama(
                     stock_facts, plate_members=panorama_members,
                     yesterday_pool=yesterday_pool_rows, yesterday_reasons=yesterday_reasons,
@@ -2406,7 +2419,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     hot_plate_ranks=hot_ranks.get("ranks", {}),
                     plate_classes=class_by_code,
                     previous_trade_date=previous_trade_date,
-                    normalized_rows=normalized_stock_rows)
+                    normalized_rows=normalized_stock_rows, prev_day_amounts=prev_day_amounts,
+                    kline_positions=kline_positions)
                 from .auction_quickbrief import build_auction_quickbrief
                 quickbrief = build_auction_quickbrief(
                     stock_facts, plate_members=panorama_members,
@@ -2437,6 +2451,22 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     from .auction_theme_buckets import read_and_build_hot
                     from .data_pipeline.plate_stock_index import verify_plate_reference
                     tb = read_and_build_hot(trade_date, redis_client=src.redis, tolerance_seconds=15)
+                    if tb:
+                        baselines = {}
+                        baseline_slice = slice_results.get('plate_amount_baseline')
+                        for row in baseline_slice.rows if baseline_slice else ():
+                            if row.get('slot') != '0925':
+                                continue
+                            value = _positive_value(row, 'median_yuan')
+                            if value:
+                                for key in ('plate_code', 'plate_name'):
+                                    if row.get(key):
+                                        baselines[str(row[key])] = value
+                        for theme in tb.get('themes', []) + tb.get('curated_themes', []):
+                            baseline = baselines.get(str(theme.get('plate_code'))) or baselines.get(str(theme.get('name')))
+                            amount = theme.get('amount_yuan')
+                            if theme.get('crowding_multiple') is None:
+                                theme['crowding_multiple'] = round(amount / baseline, 2) if amount is not None and baseline else None
                     if tb and tb.get("status") in ("available", "OK"):
                         panorama["theme_buckets"] = tb
                         payload["theme_buckets"] = tb

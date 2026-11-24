@@ -5,7 +5,7 @@ import json
 import math
 import os
 import statistics
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
@@ -212,6 +212,49 @@ def normalize_hot_plates(rows: Sequence[Mapping[str, Any]], *, fetched_at: str,
     return {"basis": basis, "ranks": ranks, "coverage": f"{len(ranks)}/{len(valid)}"}
 
 
+def load_short_term_context_td(symbols: Sequence[str], trade_date: str) -> tuple[dict[str, float], dict[str, str]]:
+    """Read a bounded set of symbols from the authoritative daily K-line store."""
+    if not os.environ.get('TD_CONFIG') or not symbols:
+        return {}, {}
+    store = None
+    try:
+        from .data_pipeline.td_sink import TaosStore
+        date = datetime.strptime(trade_date, '%Y-%m-%d').date()
+        normalized = sorted({_symbol(s) for s in symbols})
+        if any(len(s) != 6 or not s.isascii() or not s.isdigit() for s in normalized):
+            return {}, {}
+        quoted = ','.join("'" + s + "'" for s in normalized)
+        start = (date - timedelta(days=35)).isoformat()
+        store = TaosStore('core_data')
+        rows = store._run(f"SELECT symbol, ts, high, low, close, amount_yuan FROM core_data.daily_kline_v1 WHERE symbol IN ({quoted}) AND ts >= '{start}' AND ts < '{date.isoformat()}' ORDER BY ts DESC", strict=True)
+        grouped = {}
+        for symbol, ts, high, low, close, amount in rows:
+            group = grouped.setdefault(_symbol(symbol), [])
+            if len(group) < 20:
+                group.append((high, low, close, amount))
+        amounts, positions = {}, {}
+        for symbol, group in grouped.items():
+            high, low, close, amount = group[0]
+            amount, close = _num(amount), _num(close)
+            if amount is not None and amount > 0:
+                amounts[symbol] = amount
+            highs = [_num(r[0]) for r in group]; lows = [_num(r[1]) for r in group]
+            if close is None or any(v is None for v in highs + lows):
+                continue
+            maximum, minimum = max(highs), min(lows)
+            if close >= maximum * .995:
+                positions[symbol] = '新高'
+            elif maximum > minimum:
+                position = (close - minimum) / (maximum - minimum)
+                positions[symbol] = '高位' if position >= .8 else '低位' if position <= .3 else '中位'
+        return amounts, positions
+    except Exception:
+        return {}, {}
+    finally:
+        if store is not None:
+            store.close()
+
+
 def build_auction_panorama(stock_facts: Mapping[str, Any], *,
                            plate_members: Any,
                            yesterday_pool: Sequence[Mapping[str, Any]],
@@ -224,7 +267,9 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
                            plate_classes: Mapping[str, str] | None = None,
                            amount_baseline_basis: str = "PIT",
                            previous_trade_date: str | None = None,
-                           normalized_rows: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
+                           normalized_rows: Mapping[str, Mapping[str, Any]] | None = None,
+                           prev_day_amounts: Mapping[str, float] | None = None,
+                           kline_positions: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Build the schema-versioned facts. All monetary values are yuan; pct_change is percent."""
     trade_date = str(stock_facts.get("trade_date", ""))
     asof = str(stock_facts.get("asof", ""))
@@ -866,6 +911,41 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
         "verified_seal_scope": f"{len(seals_verified)}/{candidates}" if seals_verified else "待核实",
         "verified_seal_label": stock_facts.get("seal_label", "待核实"),
         "market_structure": (f"有效价格上涨{up_n}/{len(changes)}；中位涨幅{market_median:.2f}%" if changes and market_median is not None else "有效价格样本不足")}
+    distribution = dict.fromkeys(('limit_up', 'ge_7', 'p5_to_7', 'p3_to_5', 'p0_to_3', 'flat', 'm3_to_0', 'm5_to_m3', 'le_m5', 'limit_down'), 0)
+    for row in price_rows:
+        pct = _num(row.get('pct_change'))
+        side = (row.get('seal') or {}).get('seal_side')
+        bucket = ('limit_up' if side == 'up' else 'limit_down' if side == 'down' else
+                  'ge_7' if pct >= 7 else 'p5_to_7' if pct >= 5 else 'p3_to_5' if pct >= 3 else
+                  'p0_to_3' if pct > 0 else 'flat' if pct == 0 else 'm3_to_0' if pct > -3 else
+                  'm5_to_m3' if pct > -5 else 'le_m5')
+        distribution[bucket] += 1
+    distribution['valid_n'] = len(price_rows)
+    overview['market_distribution'] = distribution
+    styles = {}
+    for label, prefixes in (('main_10cm', ('00', '60')), ('gem_star_20cm', ('300', '301', '688'))):
+        group = [r for r in price_rows if r['symbol'].startswith(prefixes)]
+        group_amount = sum((_num(r.get('auction_amount_yuan')) or 0) for r in group if (_num(r.get('auction_amount_yuan')) or 0) > 0)
+        styles[label] = {'n': len(group), 'amount_yuan': group_amount if group else None,
+                         'share': group_amount / market_amount if market_amount else None,
+                         'median_pct': _median([_num(r['pct_change']) for r in group]),
+                         'ge_5_n': sum(_num(r['pct_change']) >= 5 for r in group)}
+    overview['board_style'] = styles
+    ordered_amounts = sorted(valid_amounts, reverse=True)
+    overview['concentration'] = {f'top{n}_share': sum(ordered_amounts[:n]) / market_amount if market_amount else None for n in (10, 20, 50, 100)}
+    overview['concentration']['top20pct_share'] = sum(ordered_amounts[:math.ceil(len(ordered_amounts) * .2)]) / market_amount if market_amount else None
+    def enrich(row):
+        amount = _num(row.get('auction_amount_yuan'))
+        seal = _num(row.get('seal_amount_yuan'))
+        previous = _num((prev_day_amounts or {}).get(row['symbol']))
+        row['seal_to_amount_ratio'] = round(seal / amount, 2) if seal is not None and seal > 0 and amount is not None and amount > 0 else None
+        row['burst_ratio'] = round(amount / previous, 4) if previous is not None and previous > 0 and amount is not None and amount > 0 else None
+        row['kline_pos_label'] = (kline_positions or {}).get(row['symbol'])
+        return row
+    for layer in ladder:
+        for bucket in layer['buckets']:
+            for row in bucket['stocks']:
+                enrich(row)
     # Rule-based extreme values are attached to relevant facts, plus a compact footer.
     gap = {"symbol": low["symbol"], "pct_change": _num(low.get("pct_change"))} if low else None
     extremes = {"largest_gap_down": gap,
@@ -892,11 +972,16 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
                 "at_official_limit": _at_official_limit(row), "seal_side": seal.get("seal_side")}
     amount_symbols = sorted((s for s, row in by_symbol.items() if (_num(row.get("auction_amount_yuan")) or 0) > 0),
                             key=lambda s: (-_num(by_symbol[s].get("auction_amount_yuan")), s))
-    capital_rows = [capital_row(s) for s in amount_symbols]
+    capital_rows = [enrich(capital_row(s)) for s in amount_symbols]
     nuclear = [capital_row(s) for s in pool_by_symbol if s in by_symbol and _has_valid_auction_price(by_symbol[s])
                and _num(by_symbol[s].get("pct_change")) is not None and _num(by_symbol[s].get("pct_change")) < 0]
+    nuclear = [enrich(row) for row in nuclear]
     nuclear.sort(key=lambda row: (row["pct_change"], row["symbol"]))
-    capital_flow = {"top_amount": capital_rows[:10],
+    weak_seals = [r for r in capital_rows if r['seal_side'] == 'up' and r['seal_to_amount_ratio'] is not None and r['seal_to_amount_ratio'] < .5]
+    weak_seals.sort(key=lambda r: (r['seal_to_amount_ratio'], r['symbol']))
+    bursts = [r for r in capital_rows if r['auction_amount_yuan'] >= 30_000_000 and r['burst_ratio'] is not None]
+    bursts.sort(key=lambda r: (-r['burst_ratio'], r['symbol']))
+    capital_flow = {"weak_seals": weak_seals, "burst_top": bursts[:8], "top_amount": capital_rows[:10],
                     "rush_buy": [r for r in capital_rows if r["at_official_limit"] is False and r["seal_side"] != "up"
                                  and r["pct_change"] is not None and r["pct_change"] >= 5][:8],
                     "pool_nuclear": nuclear[:5],
