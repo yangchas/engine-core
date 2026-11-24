@@ -149,6 +149,24 @@ def _hot_plate_gap_rows(root, day):
         return None
 
 
+def _td_daily_kline_verified(day: str) -> bool:
+    if not day or not os.environ.get("TD_CONFIG"):
+        return False
+    store = None
+    try:
+        from ..data_pipeline.td_sink import TaosStore
+        store = TaosStore("core_data")
+        return store.day_counts([day]).get(day, 0) >= 4500
+    except Exception:
+        return False
+    finally:
+        if store is not None:
+            try:
+                store.close()
+            except Exception:
+                pass
+
+
 def validate_handler_postcondition(name: str, day: str, root: str | Path,
                                    datasets: Any = None,
                                    event_args: Any = None) -> tuple[bool, str]:
@@ -259,6 +277,8 @@ def validate_handler_postcondition(name: str, day: str, root: str | Path,
             rows, meta = read_pool(target, datetime.now().astimezone().isoformat())
             if meta["status"] == "MISSING" or not rows:
                 return False, dataset + "_missing_or_empty"
+            continue
+        if dataset == "daily_kline" and _td_daily_kline_verified(target):
             continue
         manifest_path = catalog.locate(dataset, target)
         if manifest_path is None or not manifest_path.is_file():

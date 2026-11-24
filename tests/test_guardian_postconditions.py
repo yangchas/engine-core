@@ -44,7 +44,8 @@ def test_kaipan_fetch_requires_nonempty_previous_day_limit_pool(tmp_path, monkey
     assert validate_handler_postcondition("kaipan_fetch", "2026-11-11", tmp_path) == (True, "")
 
 
-def test_daily_kline_postcondition_reads_catalog(tmp_path):
+def test_daily_kline_postcondition_reads_catalog(tmp_path, monkeypatch):
+    monkeypatch.delenv("TD_CONFIG", raising=False)
     assert not validate_handler_postcondition("postmarket_data", "2026-10-20", tmp_path)[0]
     _catalog(tmp_path, "daily_kline", "2026-10-20", REAL_ROWS)
     assert validate_handler_postcondition("baostock_probe", "2026-10-20", tmp_path) == (True, "")
@@ -65,8 +66,9 @@ def test_premarket_requires_reference_manifests(tmp_path):
     assert validate_handler_postcondition("premarket_data", "2026-10-20", tmp_path) == (True, "")
 
 
-def test_partial_daily_kline_is_neither_present_nor_a_passed_postcondition(tmp_path):
+def test_partial_daily_kline_is_neither_present_nor_a_passed_postcondition(tmp_path, monkeypatch):
     """Real shape from 2026-10-21: a timed-out Baostock attempt committed 1774 of 5224 rows (coverage 0.34)."""
+    monkeypatch.delenv("TD_CONFIG", raising=False)
     from datetime import datetime
     from engine_core.guardian.registry import catalog_partition_present
     from engine_core.data_pipeline.storage import ArtifactCatalog
@@ -90,6 +92,48 @@ def test_partial_daily_kline_is_neither_present_nor_a_passed_postcondition(tmp_p
         source="baostock")
     assert catalog_partition_present(ArtifactCatalog(tmp_path).read(), "daily_kline", day, now)
     assert validate_handler_postcondition("baostock_probe", day, tmp_path) == (True, "")
+
+
+def test_daily_kline_td_authority_bypasses_catalog(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import td_sink
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+
+    day = "2026-11-24"
+    closed = []
+    class Store:
+        def __init__(self, database):
+            assert database == "core_data"
+        def day_counts(self, dates):
+            assert dates == [day]
+            return {day: 5224}
+        def close(self):
+            closed.append(True)
+    monkeypatch.setenv("TD_CONFIG", "configured")
+    monkeypatch.setattr(td_sink, "TaosStore", Store)
+    monkeypatch.setattr(ArtifactCatalog, "locate", lambda *args: (_ for _ in ()).throw(AssertionError("catalog consulted")))
+    for name in ("baostock_probe", "postmarket_data"):
+        assert validate_handler_postcondition(name, day, tmp_path) == (True, "")
+    assert len(closed) == 2
+    assert not (tmp_path / "catalog.json").exists()
+
+
+def test_daily_kline_td_under_threshold_falls_back_to_catalog(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import td_sink
+
+    day = "2026-11-24"
+    closed = []
+    class Store:
+        def __init__(self, database):
+            assert database == "core_data"
+        def day_counts(self, dates):
+            assert dates == [day]
+            return {day: 4499}
+        def close(self):
+            closed.append(True)
+    monkeypatch.setenv("TD_CONFIG", "configured")
+    monkeypatch.setattr(td_sink, "TaosStore", Store)
+    assert validate_handler_postcondition("baostock_probe", day, tmp_path) == (False, "daily_kline_manifest_missing")
+    assert closed == [True]
 
 
 def test_hot_plate_history_postcondition_requires_each_prior_session_saved_or_gapped(
