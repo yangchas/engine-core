@@ -78,7 +78,7 @@ def _pct_cell(value: Any) -> str:
     shown = _fmt(value, 2, "%")
     color = "#c83b3b" if isinstance(value, (int, float)) and value > 0 else (
         "#17804a" if isinstance(value, (int, float)) and value < 0 else "#667085")
-    return f'<span style="color:{color};font-weight:700">{_esc(shown)}</span>'
+    return f'<b style="color:{color}">{_esc(shown)}</b>'
 
 
 def _rank_cell(value: Any, label: str = "") -> str:
@@ -273,6 +273,9 @@ def _render_theme_buckets_section(tb: Mapping[str, Any] | None, *, for_email: bo
             share_is_big = isinstance(share_val, (int, float)) and share_val >= 0.05
             share_html = f'<span style="color:{"#1d39c4;font-weight:600" if share_is_big else "#667085"}">{t_share}</span>'
             cell_amount = f"{amount_html}<br>{share_html}"
+            crowd = t.get("crowding_multiple")
+            if isinstance(crowd, (int, float)) and not isinstance(crowd, bool):
+                cell_amount += f'<br><small style="color:{"#c65d00" if crowd >= 2 else "#1769aa"}">放量{crowd:.1f}x</small>' 
 
             # 4. 金额加权涨幅 vs 算术均涨 (A股红涨绿跌，加权涨幅加粗反映主力资金方向)
             w_bp = t.get("weighted_mean_change_bp")
@@ -284,6 +287,9 @@ def _render_theme_buckets_section(tb: Mapping[str, Any] | None, *, for_email: bo
             w_html = f'<span style="color:{w_color};font-weight:700">{_fmt(w_pct, 2, "%")}</span>' if w_pct is not None else "—"
             m_html = f'<span style="color:{m_color}">{_fmt(m_pct, 2, "%")}</span>' if m_pct is not None else "—"
             cell_mean = f'<span style="font-size:9px;color:#8c8c8c">加权</span> {w_html}<br><span style="font-size:9px;color:#8c8c8c">算术</span> {m_html}'
+            delta = t.get("amount_delta_yuan")
+            if isinstance(delta, (int, float)) and not isinstance(delta, bool):
+                cell_mean += f'<br><small style="color:{"#c83b3b" if delta > 0 else "#17804a" if delta < 0 else "#667085"}">24→25 {delta / 1e8:+.2f}亿</small>'
             mean_plain = f"加权{_fmt(w_pct, 2, '%')}·算术{_fmt(m_pct, 2, '%')}" if w_pct is not None else f"均涨{_fmt(m_pct, 2, '%')}"
 
             # 5. 多空强弱分布 (强>=+3% 红, 平 灰, 弱<=-3% 绿)
@@ -651,6 +657,15 @@ def _render_ladder_theme_matrix(product: Mapping[str, Any], *, for_email: bool =
         line = f'{label} {progress}{gap} · 中位 {_fmt(med(items), 2, "%")} · 真实封单额 {seal_total(items)}'
         text.append(line)
         blocks.append(f'<div style="display:inline-block;vertical-align:top;width:19%;min-width:120px;box-sizing:border-box;padding:4px;overflow-wrap:anywhere"><b>{_esc(label)}</b><br><span style="display:inline-block;border-radius:50%;padding:7px;background:{"#c83b3b" if n else "#98a2b3"};color:white">{n}</span><br>{_esc(progress)}<br><span style="color:#c65d00">{_esc(gap)}</span><br>中位 {_pct_cell(med(items))}<br>真实封单额 {seal_total(items)}</div>')
+    capsules = []
+    for name, items in main[:8]:
+        sealed = sum(promoted(i) for i in items)
+        capsules.append(f'<span style="display:inline-block;border-radius:12px;background:#f3f5f8;padding:4px 8px;margin:2px">{_esc(name)} <b style="color:#c83b3b">{sealed}</b>:<span style="color:#667085">{len(items)-sealed}</span></span>')
+    blocks.append('<div>题材封板:未封 ' + ''.join(capsules) + '</div>')
+    weak = (product.get('capital_flow') or {}).get('weak_seals') or []
+    weak = [r for r in weak if number(r.get('seal_to_amount_ratio')) and r['seal_to_amount_ratio'] < .5]
+    if weak:
+        blocks.append('<div style="background:#fff6e8;padding:6px">封成比 ' + ' · '.join(_esc(str(r.get('name') or r.get('symbol') or '—')) + f" {r['seal_to_amount_ratio']:.2f}x" for r in weak) + '</div>')
     cards = []
     for name, items in main:
         n = sum(promoted(i) for i in items)
@@ -659,6 +674,7 @@ def _render_ladder_theme_matrix(product: Mapping[str, Any], *, for_email: bool =
         header = f'{name} · {badge} · 拟晋级 {n}/{len(items)} ({n / len(items) * 100:.1f}%) · 中位涨幅 {_fmt(med(items), 2, "%")} · 竞价额 {_money(total(items, "auction_amount_yuan"))} · 封单额 {seal_total(items)}'
         text.append(header)
         card = [f'<section data-theme="{_esc(name)}" style="border:1px solid #d0d5dd;border-radius:6px;margin:8px 0;padding:8px;overflow-wrap:anywhere"><b>{_esc(name)}</b> · {_esc(badge)} · 拟晋级 {n}/{len(items)} ({n / len(items) * 100:.1f}%) · 中位涨幅 {_pct_cell(med(items))} · 竞价额 {_money(total(items, "auction_amount_yuan"))} · 封单额 {seal_total(items)}']
+        card.append('<table width="100%" style="table-layout:fixed"><tr>' + ''.join('<th>' + h + '</th>' for h in ('股票(身位)', '涨幅', '竞价额 / 封单', '爆量 / 日K位')) + '</tr></table>')
         for level in sorted({l for l, _ in items}, reverse=True):
             subset = [i for i in items if i[0] == level]
             title = f'昨{level}板' if level else '拟首板（今日新涨停）'
@@ -669,19 +685,29 @@ def _render_ladder_theme_matrix(product: Mapping[str, Any], *, for_email: bool =
                 if not selected:
                     continue
                 selected.sort(key=lambda i: (-(i[1].get('auction_amount_yuan') if number(i[1].get('auction_amount_yuan')) else -1), str(i[1].get('symbol') or '')))
-                card.append(f'<div>{label}：')
-                def render_stock(item):
-                    stock = item[1]
-                    status = ' · 待核实' if stock.get('promotion_status') == 'UNVERIFIED' else ''
-                    return f'{_esc(stock.get("name") or stock.get("symbol") or "—")}{status} {_pct_cell(stock.get("pct_change"))} · 封单{_esc(_money(stock.get("seal_amount_yuan")))} · 竞价额{_esc(_money(stock.get("auction_amount_yuan")))} · 额{_esc(_rank(stock.get("amount_rank")))}'
+                card.append(f'<div>{label}：</div>')
+                def stock_table(selected_rows):
+                    rendered = []
+                    for item in selected_rows:
+                        stock = item[1]
+                        name = stock.get("name") or stock.get("symbol") or "—"
+                        position = f"昨{item[0]}板" if item[0] else "首板"
+                        seal = stock.get("seal_amount_yuan")
+                        ratio = stock.get("seal_to_amount_ratio")
+                        seal_html = (f'<br><span style="color:#c83b3b">封单{_esc(_money(seal))}</span>' if number(seal) else '')
+                        if number(ratio):
+                            seal_html += f'<br>封成比{ratio:.2f}x'
+                        burst = stock.get("burst_ratio")
+                        detail = (f'爆量{burst * 100:.0f}% ' if number(burst) else '') + str(stock.get("kline_pos_label") or '')
+                        rendered.append(f'<tr><td>{_esc(name)} <small>{_esc(position)}</small></td><td align="right" bgcolor="#eef6ff">{_pct_cell(stock.get("pct_change"))}</td><td>{_esc(_money(stock.get("auction_amount_yuan")))}{seal_html}</td><td>{_esc(detail)}</td></tr>')
+                    return '<table width="100%" style="table-layout:fixed">' + ''.join(rendered) + '</table>'
                 visible = selected[:3] if level == 1 and flag != 'yes' else selected
                 hidden = selected[3:] if level == 1 and flag != 'yes' else []
-                card.append('<br>'.join(render_stock(i) for i in visible))
+                card.append(stock_table(visible))
                 if hidden:
                     m = med(hidden)
                     mid = f'{m:+.2f}%' if m is not None else '—'
-                    card.append(f'<details><summary>展开其余 {len(hidden)} 只（中位 {mid}）</summary>' + '<br>'.join(render_stock(i) for i in hidden) + '</details>')
-                card.append('</div>')
+                    card.append(f'<details><summary>展开其余 {len(hidden)} 只（中位 {mid}）</summary>' + stock_table(hidden) + '</details>')
                 text.append(label + '：' + '；'.join(_stock_text(s) for _, s in selected))
             card.append('</div>')
         card.append('</section>')
@@ -736,10 +762,10 @@ def _render_style_and_capital_flow(product: Mapping[str, Any]) -> tuple[str, str
     bar_html = f'<div style="margin:5px 4px;padding:8px;background:#eef5ff;color:#20466c;font-size:12px">{_esc(bar)} <span style="color:#667085">（昨≥2板均幅减市场均幅）</span></div>'
     lines = [bar + "（昨≥2板均幅减市场均幅）", "④ 资金去向雷达" + ("（历史报告已收录个股，非全市场）" if historical else "")]
     sections = []
-    for key, title in (("top_amount", "🔥 大资金主战场（竞价额 Top10）"), ("rush_buy", "🚀 竞价强抢筹（高开≥5%非一字 Top8）"), ("pool_nuclear", "⚠️ 昨涨停负反馈 / 核按钮 Top5")):
+    for key, title in (("top_amount", "🔥 大资金主战场（竞价额 Top10）"), ("burst_top" if flow.get("burst_top") else "rush_buy", "🚀 爆量/强抢筹 Top8"), ("pool_nuclear", "⚠️ 昨涨停负反馈 / 核按钮 Top5")):
         lines.append(title)
         rows_html = []
-        for row in flow.get(key, []):
+        for row in flow.get(key, [])[:8 if key != "pool_nuclear" else 5]:
             name = row.get("name") or row.get("symbol") or "—"
             theme = row.get("primary_theme") or row.get("primary_reason") or "—"
             streak = row.get("yesterday_streak")
@@ -748,6 +774,11 @@ def _render_style_and_capital_flow(product: Mapping[str, Any]) -> tuple[str, str
                 tags = "20cm · " + tags
             if key == "top_amount" and row.get("seal_amount_yuan") is not None:
                 tags = "封" + _money(row.get("seal_amount_yuan")) + " · " + tags
+            burst = row.get("burst_ratio")
+            if isinstance(burst, (int, float)):
+                tags += f" · 爆量{burst * 100:.0f}%"
+            if row.get("kline_pos_label"):
+                tags += " · 日K位" + str(row["kline_pos_label"])
             rank = _rank_cell(row.get("amount_rank")) + " " if key == "top_amount" else ""
             line = f"{rank}{name} [{theme}] {_fmt(row.get('pct_change'), 2, '%')} {_money(row.get('auction_amount_yuan'))} {tags}"
             lines.append(line)
@@ -833,12 +864,15 @@ def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
         prh_n = prh.get("plate_count", "—")
         summaries.append(f"板块映射：{prh_status} · 板块 {prh_n} 个 · 覆盖率 {cov_text}")
     cards_html = '<table role="presentation" width="100%"><tr>' + ''.join(
-        f'<td style="width:50%;padding:4px;vertical-align:top"><div style="background:#f6f8fb;border:1px solid #e4e7ec;padding:9px">'
+        f'<td style="width:50%;padding:4px;vertical-align:top"><div style="background:#f6f8fb;border:1px solid #e4e7ec;border-top:3px solid #3275c6;padding:9px">'
         f'<div style="font-size:10px;color:#667085">{_esc(label)}</div><strong style="display:block;padding-top:3px;font-size:13px">{_esc(value)}</strong></div></td>'
         for label, value in cards[:2]) + '</tr><tr>' + ''.join(
-        f'<td style="width:50%;padding:4px;vertical-align:top"><div style="background:#f6f8fb;border:1px solid #e4e7ec;padding:9px">'
+        f'<td style="width:50%;padding:4px;vertical-align:top"><div style="background:#f6f8fb;border:1px solid #e4e7ec;border-top:3px solid #3275c6;padding:9px">'
         f'<div style="font-size:10px;color:#667085">{_esc(label)}</div><strong style="display:block;padding-top:3px;font-size:13px">{_esc(value)}</strong></div></td>'
         for label, value in cards[2:4]) + '</tr></table>'
+    pieces = cards_html.split("border-top:3px solid #3275c6")
+    if len(pieces) == 5:
+        cards_html = pieces[0] + ''.join('border-top:3px solid ' + color + piece for color, piece in zip(("#3275c6", "#c83b3b", "#e58a25", "#8d58b5"), pieces[1:]))
     cards_html += (f'<div style="margin:5px 4px;padding:8px 9px;background:#f6f8fb;border:1px solid #e4e7ec">'
                    f'<span style="font-size:10px;color:#667085">规则一句话</span>'
                    f'<strong style="display:block;padding-top:3px;font-size:12px">{_esc(rule_sentence)}</strong></div>')
@@ -867,7 +901,22 @@ def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
                  f" · 竞价额有效 {plate.get('valid_amount_count', '—')}/{size if size is not None else '—'}"
                  f"<br>Top1占比 {_fmt((plate.get('top1_share') or 0) * 100 if plate.get('top1_share') is not None else None, 1, '%')} · 开盘啦热板名次：{_esc(_hot_rank(plate.get('hot_rank')))}")
         stock_list = plate.get("stocks") if isinstance(plate.get("stocks"), list) else []
-        stocks = "<br>".join(_esc(_stock_text(stock)) for stock in stock_list if isinstance(stock, Mapping)) or "个股待核实"
+        candidates = [stock for stock in stock_list if isinstance(stock, Mapping)]
+        def keep(stock):
+            amount, pct = stock.get("auction_amount_yuan"), stock.get("pct_change")
+            return not (isinstance(amount, (int, float)) and isinstance(pct, (int, float)) and amount < 10_000_000 and abs(pct) < 3 and not stock.get("yesterday_streak") and not stock.get("at_official_limit"))
+        filtered = [stock for stock in candidates if keep(stock)]
+        if candidates and not filtered:
+            filtered = [max(candidates, key=lambda stock: stock.get("auction_amount_yuan") if isinstance(stock.get("auction_amount_yuan"), (int, float)) else -1)]
+        stock_rows = []
+        for stock in filtered:
+            seal = stock.get("seal_amount_yuan")
+            seal_html = f'<br>封单{_esc(_money(seal))}' if isinstance(seal, (int, float)) else ''
+            tags = ' · '.join(str(tag) for tag in (stock.get("extremes") or [])[:3])
+            if stock.get("kline_pos_label"):
+                tags += (' · ' if tags else '') + str(stock["kline_pos_label"])
+            stock_rows.append(f'<tr><td>{_esc(stock.get("name") or stock.get("symbol") or "—")}</td><td align="right" bgcolor="#eef6ff">{_pct_cell(stock.get("pct_change"))}</td><td>{_esc(_money(stock.get("auction_amount_yuan")))}{seal_html}</td><td>{_esc(tags)}</td></tr>')
+        stocks = ('<table style="width:100%;table-layout:fixed;font-size:11px"><tr>' + ''.join('<th>' + h + '</th>' for h in ('股票/代码', '涨幅', '竞价额 / 封单', '标签/日K位')) + '</tr>' + ''.join(stock_rows) + '</table>') if filtered else '个股待核实' 
         plate_rows.append("<tr>" + _td(f"{_esc(name)}<br><span style=\"color:#667085\">{_esc(count)}</span>") + _td(stats + "<br>" + stocks) + "</tr>")
         reasons = plate.get("selection_reasons", plate.get("selection_reason", []))
         if isinstance(reasons, str): reasons = [reasons]
@@ -879,7 +928,20 @@ def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
     table1_names = {p.get("plate_name") for p in plates if isinstance(p, Mapping) and p.get("plate_name")}
     tb_html_block, tb_text_lines = _render_theme_buckets_section(product.get("theme_buckets"), for_email=False, table1_plates=table1_names)
     style_bar, radar_html, capital_text = _render_style_and_capital_flow(product)
+    board = overview.get("board_style")
+    if isinstance(board, Mapping):
+        parts = []
+        for key, label in (("gem_star_20cm", "20cm(创/科)"), ("main_10cm", "10cm(主板)")):
+            group = board.get(key) or {}
+            share = group.get("share")
+            parts.append(f"{label} 中位{_fmt(group.get('median_pct'), 2, '%')} / 成交额占比{_fmt(share * 100 if isinstance(share, (int, float)) else None, 1, '%')} / ≥5% {group.get('ge_5_n', '—')}家")
+        cards_html += '<div style="padding:6px;background:#eef5ff;font-size:11px">' + _esc(' · '.join(parts)) + '</div>'
     cards_html += style_bar
+    distribution = overview.get("market_distribution")
+    if isinstance(distribution, Mapping):
+        bands = [('涨停','limit_up'),('≥7%','ge_7'),('5~7%','p5_to_7'),('3~5%','p3_to_5'),('0~3%','p0_to_3'),('平盘','flat'),('-3~0%','m3_to_0'),('-5~-3%','m5_to_m3'),('≤-5%','le_m5'),('跌停','limit_down')]
+        maximum = max((distribution.get(key, 0) for _, key in bands if isinstance(distribution.get(key, 0), (int, float))), default=0)
+        cards_html += '<div style="padding:8px"><b>全市场10档竞价涨跌分布</b>' + ''.join(f'<div style="display:flex;align-items:center;font-size:11px"><span style="width:52px">{_esc(label)}</span><div style="width:65%;background:#f2f4f7"><div style="height:9px;width:{(distribution.get(key, 0) / maximum * 100 if maximum and isinstance(distribution.get(key), (int, float)) else 0):.2f}%;background:{"#c83b3b" if i < 5 else "#98a2b3" if i == 5 else "#17804a"}"></div></div><span> {_esc(distribution.get(key, "—"))}家</span></div>' for i, (label, key) in enumerate(bands)) + '</div>' 
     tb_text_section = ("\n\n③ 热点题材竞价分桶 [热榜成份股×盘前映射]\n" + "\n".join(tb_text_lines)) if tb_text_lines else ""
     text = (f"竞价全景 V6 | {product.get('trade_date', '日期待核实')} | {product.get('asof', '时点待核实')}\n"
         + " | ".join(f"{label}：{value}" for label, value in cards) + f"\n规则一句话：{rule_sentence}\n" + "\n".join(summaries) + f"\n{hot_note}\n{hot_coverage_note}\n\n① 板块竞价全景 [开盘啦全景板块]\n"
@@ -890,7 +952,7 @@ def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
         f'<title>竞价全景 V6</title></head><body style="margin:0;padding:10px;background:#eef2f6;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;color:#26364a">'
         f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center"><table role="presentation" width="100%" style="max-width:760px;background:#fff">'
         f'<tr><td style="padding:12px 14px;background:#172b43;color:#fff"><div style="font-size:16px;font-weight:700">竞价全景 V6　·　{_esc(product.get("trade_date", "日期待核实"))}　·　{_esc(product.get("asof", "时点待核实"))}　·　{_esc(overview.get("status", "PARTIAL"))}</div></td></tr>'
-        f'<tr><td style="padding:10px">{cards_html}<div style="margin:6px 0;font-size:11px">{"<br>".join(_esc(line) for line in summaries)}</div><div style="margin:6px 0;color:#7a4b00;font-size:11px">{_esc(hot_note)}</div>'
+        f'<tr><td style="padding:10px">{cards_html}<div style="margin:6px 0;font-size:11px">{"<br>".join(_esc(line) for line in summaries if not line.startswith("【昨日热板溢价】"))}</div><div style="margin:6px 0;color:#7a4b00;font-size:11px">{_esc(hot_note)}</div>'
         f'<h2 style="font-size:16px;margin:18px 0 7px">① 板块竞价全景 <span style="font-size:11px;font-weight:normal;color:#667085">[开盘啦全景板块]</span></h2>{plate_table}'
         f'<h2 style="font-size:16px;margin:18px 0 7px">② 昨日连板梯队×涨停原因</h2>{ladder_table}'
         f'{tb_html_block}{radar_html}'
@@ -901,7 +963,9 @@ def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
         diagnostics = [str(line) for line in quickbrief["lines"]
                        if str(line).startswith(("备看排序", "流动性门槛排除"))]
         quick_plain = "\n".join(quick_lines) + "\n\n"
-        quick_html = '<div style="padding:10px 12px;margin:8px 0;background:#f2f6fb;border-left:4px solid #2471a3;font-size:13px;line-height:1.7">' + "<br>".join(_esc(line) for line in quick_lines) + "</div>"
+        quick_html = '<div style="padding:10px 12px;margin:8px 0;background:#f2f6fb;border-left:4px solid #2471a3;font-size:13px;line-height:1.7">' + "<br>".join(_esc(line) for line in quick_lines[:2]) + "</div>"
+        if len(quick_lines) > 2:
+            quick_html += '<details><summary>展开 09:26 速览全文与计算诊断</summary>' + '<br>'.join(_esc(line) for line in quick_lines) + '</details>' 
         if diagnostics:
             quick_html += ('<details style="margin:4px 0 10px;color:#667085;font-size:11px"><summary>速览计算诊断</summary>'
                            + '<br>'.join(_esc(line) for line in diagnostics) + '</details>')
