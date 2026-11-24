@@ -395,11 +395,13 @@ def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows,
             'notes':[f'category_missing={missing}; category_excluded={excluded}', f'curated_count={len(curated_themes)}/{len(themes)}', 'Stocks in multiple hot plates are counted once in each; totals overlap.']}
 
 
-def read_and_build_hot(trade_date, store=None, redis_client=None, top_n_hot=40):
-    """Read only versions visible by 09:26; never consult the retired catalog."""
+def read_and_build_hot(trade_date, store=None, redis_client=None, top_n_hot=40, *,
+                       tolerance_seconds=0, max_wait_seconds=0, poll_interval=0.5):
+    """Read versions visible by 09:26 (with optional tolerance/wait); never consult retired catalog."""
     import gzip
     import json
-    from datetime import date, datetime
+    import time
+    from datetime import date, datetime, timedelta
     from pathlib import Path
     from .data_pipeline.auction_redis_view import read_auction_view, redis_client as make_redis
     from .data_pipeline.plate_stock_index import get_stock_plates, read_reference_view
@@ -408,17 +410,23 @@ def read_and_build_hot(trade_date, store=None, redis_client=None, top_n_hot=40):
     notes, stage = [], 'trade_date'
     try:
         day = date.fromisoformat(trade_date).isoformat()
-        cutoff = datetime.fromisoformat(f'{day}T09:26:00+08:00')
+        base_cutoff = datetime.fromisoformat(f'{day}T09:26:00+08:00')
+        cutoff = base_cutoff + timedelta(seconds=tolerance_seconds) if tolerance_seconds else base_cutoff
         client = redis_client or make_redis()
         stage = 'hot_plates'
-        versions = []
-        for key in client.scan_iter(match=f'core:cache:data:hot_plates:{day}:*', count=100):
-            value = json.loads(client.get(key))
-            stamp = datetime.fromisoformat(value['available_at'].replace('Z', '+00:00'))
-            if (stamp.tzinfo is not None and stamp <= cutoff and value.get('trade_date') == day
-                    and value.get('dataset') == 'hot_plates' and isinstance(value.get('rows'), list)
-                    and value.get('row_count') == len(value['rows'])):
-                versions.append((stamp, str(value.get('version', '')), value))
+        deadline = time.monotonic() + max_wait_seconds if max_wait_seconds > 0 else 0
+        while True:
+            versions = []
+            for key in client.scan_iter(match=f'core:cache:data:hot_plates:{day}:*', count=100):
+                value = json.loads(client.get(key))
+                stamp = datetime.fromisoformat(value['available_at'].replace('Z', '+00:00'))
+                if (stamp.tzinfo is not None and stamp <= cutoff and value.get('trade_date') == day
+                        and value.get('dataset') == 'hot_plates' and isinstance(value.get('rows'), list)
+                        and value.get('row_count') == len(value['rows'])):
+                    versions.append((stamp, str(value.get('version', '')), value))
+            if versions or time.monotonic() >= deadline:
+                break
+            time.sleep(poll_interval)
         if not versions:
             raise ValueError('no_visible_hot_version')
         hot = max(versions, key=lambda x: (x[0], x[1]))[2]

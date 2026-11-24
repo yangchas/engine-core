@@ -413,6 +413,60 @@ def test_curated_theme_buckets_plate_member_label_single_source_and_metrics():
     assert amounts == sorted(amounts, reverse=True)
 
 
+def test_read_and_build_hot_supports_tolerance_window(monkeypatch):
+    import json
+    from engine_core.auction_theme_buckets import read_and_build_hot
+    from engine_core.data_pipeline import auction_redis_view, plate_stock_index, trade_calendar
+
+    day = "2026-11-20"
+
+    class MockRedis:
+        def scan_iter(self, match=None, count=None):
+            return ["core:cache:data:hot_plates:2026-11-20:v1"]
+        def get(self, key):
+            if "hot_plates" in key:
+                return json.dumps({
+                    "dataset": "hot_plates", "trade_date": day, "version": "v1",
+                    "available_at": f"{day}T09:26:05+08:00",
+                    "rows": [{"rank": 1, "plate_code": "801003", "name": "5G"}],
+                    "row_count": 1
+                })
+            if "auction_seal_facts" in key:
+                return json.dumps({
+                    "dataset": "auction_seal_facts", "trade_date": day,
+                    "available_at": f"{day}T09:25:30+08:00",
+                    "rows": [{"symbol": "000001", "side": "limit_up", "seal_amount_yuan": 100000}],
+                    "row_count": 1
+                })
+            if "limit_up_pool" in key:
+                return json.dumps({
+                    "dataset": "limit_up_pool", "trade_date": "2026-11-19",
+                    "available_at": f"{day}T00:40:00+08:00",
+                    "rows": [{"symbol": "000001", "plate_code": "801003", "reason_category": "通信"}],
+                    "row_count": 1
+                })
+            return None
+
+    monkeypatch.setattr(auction_redis_view, "read_auction_view", lambda c, d, tag: [
+        {"symbol": "000001", "amount_yuan": 50000, "price_milli": 100000, "pre_close_milli": 95000, "change_bp": 526, "auction_tag": tag}
+    ])
+    monkeypatch.setattr(plate_stock_index, "get_stock_plates", lambda syms, d, **k: {
+        "000001": {"status": "PRESENT_REDIS", "plates": [{"plate_code": "801003", "plate_class": "THEME"}]}
+    })
+    monkeypatch.setattr(plate_stock_index, "read_reference_view", lambda c, ds, d, asof: {
+        "plate_registry": {"trade_date": day, "rows": [{"plate_code": "801003", "name": "5G", "parent_name": "通信", "class": "THEME"}]},
+        "stock_static": {"trade_date": day, "rows": [{"symbol": "000001", "listing_date": "2020-01-01"}]}
+    }.get(ds))
+    monkeypatch.setattr(trade_calendar.TradeCalendarStore, "all_trading_dates", lambda self: [
+        "2026-11-14", "2026-11-17", "2026-11-18", "2026-11-19", "2026-11-20"
+    ])
+
+    res = read_and_build_hot(day, redis_client=MockRedis(), tolerance_seconds=15)
+    assert res["status"] == "available"
+    assert len(res["themes"]) == 1
+
+
+
 
 
 
