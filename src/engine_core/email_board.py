@@ -618,7 +618,7 @@ def _ladder(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
     return _section("连板梯队", "".join(lines) + space, "按昨日板数分层；封/触为价格代理，非封单") , text
 
 
-def _extremes(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
+def _extremes(report: Mapping[str, Any], stage: str, limit: int | None = None) -> tuple[str, str]:
     checkpoint = _open_checkpoint_label(report) if stage == "open" else "0925"
     current_pct_key = f"p{checkpoint}_pct"
     current_prefix = f"p{checkpoint}_"
@@ -633,7 +633,7 @@ def _extremes(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
                                         checkpoint=checkpoint if stage == "open" else None)
     board = attached.get(stage) if isinstance(attached, Mapping) else None
     if isinstance(board, Mapping) and isinstance(board.get("rows"), list):
-        blocks, plain = _selected_extremes(board, stage, report)
+        blocks, plain = _selected_extremes(board, stage, report, limit)
         exclusions = _rows((attached.get("auction") or {}).get("excluded_unlimited")) if isinstance(attached, Mapping) else []
         exclusions.extend(_rows(report.get("unlimited_price_band_stocks")))
         for key in ("big_meat", "big_loss"):
@@ -724,8 +724,10 @@ def _extremes(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
 
 
 def _selected_extremes(board: Mapping[str, Any], stage: str,
-                       report: Mapping[str, Any]) -> tuple[str, str]:
+                       report: Mapping[str, Any], limit: int | None = None) -> tuple[str, str]:
     rows = _rows(board.get("rows"))
+    omitted = max(0, len(rows) - limit) if limit is not None else 0
+    displayed_rows = rows[:limit] if limit is not None else rows
     checkpoint = _open_checkpoint_label(report) if stage == "open" else "0945"
     headers = ["名称", "板块", "入选", "竞价%", "额(亿)"]
     if stage != "auction":
@@ -737,7 +739,7 @@ def _selected_extremes(board: Mapping[str, Any], stage: str,
         headers.extend(["收盘%", "Δ(pp)"])
     headers.append("状态")
     html_rows, text_rows = [], []
-    for row in rows:
+    for row in displayed_rows:
         track = row.get("tracking") if isinstance(row.get("tracking"), Mapping) else {}
         vals = [_display_name(row, 12), _short(row.get("main_plate") or "无板块", 8),
                 row.get("selection_reason") or "—", _num(row.get("auction_pct")),
@@ -754,10 +756,10 @@ def _selected_extremes(board: Mapping[str, Any], stage: str,
         if stage == "close" and not track.get("close_pct") and track.get("close_pct") is None:
             state = (state + "；" if state != "—" else "") + "收盘缺失"
         vals.append(state)
-        html_rows.append("<tr>" + "".join(f'<td style="padding:4px 5px;white-space:nowrap;border-bottom:1px solid #e8edf2">{_esc(value)}</td>' for value in vals) + "</tr>")
+        html_rows.append("<tr>" + "".join(f'<td>{_esc(value)}</td>' for value in vals) + "</tr>")
         text_rows.append(" | ".join(str(value) for value in vals))
     th = "".join(f'<th style="text-align:left;padding:4px 5px;white-space:nowrap">{_esc(value)}</th>' for value in headers)
-    table = f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:11px"><thead><tr>{th}</tr></thead><tbody>{"".join(html_rows)}</tbody></table>'
+    table = f'<table role="presentation" width="100%" cellspacing="0" cellpadding="4" style="border-collapse:collapse;font-size:11px;white-space:nowrap"><thead><tr>{th}</tr></thead><tbody>{"".join(html_rows)}</tbody></table>'
     title = {"auction": "竞价先选极值集合", "open": "竞价集合开盘追踪", "close": "竞价集合收盘追踪"}[stage]
     note = "固定集合由≤09:25竞价绝对涨幅前20与金额前20并集；金额阈值3000万元；当日描述。"
     if stage == "close":
@@ -768,6 +770,10 @@ def _selected_extremes(board: Mapping[str, Any], stage: str,
     note += " " + legend
     blocks = [_section(title, table if rows else "<p>缺少符合门槛的竞价样本。</p>", note)]
     plain = [title + ("：\n" + "\n".join(text_rows) if text_rows else "：缺少符合门槛的竞价样本。"), legend]
+    if omitted:
+        note_line = f"另省略 {omitted} 只"
+        blocks.append(f"<div>{note_line}</div>")
+        plain.append(note_line)
     if stage != "auction":
         delta_key = "delta_latest_pp" if stage == "open" else "delta_close_pp"
         endpoint_label = "实时" if stage == "open" else "收盘"
@@ -1016,7 +1022,7 @@ def _plates(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
     return _section("板块盘面", table, note), "板块盘面：" + "；".join(notes)
 
 
-def _a_to_b(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
+def _a_to_b(report: Mapping[str, Any], stage: str, limit: int | None = None) -> tuple[str, str]:
     entries = _rows(report.get("a_to_b"))
     if not isinstance(report.get("a_to_b"), list):
         msg = "数据缺口：未生成看A做B"
@@ -1025,9 +1031,10 @@ def _a_to_b(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
         msg = "看A做B：无合格A"
         return _section("看A做B", f'<div>{msg}</div>'), msg
     if any(isinstance(entry, Mapping) and entry.get("schema_version") == 2 for entry in entries):
-        return _a_to_b_v2(report, entries, stage)
+        return _a_to_b_v2(report, entries, stage, limit)
     output, plain = [], []
-    for entry in entries[:8]:
+    displayed = entries[:8] if limit is None else entries[:min(8, limit)]
+    for entry in displayed:
         entry = dict(entry)
         anchor_stock = next((row for row in _rows(report.get("stocks"))
                              if str(row.get("symbol", "")).zfill(6) == str(entry.get("a_symbol", "")).zfill(6)), {})
@@ -1063,10 +1070,14 @@ def _a_to_b(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
         content = f'<div style="line-height:23px"><b>{_esc(anchor)}</b><div style="padding-left:8px">{_esc(reason)}</div></div>'
         output.append(content)
         plain.append(anchor + " → " + reason)
+    if limit is not None and len(entries[:8]) > len(displayed):
+        note = f"另省略 {len(entries[:8]) - len(displayed)} 条"
+        output.append(f"<div>{note}</div>")
+        plain.append(note)
     return _section("看A做B", "".join(output), "点时同板块候选；不构成建议"), "看A做B：\n" + "\n".join(plain)
 
 
-def _a_to_b_v2(report: Mapping[str, Any], entries: Sequence[Mapping[str, Any]], stage: str) -> tuple[str, str]:
+def _a_to_b_v2(report: Mapping[str, Any], entries: Sequence[Mapping[str, Any]], stage: str, limit: int | None = None) -> tuple[str, str]:
     def pct(value):
         return "—" if value is None else f"{float(value):+.1f}%"
 
@@ -1108,7 +1119,8 @@ def _a_to_b_v2(report: Mapping[str, Any], entries: Sequence[Mapping[str, Any]], 
     names = {str(row.get("symbol", row.get("code", ""))).zfill(6): row.get("name")
              for row in _rows(report.get("stocks"))}
     html_blocks, text_blocks = [], []
-    for entry in entries:
+    displayed = entries[:limit] if limit is not None else entries
+    for entry in displayed:
         strength = entry.get("a_strength") or {}
         plate = entry.get("plate_state") or {}
         sentiment = entry.get("sentiment_state") or {}
@@ -1169,6 +1181,10 @@ def _a_to_b_v2(report: Mapping[str, Any], entries: Sequence[Mapping[str, Any]], 
         html_blocks.append('<div style="line-height:20px;white-space:nowrap;overflow-x:auto;border-bottom:1px solid #ddd;padding:5px 0">' +
                            "".join(f"<div>{_esc(line)}</div>" for line in [title, *metrics]) + "</div>")
         text_blocks.append("\n".join([title, *metrics]))
+    if len(displayed) < len(entries):
+        note = f"另省略 {len(entries) - len(displayed)} 条"
+        html_blocks.append(f"<div>{note}</div>")
+        text_blocks.append(note)
     plain = "看A做B：\n" + "\n\n".join(text_blocks)
     return _section("看A做B", "".join(html_blocks), "单日描述；缺失保留；不构成建议"), plain
 
@@ -1439,20 +1455,52 @@ def render_email_board(report: Mapping[str, Any], stage: str, trade_date: str) -
     other_html, other_text = _other(report, stage_key)
     _story, story_html, story_text = _story_view(report, stage_key, trade_date)
     front_html, front_text = _front_page_view(report, stage_key)
-    appendix_html = (f'<section style="margin:12px 0"><h2 style="font-size:13px;color:#475467">附表：完整事实章节</h2>'
-                     f'{_section("情绪温度计", tile_html)}{ladder_html}{extreme_html}{ab_html}{other_html}</section>')
-    main_html = (f'{story_html}{plate_html}{appendix_html}' if stage_key == "close" else
-                 f'{front_html}{plate_html}<details style="margin:8px 0"><summary style="padding:8px;background:#e9eef5">附表（极值、完整梯队、盘面、A→B、温度计）</summary>{appendix_html}</details>')
-    body = (f'<div style="max-width:680px;margin:0 auto;background:#f5f7fa;color:#263445;font-family:Arial,"Microsoft YaHei",sans-serif;font-size:12px;line-height:1.45;font-variant-numeric:tabular-nums">'
-            f'<header style="padding:10px 2px"><b>{_esc(trade_date)} {stage_label}盘面</b></header>'
-            f'{main_html}'
-            f'<footer style="padding:8px;color:#667085;font-size:10px">归属来源：{_esc(str((_front_page_inputs(report, stage_key).get("ladder") or {}).get("attribution_basis") or "登记表回退"))}；缺失不补零；涨停状态为价格代理；单日事实不构成预测或建议。</footer></div>')
-    if "close" != stage_key:
-        # The A→B chapter must not leak later prices into an earlier stage.
+    def assemble(extreme_html: str, ab_html: str) -> str:
+        appendix_html = (f'<section style="margin:12px 0"><h2 style="font-size:13px;color:#475467">附表：完整事实章节</h2>'
+                         f'{_section("情绪温度计", tile_html)}{ladder_html}{extreme_html}{ab_html}{other_html}</section>')
+        main_html = (f'{story_html}{plate_html}{appendix_html}' if stage_key == "close" else
+                     f'{front_html}{plate_html}<details style="margin:8px 0"><summary style="padding:8px;background:#e9eef5">附表（极值、完整梯队、盘面、A→B、温度计）</summary>{appendix_html}</details>')
+        body = (f'<div style="max-width:680px;margin:0 auto;background:#f5f7fa;color:#263445;font-family:Arial,"Microsoft YaHei",sans-serif;font-size:12px;line-height:1.45;font-variant-numeric:tabular-nums">'
+                f'<header style="padding:10px 2px"><b>{_esc(trade_date)} {stage_label}盘面</b></header>'
+                f'{main_html}'
+                f'<footer style="padding:8px;color:#667085;font-size:10px">归属来源：{_esc(str((_front_page_inputs(report, stage_key).get("ladder") or {}).get("attribution_basis") or "登记表回退"))}；缺失不补零；涨停状态为价格代理；单日事实不构成预测或建议。</footer></div>')
+        document = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;background:#f5f7fa">' + body + "</body></html>"
+        return re.sub(r"(?<!\d)\d{6}(?!\d)", "", document) if stage_key != "close" else document
+
+    max_bytes = 120 * 1024 if stage_key == "close" else 100_000
+    document = assemble(extreme_html, ab_html)
+    if stage_key != "close" and len(document.encode("utf-8")) > max_bytes:
+        entries = _rows(report.get("a_to_b"))
+        entry_count = len(entries) if any(e.get("schema_version") == 2 for e in entries) else min(8, len(entries))
+        def fit(count, render, fixed, ab_first):
+            low, high = 0, count
+            while low < high:
+                mid = (low + high + 1) // 2
+                candidate, _ = render(mid)
+                doc = assemble(fixed, candidate) if ab_first else assemble(candidate, fixed)
+                if len(doc.encode("utf-8")) <= max_bytes:
+                    low = mid
+                else:
+                    high = mid - 1
+            return render(low)
+        ab_html, ab_text = fit(entry_count, lambda n: _a_to_b(report, stage_key, n), extreme_html, True)
+        document = assemble(extreme_html, ab_html)
+        if len(document.encode("utf-8")) > max_bytes:
+            attached = report.get("extremes_board")
+            if not isinstance(attached, Mapping):
+                chapters = report.get("chapters") if isinstance(report.get("chapters"), Mapping) else {}
+                attached = chapters.get("extremes_board")
+            if not isinstance(attached, Mapping):
+                attached = build_extremes_board(_rows(report.get("stocks")), stage=stage_key,
+                                                checkpoint=_open_checkpoint_label(report) if stage_key == "open" else None)
+            board = attached.get(stage_key) if isinstance(attached, Mapping) else None
+            rows = board if isinstance(board, list) else board.get("rows", []) if isinstance(board, Mapping) else []
+            extreme_html, extreme_text = fit(len(rows), lambda n: _extremes(report, stage_key, n), ab_html, False)
+            document = assemble(extreme_html, ab_html)
+    if stage_key != "close":
         for forbidden in ("close_pct", "close_mean", "close_median", "收盘%", "收盘中位", "收盘"):
             assert forbidden not in ab_html
             assert forbidden not in ab_text
-    document = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;background:#f5f7fa">' + body + "</body></html>"
     tile_text = []
     for label, markup in tiles:
         value = html.unescape(re.sub(r"<[^>]*>", "", markup)).strip()
