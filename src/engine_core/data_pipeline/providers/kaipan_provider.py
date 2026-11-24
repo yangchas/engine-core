@@ -5,7 +5,7 @@ import re
 import inspect
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
@@ -144,19 +144,31 @@ class KaipanProvider:
         return {"rows": rows, "expected_count": len(seen), "request_count": self._requests, "pages": pages}
 
     def plate_members(self, trade_date: str, *, context: Any = None,
-                      page_size: int = 2000, concurrency: int = 4) -> dict[str, Any]:
+                      page_size: int = 2000, concurrency: int = 4,
+                      max_initial_failures: int | None = 10) -> dict[str, Any]:
         if not self.plate_codes:
             raise ValueError("kaipan_plate_codes_required")
         completed: dict[str, list[dict[str, Any]]] = {}
         pending = list(self.plate_codes)
         failures: dict[str, str] = {}
+        failure_messages: dict[str, str] = {}
+        aborted = threading.Event()
+        queried: set[str] = set()
+        queried_lock = threading.Lock()
 
         def fetch_plate(plate: str) -> list[dict[str, Any]]:
             plate_rows: list[dict[str, Any]] = []
             index = 0
             while True:
+                if aborted.is_set():
+                    raise CancelledError()
+                with queried_lock:
+                    queried.add(plate)
                 response = self._call(self._client_method("get_his_plate_ids", "getHisPlateIds"),
                                       plate, trade_date, str(index), str(page_size))
+                if (isinstance(response, Mapping) and "errcode" in response
+                        and str(response["errcode"]) != "0"):
+                    raise ValueError(f"kaipan_plate_members_errcode:{response['errcode']}")
                 page = _list_rows(response)
                 for raw in page:
                     if not isinstance(raw, (list, tuple)) or len(raw) < 1:
@@ -177,24 +189,48 @@ class KaipanProvider:
                     break
             return plate_rows
 
-        with ThreadPoolExecutor(max_workers=max(1, min(4, int(concurrency)))) as executor:
-            futures = {executor.submit(fetch_plate, plate): plate for plate in pending}
-            for future in as_completed(futures):
-                plate = futures[future]
-                try:
-                    completed[plate] = future.result()
-                except Exception as exc:
-                    failures[plate] = type(exc).__name__
+        workers = max(1, min(4, int(concurrency)))
+        plates = iter(pending)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {}
+
+            def fill_workers() -> None:
+                while len(futures) < workers and not aborted.is_set():
+                    plate = next(plates, None)
+                    if plate is None:
+                        break
+                    futures[executor.submit(fetch_plate, plate)] = plate
+
+            fill_workers()
+            while futures:
+                done, _ = wait(futures, return_when=FIRST_COMPLETED)
+                for future in done:
+                    plate = futures.pop(future)
+                    try:
+                        completed[plate] = future.result()
+                    except CancelledError:
+                        pass
+                    except Exception as exc:
+                        failures[plate] = type(exc).__name__
+                        if isinstance(exc, ValueError) and str(exc).startswith("kaipan_plate_members_errcode:"):
+                            failure_messages[plate] = str(exc)
+                if (not completed and max_initial_failures is not None and max_initial_failures > 0
+                        and len(failures) >= max_initial_failures):
+                    aborted.set()
+                    for future in futures:
+                        future.cancel()
+                fill_workers()
         rows = [row for plate in self.plate_codes for row in completed.get(plate, ())]
-        failed_plates = [{"plate_code": plate, "error_type": failures[plate]}
+        failed_plates = [{"plate_code": plate, "error_type": failures[plate],
+                          **({"error_message": failure_messages[plate]} if plate in failure_messages else {})}
                          for plate in self.plate_codes if plate in failures]
         partial = bool(failed_plates or len(completed) != len(self.plate_codes))
         return {"rows": rows, "expected_count": len(rows), "partial": partial,
-                "queried_plate_count": len(pending),
+                "queried_plate_count": len(queried),
                 "completed_plate_count": len(completed),
                 "failed_plates": failed_plates,
                 "unqueried_plate_count": max(0, len(self.plate_codes) - len(completed)),
-                "request_count": self._requests}
+                "request_count": self._requests, "aborted_early": aborted.is_set()}
 
     def hot_plates(self, trade_date: str, *, request_date: str | None = None,
                    context: Any = None,
