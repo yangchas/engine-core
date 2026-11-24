@@ -299,13 +299,30 @@ FORMAL_SOURCE_FROM = "17:00"
 GATE_COVERAGE_THRESHOLD = 0.95
 
 
+def _td_daily_kline_row_count(day: str) -> int:
+    from ..data_pipeline.td_sink import TaosStore
+    store = TaosStore("core_data")
+    try:
+        return store.day_counts([day]).get(day, 0)
+    finally:
+        store.close()
+
+
 def daily_kline_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
     def check():
         started = time.monotonic()
+        day = now.date().isoformat()
+        if os.environ.get("TD_CONFIG"):
+            try:
+                row_count, _ = _query_bounded(lambda: _td_daily_kline_row_count(day))
+                if row_count >= 4500:
+                    return GateResult(status="ready", reason="DAILY_KLINE_TD_READY", trade_date=day,
+                                      row_count=row_count, elapsed_ms=round((time.monotonic() - started) * 1000))
+            except Exception as exc:
+                LOG.info("guardian daily kline TD unavailable reason=%s", type(exc).__name__)
         root = Path(os.environ.get("CORE_DATA_ROOT", "~/core-data")).expanduser()
         from engine_core.data_pipeline.storage import ArtifactCatalog
         catalog = ArtifactCatalog(root)
-        day = now.date().isoformat()
         path = catalog.locate("daily_kline", day)
         if not path or not path.is_file():
             return GateResult(status="not_ready", reason="DAILY_KLINE_MISSING",

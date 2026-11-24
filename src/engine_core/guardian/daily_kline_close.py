@@ -37,6 +37,10 @@ def _rank(manifest: Mapping[str, Any]) -> int | None:
 
 def best_existing_rank(root: str | Path, day: str) -> int | None:
     """Best (lowest) quality rank among committed daily_kline versions of ``day``; None when none."""
+    if os.environ.get("TD_CONFIG"):
+        from .startup import _td_daily_kline_formal
+        if _td_daily_kline_formal(day):
+            return PROVIDER_RANK["baostock"]
     from ..data_pipeline.storage import ArtifactCatalog
 
     entry = ArtifactCatalog(root).read().get("datasets", {}).get("daily_kline", {})
