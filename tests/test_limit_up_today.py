@@ -54,6 +54,30 @@ def test_future_quote_stays_degraded(tmp_path, monkeypatch):
     assert 'future_quote=1' in reply['detail']['reason']
 
 
+def test_scan_completion_sets_pit_cutoff(tmp_path, monkeypatch):
+    raw = json.loads((Path(__file__).parent / 'fixtures/real/q2_limit_up_pool_today_2026-10-28_0702.json').read_text())
+    candidate = next(s for s, h in raw['hashes'].items() if runner.core._source_time(h.get('ts'))
+                     and runner.core._source_time(h.get('ts'))[1].startswith('2026-10-28T15:00:02'))
+    monkeypatch.setattr(runner, '_same_date_universe_names', lambda *_: {'000554': '泰山石油', candidate: '正常'})
+    observed = datetime.fromisoformat('2026-10-28T15:00:03+08:00')
+    for future in (False, True):
+        hashes = {s: dict(raw['hashes'][s]) for s in ('000554', candidate)}
+        if future:
+            # Fault injection into a captured quote; no fixture bytes are changed.
+            hashes[candidate]['ts'] = int(datetime.fromisoformat('2026-10-28T15:00:05+08:00').timestamp() * 1000)
+        snapshot = {'active_symbols': ['000554', candidate], 'hashes': hashes}
+        published = []
+        deps = runner.TodayDeps(redis_snapshot=lambda _: snapshot, clock=lambda: observed,
+                                publish_hot=lambda manifest, rows: published.append(manifest) or {'status': 'offline_replay'})
+        code, reply = runner.run({'data_date': '2026-10-28', 'as_of': '2026-10-28T15:00:00+08:00'}, tmp_path, deps=deps)
+        assert reply['detail']['as_of'] == observed.isoformat()
+        assert published[0]['available_at'] == observed.isoformat()
+        assert published[0]['quality_details']['limit_pool']['future_quote'] == int(future)
+        assert code == (10 if future else 0)
+        if future:
+            assert 'future_quote=1' in reply['detail']['reason']
+
+
 def test_registered_hot_publisher_verifies_and_rolls_back(tmp_path, monkeypatch):
     import pytest
     from engine_core.data_pipeline.providers.limit_up_today_sources import publish_hot_snapshot, SourceUnavailable
