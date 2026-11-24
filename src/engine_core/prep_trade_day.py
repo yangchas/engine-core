@@ -72,6 +72,55 @@ def _manifest(catalog: ArtifactCatalog, dataset: str, day: str | None = None,
         return None
 
 
+def _td_daily_kline_manifest(day: str, *, asof: str) -> dict[str, Any] | None:
+    if not os.environ.get("TD_CONFIG") or not day:
+        return None
+    cutoff = _pit_time(asof)
+    if cutoff is None or not (cutoff.date().isoformat() > day or
+                              (cutoff.date().isoformat() == day and cutoff.hour >= 15)):
+        return None
+    store = None
+    try:
+        from .data_pipeline.td_sink import TaosStore
+        store = TaosStore("core_data")
+        count = store.day_counts([day]).get(day, 0)
+        if count >= 4500:
+            return {"dataset": "daily_kline", "trade_date": day, "row_count": count,
+                    "version": f"td:{day}:{count}", "storage_source": "tdengine",
+                    "quality": {"status": "READY"}}
+    except Exception:
+        return None
+    finally:
+        if store is not None:
+            try:
+                store.close()
+            except Exception:
+                pass
+    return None
+
+
+def _daily_kline_manifest(catalog: ArtifactCatalog, day: str | None, *, asof: str) -> dict[str, Any] | None:
+    return (_td_daily_kline_manifest(day, asof=asof) if day else None) or _manifest(
+        catalog, "daily_kline", day, asof=asof)
+
+
+def _read_plate_registry_redis(days: Iterable[str], *, asof: str) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    url = os.getenv("CORE_REDIS_URL") or os.getenv("REDIS_URL")
+    if not url:
+        return None
+    try:
+        import redis
+        from .data_pipeline import plate_stock_index
+        client = redis.Redis.from_url(url, decode_responses=True, socket_connect_timeout=0.5, socket_timeout=0.5)
+        for day in days:
+            value = plate_stock_index.read_reference_view(client, "plate_registry", day, asof)
+            if value and value.get("rows"):
+                return value["rows"], value
+    except Exception:
+        return None
+    return None
+
+
 def _read_hot_plates(catalog: ArtifactCatalog, day: str, *, asof: str) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
     """Read the newest PIT-visible Redis snapshot, or the TD cold archive."""
     from .data_pipeline.hot_plates_gaps import _snapshot_manifests
@@ -181,7 +230,8 @@ def _step(name: str, dataset: str, day: str | None, catalog: ArtifactCatalog,
     hot = _read_hot_plates(catalog, day, asof=asof) if dataset == "hot_plates" and day else None
     manifest = ((hot[1] if hot else None) if dataset == "hot_plates" else
                 (_plate_members_snapshot(asof=asof) if dataset == "plate_members" else
-                 _manifest(catalog, dataset, day, asof=asof)) if day else None)
+                 (_daily_kline_manifest(catalog, day, asof=asof) if dataset == "daily_kline" else
+                  _manifest(catalog, dataset, day, asof=asof))) if day else None)
     quality = manifest.get("quality") if manifest and isinstance(manifest.get("quality"), dict) else {}
     if manifest:
         status = ("PARTIAL" if manifest.get("business_status") == "PARTIAL" or
@@ -199,6 +249,8 @@ def _step(name: str, dataset: str, day: str | None, catalog: ArtifactCatalog,
             "elapsed_ms": round((time.monotonic() - started) * 1000, 3)}
     if dataset == "plate_members":
         result["available_at"] = manifest.get("available_at") if manifest else None
+    if dataset == "daily_kline" and manifest and manifest.get("storage_source"):
+        result["storage_source"] = manifest.get("storage_source")
     return result
 
 
@@ -340,10 +392,12 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
     cutoff = asof
     if hot:
         hot = (_pit_rows(hot[0], cutoff)[0], hot[1])
-    registry_catalog = catalog.read().get("datasets", {}).get("plate_registry", {}).get("dates", {})
-    registry_dates = sorted(day for day in registry_catalog if day <= trade_date)
-    registry = next((load("plate_registry", day) for day in reversed(registry_dates)
-                     if load("plate_registry", day)), None)
+    registry = _read_plate_registry_redis((trade_date, previous), asof=asof)
+    if registry is None:
+        registry_catalog = catalog.read().get("datasets", {}).get("plate_registry", {}).get("dates", {})
+        registry_dates = sorted(day for day in registry_catalog if day <= trade_date)
+        registry = next((load("plate_registry", day) for day in reversed(registry_dates)
+                         if load("plate_registry", day)), None)
     reasons: list[dict[str, Any]] = []
     reason_manifests: dict[str, str] = {}
     reason_dates = sorted(catalog.read().get("datasets", {}).get("limit_reasons", {})
@@ -706,7 +760,7 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                 # A successful real-time fetch becomes visible at completion, never retroactively.
                 asof = datetime.now().astimezone().isoformat()
         # Reuse committed input when present; each existing provider/job owns cache and quality rules.
-        if not _manifest(catalog, "daily_kline", previous, asof=asof):
+        if not _daily_kline_manifest(catalog, previous, asof=asof):
             started = time.monotonic()
             rc, out = _run(repo, "run_data_jobs.py", ["--job", "daily_kline", "--date", previous,
                 "--write", "--artifact-root", str(root)])
@@ -715,7 +769,7 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                 errors.append("daily_kline:COMMAND_FAILED")
                 error_codes.append(_declared_code(out))
                 error_steps.append({"step": errors[-1].split(":", 1)[0], "code": error_codes[-1]})
-        if _manifest(catalog, "daily_kline", previous, asof=asof) and (
+        if _daily_kline_manifest(catalog, previous, asof=asof) and (
                 not _manifest(catalog, "daily_indicators", previous, asof=asof)
                 or not _manifest(catalog, "daily_report_features", previous, asof=asof)):
             feature_names = [name for name, dataset in (("daily_indicators", "daily_indicators"),

@@ -561,3 +561,72 @@ def test_hot_plates_redis_then_cold_archive_real_snapshot(tmp_path, monkeypatch)
     step, result = check()
     assert step['status'] == 'MISSING' and 'PREP_CRITICAL_MISSING:hot_plates' in result
     assert prep._read_hot_plates(catalog, day, asof=asof) is None
+
+
+def test_daily_kline_td_authority_without_catalog(tmp_path, monkeypatch):
+    import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline import td_sink
+
+    monkeypatch.setenv('TD_CONFIG', 'configured')
+    monkeypatch.delenv('REDIS_URL', raising=False)
+    monkeypatch.delenv('CORE_REDIS_URL', raising=False)
+    counts = {'value': 5224}
+    class Store:
+        def __init__(self, database):
+            assert database == 'core_data'
+        def day_counts(self, days):
+            return {days[0]: counts['value']}
+        def close(self):
+            pass
+    monkeypatch.setattr(td_sink, 'TaosStore', Store)
+    catalog = ArtifactCatalog(tmp_path)
+    day, asof = '2026-11-03', '2026-11-04T08:30:00+08:00'
+    step = prep._step('previous_daily_kline', 'daily_kline', day, catalog, asof=asof)
+    assert step['status'] == 'READY' and step['storage_source'] == 'tdengine'
+    counts['value'] = 4499
+    assert prep._step('previous_daily_kline', 'daily_kline', day, catalog, asof=asof)['status'] == 'MISSING'
+    counts['value'] = 5224
+    assert prep._step('previous_daily_kline', 'daily_kline', day, catalog, asof=day + 'T10:00:00+08:00')['status'] == 'MISSING'
+    _seed_c325(tmp_path)
+    calls = []
+    monkeypatch.setattr(prep, '_run', lambda repo, script, args: (calls.append((script, args)) or (1, '')))
+    monkeypatch.setattr(prep, '_prepare_theme_snapshot_cache', lambda *a, **kw: True)
+    monkeypatch.setattr(prep, '_plate_members_snapshot', lambda **kw: None)
+    prep.build_prep_report(tmp_path, '2026-11-04', write=True, asof=asof)
+    assert not any(script == 'run_data_jobs.py' and args[:2] == ['--job', 'daily_kline'] for script, args in calls)
+
+
+def test_theme_registry_redis_without_catalog_entry(tmp_path, monkeypatch):
+    import gzip
+    import redis
+    import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline import plate_stock_index, limit_pool_hot_view
+    from conftest import use_declared_time_as_test_commit_clock
+
+    _seed_c325(tmp_path)
+    fixture = Path(__file__).parent / 'fixtures/real'
+    with gzip.open(fixture / 'core_artifacts/c594/plate_registry/2026-10-13/current/rows.jsonl.gz', 'rt') as f:
+        registry = [json.loads(line) for line in f]
+    reasons = json.loads((fixture / 'kaipan_ban_reasons_2026-10-29_003021_st200_0538.json').read_text())['List']
+    pool = [json.loads(line) for line in (Path(__file__).parent / 'fixtures/real_limit_up_pool_sample.jsonl').read_text().splitlines()[:2]]
+    day, asof = '2026-11-03', '2026-11-04T08:30:00+08:00'
+    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path))
+    catalog.commit('limit_reasons', day, reasons, {'trade_date': day, 'available_at': asof}, source='fixture')
+    monkeypatch.setenv('CORE_REDIS_URL', 'redis://example')
+    client = object()
+    monkeypatch.setattr(redis.Redis, 'from_url', lambda *a, **kw: client)
+    calls = []
+    def read_reference(client_arg, dataset, requested_day, cutoff):
+        calls.append((client_arg, dataset, requested_day, cutoff))
+        return {'rows': [{**row, 'available_at': asof} for row in registry], 'version': 'recorded-registry'} if requested_day == day else None
+    monkeypatch.setattr(plate_stock_index, 'read_reference_view', read_reference)
+    monkeypatch.setattr(limit_pool_hot_view, 'read', lambda *a: (pool, {'status': 'READY', 'version': 'recorded-pool'}))
+    monkeypatch.setattr(prep, '_read_hot_plates', lambda *a, **kw: None)
+    monkeypatch.setattr(prep, '_plate_members_snapshot', lambda **kw: None)
+    diag = []
+    assert prep._prepare_theme_snapshot_cache(catalog, '2026-11-04', day, asof, diagnostics=diag)
+    assert [call[2] for call in calls] == ['2026-11-04', day]
+    assert not any(item.startswith('plate_registry:') for item in diag)
+    node_entry = catalog.read()['datasets']['node__theme_snapshot']['dates']['2026-11-04'][-1]
+    node = json.loads(Path(node_entry['manifest']).read_text())
+    assert node['inputs']['plate_registry'] == f'recorded-registry:{len(registry)}'
