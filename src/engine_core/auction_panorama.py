@@ -876,8 +876,35 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
             if any(row["pct_change"] is not None for rows in groups.values() for row in rows)],
         "footer": "；".join(filter(None, [f"最大低开 {gap['symbol']} {gap['pct_change']:.2f}%" if gap else None,
             f"竞价金额Top1占比 {max((p['top1_share'] for p in plate_stats if p['top1_share'] is not None), default=0):.1%}"]))}
+    def capital_row(symbol: str) -> dict[str, Any]:
+        row = by_symbol[symbol]
+        pool = pool_by_symbol.get(symbol, {})
+        seal = row.get("seal") or {}
+        assignment = theme_assignments.get(symbol) or {}
+        primary = assignment.get("primary_theme") if isinstance(assignment, Mapping) else None
+        theme = primary.get("name") if isinstance(primary, Mapping) else None
+        return {"symbol": symbol, "name": stock_name(symbol, row, pool),
+                "pct_change": _num(row.get("pct_change")) if _has_valid_auction_price(row) else None,
+                "auction_amount_yuan": _num(row.get("auction_amount_yuan")),
+                "amount_rank": amount_ranks.get(symbol), "primary_theme": theme or primary_reason_by_symbol.get(symbol),
+                "yesterday_streak": streak_for(symbol) if symbol in pool_by_symbol else None,
+                "seal_amount_yuan": _num(seal.get("seal_amount_yuan")) if seal.get("status") in ("VERIFIED", "VERIFIED_REPLAY") else None,
+                "at_official_limit": _at_official_limit(row), "seal_side": seal.get("seal_side")}
+    amount_symbols = sorted((s for s, row in by_symbol.items() if (_num(row.get("auction_amount_yuan")) or 0) > 0),
+                            key=lambda s: (-_num(by_symbol[s].get("auction_amount_yuan")), s))
+    capital_rows = [capital_row(s) for s in amount_symbols]
+    nuclear = [capital_row(s) for s in pool_by_symbol if s in by_symbol and _has_valid_auction_price(by_symbol[s])
+               and _num(by_symbol[s].get("pct_change")) is not None and _num(by_symbol[s].get("pct_change")) < 0]
+    nuclear.sort(key=lambda row: (row["pct_change"], row["symbol"]))
+    capital_flow = {"top_amount": capital_rows[:10],
+                    "rush_buy": [r for r in capital_rows if r["at_official_limit"] is False and r["seal_side"] != "up"
+                                 and r["pct_change"] is not None and r["pct_change"] >= 5][:8],
+                    "pool_nuclear": nuclear[:5],
+                    "style_preference": {"top20_amount_share": sum(r["auction_amount_yuan"] for r in capital_rows[:20]) / market_amount if market_amount else None,
+                        "chinext_star_strong_n": sum(s.startswith(("30", "688")) and _has_valid_auction_price(r) and (_num(r.get("pct_change")) is not None and _num(r.get("pct_change")) >= 5) for s, r in by_symbol.items()) if price_rows else None,
+                        "big_ticket_1e_n": sum(v >= 1e8 for v in valid_amounts) if valid_amounts else None}}
     return {"schema": SCHEMA, "trade_date": trade_date, "asof": asof, "status": "PARTIAL",
-            "overview": overview, "plates": plates_out, "yesterday_ladder": ladder, "extremes": extremes,
+            "overview": overview, "plates": plates_out, "yesterday_ladder": ladder, "extremes": extremes, "capital_flow": capital_flow,
             "compatibility_aliases": {"equal_weight_pct": {"alias_for": "member_median_pct",
                                                                "label": "兼容别名"}},
             "lineage": {"auction_stock_facts": stock_facts.get("version"), "hot_plate_ranks": "UNKNOWN" if not hot_plate_ranks else "PROVIDED"}}
