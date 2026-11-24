@@ -251,7 +251,9 @@ def _redis_sample(day: str, root: Path, deps: TodayDeps, *, as_of: Any = None,
     observed_at = _local_datetime(None, deps.clock())
     requested_time = _local_datetime(as_of, observed_at)
     elapsed = (observed_at - requested_time).total_seconds()
-    sample_time = observed_at if as_of not in (None, "") and 0 < elapsed <= 60 else requested_time
+    sample_time = (observed_at if as_of not in (None, "") and
+                   observed_at.date() == requested_time.date() and 0 < elapsed <= 240
+                   else requested_time)
     names = _same_date_universe_names(root, day, sample_time)
     try:
         built = _build_pool(day, sample_time, snapshot, names)

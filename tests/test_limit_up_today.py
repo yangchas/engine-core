@@ -78,6 +78,41 @@ def test_scan_completion_sets_pit_cutoff(tmp_path, monkeypatch):
             assert 'future_quote=1' in reply['detail']['reason']
 
 
+def test_long_scan_delay_and_historical_replay_cutoffs(tmp_path, monkeypatch):
+    raw = json.loads((Path(__file__).parent / 'fixtures/real/q2_limit_up_pool_today_2026-10-28_0702.json').read_text())
+    candidate = next(s for s, h in raw['hashes'].items() if runner.core._source_time(h.get('ts'))
+                     and runner.core._source_time(h.get('ts'))[1].startswith('2026-10-28T15:00:02'))
+    symbols = ['000554', candidate]
+    snapshot = {'active_symbols': symbols, 'hashes': {s: raw['hashes'][s] for s in symbols}}
+    monkeypatch.setattr(runner, '_same_date_universe_names', lambda *_: {s: '正常' for s in symbols})
+    requested = '2026-10-28T14:58:28+08:00'
+    sample_times = []
+    build_pool = runner._build_pool
+    def capture_sample_time(day, sample_time, snapshot, names):
+        sample_times.append(sample_time.isoformat())
+        return build_pool(day, sample_time, snapshot, names)
+    monkeypatch.setattr(runner, '_build_pool', capture_sample_time)
+    for observed, expected, historical in (
+        ('2026-10-29T15:00:03+08:00', requested, True),
+        ('2026-10-28T15:00:03+08:00', '2026-10-28T15:00:03+08:00', False),
+    ):
+        published = []
+        deps = runner.TodayDeps(redis_snapshot=lambda _: snapshot,
+                                clock=lambda: datetime.fromisoformat(observed),
+                                publish_hot=lambda manifest, rows: published.append(manifest) or {'status': 'offline_replay'})
+        code, reply = runner.run({'data_date': '2026-10-28', 'as_of': requested}, tmp_path, deps=deps)
+        assert sample_times[-1] == expected
+        if historical:
+            assert code == 40 and reply['error_code'] == 'Q2_SNAPSHOT_INVALID'
+            assert not published
+            continue
+        assert reply['detail']['as_of'] == expected
+        assert published[0]['as_of'] == expected
+        assert published[0]['available_at'] == expected
+        assert published[0]['quality_details']['limit_pool']['future_quote'] == 0
+        assert code == 0
+
+
 def test_registered_hot_publisher_verifies_and_rolls_back(tmp_path, monkeypatch):
     import pytest
     from engine_core.data_pipeline.providers.limit_up_today_sources import publish_hot_snapshot, SourceUnavailable
