@@ -689,6 +689,75 @@ def _render_ladder_theme_matrix(product: Mapping[str, Any], *, for_email: bool =
     return '<table role="table" style="width:100%;table-layout:fixed"><tr><td>' + ''.join(blocks) + ''.join(cards) + '</td></tr></table>', text
 
 
+def _render_style_and_capital_flow(product: Mapping[str, Any]) -> tuple[str, str, list[str]]:
+    flow = product.get("capital_flow")
+    historical = not isinstance(flow, Mapping)
+    if historical:
+        stocks: dict[str, dict[str, Any]] = {}
+        pool: set[str] = set()
+        def add(row: Mapping[str, Any], **extra: Any) -> None:
+            symbol = str(row.get("symbol") or "")
+            if not symbol:
+                return
+            dest = stocks.setdefault(symbol, {})
+            for key, value in {**extra, **row}.items():
+                if value is not None and (key not in dest or dest[key] is None):
+                    dest[key] = value
+        for plate in product.get("plates", []):
+            for row in plate.get("stocks", []):
+                add(row, primary_theme=plate.get("plate_name"))
+        for layer in product.get("yesterday_ladder", []):
+            for bucket in layer.get("buckets", []):
+                for row in bucket.get("stocks", []):
+                    add(row, primary_theme=row.get("primary_reason") or bucket.get("reason"), yesterday_streak=layer.get("yesterday_streak"))
+                    pool.add(str(row.get("symbol") or ""))
+        for row in (product.get("theme_buckets") or {}).get("seals", []):
+            assignment = row.get("assignment") or {}
+            theme = assignment.get("primary_theme") or {}
+            add(row, primary_theme=theme.get("name"), seal_side="up" if row.get("side") == "limit_up" else None)
+        ordered = sorted((r for r in stocks.values() if isinstance(r.get("auction_amount_yuan"), (int, float)) and r["auction_amount_yuan"] > 0),
+                         key=lambda r: (-r["auction_amount_yuan"], r["symbol"]))
+        rush = [r for r in ordered if isinstance(r.get("pct_change"), (int, float)) and r["pct_change"] >= 5
+                and (r.get("at_official_limit") is False or r.get("seal_status") == "NOT_LIMIT") and r.get("seal_side") != "up"
+                and r.get("promotion_status") != "PROVISIONAL" and r.get("seal_status") not in ("VERIFIED", "VERIFIED_REPLAY")]
+        nuclear = sorted((r for r in stocks.values() if r.get("symbol") in pool and isinstance(r.get("pct_change"), (int, float)) and r["pct_change"] < 0), key=lambda r: (r["pct_change"], r["symbol"]))
+        flow = {"top_amount": ordered[:10], "rush_buy": rush[:8], "pool_nuclear": nuclear[:5], "style_preference": {}}
+    style = flow.get("style_preference") or {}
+    share = style.get("top20_amount_share")
+    ladder_changes = [s.get("pct_change") for layer in product.get("yesterday_ladder", []) if (layer.get("yesterday_streak") or 0) >= 2
+                      for bucket in layer.get("buckets", []) for s in bucket.get("stocks", [])
+                      if s.get("valid_price") is True and isinstance(s.get("pct_change"), (int, float))]
+    market_mean = (product.get("overview") or {}).get("market_mean_pct")
+    premium = sum(ladder_changes) / len(ladder_changes) - market_mean if ladder_changes and isinstance(market_mean, (int, float)) else None
+    premium_text = f"{premium:+.2f}pp" if premium is not None else "—"
+    bar = (f"大票吸金 Top20占比 {_fmt(share * 100 if isinstance(share, (int, float)) else None, 1, '%')} · "
+           f"亿元大单 {style.get('big_ticket_1e_n') if style.get('big_ticket_1e_n') is not None else '—'}只 · "
+           f"20cm高开≥5% {style.get('chinext_star_strong_n') if style.get('chinext_star_strong_n') is not None else '—'}只 · 连板溢价 {premium_text}")
+    bar_html = f'<div style="margin:5px 4px;padding:8px;background:#eef5ff;color:#20466c;font-size:12px">{_esc(bar)} <span style="color:#667085">（昨≥2板均幅减市场均幅）</span></div>'
+    lines = [bar + "（昨≥2板均幅减市场均幅）", "④ 资金去向雷达" + ("（历史报告已收录个股，非全市场）" if historical else "")]
+    sections = []
+    for key, title in (("top_amount", "🔥 大资金主战场（竞价额 Top10）"), ("rush_buy", "🚀 竞价强抢筹（高开≥5%非一字 Top8）"), ("pool_nuclear", "⚠️ 昨涨停负反馈 / 核按钮 Top5")):
+        lines.append(title)
+        rows_html = []
+        for row in flow.get(key, []):
+            name = row.get("name") or row.get("symbol") or "—"
+            theme = row.get("primary_theme") or row.get("primary_reason") or "—"
+            streak = row.get("yesterday_streak")
+            tags = (f"昨{streak:g}板" if isinstance(streak, (int, float)) else "—")
+            if key == "rush_buy" and str(row.get("symbol", "")).startswith(("30", "688")):
+                tags = "20cm · " + tags
+            if key == "top_amount" and row.get("seal_amount_yuan") is not None:
+                tags = "封" + _money(row.get("seal_amount_yuan")) + " · " + tags
+            rank = _rank_cell(row.get("amount_rank")) + " " if key == "top_amount" else ""
+            line = f"{rank}{name} [{theme}] {_fmt(row.get('pct_change'), 2, '%')} {_money(row.get('auction_amount_yuan'))} {tags}"
+            lines.append(line)
+            rows_html.append(f'<tr><td style="padding:3px;border-bottom:1px solid #eee">{_esc(rank + str(name))}<br><small>{_esc(theme)} · {_esc(tags)}</small></td><td>{_pct_cell(row.get("pct_change"))}</td><td>{_esc(_money(row.get("auction_amount_yuan")))}</td></tr>')
+        sections.append(f'<h3 style="font-size:13px;margin:12px 0 4px">{_esc(title)}</h3><table style="width:100%;font-size:12px;border-collapse:collapse">{"".join(rows_html) or "<tr><td>—</td></tr>"}</table>')
+    note = "（历史报告已收录个股，非全市场）" if historical else ""
+    radar = f'<h2 style="font-size:16px;margin:18px 0 7px">④ 资金去向雷达 <small>{note}</small></h2>' + "".join(sections)
+    return bar_html, radar, lines
+
+
 def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
     """Render a complete two-table V6 page and its matching plain-text version."""
     overview = product.get("overview") if isinstance(product.get("overview"), Mapping) else {}
@@ -809,11 +878,13 @@ def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
     ladder_table, ladder_text = _render_ladder_theme_matrix(product)
     table1_names = {p.get("plate_name") for p in plates if isinstance(p, Mapping) and p.get("plate_name")}
     tb_html_block, tb_text_lines = _render_theme_buckets_section(product.get("theme_buckets"), for_email=False, table1_plates=table1_names)
+    style_bar, radar_html, capital_text = _render_style_and_capital_flow(product)
+    cards_html += style_bar
     tb_text_section = ("\n\n③ 热点题材竞价分桶 [热榜成份股×盘前映射]\n" + "\n".join(tb_text_lines)) if tb_text_lines else ""
     text = (f"竞价全景 V6 | {product.get('trade_date', '日期待核实')} | {product.get('asof', '时点待核实')}\n"
         + " | ".join(f"{label}：{value}" for label, value in cards) + f"\n规则一句话：{rule_sentence}\n" + "\n".join(summaries) + f"\n{hot_note}\n{hot_coverage_note}\n\n① 板块竞价全景 [开盘啦全景板块]\n"
         + "\n\n".join(plate_text) + "\n\n② 昨日连板梯队×涨停原因\n" + "\n\n".join(ladder_text)
-        + tb_text_section
+        + tb_text_section + "\n\n" + "\n".join(capital_text)
         + "\n\n缺失字段留白或待核实；名次为全市场口径。")
     document = (f'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
         f'<title>竞价全景 V6</title></head><body style="margin:0;padding:10px;background:#eef2f6;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;color:#26364a">'
@@ -822,7 +893,7 @@ def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
         f'<tr><td style="padding:10px">{cards_html}<div style="margin:6px 0;font-size:11px">{"<br>".join(_esc(line) for line in summaries)}</div><div style="margin:6px 0;color:#7a4b00;font-size:11px">{_esc(hot_note)}</div>'
         f'<h2 style="font-size:16px;margin:18px 0 7px">① 板块竞价全景 <span style="font-size:11px;font-weight:normal;color:#667085">[开盘啦全景板块]</span></h2>{plate_table}'
         f'<h2 style="font-size:16px;margin:18px 0 7px">② 昨日连板梯队×涨停原因</h2>{ladder_table}'
-        f'{tb_html_block}'
+        f'{tb_html_block}{radar_html}'
         f'<div style="font-size:10px;color:#667085;margin-top:12px">{_esc(hot_coverage_note)} 缺失字段留白或待核实；名次为全市场口径。</div></td></tr></table></td></tr></table></body></html>')
     quickbrief = product.get("quickbrief")
     if isinstance(quickbrief, Mapping) and isinstance(quickbrief.get("lines"), list):

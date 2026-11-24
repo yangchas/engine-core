@@ -478,3 +478,39 @@ def test_c1567_real_ladder_collapses_first_board_and_size():
     assert all(s['name'] in before for s in rows[:3])
     assert all(s['name'] in hidden and s['name'] not in before for s in rows[3:])
     assert len(render_auction_panorama(product)[0].encode()) < 100_000
+
+
+def test_c1568_real_capital_flow():
+    import gzip
+    import json
+    from pathlib import Path
+    from engine_core.auction_panorama import build_auction_panorama
+
+    root = Path('/home/exedev/core-data')
+    product = json.loads((root / 'reports/2026-11-24/auction_0926/auction_panorama.json').read_text())['panorama']
+    path = next((root / 'auction_stock_facts/trade_date=2026-11-24').rglob('rows.jsonl.gz'))
+    with gzip.open(path, 'rt') as stream:
+        rows = [json.loads(line) for line in stream]
+    pool = [dict(stock, lb_days=layer['yesterday_streak'], primary_reason=bucket['reason'])
+            for layer in product['yesterday_ladder'] for bucket in layer['buckets'] for stock in bucket['stocks']]
+    names = {s['symbol']: s['name'] for p in product['plates'] for s in p.get('stocks', []) if s.get('name')}
+    result = build_auction_panorama({'trade_date': '2026-11-24', 'asof': '2026-11-24T09:26:00+08:00', 'rows': rows},
+                                    plate_members=[], yesterday_pool=pool, name_map=names)['capital_flow']
+    assert result['top_amount'][0]['symbol'] == '300308'
+    assert len(result['top_amount']) == 10 and len(result['rush_buy']) == 8
+    assert all(s['at_official_limit'] is False and s['pct_change'] >= 5 for s in result['rush_buy'])
+    assert [s['name'] for s in result['pool_nuclear'][:2]] == ['大东方', '好当家']
+    amounts = sorted((r['auction_amount_yuan'] for r in rows if r.get('auction_amount_yuan', 0) > 0), reverse=True)
+    assert result['style_preference']['top20_amount_share'] == pytest.approx(sum(amounts[:20]) / sum(amounts))
+    assert result['style_preference']['big_ticket_1e_n'] == sum(x >= 1e8 for x in amounts)
+    assert result['style_preference']['chinext_star_strong_n'] == sum(r['symbol'].startswith(('30', '688')) and r.get('valid_price') is True and r.get('pct_change') is not None and r['pct_change'] >= 5 for r in rows)
+
+
+def test_c1568_real_historical_render_and_size():
+    import json
+    from pathlib import Path
+    product = json.loads(Path('/home/exedev/core-data/reports/2026-11-24/auction_0926/auction_panorama.json').read_text())['panorama']
+    html, plain = render_auction_panorama(product)
+    for label in ('大票吸金', '④ 资金去向雷达', '中际旭创', '和林微纳', '炬光科技', '大东方', '好当家'):
+        assert label in html and label in plain
+    assert len(html.encode()) < 100_000
