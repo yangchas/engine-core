@@ -980,3 +980,37 @@ def test_real_baseline_metadata_reaches_both_report_readers():
     assert len(history) == 28
     assert build_auction_panorama(_facts(), plate_members=[], yesterday_pool=[], market_amount_history=product)["overview"]["amount_multiple_64d"]["status"] == "READY"
     assert build_auction_quickbrief(_facts(), plate_members=[], yesterday_pool=[], market_amount_history=product)["metrics"]["market"]["baseline_status"] == "READY"
+
+
+def test_shrink_live_report_trims_theme_buckets_and_quickbrief_rules():
+    from engine_core.daily_pipeline import _shrink_live_report
+    report = {
+        "theme_buckets": {
+            "themes": list(range(40)),
+            "seals": list(range(30)),
+            "curated_themes": list(range(10)),
+        },
+        "auction_quickbrief": {
+            "rules": {
+                "plate_metrics": {f"p_{i}": {"score": i, "data": "x" * 200} for i in range(50)},
+                "rejections": {f"r_{i}": {"reason": "rej", "data": "y" * 200} for i in range(50)},
+            }
+        },
+        "chapters": {
+            "yesterday_highboards": {"rows": list(range(30))},
+            "yesterday_limit_pool": {"rows": list(range(30))},
+        }
+    }
+    out = _shrink_live_report(report)
+    assert len(out["theme_buckets"]["themes"]) <= 10
+    assert out["theme_buckets"]["themes_total"] == 40
+    assert len(out["theme_buckets"]["seals"]) <= 10
+    assert len(out["theme_buckets"]["curated_themes"]) == 10
+    assert len(out["auction_quickbrief"]["rules"]["plate_metrics"]) <= 10
+    assert out["auction_quickbrief"]["rules"]["plate_metrics_total"] == 50
+    assert len(out["chapters"]["yesterday_highboards"]["rows"]) <= 15
+    assert len(out["chapters"]["yesterday_limit_pool"]["rows"]) <= 15
+    omitted_paths = [item["path"] for item in out.get("omitted_blocks", [])]
+    assert "theme_buckets.themes" in omitted_paths
+    assert "auction_quickbrief.rules.plate_metrics" in omitted_paths
+

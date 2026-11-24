@@ -232,6 +232,24 @@ def _shrink_live_report(report: dict[str, Any], *, plate_cap: int = 20, row_cap:
     terminal = report.get("auction_terminal_0925")
     if isinstance(terminal, dict):
         cut(terminal, "top_plates_by_share", plate_cap)
+    tb = report.get("theme_buckets")
+    if isinstance(tb, dict):
+        cut(tb, "themes", 10)
+        cut(tb, "seals", 10)
+    qb = report.get("auction_quickbrief")
+    if isinstance(qb, dict):
+        rules = qb.get("rules")
+        if isinstance(rules, dict):
+            for key in ("plate_metrics", "rejections"):
+                if key in rules and isinstance(rules[key], dict) and len(rules[key]) > 10:
+                    original_val = rules[key]
+                    encoded = json.dumps(original_val, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                    omitted.append({"path": f"auction_quickbrief.rules.{key}", "rows": len(original_val),
+                                    "sha256": hashlib.sha256(encoded.encode("utf-8")).hexdigest()})
+                    rules[f"{key}_total"] = len(original_val)
+                    rules[key] = dict(list(original_val.items())[:10])
+    cut(chapters.get("yesterday_highboards"), "rows", 15)
+    cut(chapters.get("yesterday_limit_pool"), "rows", 15)
     return report
 
 
@@ -2348,7 +2366,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 try:
                     from .auction_theme_buckets import read_and_build_hot
                     from .data_pipeline.plate_stock_index import verify_plate_reference
-                    tb = read_and_build_hot(trade_date, redis_client=src.redis)
+                    tb = read_and_build_hot(trade_date, redis_client=src.redis, tolerance_seconds=15)
                     if tb and tb.get("status") in ("available", "OK"):
                         panorama["theme_buckets"] = tb
                         payload["theme_buckets"] = tb
