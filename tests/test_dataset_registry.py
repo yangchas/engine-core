@@ -86,3 +86,19 @@ def test_chip_and_dde_registry_entries():
     items = {item['id']: item for item in load_registry()}
     for name, stable in [('chip_peak', 'chip_indicators_v1'), ('dde_derived', 'dde_indicators_v1')]:
         assert items[name]['cadence'] and items[name]['td_sink']['stable'] == stable
+
+
+def test_plate_members_freshness_prefers_td_snapshot(monkeypatch):
+    from engine_core import prep_trade_day
+
+    item = next(item for item in load_registry() if item['id'] == 'plate_members')
+    catalog = {'datasets': {'plate_members': {'dates': {'2026-10-30': [
+        {'row_count': 1, 'available_at': '2026-10-30T09:00:00+08:00'}]}}}}
+    now = datetime.fromisoformat('2026-11-24T15:20:00+08:00')
+    monkeypatch.setattr(prep_trade_day, '_plate_members_snapshot',
+                        lambda **kwargs: {'available_at': '2026-11-24T09:00:13+08:00'})
+    monkeypatch.delenv('TD_CONFIG', raising=False)
+    assert stale_items(now, catalog, [item])[0]['status'] == 'STALE'
+    monkeypatch.setenv('TD_CONFIG', 'configured')
+    row = stale_items(now, catalog, [item])[0]
+    assert (row['status'], row['partition']) == ('OK', '2026-11-24')

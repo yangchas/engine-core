@@ -3,6 +3,23 @@ from engine_core.data_pipeline.storage import ArtifactCatalog
 from engine_core.guardian.startup import boot_apply_plan
 
 
+def test_plate_members_fetch_uses_previous_trade_day(tmp_path, monkeypatch):
+    from engine_core import prep_trade_day
+    from engine_core.guardian import startup
+
+    calls = []
+    monkeypatch.setattr(prep_trade_day, 'previous_trade_date', lambda root, day: '2026-11-23')
+    monkeypatch.setattr(startup, '_fetch_spec', lambda item: ([], 1))
+    monkeypatch.setattr(startup, '_run_fetch_job',
+                        lambda item, day, timeout, root: calls.append((item['id'], day)))
+    monkeypatch.setattr(startup, '_verify_partition', lambda *args: None)
+    for item in ('plate_members', 'hot_plates'):
+        result = startup.fetch_item(item, '2026-11-24', tmp_path, dry_run=False,
+                                    now='2026-11-24T15:20:00+08:00')
+        assert result['status'] == 'ok'
+    assert calls == [('plate_members', '2026-11-23'), ('hot_plates', '2026-11-24')]
+
+
 def test_theme_assignment_missing_inputs_is_retryable(tmp_path):
     result = fetch_item("stock_theme_assignment", "2026-10-20", tmp_path, execute=True)
     assert result["status"] == "failed"

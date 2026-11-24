@@ -1089,10 +1089,14 @@ def fetch_item(item_id: str, partition: str, root: str | Path, *,
     try:
         _argv, timeout = _fetch_spec(item)
         refetched = True
+        fetch_partition = partition
+        if item_id == "plate_members" and partition >= clock.date().isoformat():
+            from ..prep_trade_day import previous_trade_date
+            fetch_partition = previous_trade_date(root, clock.date().isoformat()) or partition
         if schedule_args:
-            result = _run_fetch_job(item, partition, timeout, root, schedule_args=schedule_args)
+            result = _run_fetch_job(item, fetch_partition, timeout, root, schedule_args=schedule_args)
         else:
-            result = _run_fetch_job(item, partition, timeout, root)
+            result = _run_fetch_job(item, fetch_partition, timeout, root)
         # The postcondition is judged after the job: a partition committed by this very job has
         # available_at == its commit instant, later than the clock sampled before the job ran.
         if dataset == "plate_members":
