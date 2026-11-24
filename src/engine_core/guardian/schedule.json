@@ -3490,7 +3490,12 @@
       "on_deadline": "missed",
       "late_until": null,
       "gate": "daily_kline_ready",
-      "depends_on": [],
+      "depends_on": [
+        "baostock_probe_1730"
+      ],
+      "accept_degraded_dependencies": [
+        "baostock_probe_1730"
+      ],
       "after": [],
       "order": null,
       "cost": "heavy",
@@ -3518,7 +3523,12 @@
       "on_deadline": "missed",
       "late_until": "23:30:00",
       "gate": "daily_kline_ready",
-      "depends_on": [],
+      "depends_on": [
+        "baostock_probe_1730"
+      ],
+      "accept_degraded_dependencies": [
+        "baostock_probe_1730"
+      ],
       "after": [],
       "order": null,
       "cost": "heavy",
