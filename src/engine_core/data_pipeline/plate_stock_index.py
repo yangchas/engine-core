@@ -195,6 +195,7 @@ def read_stocks(store, day, symbols, *, restore=True, hot_only=False):
 
 def publish_reference_view(redis, dataset, snapshot):
     """Publish a complete reference snapshot atomically as one Redis value."""
+    from .redis_day_view import hot_view_expire_at
     if dataset not in ('plate_registry', 'stock_static'):
         raise ValueError('invalid_reference_dataset')
     rows = snapshot['rows']
@@ -204,8 +205,16 @@ def publish_reference_view(redis, dataset, snapshot):
     if stamp.tzinfo is None:
         raise ValueError('invalid_reference_available_at')
     day = date.fromisoformat(snapshot['trade_date']).isoformat()
+    deadline = hot_view_expire_at(day)
     payload = dict(snapshot, dataset=dataset, trade_date=day, row_count=len(rows))
-    redis.set(f'core:view:{dataset}:{day}', _json(payload))
+    key = f'core:view:{dataset}:{day}'
+    redis.set(key, _json(payload))
+    if hasattr(redis, 'expireat'):
+        redis.expireat(key, deadline)
+    else:
+        pipe = redis.pipeline()
+        pipe.expireat(key, deadline)
+        pipe.execute()
 
 
 def read_reference_view(redis, dataset, day, asof):
