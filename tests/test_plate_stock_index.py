@@ -27,7 +27,14 @@ class MemoryRedis:
     def __init__(self):
         self.values = {}
         self.hashes = {}
+        self.expirations = {}
         self.fail = False
+
+    def set(self, key, value):
+        self.values[key] = value
+
+    def expireat(self, key, deadline):
+        self.expirations[key] = deadline
 
     def pipeline(self, **kwargs):
         return Pipeline(self)
@@ -42,6 +49,23 @@ class MemoryRedis:
 
     def hlen(self, key):
         return len(self.hashes.get(key, {}))
+
+
+def test_reference_views_expire_and_remain_readable(monkeypatch):
+    from engine_core.data_pipeline import plate_stock_index, redis_day_view
+    monkeypatch.setenv('CORE_DATA_ROOT', '/home/exedev/core-data')
+    monkeypatch.setattr(redis_day_view, '_now_timestamp', lambda: 1795500000)
+    day = '2026-10-28'
+    snapshot = {'trade_date': day, 'version': 'captured',
+                'available_at': f'{day}T09:20:00+08:00', 'rows': captured_members()}
+    redis = MemoryRedis()
+    deadline = redis_day_view.hot_view_expire_at(day)
+    for dataset in ('plate_registry', 'stock_static'):
+        plate_stock_index.publish_reference_view(redis, dataset, snapshot)
+        assert redis.expirations[f'core:view:{dataset}:{day}'] == deadline
+        result = plate_stock_index.read_reference_view(redis, dataset, day, snapshot['available_at'])
+        assert result['rows'] == snapshot['rows']
+        assert result['dataset'] == dataset
 
 
 class Pipeline:
