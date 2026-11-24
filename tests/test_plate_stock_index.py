@@ -198,3 +198,46 @@ def test_captured_markers_select_distinct_index_versions(monkeypatch):
     for asof in ('2026-11-16T15:30:00.000001+08:00', '2026-11-16T15:30:00.000002+08:00'):
         index.run('2026-11-16', asof, reference_store=Reference(), store=capture)
     assert capture.versions[0] != capture.versions[1]
+
+
+def test_verify_reference_heal_failure_preserves_reason(monkeypatch):
+    from engine_core.data_pipeline import plate_stock_index as index
+    day = '2026-10-28'
+    members = captured_members()
+    def fail_heal(*args, **kwargs):
+        raise RuntimeError('canonical reference unavailable')
+    monkeypatch.setattr(index, 'preload_canonical_reference', fail_heal)
+    for present, expected in ((False, 'MISSING'), (True, 'DEGRADED')):
+        redis = MemoryRedis()
+        if present:
+            redis.values[f'core:view:plate_registry:{day}'] = json.dumps({'rows': members[:1]})
+            redis.hashes[f'core:view:plate_stock_index:{day}'] = index.build_index(members)
+        result = index.verify_plate_reference(day, redis_client=redis, auto_heal=True)
+        assert result['status'] == expected
+        assert result['healed'] is False
+        assert any(reason.startswith('heal_error:RuntimeError:canonical reference unavailable') for reason in result['reasons'])
+
+
+def test_verify_reference_redis_errors_and_real_views():
+    from engine_core.data_pipeline import plate_stock_index as index
+    day = '2026-10-28'
+    members = captured_members()
+    redis = MemoryRedis()
+    redis.values[f'core:view:plate_registry:{day}'] = json.dumps({'rows': members[:1]})
+    redis.values[f'core:view:stock_static:{day}'] = json.dumps({'rows': members[:1]})
+    redis.hashes[f'core:view:plate_stock_index:{day}'] = index.build_index(members)
+    result = index.verify_plate_reference(day, redis_client=redis, min_rows=1, min_coverage=0)
+    assert result['status'] == 'OK'
+    for dataset in ('plate_registry', 'stock_static'):
+        key = f'core:view:{dataset}:{day}'
+        original = redis.values[key]
+        redis.values[key] = '{'
+        result = index.verify_plate_reference(day, redis_client=redis, min_rows=1, min_coverage=0)
+        assert f'{dataset}_corrupt' in result['reasons']
+        redis.values[key] = original
+    def fail_hlen(key):
+        raise ConnectionError('redis unavailable')
+    redis.hlen = fail_hlen
+    result = index.verify_plate_reference(day, redis_client=redis)
+    assert result['status'] == 'MISSING'
+    assert result['reasons'] == ['redis_error:ConnectionError']

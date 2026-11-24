@@ -334,22 +334,23 @@ def verify_plate_reference(trade_date, *, redis_client=None, data_dir=None,
             "reasons": [f"redis_client_error:{type(exc).__name__}"]
         }
     healed = False
+    heal_error = None
 
     def _inspect():
+        corrupt = []
         reg_raw = client.get(f"core:view:plate_registry:{day}")
         reg_rows = []
         if reg_raw:
             try:
                 reg_obj = json.loads(reg_raw) if isinstance(reg_raw, (str, bytes)) else reg_raw
                 reg_rows = reg_obj.get("rows", [])
+                if not isinstance(reg_rows, list):
+                    raise ValueError('invalid_rows')
             except Exception:
                 reg_rows = []
+                corrupt.append('plate_registry_corrupt')
 
-        stock_count = 0
-        try:
-            stock_count = int(client.hlen(f"core:view:plate_stock_index:{day}") or 0)
-        except Exception:
-            stock_count = 0
+        stock_count = int(client.hlen(f"core:view:plate_stock_index:{day}") or 0)
 
         static_raw = client.get(f"core:view:stock_static:{day}")
         static_rows = []
@@ -357,14 +358,17 @@ def verify_plate_reference(trade_date, *, redis_client=None, data_dir=None,
             try:
                 static_obj = json.loads(static_raw) if isinstance(static_raw, (str, bytes)) else static_raw
                 static_rows = static_obj.get("rows", [])
+                if not isinstance(static_rows, list):
+                    raise ValueError('invalid_rows')
             except Exception:
                 static_rows = []
+                corrupt.append('stock_static_corrupt')
 
         both_present = bool(reg_raw and stock_count > 0 and static_raw)
-        return reg_rows, stock_count, static_rows, both_present
+        return reg_rows, stock_count, static_rows, both_present, corrupt
 
     try:
-        reg_rows, stock_count, static_rows, both_present = _inspect()
+        reg_rows, stock_count, static_rows, both_present, corrupt = _inspect()
     except Exception as exc:
         return {
             "status": "MISSING",
@@ -381,10 +385,19 @@ def verify_plate_reference(trade_date, *, redis_client=None, data_dir=None,
     if (not both_present or len(reg_rows) < min_rows or not stock_count or not static_rows) and auto_heal:
         try:
             preload_canonical_reference(day, data_dir=data_dir, redis_client=client)
+        except Exception as exc:
+            heal_error = f"heal_error:{type(exc).__name__}:{str(exc)[:200]}"
+        else:
             healed = True
-            reg_rows, stock_count, static_rows, both_present = _inspect()
-        except Exception:
-            pass
+            try:
+                reg_rows, stock_count, static_rows, both_present, corrupt = _inspect()
+            except Exception as exc:
+                return {
+                    "status": "MISSING", "trade_date": day, "plate_count": 0,
+                    "stock_count": 0, "stock_static_count": 0, "unnamed_plate_count": 0,
+                    "coverage": 0.0, "healed": healed,
+                    "reasons": [f"redis_error:{type(exc).__name__}"]
+                }
 
     plate_count = len(reg_rows)
     static_count = len(static_rows)
@@ -400,12 +413,12 @@ def verify_plate_reference(trade_date, *, redis_client=None, data_dir=None,
             "unnamed_plate_count": 0,
             "coverage": 0.0,
             "healed": healed,
-            "reasons": ["views_not_found"]
+            "reasons": ["views_not_found", *corrupt, *([heal_error] if heal_error else [])]
         }
 
     expected_stocks = 5000
     coverage = min(1.0, stock_count / expected_stocks) if stock_count else 0.0
-    reasons = []
+    reasons = [*corrupt, *([heal_error] if heal_error else [])]
     if plate_count < min_rows:
         reasons.append(f"plate_count_below_min:{plate_count}<{min_rows}")
     if coverage < min_coverage:
