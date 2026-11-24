@@ -159,6 +159,10 @@ def _declared_code(output: str) -> str | None:
     return None
 
 
+def _is_already_satisfied(rc: int, out: str) -> bool:
+    return rc == 20 and _declared_code(out) == "ALREADY_SATISFIED"
+
+
 def _step(name: str, dataset: str, day: str | None, catalog: ArtifactCatalog,
           *, asof: str, reason: str | None = None) -> dict[str, Any]:
     started = time.monotonic()
@@ -598,11 +602,11 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
         started = time.monotonic()
         try:
             rc, out = original_run(repo, script, args)
-            if rc == 0:
+            if rc == 0 or _is_already_satisfied(rc, out):
                 fill_cutoffs[name] = _post_fill_cutoff(asof, succeeded=True)
             if job == "plate_members":
                 members_refetched = True
-                if rc == 0:
+                if rc == 0 or _is_already_satisfied(rc, out):
                     members_fill_cutoff = _post_fill_cutoff(members_fill_cutoff or asof, succeeded=True)
             record["fill_exit"] = rc
             for line in out.splitlines():
@@ -707,7 +711,7 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
             rc, out = _run(repo, "run_data_jobs.py", ["--job", "daily_kline", "--date", previous,
                 "--write", "--artifact-root", str(root)])
             timings["previous_daily_kline"] = round((time.monotonic() - started) * 1000, 3)
-            if rc:
+            if rc and not _is_already_satisfied(rc, out):
                 errors.append("daily_kline:COMMAND_FAILED")
                 error_codes.append(_declared_code(out))
                 error_steps.append({"step": errors[-1].split(":", 1)[0], "code": error_codes[-1]})
@@ -769,7 +773,7 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                 timings[{"limit_up_pool": "yesterday_limit_pool", "limit_reasons": "limit_reasons",
                          "hot_plates": "hot_plates", "plate_members": "plate_members"}[dataset]] = round(
                              (time.monotonic() - started) * 1000, 3)
-                if rc:
+                if rc and not _is_already_satisfied(rc, out):
                     errors.append(job + ":COMMAND_FAILED")
                     error_codes.append(_declared_code(out))
                     error_steps.append({"step": job, "code": error_codes[-1]})
@@ -777,7 +781,7 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
             started = time.monotonic()
             rc, out = _run(repo, "capture_ths_hot_rank.py", ["--execute", "--artifact-root", str(root)])
             timings["hot_rank"] = round((time.monotonic() - started) * 1000, 3)
-            if rc:
+            if rc and not _is_already_satisfied(rc, out):
                 errors.append("hot_rank:COMMAND_FAILED")
                 error_codes.append(_declared_code(out))
                 error_steps.append({"step": "hot_rank", "code": error_codes[-1]})
@@ -786,7 +790,7 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
             rc, out = _run(repo, "capture_wencai_hot_rank.py", ["--trade-date", previous, "--execute",
                 "--artifact-root", str(root)])
             timings["hot_rank_prev"] = round((time.monotonic() - started) * 1000, 3)
-            if rc:
+            if rc and not _is_already_satisfied(rc, out):
                 errors.append("hot_rank_prev:COMMAND_FAILED")
                 error_codes.append(_declared_code(out))
                 error_steps.append({"step": "hot_rank_prev", "code": error_codes[-1]})
@@ -794,7 +798,7 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
         rc, out = _run(repo, "build_auction_baseline.py", ["--date", trade_date, "--write",
             "--artifact-root", str(root)])
         timings["auction_baseline"] = round((time.monotonic() - started) * 1000, 3)
-        if rc:
+        if rc and not _is_already_satisfied(rc, out):
             errors.append("auction_baseline:COMMAND_FAILED:" + out[-240:])
             error_codes.append(_declared_code(out))
             error_steps.append({"step": "auction_baseline", "code": error_codes[-1]})
@@ -802,7 +806,7 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
         rc, out = _run(repo, "build_plate_amount_baseline.py", ["--date", trade_date, "--write",
             "--artifact-root", str(root)])
         timings["plate_amount_baseline"] = round((time.monotonic() - started) * 1000, 3)
-        if rc:
+        if rc and not _is_already_satisfied(rc, out):
             errors.append("plate_amount_baseline:COMMAND_FAILED:" + out[-240:])
             error_codes.append(_declared_code(out))
             error_steps.append({"step": "plate_amount_baseline", "code": error_codes[-1]})

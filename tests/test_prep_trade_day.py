@@ -137,6 +137,39 @@ def test_prep_baseline_target_is_report_day(tmp_path, monkeypatch):
     assert baseline_step["trade_date"] == "2026-10-19"
 
 
+def test_prep_baseline_satisfied_contract_and_failure_boundary(tmp_path, monkeypatch):
+    import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline import limit_pool_hot_view
+
+    matrix = json.loads((Path(prep.__file__).parent / "guardian/contract_matrix.json").read_text())
+    rows = {row["id"]: row for row in matrix["rows"]}
+    monkeypatch.delenv("CORE_REDIS_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setattr(prep, "previous_trade_date", lambda *a: "2026-11-23")
+    monkeypatch.setattr(prep, "_manifest", lambda *a, **k: {"version": "existing"})
+    monkeypatch.setattr(prep, "_plate_members_snapshot", lambda **k: {"version": "existing"})
+    monkeypatch.setattr(prep, "_read_hot_plates", lambda *a, **k: ([], {}))
+    monkeypatch.setattr(limit_pool_hot_view, "read", lambda *a: ([], {"storage_source": "redis", "status": "READY"}))
+    def ready(name, dataset, day, *a, **k):
+        return {"step": name, "dataset": dataset, "trade_date": day, "status": "READY", "version": "existing"}
+    monkeypatch.setattr(prep, "_step", ready)
+    monkeypatch.setattr(prep, "_latest_step", ready)
+    monkeypatch.setattr(prep, "_prepare_theme_snapshot_cache", lambda *a, **k: True)
+    for row_id, failed in (("satisfied_20", False), ("noop_20_without_code", True),
+                           ("stock_cap_fetch_retryable_75", True)):
+        row = rows[row_id]
+        def run(_repo, script, _args):
+            return (row["exit"], json.dumps(row["reply"])) if script == "build_plate_amount_baseline.py" else (0, "")
+        monkeypatch.setattr(prep, "_run", run)
+        report = prep.build_prep_report(tmp_path, "2026-11-24", write=True,
+                                        asof="2026-11-24T08:30:00+08:00")
+        assert bool(report["errors"]) is failed
+        assert bool(report["error_steps"]) is failed
+        if failed:
+            assert report["errors"][0].startswith("plate_amount_baseline:COMMAND_FAILED:")
+            assert report["error_steps"][0]["step"] == "plate_amount_baseline"
+
+
 def test_prep_does_not_mark_future_artifact_ready(tmp_path):
     _seed_c325(tmp_path)
     catalog = ArtifactCatalog(tmp_path)
