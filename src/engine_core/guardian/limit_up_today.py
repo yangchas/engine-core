@@ -248,7 +248,10 @@ def _redis_sample(day: str, root: Path, deps: TodayDeps, *, as_of: Any = None,
     except Exception as exc:  # noqa: BLE001
         return 75, {"contract": 1, "status": "failed", "error_code": "Q2_READ_FAILED",
                     "retryable": True, "artifacts": [], "detail": type(exc).__name__}
-    sample_time = _local_datetime(as_of, deps.clock())
+    observed_at = _local_datetime(None, deps.clock())
+    requested_time = _local_datetime(as_of, observed_at)
+    elapsed = (observed_at - requested_time).total_seconds()
+    sample_time = observed_at if as_of not in (None, "") and 0 < elapsed <= 60 else requested_time
     names = _same_date_universe_names(root, day, sample_time)
     try:
         built = _build_pool(day, sample_time, snapshot, names)
