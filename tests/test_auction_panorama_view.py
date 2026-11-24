@@ -449,3 +449,32 @@ def test_c1566_real_theme_fallback_metrics_and_behavior():
              ({'mean_change_bp': 200, 'weighted_mean_change_bp': 210, 'up_ratio': .7, 'limit_up_count': 4}, '涨停潮'),
              ({'mean_change_bp': 100, 'weighted_mean_change_bp': 260, 'up_ratio': .5}, '大票领涨')]
     assert [_theme_behavior_tag(t)[0] for t, _ in cases] == [label for _, label in cases]
+
+
+def test_c1567_real_ladder_matrix_funnel_and_themes():
+    import json
+    from pathlib import Path
+    product = json.loads(Path('/home/exedev/core-data/reports/2026-11-24/auction_0926/auction_panorama.json').read_text())['panorama']
+    from engine_core.auction_panorama_view import _render_ladder_theme_matrix
+    html, text = _render_ladder_theme_matrix(product)
+    for label in ('更高(昨≥4板)', '拟4板(昨3板)', '拟3板(昨2板)', '拟2板(昨1板)', '拟首板(今日新涨停)', '缺昨4板(断层)', '4/13', '11/130'):
+        assert label in html and label in '\n'.join(text)
+    pcb = html.split('data-theme="PCB"', 1)[1].split('</section>', 1)[0]
+    assert '中京电子' in pcb and '奥士康' in pcb
+    assert '东山精密' in html
+
+
+def test_c1567_real_ladder_collapses_first_board_and_size():
+    import json
+    from pathlib import Path
+    product = json.loads(Path('/home/exedev/core-data/reports/2026-11-24/auction_0926/auction_panorama.json').read_text())['panorama']
+    from engine_core.auction_panorama_view import _render_ladder_theme_matrix
+    html, _ = _render_ladder_theme_matrix(product)
+    card = html.split('data-theme="机器人"', 1)[1].split('</section>', 1)[0]
+    before, rest = card.split('<details', 1)
+    hidden = rest.split('</details>', 1)[0]
+    rows = [s for l in product['yesterday_ladder'] if l['yesterday_streak'] == 1 for b in l['buckets'] for s in b['stocks'] if s.get('primary_reason') == '机器人概念' and s.get('promotion_status') != 'PROVISIONAL']
+    rows.sort(key=lambda s: -(s.get('auction_amount_yuan') or 0))
+    assert all(s['name'] in before for s in rows[:3])
+    assert all(s['name'] in hidden and s['name'] not in before for s in rows[3:])
+    assert len(render_auction_panorama(product)[0].encode()) < 100_000
