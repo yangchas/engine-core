@@ -867,6 +867,70 @@ def _close_fallback(trade_date: str, missing: list[str]) -> tuple[dict[str, Any]
                   "input_files": {}, "missing": missing}
 
 
+def _td_close_daily_kline(source_date: str, cutoff: datetime) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    if not os.environ.get("TD_CONFIG") or not source_date:
+        return None
+    cutoff = cutoff.astimezone(TZ) if cutoff.tzinfo else cutoff.replace(tzinfo=TZ)
+    if cutoff.date().isoformat() < source_date or (cutoff.date().isoformat() == source_date and cutoff.hour < 15):
+        return None
+    store = None
+    try:
+        from .data_pipeline.td_sink import TaosStore
+        store = TaosStore("core_data")
+        data = store.read_day_rows(source_date)
+        if not data:
+            return None
+        rows = [{"date": source_date, "symbol": symbol,
+                 **{key: bar.get(key) for key in ("open", "high", "low", "close", "pre_close",
+                                                   "pct_chg", "amount_yuan", "turnover_pct", "suspended")},
+                 "volume": bar.get("volume_shares")} for symbol, bar in sorted(data.items())]
+        version = next((bar.get("version") for bar in data.values() if bar.get("version")), None)
+        return rows, {"status": "READY", "trade_date": source_date,
+                      "version": version or f"td:{source_date}:{len(rows)}", "row_count": len(rows),
+                      "storage_source": "tdengine", "storage_format": "tdengine", "quality": {"status": "READY"}}
+    except Exception:
+        return None
+    finally:
+        if store is not None:
+            try:
+                store.close()
+            except Exception:
+                pass
+
+
+def _td_close_plate_members(source_date: str, cutoff: datetime) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    if not os.environ.get("TD_CONFIG") or not source_date:
+        return None
+    store = None
+    try:
+        from .data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+        store = ReferenceSnapshotStore()
+        value = store.read_latest("plate_members")
+        if not value or not isinstance(value.get("rows"), list) or not value["rows"]:
+            return None
+        quality = value.get("quality")
+        if isinstance(quality, Mapping) and quality.get("status") == "FAILED":
+            return None
+        available = datetime.fromisoformat(str(value.get("available_at") or "").replace("Z", "+00:00"))
+        available = available if available.tzinfo else available.replace(tzinfo=TZ)
+        cutoff = cutoff if cutoff.tzinfo else cutoff.replace(tzinfo=TZ)
+        if available > cutoff:
+            return None
+        rows = value["rows"]
+        return rows, {"status": "READY", "trade_date": value.get("trade_date") or source_date,
+                      "version": value.get("version"), "sha256": value.get("sha256"),
+                      "row_count": len(rows), "available_at": value.get("available_at"),
+                      "storage_source": "tdengine", "storage_format": "tdengine", "quality": quality}
+    except Exception:
+        return None
+    finally:
+        if store is not None:
+            try:
+                store.close()
+            except Exception:
+                pass
+
+
 def load_close_catalog_inputs(catalog: Any, trade_date: str,
                               prior_trade_date: str | None, *, asof: str | None = None,
                               basis: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -889,6 +953,14 @@ def load_close_catalog_inputs(catalog: Any, trade_date: str,
     selected: dict[str, dict[str, Any]] = {}
     provenance: dict[str, Any] = {}
     for dataset, source_date in specifications.items():
+        if dataset in {"daily_kline", "plate_members"}:
+            loader = _td_close_daily_kline if dataset == "daily_kline" else _td_close_plate_members
+            result = loader(source_date, cutoff)
+            if result is not None:
+                rows, meta = result
+                selected[dataset] = {"manifest": meta, "path": None, "rows": rows}
+                provenance[dataset] = meta
+                continue
         if dataset == "limit_up_pool":
             from .data_pipeline.limit_pool_hot_view import read as read_pool
             rows, meta = (read_pool(source_date, cutoff.isoformat()) if source_date else
@@ -1027,7 +1099,7 @@ def load_close_catalog_inputs(catalog: Any, trade_date: str,
             "lb_days": previous.get("lb_days"),
             "yesterday_limit_up": (bool(previous) if provenance.get("limit_up_pool", {}).get("status") == "READY" else None), "yesterday_lb_days": previous.get("lb_days"),
             "main_plate": primary.get("name"), "plates": list(dict.fromkeys(themes)),
-            "daily_source": "CORE_CATALOG:daily_kline", "checkpoint_status": "MISSING",
+            "daily_source": ("TDENGINE:core_data.daily_kline_v1" if provenance.get("daily_kline", {}).get("storage_source") == "tdengine" else "CORE_CATALOG:daily_kline"), "checkpoint_status": "MISSING",
         })
 
     fields = {
@@ -1080,7 +1152,7 @@ def load_close_catalog_inputs(catalog: Any, trade_date: str,
     manifest = {"source": "CORE_CATALOG", "trade_date": trade_date, "basis": basis,
                 "asof": cutoff.isoformat(),
                 "late_sources": [name for name, info in provenance.items()
-                                 if basis == "POSTHOC_REVIEW" and info.get("available_at") and
+                                 if basis == "POSTHOC_REVIEW" and info.get("storage_source") != "tdengine" and info.get("available_at") and
                                  (datetime.fromisoformat(str(info["available_at"]).replace("Z", "+00:00")) > (cutoff if cutoff.tzinfo else cutoff.replace(tzinfo=TZ)))],
                 "prior_trade_date": prior_trade_date, "datasets": provenance,
                 "field_coverage": field_coverage, "checkpoint_status": "MISSING",
@@ -2494,6 +2566,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                                      (STAGE_NAMES["close"], STAGE_NAMES["open"]))
         if close_catalog_ready:
             fact_stocks = close_catalog_rows
+            daily_source = ("TDENGINE:core_data.daily_kline_v1" if close_catalog_manifest.get("datasets", {}).get("daily_kline", {}).get("storage_source") == "tdengine" else "CORE_CATALOG:daily_kline")
             fact_rows = [{"symbol": row["symbol"], "yesterday_limit_up": row["in_yest_pool"],
                           "yesterday_lb_days": row["lb_days"]} for row in fact_stocks]
             amounts = [row["amount_yuan"] for row in fact_stocks if isinstance(row.get("amount_yuan"), (int, float))]
@@ -2504,10 +2577,10 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 prev_live=_read_optional_json(prev_path, degraded, "PREVIOUS_REPORT")
                     if prev_path and prev_path.is_file() else None,
                 market={"amount_yuan": sum(amounts) if amounts else None,
-                        "amount_coverage": len(amounts), "daily_source": "CORE_CATALOG:daily_kline"},
+                        "amount_coverage": len(amounts), "daily_source": daily_source},
                 checkpoint_status={tag: "READY" if any(r.get(f"p{tag}_pct") is not None for r in fact_stocks) else "MISSING"
                                    for tag in ("0932", "0935", "0940", "0945")})
-            data["data_quality"]["daily_source"] = "CORE_CATALOG:daily_kline"
+            data["data_quality"]["daily_source"] = daily_source
             data["data_quality"]["catalog_field_coverage"] = close_catalog_manifest["field_coverage"]
             daily_provenance = close_catalog_manifest.get("datasets", {}).get("daily_kline", {})
             daily_quality = daily_provenance.get("quality", {}) if isinstance(daily_provenance, Mapping) else {}

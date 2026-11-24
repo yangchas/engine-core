@@ -1085,3 +1085,60 @@ def test_auction_panorama_uses_redis_hot_plates_without_catalog(tmp_path, monkey
                        out_root=tmp_path / "out", sources=DailySources(td=FakeTD(), redis=redis,
                        slice_reader=SliceReader(providers)), dry_run=True)
     assert received and received[0]["801159"]["hot_rank"] == 1
+
+
+def test_close_inputs_prefer_td_and_redis_without_catalog(monkeypatch):
+    from engine_core.daily_pipeline import load_close_catalog_inputs
+    from engine_core.data_pipeline.td_sink import TaosStore
+    from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+    from engine_core.data_pipeline import limit_pool_hot_view
+
+    class EmptyCatalog:
+        def locate(self, dataset, day):
+            assert dataset not in {"daily_kline", "plate_members", "limit_up_pool"}
+            return None
+        def read(self): return {}
+
+    monkeypatch.setenv("TD_CONFIG", "configured")
+    monkeypatch.setattr(TaosStore, "read_day_rows", lambda self, day: {
+        "000001": {"open": 10, "high": 12, "low": 9, "close": 11, "pre_close": 10,
+                   "pct_chg": 10, "volume_shares": 100, "amount_yuan": 1100,
+                   "turnover_pct": 1, "suspended": False, "version": "v1"}})
+    monkeypatch.setattr(ReferenceSnapshotStore, "read_latest", lambda self, dataset: {
+        "rows": [{"symbol": "000001", "plate_member_label": "银行、金融"}],
+        "available_at": "2026-11-24T14:00:00+08:00", "version": "p1"})
+    monkeypatch.setattr(limit_pool_hot_view, "read", lambda day, cutoff: (
+        [{"symbol": "000001", "lb_days": 2}], {"status": "READY"}))
+    rows, manifest = load_close_catalog_inputs(EmptyCatalog(), "2026-11-24", "2026-11-23",
+                                               asof="2026-11-24T15:30:00+08:00")
+    assert len(rows) == 1
+    assert rows[0]["daily_source"] == "TDENGINE:core_data.daily_kline_v1"
+    assert rows[0]["close"] == 11 and rows[0]["volume_shares"] == 100
+    assert rows[0]["plates"] == ["金融", "银行"] and rows[0]["in_yest_pool"] is True
+    assert all(manifest["datasets"][name]["storage_source"] == "tdengine"
+               for name in ("daily_kline", "plate_members"))
+    assert manifest["datasets"]["daily_kline"]["version"] == "v1"
+
+
+def test_close_inputs_td_pit_guards(monkeypatch):
+    from engine_core.daily_pipeline import load_close_catalog_inputs
+    from engine_core.data_pipeline.td_sink import TaosStore
+    from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+    from engine_core.data_pipeline import limit_pool_hot_view
+
+    class EmptyCatalog:
+        def locate(self, dataset, day): return None
+        def read(self): return {}
+
+    daily_calls = []
+    monkeypatch.setenv("TD_CONFIG", "configured")
+    monkeypatch.setattr(TaosStore, "read_day_rows", lambda self, day: daily_calls.append(day) or {})
+    monkeypatch.setattr(ReferenceSnapshotStore, "read_latest", lambda self, dataset: {
+        "rows": [{"symbol": "000001", "plate_member_label": "银行"}],
+        "available_at": "2026-11-24T15:00:00+08:00"})
+    monkeypatch.setattr(limit_pool_hot_view, "read", lambda day, cutoff: ([], {"status": "READY"}))
+    rows, manifest = load_close_catalog_inputs(EmptyCatalog(), "2026-11-24", "2026-11-23",
+                                               asof="2026-11-24T14:30:00+08:00")
+    assert not daily_calls and not rows
+    assert manifest["datasets"]["daily_kline"]["status"] == "MISSING"
+    assert manifest["datasets"]["plate_members"]["status"] == "MISSING"
