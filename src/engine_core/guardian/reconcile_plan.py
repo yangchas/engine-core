@@ -100,11 +100,15 @@ def daily_kline_catalog_state(catalog: Mapping[str, Any], dataset: str,
     candidate and target-date logic below.
     """
     manifest = catalog_manifest(catalog, dataset, partition)
+    needs_upgrade = daily_kline_needs_upgrade(manifest)
+    if needs_upgrade:
+        from .startup import _td_daily_kline_formal
+        needs_upgrade = not _td_daily_kline_formal(partition)
     return {
         "manifest": manifest,
         "version": str((manifest or {}).get("version", "")),
         "present": catalog_partition_present(catalog, dataset, partition, now),
-        "needs_upgrade": daily_kline_needs_upgrade(manifest),
+        "needs_upgrade": needs_upgrade,
     }
 
 
