@@ -6,6 +6,23 @@ import pytest
 from engine_core.guardian.gates import auction_snapshot_ready, checkpoint_ready, daily_kline_ready
 
 
+def test_daily_kline_td_ready_without_catalog(tmp_path, monkeypatch):
+    from engine_core.guardian import gates
+    from engine_core.data_pipeline.td_sink import TaosStore
+    from engine_core.data_pipeline import storage
+
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("TD_CONFIG", "configured")
+    monkeypatch.setattr(TaosStore, "day_counts", lambda self, days: {days[0]: 5224})
+    monkeypatch.setattr(TaosStore, "close", lambda self: None)
+    monkeypatch.setattr(storage, "ArtifactCatalog", lambda *_: pytest.fail("catalog accessed"))
+    gates._CACHE.clear()
+    event = type("Event", (), {"gate": "daily_kline_ready"})()
+    result = daily_kline_ready(event, datetime.fromisoformat("2026-11-24T18:00:00+08:00"), {})
+    assert (result["status"], result["reason"], result["row_count"]) == ("ready", "DAILY_KLINE_TD_READY", 5224)
+    assert not (tmp_path / "catalog.json").exists()
+
+
 @pytest.fixture(autouse=True)
 def _offline_snapshot_redis(monkeypatch):
     import engine_core.data_pipeline.auction_redis_view as view

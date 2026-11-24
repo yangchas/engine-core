@@ -17,6 +17,20 @@ REQUEST_DATE = "2026-10-26"
 REFERENCE_DATE = "2026-10-23"
 
 
+def test_td_formal_satisfies_close_without_catalog(tmp_path, monkeypatch):
+    from engine_core.guardian import daily_kline_close, startup
+    from engine_core.data_pipeline import storage
+
+    monkeypatch.setenv("TD_CONFIG", "configured")
+    monkeypatch.setattr(startup, "_td_daily_kline_formal", lambda day: day == REQUEST_DATE)
+    monkeypatch.setattr(storage, "ArtifactCatalog", lambda *_: pytest.fail("catalog accessed"))
+    assert daily_kline_close.best_existing_rank(tmp_path, REQUEST_DATE) == daily_kline_close.PROVIDER_RANK["baostock"]
+    run = _runner(0, _contract(status="ok"))
+    code, payload = daily_kline_close.run_close_tier(_request("baostock"), tmp_path, runner=run)
+    assert (code, payload["error_code"]) == (20, "ALREADY_SATISFIED")
+    assert not run.calls and not (tmp_path / "catalog.json").exists()
+
+
 def _schedule():
     return json.loads((ROOT / "src/engine_core/guardian/schedule.json").read_text(encoding="utf-8"))
 
