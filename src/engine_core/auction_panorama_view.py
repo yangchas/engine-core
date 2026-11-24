@@ -228,8 +228,20 @@ def _render_theme_buckets_section(tb: Mapping[str, Any] | None, *, for_email: bo
             strength_plain = f"(强度{strength_val})" if strength_val is not None else ""
             cell_theme = f'{rank_badge}<b>{t_name}</b>{res_badge}<br>{tag_badge}{strength_html}'
 
-            # 2. 成员数 (有效竞价数 / 板块总成份股)
-            t_members = f"{t.get('auction_count', '—')}/{t.get('member_count', '—')}"
+            # 2. 成员数与红盘率 (成份股 + 红盘率)
+            up_ratio_val = t.get("up_ratio")
+            auction_cnt = t.get('auction_count', '—')
+            member_cnt = t.get('member_count', '—')
+            if isinstance(up_ratio_val, (int, float)):
+                up_pct = up_ratio_val * 100
+                up_color = "#cf1322" if up_pct >= 50 else ("#389e0d" if up_pct < 20 else "#595959")
+                up_html = f'<br><span style="font-size:9px;font-weight:600;color:{up_color}">红盘{_fmt(up_pct, 1, "%")}</span>'
+                up_plain_str = f"·红盘{_fmt(up_pct, 1, '%')}"
+            else:
+                up_html = ""
+                up_plain_str = ""
+            cell_members = f"{auction_cnt}/{member_cnt}{up_html}"
+            members_plain = f"{auction_cnt}/{member_cnt}{up_plain_str}"
 
             # 3. 竞价额·占比 (大额金额加粗，大额占比高亮)
             amount_val = t.get("amount_yuan")
@@ -270,25 +282,39 @@ def _render_theme_buckets_section(tb: Mapping[str, Any] | None, *, for_email: bo
                 cell_structure = '<span style="color:#bfbfbf">—</span>'
                 struct_plain = "—"
 
-            # 6. 涨跌停与极值龙头集中度
+            # 6. Top1 龙头集中度与涨跌停
+            top1_sym = t.get("top1_symbol")
+            top1_nm = t.get("top1_name") or top1_sym
+            top1_sh = t.get("top1_share")
+            top1_chg = t.get("top1_change_pct")
             up_cnt = t.get("limit_up_count", 0)
             down_cnt = t.get("limit_down_count", 0)
-            up_badge = f'<span style="display:inline-block;padding:1px 3px;font-size:9px;background:#fff1f0;color:#cf1322;border:1px solid #ffa39e;border-radius:2px;font-weight:700">涨停{up_cnt}</span>' if up_cnt > 0 else '<span style="color:#bfbfbf">-</span>'
+            up_badge = f'<span style="display:inline-block;padding:1px 3px;font-size:9px;background:#fff1f0;color:#cf1322;border:1px solid #ffa39e;border-radius:2px;font-weight:700">涨停{up_cnt}</span>' if up_cnt > 0 else ''
             down_badge = f' <span style="display:inline-block;padding:1px 3px;font-size:9px;background:#f6ffed;color:#389e0d;border:1px solid #b7eb8f;border-radius:2px;font-weight:700">跌停{down_cnt}</span>' if down_cnt > 0 else ''
-            top3_val = t.get("amount_top3_share")
-            top3_html = f'<br><span style="font-size:9px;color:#8c8c8c">Top3 {_fmt(top3_val * 100, 1, "%")}</span>' if isinstance(top3_val, (int, float)) else ""
-            top3_plain = f"·Top3 {_fmt(top3_val * 100, 1, '%')}" if isinstance(top3_val, (int, float)) else ""
-            cell_limits = f"{up_badge}{down_badge}{top3_html}"
-            limits_plain = f"涨停{up_cnt}/跌停{down_cnt}{top3_plain}"
+            limit_prefix = f"{up_badge}{down_badge}<br>" if (up_badge or down_badge) else ""
 
-            cells = [cell_theme, t_members, cell_amount, cell_mean, cell_structure, cell_limits]
+            if top1_nm:
+                top1_chg_color = "#cf1322" if (top1_chg or 0) > 0 else ("#389e0d" if (top1_chg or 0) < 0 else "#667085")
+                top1_chg_html = f' <span style="color:{top1_chg_color};font-size:9px">{_fmt(top1_chg, 2, "%")}</span>' if top1_chg is not None else ""
+                top1_sh_str = _fmt(top1_sh * 100, 1, "%") if isinstance(top1_sh, (int, float)) else ""
+                top1_sh_html = f'<br><span style="font-size:9px;color:#8c8c8c">Top1 {top1_sh_str}</span>' if top1_sh_str else ""
+                cell_limits = f"{limit_prefix}<b>{_esc(top1_nm)}</b>{top1_chg_html}{top1_sh_html}"
+                limits_plain = f"Top1:{top1_nm}({top1_sh_str})" if top1_sh_str else f"Top1:{top1_nm}"
+            else:
+                top3_val = t.get("amount_top3_share")
+                top3_html = f'<br><span style="font-size:9px;color:#8c8c8c">Top3 {_fmt(top3_val * 100, 1, "%")}</span>' if isinstance(top3_val, (int, float)) else ""
+                top3_plain = f"·Top3 {_fmt(top3_val * 100, 1, '%')}" if isinstance(top3_val, (int, float)) else ""
+                cell_limits = f"{limit_prefix or '<span style=\"color:#bfbfbf\">-</span>'}{top3_html}"
+                limits_plain = f"涨停{up_cnt}/跌停{down_cnt}{top3_plain}"
+
+            cells = [cell_theme, cell_members, cell_amount, cell_mean, cell_structure, cell_limits]
             row_tds = "".join(f'<td style="{td_style}">{cell}</td>' for cell in cells)
             tb_rows.append(f"<tr>{row_tds}</tr>")
 
             rank_prefix = f"[{rank_plain}] " if rank_plain else ""
-            tb_text_lines.append(f"{rank_prefix}{t_name_raw}{res_plain} {tag_plain}{strength_plain} 成员{t_members}；额{t_amount}·占比{t_share}；{mean_plain}；分布:{struct_plain}；{limits_plain}")
+            tb_text_lines.append(f"{rank_prefix}{t_name_raw}{res_plain} {tag_plain}{strength_plain} 成员{members_plain}；额{t_amount}·占比{t_share}；{mean_plain}；分布:{struct_plain}；{limits_plain}")
 
-        tb_head = ("热点题材(开盘竞价)", "有效/总数", "竞价额·占比", "加权/算术均涨", "强/平/弱分布", "涨跌停·龙头集中度")
+        tb_head = ("热点题材(开盘竞价)", "成份股·红盘率", "竞价额·占比", "加权/算术均涨", "强/平/弱分布", "涨跌停·龙头集中度")
         font_sz = "10px" if for_email else "11px"
         tb_table = f'<table role="table" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;table-layout:fixed;font-size:{font_sz}"><thead><tr>' + ''.join(_th(label) for label in tb_head) + '</tr></thead><tbody>' + ''.join(tb_rows) + '</tbody></table>'
 

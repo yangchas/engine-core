@@ -317,6 +317,9 @@ def test_render_auction_theme_buckets_top10_and_seals():
         }
         for i in range(1, 15)
     ]
+    themes[0]["up_ratio"] = 0.654
+    themes[0]["top1_name"] = "测试龙头"
+    themes[0]["top1_share"] = 0.35
     seals = [
         {
             "symbol": "000593", "name": "德龙汇能", "side": "limit_up", "seal_amount_yuan": 42140880.0,
@@ -352,6 +355,9 @@ def test_render_auction_theme_buckets_top10_and_seals():
     # Structure and seals
     assert "5强" in html and "15平" in html
     assert "德龙汇能" in html and "天然气" in html
+    # Up ratio and Top1 metrics in Table ③
+    assert "红盘65.4%" in html and "红盘65.4%" in plain
+    assert "测试龙头" in html and "Top1:测试龙头" in plain
     # C1544 additions: behavior tags, resonance, and dual-side seal extreme comparison
     assert "①共振" in html and "①全景共振" in plain
     assert "龙头领涨" in html or "剧烈分化" in html

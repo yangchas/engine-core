@@ -5,6 +5,20 @@ from statistics import mean, median
 from .data_pipeline.auction_seal_facts import classify_limit
 
 
+def normalize_theme_label(label: str) -> str:
+    """Normalize plate member label with minimal mechanical rules."""
+    if not label:
+        return ""
+    label = label.strip()
+    if label.endswith("概念") and len(label) > 2:
+        label = label[:-2]
+    if label in ("CPO/MPO", "光芯片", "CPO"):
+        return "光模块"
+    if label in ("CRO", "CRO/CMO"):
+        return "创新药"
+    return label
+
+
 def build_theme_buckets(auction_rows, stock_plates, *, top_n=10, universe_count=None, names=None, listings=None, trading_dates=None):
     if not isinstance(top_n, int) or isinstance(top_n, bool) or top_n < 0:
         raise ValueError('invalid_top_n')
@@ -274,9 +288,109 @@ def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows,
     seals = [dict(r, name=r.get('name') or (stock_names or {}).get(r['symbol']),
                   assignment=assigned.get(r['symbol']), hot_plates=members.get(r['symbol'], []))
              for r in seal_rows if r.get('side') in ('limit_up', 'limit_down')]
-    curated_themes = [t for t in themes if not t.get('non_theme_reason')
-                      and (t.get('amount_yuan') or 0) >= 30_000_000
-                      and (t.get('auction_count') or 0) >= 5]
+    # Curated Top 10 by auction amount using single source of truth plate_member_label
+    stock_to_label = {}
+    for sym, p_list in stock_plates.items():
+        if isinstance(p_list, list) and p_list:
+            for pl in p_list:
+                raw_lbl = pl.get('plate_member_label')
+                if raw_lbl:
+                    first = raw_lbl.replace(',', '、').split('、')[0].strip()
+                    norm = normalize_theme_label(first)
+                    if norm:
+                        stock_to_label[sym] = norm
+                        break
+
+    curated_themes = []
+    if stock_to_label:
+        buckets = defaultdict(list)
+        for s, row in current.items():
+            if s in stock_to_label and row.get('price_milli') is not None:
+                lbl = stock_to_label[s]
+                if not non_theme_reason(lbl):
+                    buckets[lbl].append(row)
+
+        members_by_label = defaultdict(set)
+        for s, lbl in stock_to_label.items():
+            if not non_theme_reason(lbl):
+                members_by_label[lbl].add(s)
+
+        theme_items = []
+        for name, p_rows in buckets.items():
+            amt = sum(r['amount_yuan'] for r in p_rows if r.get('amount_yuan') is not None)
+            if amt >= 30_000_000 and len(p_rows) >= 5:
+                theme_items.append((name, amt, p_rows))
+
+        theme_items.sort(key=lambda x: -x[1])
+
+        for rank_idx, (name, amt, p_rows) in enumerate(theme_items[:10], 1):
+            n = len(p_rows)
+            changed = [r for r in p_rows if r.get('change_bp') is not None]
+            strong = sum(r['change_bp'] >= 300 for r in changed)
+            weak = sum(r['change_bp'] <= -300 for r in changed)
+            middle = len(changed) - strong - weak
+
+            up_count = sum(r['change_bp'] > 0 for r in changed)
+            down_count = sum(r['change_bp'] < 0 for r in changed)
+            flat_count = sum(r['change_bp'] == 0 for r in changed)
+            up_ratio = up_count / len(changed) if changed else 0.0
+
+            weighted_rows = [r for r in changed if r.get('amount_yuan') is not None]
+            weight = sum(r['amount_yuan'] for r in weighted_rows)
+            w_bp = sum(r['change_bp'] * r['amount_yuan'] for r in weighted_rows) / weight if weight else None
+            m_bp = mean(r['change_bp'] for r in changed) if changed else None
+
+            sides = [classify_limit(trade_date or str(r.get('snapshot_cutoff', ''))[:10], r['symbol'], r,
+                                    listings.get(r['symbol']), trading_dates) for r in p_rows] if trading_dates else []
+            limit_up_cnt = sides.count('limit_up')
+            limit_down_cnt = sides.count('limit_down')
+
+            sorted_by_amt = sorted(p_rows, key=lambda r: (r.get('amount_yuan') or 0), reverse=True)
+            top1 = sorted_by_amt[0] if sorted_by_amt else None
+            top1_amt = top1.get('amount_yuan') or 0 if top1 else 0
+            top1_share = top1_amt / amt if amt else 0.0
+            top1_sym = top1['symbol'] if top1 else None
+            top1_name = (stock_names or {}).get(top1_sym) or top1_sym
+            top1_chg = (top1.get('change_bp') or 0) / 100 if top1 and top1.get('change_bp') is not None else None
+
+            top3_amts = [r.get('amount_yuan') or 0 for r in sorted_by_amt[:3]]
+            top3_share = sum(top3_amts) / amt if amt else None
+
+            curated_themes.append({
+                'plate_code': name,
+                'name': name,
+                'class': 'THEME',
+                'rank': rank_idx,
+                'member_count': len(members_by_label.get(name, p_rows)),
+                'auction_count': n,
+                'amount_yuan': amt,
+                'market_amount_share': amt / market_amount if market_amount else None,
+                'mean_change_bp': m_bp,
+                'weighted_mean_change_bp': w_bp,
+                'strong_count': strong,
+                'middle_count': middle,
+                'weak_count': weak,
+                'strong_share': strong / n if n else None,
+                'middle_share': middle / n if n else None,
+                'weak_share': weak / n if n else None,
+                'up_count': up_count,
+                'down_count': down_count,
+                'flat_count': flat_count,
+                'up_ratio': up_ratio,
+                'limit_up_count': limit_up_cnt,
+                'limit_down_count': limit_down_cnt,
+                'top1_symbol': top1_sym,
+                'top1_name': top1_name,
+                'top1_amount_yuan': top1_amt,
+                'top1_share': top1_share,
+                'top1_change_pct': top1_chg,
+                'amount_top3_share': top3_share,
+            })
+
+    if not curated_themes:
+        curated_themes = [t for t in themes if not t.get('non_theme_reason')
+                          and (t.get('amount_yuan') or 0) >= 30_000_000
+                          and (t.get('auction_count') or 0) >= 5]
     return {'status':'available', 'themes':themes, 'curated_themes':curated_themes, 'market':{'amount_yuan':market_amount}, 'seals':seals,
             'notes':[f'category_missing={missing}; category_excluded={excluded}', f'curated_count={len(curated_themes)}/{len(themes)}', 'Stocks in multiple hot plates are counted once in each; totals overlap.']}
 
