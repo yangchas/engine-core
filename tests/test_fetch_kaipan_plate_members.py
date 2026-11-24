@@ -109,3 +109,43 @@ def test_refresh_partial_reports_provider_failure_details(tmp_path, monkeypatch)
                  'query_trade_date=2026-10-28', 'requests=1', 'elapsed_ms=',
                  'failure_types={"RuntimeError":1}', f'failed_plate_codes={codes[1]}'):
         assert part in message
+
+
+def test_plate_members_aborts_on_initial_real_error_response():
+    from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
+
+    class Replay:
+        def get_his_plate_ids(self, plate, day, index, size):
+            return {'errcode': '1020', 'errmsg': '参数出错'}
+
+    codes = [f'801{i:03d}' for i in range(50)]
+    result = KaipanProvider(Replay(), plate_codes=codes, max_requests=100,
+                            sleep_fn=lambda _: None).plate_members('2026-11-24')
+    assert result['aborted_early'] is True
+    assert result['partial'] is True
+    assert result['completed_plate_count'] == 0
+    assert result['unqueried_plate_count'] == 50
+    assert result['request_count'] <= 14
+    assert all(row['error_type'] == 'ValueError' and '1020' in row['error_message']
+               for row in result['failed_plates'])
+
+
+def test_plate_members_success_prevents_initial_abort():
+    from pathlib import Path
+    from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
+
+    fixture = next((Path(__file__).parent / 'fixtures' / 'real').glob(
+        'kaipan_plate_members_2026-10-28_*_i0_*.json'))
+    response = json.loads(fixture.read_text())
+    codes = [f'801{i:03d}' for i in range(20)]
+
+    class Replay:
+        def get_his_plate_ids(self, plate, day, index, size):
+            return response if plate == codes[0] else {'errcode': '1020', 'errmsg': '参数出错'}
+
+    result = KaipanProvider(Replay(), plate_codes=codes, max_requests=100,
+                            sleep_fn=lambda _: None).plate_members('2026-10-28', concurrency=1)
+    assert result['aborted_early'] is False
+    assert result['completed_plate_count'] == 1
+    assert result['request_count'] == len(codes)
+    assert len(result['failed_plates']) == len(codes) - 1
