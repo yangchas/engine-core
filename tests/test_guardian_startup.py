@@ -483,3 +483,35 @@ def test_boot_apply_plan_skips_items_owned_by_open_event_window(tmp_path):
         enqueue_only=True,
     )
     assert heavy["detail"]["deferred"][0]["run_in_phases"] == ["MIDDAY_BREAK"]
+
+
+def test_daily_kline_catalog_state_prefers_formal_td(monkeypatch):
+    from pathlib import Path
+    from engine_core.guardian import startup
+    from engine_core.guardian.reconcile_plan import daily_kline_catalog_state
+
+    day = "2026-11-12"
+    catalog = json.loads(Path("/home/exedev/core-data/catalog.json").read_text())
+    versions = catalog["datasets"]["daily_kline"]["dates"][day]
+    catalog["datasets"]["daily_kline"]["dates"][day] = [next(v for v in versions if v.get("source") == "wencai")]
+    monkeypatch.setenv("TD_CONFIG", "configured")
+    monkeypatch.setattr(startup, "_td_daily_kline_formal", lambda partition, result=None: partition == day, raising=False)
+    state = daily_kline_catalog_state(catalog, "daily_kline", day, datetime.fromisoformat("2026-11-24T21:00:00+08:00"))
+    assert state["needs_upgrade"] is False
+
+
+def test_daily_kline_upgrade_resolves_from_backfill_coverage(tmp_path, monkeypatch):
+    from pathlib import Path
+    from engine_core.guardian.startup import _record_daily_kline_upgrade
+
+    day = "2026-11-12"
+    catalog = json.loads(Path("/home/exedev/core-data/catalog.json").read_text())
+    versions = catalog["datasets"]["daily_kline"]["dates"][day]
+    catalog["datasets"]["daily_kline"]["dates"][day] = [next(v for v in versions if v.get("source") == "wencai")]
+    (tmp_path / "catalog.json").write_text(json.dumps(catalog))
+    monkeypatch.delenv("TD_CONFIG", raising=False)
+    result = {"detail": {"coverage": {day: 1.0}, "incomplete": []}}
+    state = _record_daily_kline_upgrade(tmp_path, day, succeeded=True, result=result,
+                                        now="2026-11-24T21:00:00+08:00", phase="POST_MARKET")
+    assert state["status"] == "resolved"
+    assert state["reason"] == "formal_version_available"

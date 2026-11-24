@@ -211,7 +211,35 @@ def daily_kline_coverage(root: Path, candidates: list[str], catalog: dict[str, A
                             known_missing=known_missing if isinstance(known_missing, Mapping) else None)
 
 
+def _td_daily_kline_formal(partition: str, result: Mapping[str, Any] | None = None) -> bool:
+    """Use the backfill coverage first; otherwise check the authoritative TD rows."""
+    if isinstance(result, Mapping):
+        detail = result.get("detail")
+        if isinstance(detail, Mapping):
+            coverage, incomplete = detail.get("coverage"), detail.get("incomplete")
+            if isinstance(coverage, Mapping) and isinstance(incomplete, (list, tuple, set)):
+                value = coverage.get(partition)
+                if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0.995 and partition not in incomplete:
+                    return True
+    if not os.environ.get("TD_CONFIG"):
+        return False
+    store = None
+    try:
+        from ..data_pipeline.td_sink import TaosStore
+        store = TaosStore("core_data")
+        return store.day_counts([partition]).get(partition, 0) >= 4500
+    except Exception:
+        return False
+    finally:
+        if store is not None:
+            try:
+                store.close()
+            except Exception:
+                pass
+
+
 def _record_daily_kline_upgrade(root: Path, partition: str, *, succeeded: bool,
+                                result: Mapping[str, Any] | None = None,
                                 now: datetime | str | None = None,
                                 phase: str | None = None) -> dict[str, Any] | None:
     """Record one source attempt against its partition and current quiet window."""
@@ -247,7 +275,7 @@ def _record_daily_kline_upgrade(root: Path, partition: str, *, succeeded: bool,
         except (OSError, ValueError):
             catalog = {"datasets": {}}
         manifest = catalog_manifest(catalog, "daily_kline", partition)
-        if not daily_kline_needs_upgrade(manifest):
+        if not daily_kline_needs_upgrade(manifest) or _td_daily_kline_formal(partition, result):
             state.update(status="resolved", reason="formal_version_available")
         else:
             state["attempts"] = int(state.get("attempts", 0)) + 1
@@ -1107,7 +1135,7 @@ def fetch_item(item_id: str, partition: str, root: str | Path, *,
             cutoff = clock if now is not None else datetime.now().astimezone()
         snapshot_info = _verify_partition(item, partition, root, cutoff)
         if upgrade:
-            state = _record_daily_kline_upgrade(root, partition, succeeded=True, now=clock, phase=phase)
+            state = _record_daily_kline_upgrade(root, partition, succeeded=True, result=result, now=clock, phase=phase)
             if state:
                 _record_daily_kline_upgrade_gap(root, partition, state, clock)
             if state and state.get("status") != "resolved":
