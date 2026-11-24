@@ -382,6 +382,38 @@ def test_curated_theme_buckets_filters_geography_and_low_liquidity():
     assert all((t.get("auction_count") or 0) >= 5 for t in result["curated_themes"])
 
 
+def test_curated_theme_buckets_plate_member_label_single_source_and_metrics():
+    from engine_core.auction_theme_buckets import build_hot_theme_buckets
+    data = json.loads((Path(__file__).parent / 'fixtures/real/c1351/excerpt.json').read_text())
+    hot = next(h for h in data['hot'] if h['event_id'] == 'kaipan_hot_092520')
+    stock_names = {r['symbol']: r.get('name') for r in data['stock_static']}
+    result = build_hot_theme_buckets(
+        data['auction_0925'] + data['auction_0924'], data['mapping'], hot['rows'],
+        data['registry']['rows'],
+        listings={r['symbol']: r['listing_date'] for r in data['stock_static']},
+        trading_dates=data['calendar'], top_n_hot=243, stock_names=stock_names
+    )
+    curated = result["curated_themes"]
+    assert len(curated) <= 10
+    # Top 1 by auction amount is 银行 with 3.02亿
+    top1_theme = curated[0]
+    assert top1_theme["name"] == "银行"
+    assert top1_theme["rank"] == 1
+    assert top1_theme["amount_yuan"] == 301967190
+    assert top1_theme["auction_count"] == 41
+    assert round(top1_theme["up_ratio"], 4) == 0.2683
+    assert "top1_symbol" in top1_theme and top1_theme["top1_share"] > 0
+    # Canonical normalization: 光芯片 -> 光模块, 机器人概念 -> 机器人
+    names = [t["name"] for t in curated]
+    assert "光模块" in names
+    assert "光芯片" not in names
+    assert "机器人概念" not in names
+    # Verification of descending order by auction amount
+    amounts = [t["amount_yuan"] for t in curated]
+    assert amounts == sorted(amounts, reverse=True)
+
+
+
 
 
 
