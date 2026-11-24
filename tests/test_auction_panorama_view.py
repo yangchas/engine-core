@@ -360,7 +360,7 @@ def test_render_auction_theme_buckets_top10_and_seals():
     assert "测试龙头" in html and "Top1:测试龙头" in plain
     # C1544 additions: behavior tags, resonance, and dual-side seal extreme comparison
     assert "①共振" in html and "①全景共振" in plain
-    assert "龙头领涨" in html or "剧烈分化" in html
+    assert "平稳分化" in html or "剧烈分化" in html
     assert "🔴买方涨停极值" in html and "🟢卖方跌停核按钮" in html
     assert "🔴买方涨停极值" in plain and "🟢卖方跌停核按钮" in plain
 
@@ -393,3 +393,59 @@ def test_render_auction_theme_buckets_curated_filters_geography():
 
 
 
+
+
+def test_c1566_real_replay_seals_and_quickbrief():
+    import gzip
+    import json
+    from pathlib import Path
+    from engine_core.auction_quickbrief import build_auction_quickbrief
+    from engine_core.auction_panorama_view import _streak_and_hot_conclusions
+
+    root = Path('/home/exedev/core-data')
+    report = root / 'reports/2026-11-24/auction_0926/auction_panorama.json'
+    paths = list((root / 'auction_stock_facts/trade_date=2026-11-24').rglob('rows.jsonl.gz'))
+    if not report.exists() or not paths:
+        pytest.skip('2026-11-24 real data unavailable')
+    product = json.loads(report.read_text())['panorama']
+    with gzip.open(paths[0], 'rt') as stream:
+        rows = [json.loads(line) for line in stream]
+    pool = [{'symbol': stock['symbol'], 'lb_days': layer['yesterday_streak']}
+            for layer in product['yesterday_ladder'] if layer['yesterday_streak'] >= 2
+            for bucket in layer['buckets'] for stock in bucket['stocks']]
+    result = build_auction_quickbrief({'rows': rows}, plate_members=[], yesterday_pool=pool)
+    assert result['metrics']['multi_board']['sealed_next_board_n'] == 5
+    seals = product['theme_buckets']['seals']
+    up = [s for s in seals if s.get('side') == 'limit_up' and (s.get('seal_amount_yuan') or s.get('amount_yuan'))]
+    down = [s for s in seals if s.get('side') == 'limit_down' and (s.get('seal_amount_yuan') or s.get('amount_yuan'))]
+    line = _streak_and_hot_conclusions(product)[-1]
+    assert 'UNKNOWN' not in line and f'（{len(up)}只）' in line and f'（{len(down)}只）' in line
+    from engine_core.auction_panorama_view import _render_theme_buckets_section
+    html, _ = _render_theme_buckets_section(product["theme_buckets"])
+    assert all(name not in html for name in ("海峡两岸", "次新股", "粤港澳"))
+
+
+def test_c1566_real_theme_fallback_metrics_and_behavior():
+    import json
+    from pathlib import Path
+    from engine_core.auction_theme_buckets import build_hot_theme_buckets
+    from engine_core.auction_theme_cards import non_theme_reason
+    from engine_core.auction_panorama_view import _render_theme_buckets_section, _theme_behavior_tag
+
+    data = json.loads((Path(__file__).parent / 'fixtures/real/c1351/excerpt.json').read_text())
+    hot = next(h for h in data['hot'] if h['event_id'] == 'kaipan_hot_092520')
+    mapping = {s: [{k: v for k, v in plate.items() if k != 'plate_member_label'} for plate in plates]
+               for s, plates in data['mapping'].items()}
+    result = build_hot_theme_buckets(data['auction_0925'], mapping, hot['rows'], data['registry']['rows'],
+                                    stock_names={r['symbol']: r.get('name') for r in data['stock_static']}, top_n_hot=243)
+    theme = next(t for t in result['curated_themes'] if t['name'] == '银行')
+    assert theme['top1_name'] and 0 <= theme['up_ratio'] <= 1
+    assert all(non_theme_reason(n, extended=True) for n in ('海峡两岸', '次新股', '粤港澳'))
+    assert all((t.get('top1_share') or 0) < .8 for t in result['curated_themes'])
+    html, _ = _render_theme_buckets_section(result)
+    assert all(n not in html for n in ('海峡两岸', '次新股', '粤港澳'))
+    assert theme['top1_name'] in html
+    cases = [({'mean_change_bp': 300, 'weighted_mean_change_bp': 310, 'up_ratio': .8, 'limit_up_count': 2}, '共振主升'),
+             ({'mean_change_bp': 200, 'weighted_mean_change_bp': 210, 'up_ratio': .7, 'limit_up_count': 4}, '涨停潮'),
+             ({'mean_change_bp': 100, 'weighted_mean_change_bp': 260, 'up_ratio': .5}, '大票领涨')]
+    assert [_theme_behavior_tag(t)[0] for t, _ in cases] == [label for _, label in cases]

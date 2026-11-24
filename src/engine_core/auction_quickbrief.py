@@ -210,7 +210,7 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
                 multi_pool.append(rows[symbol])
     confirmed_next = [r for r in multi_pool if isinstance(r.get("seal"), Mapping)
                       and r["seal"].get("status") in ("VERIFIED", "VERIFIED_REPLAY")
-                      and r.get("limit_up_candidate") is True]
+                      and (r.get("limit_up_candidate") is True or r["seal"].get("seal_side") == "up")]
     weak = sorted((r for r in multi_pool if _has_valid_auction_price(r)
                    and (_num(r.get("pct_change")) or 0) <= -3),
                   key=lambda r: (_num(r.get("pct_change")), normalize_symbol(r.get("symbol"))))[:2]
