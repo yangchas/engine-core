@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -318,7 +319,7 @@ def items_for_phase(phase: str, registry: list[dict[str, Any]] | None = None) ->
 def stale_items(now: datetime, catalog: str | Path | Mapping[str, Any],
                 registry: list[dict[str, Any]] | None = None, *,
                 trade_date: str | None = None, prev_trade_date: str | None = None) -> list[dict[str, Any]]:
-    """Per-item status for a trading day, from registry metadata and the catalog only.
+    """Per-item status for a trading day, using the authoritative snapshot when available.
 
     ``freshness`` = {partition: "D"|"D-1", expected_by: "HH:MM"}. The item is OK when the
     catalog holds that partition, PENDING before ``expected_by`` (local time of ``now``),
@@ -353,6 +354,20 @@ def stale_items(now: datetime, catalog: str | Path | Mapping[str, Any],
                            **({"reason": getattr(presence, "reason", None) or "corrupt_presence"}
                               if presence == "CORRUPT" else {})})
             continue
+        if item["id"] == "plate_members" and os.environ.get("TD_CONFIG"):
+            try:
+                from ..prep_trade_day import _plate_members_snapshot
+                snapshot = _plate_members_snapshot(asof=now.isoformat())
+                available = datetime.fromisoformat(snapshot["available_at"].replace("Z", "+00:00"))
+                if available.tzinfo is None:
+                    raise ValueError("snapshot available_at must be timezone-aware")
+                snap_day = available.astimezone(now.tzinfo).date().isoformat()
+                age = (datetime.fromisoformat(day) - datetime.fromisoformat(snap_day)).days
+                result.append({"id": item["id"], "dataset": dataset, "partition": snap_day,
+                               "status": "OK" if age <= rule.get("max_age_days", 8) else "STALE"})
+                continue
+            except Exception:
+                pass  # Preserve catalog fallback when the authoritative snapshot is unavailable.
         if not dataset:
             result.append({"id": item["id"], "status": "UNKNOWN", "reason": "no catalog dataset"})
             continue
