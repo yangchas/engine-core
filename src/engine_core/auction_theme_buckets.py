@@ -215,7 +215,7 @@ def read_and_build(trade_date, store=None, redis_client=None):
 def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows, *, top_n_hot=40,
                             listings=None, trading_dates=None, seal_rows=(), trade_date=None,
                             previous_trade_date=None, pool_labels=None, reason_rows=(),
-                            stock_names=None):
+                            stock_names=None, plate_baselines=None):
     """Aggregate PIT hot plates independently; overlapping members count in each plate."""
     from .auction_theme_cards import non_theme_reason
     from .stock_theme_assignment import build_stock_theme_assignments
@@ -242,6 +242,16 @@ def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows,
         target[row['symbol']] = row
     market_amount = sum(r['amount_yuan'] for r in current.values() if r.get('amount_yuan') is not None)
     listings = listings or {}
+    plate_baselines = plate_baselines or {}
+    def extras(rows, code, name, amount):
+        deltas = [r['amount_yuan'] - previous[r['symbol']]['amount_yuan'] for r in rows
+                  if r.get('amount_yuan') is not None and r['symbol'] in previous
+                  and previous[r['symbol']].get('amount_yuan') is not None]
+        n = len(rows)
+        baseline = plate_baselines.get(code, plate_baselines.get(name))
+        return {'amount_delta_yuan': sum(deltas) if previous and n and len(deltas) >= max(1, int(n * .8)) else None,
+                'amount_delta_coverage': round(len(deltas) / n, 3) if previous and n else None,
+                'crowding_multiple': round(amount / baseline, 2) if amount is not None and baseline is not None and baseline > 0 else None}
     themes = []
     for hot in selected:
         code = str(hot['plate_code'])
@@ -286,7 +296,7 @@ def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows,
                        'mean_ex_top3_bp': mean(r['change_bp'] for r in ordered[3:]) if len(ordered)>3 else None,
                        'amount_top3_share': sum(sorted(amounts, reverse=True)[:3])/amount if amount else None,
                        'amount_yuan': amount, 'market_amount_share': amount/market_amount if amount is not None and market_amount else None,
-                       'amount_delta_yuan': sum(deltas) if n and len(deltas)==n else None,
+                       **extras(priced, code, hot.get('name'), amount),
                        'rank': hot.get('rank'), 'strength': hot.get('strength'), 'change_pct': hot.get('change_pct'),
                        'kaipan_amount_yuan': ka_amount, 'amount_to_kaipan_ratio': amount/ka_amount if amount is not None and ka_amount else None})
     members = {s: [{'id': str(p['plate_code']), 'name': h.get('name') or str(p['plate_code'])}
@@ -376,6 +386,7 @@ def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows,
                 'member_count': len(members_by_label.get(name, p_rows)),
                 'auction_count': n,
                 'amount_yuan': amt,
+                **extras(p_rows, name, name, amt),
                 'market_amount_share': amt / market_amount if market_amount else None,
                 'mean_change_bp': m_bp,
                 'weighted_mean_change_bp': w_bp,
