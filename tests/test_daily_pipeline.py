@@ -643,6 +643,31 @@ def test_publish_and_dry_run_are_mutually_exclusive(tmp_path):
                            sources=DailySources(td=FakeTD()), publish=True, dry_run=True)
 
 
+def test_close_stage_reads_injected_core_redis_hot_plates(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path / "core"))
+    key = "core:cache:data:hot_plates:2026-11-24:sha256-594970e05878c3e1"
+    view = {"dataset": "hot_plates", "trade_date": "2026-11-24",
+            "version": "sha256-594970e05878c3e1", "available_at": "2026-11-24T10:30:08+08:00",
+            "business_status": "PROVISIONAL", "quality": {"partial": False}, "row_count": 1,
+            "rows": [{"plate_code": "TEST", "name": "test", "trade_date": "2026-11-24"}]}
+
+    class FakeRedis:
+        def scan_iter(self, match, count):
+            return iter([key] if match == "core:cache:data:hot_plates:2026-11-24:*" else [])
+
+        def get(self, requested):
+            return json.dumps(view) if requested == key else None
+
+    result = run_daily_pipeline(stage="close", trade_date="2026-11-24",
+                                asof="2026-11-24T18:22:57+08:00", out_root=tmp_path / "out",
+                                sources=DailySources(td=FakeTD(), redis=FakeRedis()), dry_run=True)
+    manifest = result["manifest"]
+    hot = manifest["slices"]["hot_plates_today"]
+    assert hot["status"] in {"READY", "PARTIAL"}
+    assert hot["source"] == "core_redis" and hot["rows"] > 0
+    assert "MISSING_SLICE:hot_plates_today" not in manifest["degraded"]
+
+
 def test_close_stage_never_reads_td_daily_kline_when_core_catalog_is_missing(tmp_path):
     sources = DailySources(td=FakeTD(), reference_root=tmp_path / "refs",
                            daily_kline_rows=lambda day: [{

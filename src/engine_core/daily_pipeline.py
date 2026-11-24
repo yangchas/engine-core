@@ -1162,7 +1162,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
     pipeline_timings: dict[str, float] = {}
     auction_panorama_artifact = None
     src = sources or DailySources(reference_root=reference_root)
-    if src.redis is None and stage != "close":
+    if src.redis is None:
         try:
             src.redis = _connect_redis()
         except Exception:
@@ -1176,7 +1176,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                                                   stage=stage, redis=None)
     from .slices import SliceProviders, SliceReader
     slice_reader = src.slice_reader or SliceReader(
-        SliceProviders(redis=None if stage == "close" else src.redis).providers(), snapshot_id=f"{trade_date}:{stage}")
+        SliceProviders(redis=src.redis).providers(), snapshot_id=f"{trade_date}:{stage}")
     point = (asof or ("09:26:00" if stage == "auction" else
                       "09:46:00" if stage == "open" else "17:40:00"))
     if stage == "close":
