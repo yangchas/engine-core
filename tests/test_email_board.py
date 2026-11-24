@@ -306,3 +306,29 @@ def test_extremes_table_explains_rank_columns_and_marks_missing_plate():
     _, text = _extremes({"extremes_board": board}, "auction")
     assert "无板块" in text
     assert "绝对值#=竞价涨跌幅绝对值排名" in text and "额#=竞价匹配额排名" in text
+
+
+def test_real_open_report_converges_appendix_within_mail_budget():
+    import copy
+    import json
+    from pathlib import Path
+    from engine_core.email_board import _front_page_view, _plates
+
+    report = json.loads(Path('/home/exedev/core-data/reports/2026-11-24/open_0935/report.json').read_text())
+    report['checkpoint'] = '0945'
+    entries = report['a_to_b']
+    report['a_to_b'] = [copy.deepcopy(entries[i % len(entries)]) for i in range(30)]
+    board = report['chapters']['extremes_board']
+    rows = board['auction']['rows']
+    board['open']['rows'] = [copy.deepcopy(rows[i % len(rows)]) for i in range(700)]
+    front, _ = _front_page_view(report, 'open')
+    plates, _ = _plates(report, 'open')
+    rendered, plain = render_email_board(report, 'open', '2026-11-24')
+    assert len(rendered.encode('utf-8')) <= 100_000
+    assert re.sub(r'(?<!\d)\d{6}(?!\d)', '', front) in rendered
+    assert re.sub(r'(?<!\d)\d{6}(?!\d)', '', plates) in rendered
+    assert '另省略 30 条' in rendered and '另省略 ' in plain
+    assert re.search(r'另省略 \d+ 只', rendered)
+    assert '收盘%' not in rendered + plain
+    assert 'close_pct' not in rendered + plain
+    assert re.search(r'(?<!\d)\d{6}(?!\d)', re.sub(r'<[^>]*>', ' ', rendered) + plain) is None
