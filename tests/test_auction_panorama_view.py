@@ -556,3 +556,36 @@ def test_c1569_real_theme_partial_delta():
     assert theme['amount_delta_yuan'] == sum(r['amount_yuan'] - previous[r['symbol']]['amount_yuan'] for r in current if r['symbol'] in previous and r['symbol'] in symbols[:9])
     assert theme['amount_delta_coverage'] == .9
     assert theme['crowding_multiple'] == round(theme['amount_yuan'], 2)
+
+
+def test_c1570_real_distribution_and_plate_filter():
+    import gzip
+    import json
+    from pathlib import Path
+    from engine_core.auction_panorama import build_auction_panorama
+    root = Path('/home/exedev/core-data')
+    product = json.loads((root / 'reports/2026-11-24/auction_0926/auction_panorama.json').read_text())['panorama']
+    path = next((root / 'auction_stock_facts/trade_date=2026-11-24').rglob('rows.jsonl.gz'))
+    with gzip.open(path, 'rt') as stream:
+        rows = [json.loads(line) for line in stream]
+    metrics = build_auction_panorama({'trade_date': '2026-11-24', 'asof': '2026-11-24T09:26:00+08:00', 'rows': rows}, plate_members=[], yesterday_pool=[])
+    product['overview']['market_distribution'] = metrics['overview']['market_distribution']
+    product['capital_flow'] = metrics['capital_flow']
+    html, _ = render_auction_panorama(product)
+    assert '全市场10档竞价涨跌分布' in html
+    assert all(label in html for label in ('≥7%', '5~7%', '3~5%', '0~3%', '平盘', '-3~0%', '-5~-3%', '≤-5%'))
+    assert '题材封板:未封' in html
+    plate = html.split('① 板块竞价全景', 1)[1].split('② 昨日连板', 1)[0]
+    assert '福斯特' not in plate and '步长制药' not in plate
+    assert '封成比' in html
+
+
+def test_c1570_real_ladder_table_and_size():
+    import json
+    from pathlib import Path
+    product = json.loads(Path('/home/exedev/core-data/reports/2026-11-24/auction_0926/auction_panorama.json').read_text())['panorama']
+    html, _ = render_auction_panorama(product)
+    ladder = html.split('② 昨日连板', 1)[1].split('③ 热点题材', 1)[0]
+    assert all(label in ladder for label in ('股票(身位)', '竞价额 / 封单', '爆量 / 日K位', '#eef6ff'))
+    assert '封单—' not in ladder
+    assert len(html.encode()) < 100_000
