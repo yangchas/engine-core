@@ -1722,7 +1722,9 @@
       "calendar": "trading_day",
       "cost": "heavy",
       "data_date_offset": 0,
-      "depends_on": [],
+      "depends_on": [
+        "baostock_probe_1730"
+      ],
       "enabled": true,
       "gate": "daily_kline_ready",
       "handler": "close_report",
@@ -1739,7 +1741,10 @@
         "POST_MARKET"
       ],
       "trigger_type": "window",
-      "policy": "policy_08"
+      "policy": "policy_08",
+      "accept_degraded_dependencies": [
+        "baostock_probe_1730"
+      ]
     },
     "postmarket_publish": {
       "after": [],
@@ -1754,7 +1759,9 @@
       "calendar": "trading_day",
       "cost": "heavy",
       "data_date_offset": 0,
-      "depends_on": [],
+      "depends_on": [
+        "baostock_probe_1730"
+      ],
       "enabled": true,
       "gate": "daily_kline_ready",
       "handler": "postmarket_data",
@@ -1771,7 +1778,10 @@
         "POST_MARKET"
       ],
       "trigger_type": "window",
-      "policy": "policy_05"
+      "policy": "policy_05",
+      "accept_degraded_dependencies": [
+        "baostock_probe_1730"
+      ]
     },
     "runtime_reconcile": {
       "after": [],

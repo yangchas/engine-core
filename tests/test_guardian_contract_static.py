@@ -83,3 +83,29 @@ def test_stock_cap_schedule_avoids_wencai_windows():
                           chain.get('budget_seconds', 0) if isinstance(chain, dict) else 0)
             other_end += timedelta(seconds=timeout)
             assert end <= other_start or start >= other_end, event['event_id']
+
+
+def test_postmarket_reports_wait_for_baostock_with_degraded_allowed():
+    import json
+    import subprocess
+
+    guardian = ROOT / 'src/engine_core/guardian'
+    schedule = json.loads((guardian / 'schedule.json').read_text())
+    timeline = json.loads((guardian / 'timeline.json').read_text())
+    events = {event['event_id']: event for event in schedule['events']}
+    for event_id in ('close_recap', 'postmarket_publish'):
+        for event in (events[event_id], timeline['functions'][event_id]):
+            assert event['depends_on'] == ['baostock_probe_1730']
+            assert event['accept_degraded_dependencies'] == ['baostock_probe_1730']
+
+    result = subprocess.run(
+        ['go', 'run', '.', 'migrate', '--from', str(guardian / 'schedule.json'),
+         '--to', '/dev/stdout', '--expand'],
+        cwd=ROOT / 'native/guardiand', capture_output=True, text=True, check=True,
+    )
+    native, _ = json.JSONDecoder().raw_decode(result.stdout)
+    compiled = {event['id']: event for event in native['events']}
+    for event_id in ('close_recap', 'postmarket_publish'):
+        assert compiled[event_id]['depends_on'] == [
+            {'id': 'baostock_probe_1730', 'accept_degraded': True}
+        ]
