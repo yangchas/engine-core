@@ -84,7 +84,7 @@ def test_message_recovers_matching_panorama_for_compact_auction_body(tmp_path, m
         report / "report.html", report / "report.json", [report_mailer.ALLOWED_RECIPIENT],
         "reports@example.test")
     html = message.get_body(preferencelist=("html",)).get_content()
-    assert "竞价速览卡" in html and "题材横向对比" in html
+    assert "竞价全景 V6" in html and 'data-matrix="ladder-2d"' in html
     assert "附件" not in message.get_body(preferencelist=("plain",)).get_content()
     assert "完整明细已存档于 Core 报告目录" in message.get_body(preferencelist=("plain",)).get_content()
 

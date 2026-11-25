@@ -887,7 +887,7 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
         if isinstance(public_lines, list) and public_lines and not full_report:
             status, _, _ = _quality_banner(manifest, report)
             if isinstance(panorama, Mapping):
-                from .auction_panorama_view import render_auction_email_digest
+                from .auction_panorama_view import render_auction_panorama
                 degraded_note = ""
                 if status != "READY":
                     for group_name in ("slices", "sources"):
@@ -906,9 +906,14 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
                             break
                     if not degraded_note:
                         degraded_note = "原因：数据覆盖或来源状态未完整"
-                return render_auction_email_digest(panorama, quickbrief,
-                                                   completeness=status,
-                                                   degraded_note=degraded_note)
+                if "quickbrief" not in panorama and isinstance(quickbrief, Mapping):
+                    panorama = {**panorama, "quickbrief": quickbrief}
+                html, plain = render_auction_panorama(panorama)
+                if degraded_note:
+                    note_html = f'<div style="margin:4px 10px;color:#7c2d12;font-size:10px">{_esc(degraded_note)}</div>'
+                    html = html.replace("</body>", note_html + "</body>", 1)
+                    plain += "\n" + degraded_note
+                return html, plain
             warning = status != "READY"
             title = str(public_lines[0])
             replay_note = (str(public_lines[1]) if len(public_lines) > 1 and

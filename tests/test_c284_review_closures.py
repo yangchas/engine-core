@@ -136,15 +136,13 @@ def test_auction_email_body_is_compact_panorama_without_attachment_by_default(tm
         [report_mailer.ALLOWED_RECIPIENT], "reports@localhost")
     body = message.get_body(preferencelist=("plain",)).get_content()
     attachments = list(message.iter_attachments())
-    assert "昨日整批统计" in body and "①题材横向对比" in body
+    assert "竞价全景 V6" in body and "② 昨日连板梯队" in body
     assert "附件" not in body
-    assert "竞价全景 V6" not in body and "② 昨日连板梯队" not in body
     assert attachments == []
-    assert "昨日整批统计" in body and "①题材横向对比" in body
-    assert "②昨日涨停×题材接力意愿" in body
-    assert len(body.encode("utf-8")) <= 30_000
+    assert len(body.encode("utf-8")) <= 60_000
     html_body = message.get_body(preferencelist=("html",)).get_content()
-    assert len(html_body.encode("utf-8")) <= 30_000
+    assert 'data-matrix="ladder-2d"' in html_body
+    assert len(html_body.encode("utf-8")) <= 100_000
     explicit = build_report_message("Core", "2026-10-16", "auction", report_html, report_json,
         [report_mailer.ALLOWED_RECIPIENT], "reports@localhost", attach_full_html=True)
     assert [part.get_filename() for part in explicit.iter_attachments()] == ["report.html"]
