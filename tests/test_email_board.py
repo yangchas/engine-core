@@ -364,8 +364,26 @@ def test_open_verification_real_report_contract():
     report = json.loads(Path('/home/exedev/core-data/reports/2026-11-24/open_0935/report.json').read_text())
     rendered, plain = render_email_board(report, 'open', '2026-11-24')
     for expected in ('data-section="open-money-flow"', 'data-section="open-verification"',
-                     'CPO/MPO', '文投控股', '荣联科技', '东山精密', '封死', '开板'):
+                     'data-item="open-flow-row"', '文投控股', '荣联科技', '东山精密', '封死', '开板'):
         assert expected in rendered
     assert len(rendered.encode('utf-8')) < 90_000
     assert not re.search(r'(?<!\d)\d{6}(?!\d)', rendered + plain)
     assert not any(word in rendered + plain for word in ('close_pct', 'close_mean', 'close_median', '收盘'))
+
+
+def test_real_open_attack_and_risk_corrections():
+    import json
+    import re
+    from pathlib import Path
+
+    report = json.loads(Path('/home/exedev/core-data/reports/2026-11-25/open_0935/report.json').read_text())
+    rendered, _ = render_email_board(report, 'open', '2026-11-25')
+    flow = ''.join(re.findall(r'<tr data-item="open-flow-row">.*?</tr>', rendered))
+    risk = re.search(r'🩸 放量失血.*?</div>', rendered)
+    seals = ''.join(re.findall(r'<span data-item="open-seal".*?</span>', rendered))
+    assert '医药' in flow and '存储' not in flow and '先进封装' not in flow
+    assert risk and '存储' in risk.group()
+    assert 'ST天圣' not in seals and 'ST汇洲' not in seals
+    assert re.search(r'克来机电 · 封[\d.]+亿', seals)
+    assert '砸盘/炸板避坑 Top 3' in rendered and '高开跳水避坑 Top 3' not in rendered
+    assert len(rendered.encode('utf-8')) < 25_000 and '<details' not in rendered
