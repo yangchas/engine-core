@@ -1,164 +1,124 @@
 <div align="center">
 
-# ⚙️ engine_core
+# ⚙️ engine_core (`v1.0.0`)
 
-### **事实先行 · 确定性计算 · 只读接入**
+### **实时盘口采集 · 工作流编排 · 竞价/开盘/收盘决策报告一体化 Monorepo**
 
-独立的行情驱动计算内核：把有时点的数据转成可追溯的竞价与开盘事实。
-
-`MISSING ≠ ZERO`　·　`NO LOOK-AHEAD`　·　`READ-ONLY CORE`
+`REDIS + TDENGINE`　·　`MISSING ≠ ZERO`　·　`NO LOOK-AHEAD`　·　`SEAMLESS DEGRADATION`
 
 </div>
 
-> 本项目只读真实数据与封存文件。RabbitMQ → t1_v2 → TD/Redis 的生产链路在项目之外；Core 不接管 Rabbit ACK，不写 TD/Redis，不执行正式 effect。
+---
 
-## 导航
+## 1. 系统定位与总体架构
 
-[定位与数据流](#数据流) · [分析流水线](#板块与个股分析流水线) · [模块地图](#模块地图) · [时点与来源](#数据源与时点) · [状态](#状态看板) · [快速开始](#快速开始) · [目录](#目录结构) · [路线图](#路线图) · [贡献与验证](#贡献与验证)
-
-## 数据流
+`engine_core` 是 A 股日内短线与题材演化的全链路生产系统（单仓 Monorepo），由三大核心组件组成：
 
 ```mermaid
 flowchart LR
-  subgraph Outside[项目外：既有生产链路]
-    RMQ[RabbitMQ] --> T1[t1_v2] --> TD[TD]
-    T1 --> Redis[Redis]
-  end
-  Redis --> Q2[Q2 / TD 快照]
-  Q2 --> Adapter[只读 Adapter]
-  Adapter --> State[CurrentMarketState]
-  State --> Window[Window]
-  Window --> Engine[Deterministic Engine]
-  Engine --> Facts[Facts]
-  Facts --> Reports[Reports]
+  RMQ[RabbitMQ 行情流] --> TICKD[native/tickd C++17]
+  TICKD -->|实时 q2:* 含 b1a/a1a & 竞价全量| REDIS[(Redis 热层)]
+  TICKD -->|09:45前五档 tick| TD[(TDengine 时序库)]
+  EXT[Kaipan / Baostock / 问财] --> GUARD[native/guardiand Go]
+  GUARD -->|任务编排 / Gate / 多级 Ladder| CORE[src/engine_core Python]
+  REDIS --> CORE
+  TD --> CORE
+  CORE -->|4封正式邮件| MAIL[09:26 竞价 · 09:35/09:45 开盘 · 17:40 收盘]
 ```
 
-Core 的计算边界从已读取或封存的输入开始。事件时间、读取时间与到达时间各自保留；确定性回放只证明对应输入上的可重复性，不代表生产批次或输入保真度等价。
+| 组件 | 路径 | 语言 | 职责 |
+|---|---|---|---|
+| **实时行情采集端** | `native/tickd/` | C++17 | 消费 RabbitMQ 原始五档行情，实时写入 Redis `q2:*`（含一档盘口金额 `b1a`/`a1a`、大单净额、涨速、竞价锚点）与全量竞价视图 `core:auction:full:*`，并在 `09:45:59` 前落盘五档 tick 至 TDengine `market_data1.stock_tick_v2` |
+| **工作流调度守护进程** | `native/guardiand/` | Go | 原生交易日任务编排器：支持开机初始化链、9 种前置 `gate`、DAG `depends_on`、`catchup`/`late_until` 迟到回补、指数退避、盘后重型任务 `cost=heavy` 负载退让（`heavy_max_load5`），以及多级 `ladder` 自动降级 |
+| **核心计算与报告引擎** | `src/engine_core/` | Python 3.12 | 全链路数据管道、盘中涨停池实时真封单/开板风险判定、竞价 V3 全景报告、开盘极简确定性快报、收盘复盘报告与邮件投递 |
 
-## 板块与个股分析流水线
+---
 
-```mermaid
-flowchart LR
-  Pool[昨日池] --> Registry[板块注册表]
-  Reasons[带日期原因] --> Registry
-  Static[静态关系] --> Registry
-  Registry --> Cs[个股特征集 C_s]
-  Cs --> Significance[盘中显著性检测]
-  Significance --> Selection[独立板块选择]
-  Selection --> Report[竞价 / 开盘事实报告]
-  Hot[Kaipan 热板参考列] -. 仅参考 .-> Report
-```
-
-输出用于描述观察到的事实与质量状态。显著性、C_s 分类与板块选择不自动构成交易建议；Kaipan 热板目前仅作为参考列。
-
-## 降级矩阵
-
-```mermaid
-flowchart TD
-  Start[输入检查] --> K{Kaipan 可用?}
-  K -- 是 --> KData[使用带日期的池 / 原因]
-  K -- 否 --> Static[静态关系 / 可用原因降级]
-  Start --> A{竞价输入可用?}
-  A -- 是 --> Auction[按来源与时点计算]
-  A -- 否 --> W[问财 >500万 兜底]
-  Start --> H{热板可用?}
-  H -- 是 --> Hot[仅作参考列]
-  H -- 否 --> Proxy[PROXY 标注或不排名]
-```
-
-| 缺失环节 | 处理方式 | 解释 |
-|---|---|---|
-| Kaipan 池 / 原因 | 可用的静态关系、带日期原因 | 保留来源与时点；缺少时不补造成员 |
-| 竞价输入 | 问财竞价金额大于 500 万兜底 | 兜底数据单独标来源，不冒充 Q2 / TD |
-| 热门板块 | 标为 `PROXY` 或不排名 | 热板不是核心分析输入 |
-
-## 核心原则
-
-- **确定性与无未来函数：** 结论只使用结论时点之前可用的输入；盘后事实只用于结果核验。
-- **缺失保持缺失：** 不把 `None`、不可用或未知静默填成零。
-- **来源保持可见：** 同一引擎不代表输入保真度相同；事实与策略结论分开。
-- **边界解耦：** `src/engine_core` 不依赖 `examples` 或旧系统源码；旧系统适配边界放在 `examples/legacy_adapters.py`。
-- **竞价语义明确：** 09:25 前是虚拟撮合状态，不是成交量/成交额；真实成交量与成交额从 09:25 后出现。
-
-## 模块地图
-
-| 模块 | 职责 |
-|---|---|
-| `engine.py` / `state.py` | 确定性信号队列、reducer 与当前市场状态 |
-| `q2.py` | Redis Q2 投影的薄适配与字段归一化 |
-| `windows.py` / `timers.py` | 半开时间窗与定时器原语 |
-| `auction.py` / `opening.py` | 已观测竞价字段与开盘事实的纯计算 |
-| `plate_registry.py` / `plate_membership.py` | 板块注册表、多成员关系与层级事实 |
-| `plate_significance.py` | 单横截面稳健板块显著性检查 |
-| `plate_aggregation.py` / `plate_strength.py` | 不含策略结论的板块竞价与开盘聚合事实 |
-| `data.py` / `live_inputs.py` | 查询数据边界与输入结果封装 |
-| `reporting.py` / `report_render.py` | 冻结事实的报告投影与渲染 |
-| `replay.py` / `replay_frames.py` / `replay_arrival.py` | 回放与输入保真度相关工具 |
-
-## 数据源与时点
-
-| 输入 | 用途 | 时点规则 |
-|---|---|---|
-| Redis Q2 投影 | 实时影子读取、竞价与开盘状态 | 保留源时间戳与读取时间；09:25 前不当作成交 |
-| TD 竞价快照 | 历史竞价行与摘要重建 | 按冻结行自身时间聚合；不推断 Rabbit 到达顺序 |
-| Kaipan 池 / 原因 | 昨日池、原因与板块层级 | 使用 `Date < D` 的原因构造 D 日盘前输入 |
-| 静态板块关系 | 个股与板块映射 | 记录快照时点；未知时点不得宣称 point-in-time |
-| 问财竞价兜底 | 竞价输入缺失时的有限补充 | 仅按日期查询，标记来源；阈值为金额大于 500 万 |
-
-## 状态看板
-
-| 项目 | 状态 |
-|---|---|
-| TASK-008 | `PARTIAL_EVIDENCE` |
-| REPLAY_FOR_DEVELOPMENT | `USABLE_WITH_LIMITS` |
-| NORMAL_OPENING_ACCEPTANCE | `UNPROVEN` |
-| M3_1_NORMAL | `BLOCKED` |
-| TD_WRITE_HEALTH | `UNPROVEN` |
-
-以上为当前证据边界，不因 README 更新而改变。
-
-## 快速开始
-
-在仓库根目录运行离线测试与最小垂直切片：
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. python -m pytest tests -q -p no:cacheprovider
-python examples/run_vertical_slice.py
-```
-
-| 常用脚本 | 用途 |
-|---|---|
-| `examples/run_vertical_slice.py` | 本地最小垂直切片 |
-| `examples/run_fact_vertical_slice.py` | 事实计算垂直切片 |
-| `examples/run_q2frame` 系列 | 封存 Q2Frame 回放与审计 |
-| `examples/run_offline_plate_auction_open_report.py` | 离线板块竞价 / 开盘报告 |
-| `examples/run_wencai_fallback.py` | 调用方提供网络函数的问财兜底入口 |
-
-示例脚本的参数与输入边界以脚本 `--help` 和各自说明为准。默认测试使用离线 fixture，不等同于在线数据源验证。
-
-## 目录结构
+## 2. 仓库目录结构
 
 ```text
-src/engine_core/   计算内核、适配合同、事实与报告
-examples/          有界回放、只读探针、离线构建与报告脚本
-tests/             单元、合同与 fixture 测试
-docs/              项目知识、任务文档与证据索引
-plate/             板块关系与字典数据
+engine_core/
+├── src/engine_core/          # Python 核心引擎、数据管道、报告渲染与邮件投递
+│   ├── data_pipeline/        # 去 catalog 数据存取、B4 契约校验、日K/涨停池/热板 provider
+│   ├── guardian/             # 任务命令构造、门禁校验、盘前健康检查、多收件人分流
+│   ├── auction_panorama*.py  # 09:26 竞价 V3 全景计算与 2D 题材连板矩阵渲染
+│   ├── email_board.py        # 09:35/09:45 极简确定性开盘快报（~9KB 一屏）与收盘看板
+│   ├── close_review.py       # 17:40 收盘复盘推导（含热板象限演化与开盘检查点追踪）
+│   └── q2.py                 # Redis q2:* 实时行情适配（含 b1a/a1a 一档挂单金额）
+├── native/
+│   ├── guardiand/            # Go 原生任务编排器源码与配置生成工具
+│   └── tickd/                # C++17 实时行情采集与盘口计算引擎（原 t1_v2）
+├── examples/                 # 生产入口脚本（guardian_handler.py / run_daily_reports.py 等）
+├── tests/                    # 单元与真实数据契约回归测试
+└── docs/                     # 架构说明（ARCHITECTURE.md）与专题技术文档
 ```
 
-## 路线图
+---
 
-| 已完成 | 进行中 | 待办 / 未证 |
+## 3. 生产存储规范（已全面去 `catalog`）
+
+- **热态与实时数据 → Redis**：
+  - `q2:<symbol>`：全市场 5,200+ 只股票实时快照（含 `b1a` 买一金额元、`a1a` 卖一金额元、涨跌停状态 `ls`、`spd1m`/`amt2m`/`ln`）
+  - `core:auction:full:<date>:<0920|0924|0925>`：全量竞价定点视图
+  - `core:cache:data:hot_plates:<date>:*`：开盘啦全天多时点热板快照
+  - `core:cache:data:limit_up_pool_today:<date>:*`：盘中涨停池（含实时 `seal_amount`、`ask1_amount`、`seal_status`: `SEALED / OPEN_RISK / EMPTY_BOOK`）
+  - `core:view:limit_up_pool:<date>` / `core:view:plate_stock_index:<date>`：昨日涨停池与板块映射视图
+- **历史与盘后时序数据 → TDengine**：
+  - `core_data.daily_kline_v1`、`daily_dde_v1`、`price_volume_indicators_v1`、`chip_indicators_v1`、`dde_indicators_v1`、`adjust_factor_v1`
+  - `market_data1.stock_tick_v2`（`09:15–09:45:59` 五档逐笔）
+  - `cold_*`：异步冷归档表
+- **静态参考资产**：允许使用规范化 CSV；生产链路禁止读写旧 `catalog.json`。
+
+---
+
+## 4. 每日 4 封核心生产报告
+
+| 时点 | 阶段 | 体积 | 核心定位 |
+|---|---|---|---|
+| **09:26** | 竞价全景 V3 | ~62 KB | 热点题材竞价分桶、2D `连板天数 × 题材` 色块矩阵、资金去向雷达与风格分布 |
+| **09:35** | 开盘极简初验 | ~9 KB | 10 秒一屏确定性快报：大环境抛压定性 + 🔥真进攻主线 Top5 + 🩸放量失血避坑 + 硬封/开板/跌停（去ST带封单额）+ 急拉与砸盘避坑 + 核心高标 |
+| **09:45** | 开盘极简终验 | ~9 KB | 同上，开盘 15 分钟终局确认 |
+| **17:40** | 收盘复盘 | ~30 KB | 全天大盘、竞价与开盘检查点追踪、243 板块热板象限演化、连板晋级与昨日机会回看 |
+
+> **收件人隔离**：正式报告支持在 `guardiand` 配置的 `email_to` 中配置多收件人；所有测试、模拟演练（`--simulate-clock`）、告警（`Core [ALERT]`）与夜间报告强制仅发送给管理员单人邮箱。
+
+---
+
+## 5. 工作流级无感降级（`tickd DEAD` 容灾）
+
+基于 `guardiand` 原生多级 `ladder`（`rung 0` 失败/超时自动切 `rung 1` 并传 `degrade_requested=true`），在数据适配层实现**下游渲染无感替换**：
+
+| 阶段 | 主链（`rung 0`） | 断源自动降级（`rung 1`） |
 |---|---|---|
-| 确定性内核基础、Q2 / TD 只读适配、事实与报告轮子 | 盘中板块显著性、C_s 分类与独立板块选择 | NORMAL opening 验收、Rabbit 到达与批次保真度、TD 写入健康 |
-| 冻结输入回放与有限真实数据对照 | 竞价与开盘事实输出迭代 | 完整策略迁移与正式 effect（不属于首期） |
+| **09:26 竞价** | `core:auction:full:0925` (`require_live_data=true`) | 问财竞价兜底 → 无感适配为标准 `facts_rows`，复用同一套 V3 竞价报告 |
+| **09:35 / 09:45 开盘** | `live_q2 + hot_plates` (`require_live_data=true`) | 纯开盘啦热板进攻主线 + 昨日高标（不依赖 `tickd`） |
+| **盘中涨停池** | Redis `q2:*`（实时 `b1a/a1a`） | 关键节点（`10:10 / 11:25 / 14:30 / 15:20`）自动切问财（受日预算与限频约束） |
+| **15:05 / 17:40 盘后** | `Baostock → WenCai → Q2FinalProvider` | 天生不依赖 `tickd`，受 `cost=heavy` 与 `heavy_max_load5` 错峰退让保护 |
 
-## 贡献与验证
+---
 
-建议流程：**最小 patch → 针对性单测 → 最短可触发的真实窗口 → 证据复核 → 提交**。发布里程碑才运行全量回放；日常改动优先使用短窗口。每项结论注明输入、时点、来源与限制，状态标签只由证据维护流程更新。
+## 6. 构建、测试与运维速查
 
-提交格式：`type(scope): summary`；常用类型为 `feat`、`fix`、`test`、`docs`、`chore`。
+### Python 核心测试
+```bash
+PYTHONPATH=src:. /home/exedev/services/engine-next/shared/venv/bin/python -m pytest -q \
+  tests/test_q2_adapter.py tests/test_limit_up_today.py tests/test_email_board.py \
+  tests/test_auction_panorama_view.py tests/test_daily_pipeline.py
+```
 
-## 历史说明
+### 编译与自检 `native/tickd`（C++17）
+```bash
+cd native/tickd
+CORE_DATA_ROOT=/home/exedev/core-data bash make.sh --self-test --out=build/tickd
+```
 
-迁移过程与各验证入口的详细背景已完整归档至 [docs/README_HISTORY.md](docs/README_HISTORY.md)。
+### 校验与重启 `guardiand`
+```bash
+# 校验配置
+/home/exedev/core-data/guardian-native/guardiand validate /home/exedev/core-data/guardian-native/config.json
+
+# 平滑重启（由 supervisor.sh 5 秒后自动拉起并加载新 config_version）
+kill -TERM "$(pgrep -x guardiand | head -n 1)"
+```
+
+更多架构细节与线上目录拓扑见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 与 [native/tickd/README.md](native/tickd/README.md)。
