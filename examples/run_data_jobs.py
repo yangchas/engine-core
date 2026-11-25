@@ -1,0 +1,1138 @@
+#!/usr/bin/env python3
+"""Run injected Core data adapters. Importing this CLI never connects to a source."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib
+import inspect
+import json
+import os
+import time
+from collections import Counter
+from dataclasses import replace
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Any, Mapping
+from zoneinfo import ZoneInfo
+
+from engine_core.data_pipeline.jobs import JobRunner, RequestBudget
+from engine_core.data_pipeline.registry import DATASETS, get_dataset
+from engine_core.data_pipeline.storage import ArtifactCatalog
+from engine_core.runtime_state import ProviderState, redis_configured
+from engine_core.data_pipeline.reader import load_dataset
+from engine_core.data_pipeline.job_contract import (
+    JobResult as ContractJobResult,
+    emit as emit_job_result,
+    exception_code,
+    run_with_degrade,
+)
+from engine_core.data_pipeline.job_contract import contract_main, emit_failure
+from engine_core.errors import CoreError, QualityInvalid, SchemaInvalid
+
+
+def _load_adapter(spec: str | None) -> dict[str, Any]:
+    if not spec: return {}
+    module_name, separator, factory_name = spec.partition(":")
+    if not separator: raise ValueError("adapter must be module:function")
+    factory = getattr(importlib.import_module(module_name), factory_name)
+    value = factory()
+    if not isinstance(value, dict): raise ValueError("adapter factory must return a mapping")
+    return value
+
+
+def _plate_registry_rows(artifact_root: str, trade_date: str,
+                         configured: str | None = None) -> list[dict[str, Any]]:
+    if os.environ.get("TD_CONFIG"):
+        from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+
+        with ReferenceSnapshotStore() as store:
+            latest = store.read_latest("plate_registry")
+        if latest is not None:
+            return [dict(row) for row in latest["rows"]]
+    candidates = ([Path(configured)] if configured else []) + [
+        Path(artifact_root) / "plate_registry.json",
+        Path(artifact_root) / "plate" / "registry.json",
+        Path(artifact_root) / "plate_registry" / "registry.json",
+    ]
+    codes_path = next((path for path in candidates if path.is_file()), None)
+    if codes_path is not None:
+        payload = json.loads(codes_path.read_text(encoding="utf-8"))
+        plate_rows = payload.get("plates", []) if isinstance(payload, dict) else payload
+        return [dict(item) if isinstance(item, dict) else {"plate_code": str(item)}
+                for item in plate_rows if isinstance(item, (dict, str, int))]
+    catalog = ArtifactCatalog(artifact_root)
+    path = catalog.locate("plate_registry", trade_date) or catalog.locate("plate_registry")
+    if path is None:
+        return []
+    return catalog.read_rows(path)
+
+
+def _plate_codes(artifact_root: str, trade_date: str, configured: str | None = None) -> list[str]:
+    return list(dict.fromkeys(str(row.get("plate_code") or row.get("code") or "")
+                              for row in _plate_registry_rows(artifact_root, trade_date, configured)
+                              if row.get("plate_code") or row.get("code")))
+
+
+def _refresh_plate_members_latest(trade_date: str, artifact_root: str, *, persist: bool,
+                                  max_requests: int) -> dict[str, Any]:
+    from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
+    from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+    from engine_core.data_pipeline.static_data import build_plate_members
+
+    registry_rows = _plate_registry_rows(artifact_root, trade_date, os.getenv("CORE_PLATE_REGISTRY"))
+    if not registry_rows:
+        raise RuntimeError("plate_registry_reference_missing")
+    codes = list(dict.fromkeys(str(row.get("plate_code") or row.get("code") or "").strip()
+                               for row in registry_rows
+                               if row.get("plate_code") or row.get("code")))
+    if not codes:
+        raise RuntimeError("plate_registry_codes_missing")
+    classes = {str(row.get("plate_code") or row.get("code")): str(row.get("class") or "UNKNOWN")
+               for row in registry_rows}
+
+    class LazyKaipanClient:
+        def get_his_plate_ids(self, plate: str, day: str, index: int, size: int):
+            api = importlib.import_module("pykaipan.pykaipan")
+            return api.getHisPlateIds(p=plate, date=day, index=str(index), size=str(size))
+
+    source = "kaipan_getHisPlateIds"
+    available_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
+    store = ReferenceSnapshotStore() if persist else None
+    version = store.begin("plate_members", source=source, available_at=available_at) if store else None
+    started = time.monotonic()
+    try:
+        provider = KaipanProvider(LazyKaipanClient(), plate_codes=codes, plate_classes=classes,
+                                  max_requests=max(max_requests, len(codes) * 8),
+                                  min_interval_seconds=0.2)
+        fetched = provider.plate_members(trade_date, concurrency=4)
+        if fetched.get("partial"):
+            failed_plates = fetched.get("failed_plates") or []
+            failure_types = Counter(str(row.get("error_type") or "UNKNOWN")
+                                    for row in failed_plates if isinstance(row, Mapping))
+            failed_codes = [str(row.get("plate_code") or "") for row in failed_plates
+                            if isinstance(row, Mapping) and row.get("plate_code")]
+            elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
+            raise RuntimeError(
+                "kaipan_plate_members_incomplete_retry_all:"
+                f"failed={len(failed_plates)},completed={fetched.get('completed_plate_count', 0)},"
+                f"queried={fetched.get('queried_plate_count', 0)},"
+                f"unqueried={fetched.get('unqueried_plate_count', 0)},"
+                f"query_trade_date={trade_date},requests={fetched.get('request_count', 0)},"
+                f"elapsed_ms={elapsed_ms},"
+                f"failure_types={json.dumps(dict(sorted(failure_types.items())), separators=(',', ':'))},"
+                f"failed_plate_codes={','.join(failed_codes[:20])}"
+            )
+        partition = build_plate_members(
+            fetched["rows"], registry_rows, trade_date=trade_date, as_of=available_at,
+            source_dates={"kaipan_getHisPlateIds": {"query_trade_date": trade_date,
+                                                     "request_count": fetched.get("request_count")}},
+        )
+        fetched_row_count = len(fetched["rows"])
+        if len(partition.rows) != fetched_row_count:
+            raise RuntimeError(
+                f"kaipan_plate_members_row_count_changed:{fetched_row_count}:{len(partition.rows)}"
+            )
+        elapsed_ms = max(1, int((time.monotonic() - started) * 1000))
+        committed = None
+        if store is not None and version is not None:
+            committed = store.write_and_activate(
+                "plate_members", version, partition.rows, source=source,
+                available_at=available_at, request_count=int(fetched.get("request_count") or 0),
+                elapsed_ms=elapsed_ms,
+            )
+        return {"dataset": "plate_members", "date": trade_date,
+                "status": "READY", "row_count": len(partition.rows),
+                "request_count": int(fetched.get("request_count") or 0),
+                "elapsed_ms": elapsed_ms, "fetched_row_count": fetched_row_count,
+                "persisted_to_td": committed is not None,
+                "snapshot": committed}
+    finally:
+        if store is not None:
+            store.close()
+
+
+def _universe_delta(current: set[str], previous: set[str], *, reject_ratio: float = 0.10) -> tuple[int, float]:
+    delta = len(current ^ previous)
+    ratio = delta / max(1, len(previous))
+    if ratio > reject_ratio:
+        raise QualityInvalid("universe_change_over_10pct")
+    return delta, ratio
+
+
+def _normalize_universe_rows(source_rows: list[list[str]]) -> list[dict[str, str]]:
+    """Normalize real query_all_stock tuples, keeping exchange-qualified identity."""
+    by_symbol: dict[str, dict[str, str]] = {}
+    possible_identities: dict[str, set[str]] = {}
+    for source_row in source_rows:
+        if len(source_row) < 3:
+            continue
+        code, status, name = map(str, source_row[:3])
+        exchange, sep, symbol = code.partition(".")
+        exchange, symbol = exchange.lower(), symbol.strip()
+        if not sep or len(symbol) != 6 or not symbol.isdigit():
+            continue
+        eligible = ((exchange == "sh" and symbol.startswith(("60", "68"))) or
+                    (exchange == "sz" and symbol.startswith(("00", "30"))))
+        # 000xxx Shanghai codes are index families, including known collisions
+        # with Shenzhen A shares; they must not be treated as competing stocks.
+        plausible_stock_code = symbol.startswith(("60", "68", "00", "30")) and not (
+            exchange == "sh" and symbol.startswith("000"))
+        if plausible_stock_code:
+            possible_identities.setdefault(symbol, set()).add(f"{exchange}.{symbol}")
+        if not eligible:
+            continue
+        row = {"symbol": symbol, "code": f"{exchange}.{symbol}", "name": name,
+               "trade_status": status, "universe_asof": "", "source": "baostock_query_all_stock"}
+        previous = by_symbol.get(symbol)
+        if previous is not None and previous["code"] != row["code"]:
+            raise QualityInvalid("universe_identity_conflict")
+        if previous is not None and previous != row:
+            raise QualityInvalid("universe_duplicate_conflict")
+        by_symbol[symbol] = row
+    for symbol, codes in possible_identities.items():
+        if symbol in by_symbol and len(codes) > 1:
+            raise QualityInvalid("universe_identity_conflict")
+    return [by_symbol[symbol] for symbol in sorted(by_symbol)]
+
+
+def _symbols_file(path: str | Path, universe_rows: list[dict[str, Any]]) -> list[str]:
+    """Read a bounded debug cohort and ensure every identifier belongs to the PIT universe."""
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise RuntimeError(f"symbols_file_unreadable:{type(exc).__name__}") from None
+    symbols: list[str] = []
+    for line_number, raw in enumerate(lines, 1):
+        value = raw.strip()
+        if not value:
+            continue
+        if len(value) != 6 or not value.isdigit():
+            raise ValueError(f"symbols_file_invalid_code:line={line_number}")
+        if value in symbols:
+            raise ValueError(f"symbols_file_duplicate_code:line={line_number}")
+        symbols.append(value)
+    if not symbols:
+        raise ValueError("symbols_file_empty")
+    available = {str(row.get("symbol", row.get("code", ""))).rsplit(".", 1)[-1].zfill(6)
+                 for row in universe_rows}
+    unknown = sorted(set(symbols) - available)
+    if unknown:
+        raise ValueError("symbols_file_outside_universe:" + ",".join(unknown[:5]))
+    return symbols
+
+
+def _require_sample_artifact_root(path: str | Path) -> str:
+    root = Path(path).expanduser().resolve()
+    production_root = Path(os.getenv("CORE_DATA_ROOT", "~/core-data")).expanduser().resolve()
+    try:
+        root.relative_to(production_root)
+    except ValueError:
+        return str(root)
+    raise ValueError("symbols_file_artifact_root_cannot_be_core_data_root")
+
+
+def _wencai_options(args: Any, parser: Any) -> dict[str, Any]:
+    try:
+        edges = tuple(None if item.strip().lower() in {"", "none"} else float(item)
+                      for item in str(args.wencai_segment_edges_yi).split(","))
+    except ValueError:
+        parser.error("--wencai-segment-edges-yi must be numbers or none")
+    if (args.wencai_cooldown_seconds < 0 or args.wencai_cooldown_max_seconds < 0 or args.wencai_max_cooldowns < 0
+            or args.wencai_max_total_requests < 1 or args.wencai_segment_max_rows < 1
+            or not 0 < args.wencai_coverage_threshold <= 1):
+        parser.error("invalid WenCai throttle/segment bounds")
+    return {"cookie_file": args.wencai_cookie_file or None,
+            "cooldown_seconds": args.wencai_cooldown_seconds,
+            "cooldown_max_seconds": args.wencai_cooldown_max_seconds,
+            "max_cooldowns_per_page": args.wencai_max_cooldowns,
+            "max_total_requests": args.wencai_max_total_requests,
+            "segment_enabled": args.wencai_segments == "on",
+            "segment_edges_yi": edges,
+            "segment_max_rows": args.wencai_segment_max_rows,
+            "coverage_threshold": args.wencai_coverage_threshold}
+
+
+def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
+                      write_enabled: bool, *, baostock_timeout_seconds: float = 60.0,
+                      baostock_total_timeout_seconds: float | None = None,
+                      baostock_no_progress_seconds: float = 300.0,
+                      baostock_symbols_file: str | None = None,
+                      wencai_options: dict[str, Any] | None = None,
+                      td_progress_writer: Any = None) -> dict[str, Any]:
+    """Construct lazy read-only adapters; optional SDK imports happen on fetch."""
+    sample_path = Path(baostock_symbols_file).expanduser() if baostock_symbols_file else None
+    if sample_path is not None:
+        artifact_root = _require_sample_artifact_root(artifact_root)
+    sample_token = (hashlib.sha256(sample_path.read_bytes()).hexdigest()[:12]
+                    if sample_path is not None else None)
+
+    def symbols_for(day: str) -> list[str]:
+        found = load_dataset("symbol_universe", day, prefer="file",
+                             catalog=ArtifactCatalog(artifact_root))
+        if found is None:
+            raise CoreError("UPSTREAM_NOT_READY", "symbol_universe_artifact_required:" + day)
+        if sample_path is not None:
+            return _symbols_file(sample_path, found.rows)
+        return [str(row.get("symbol", row.get("code", ""))).zfill(6) for row in found.rows]
+
+    def universe_fetch(day: str, context: Any = None) -> dict[str, Any]:
+        """Build a PIT-safe target-day snapshot from the preceding session's exchange list."""
+        from datetime import datetime
+        if context is not None:
+            context.request()
+        try:
+            from engine_core.trade_day_context import previous_trade_date as context_previous
+            asof = context_previous(artifact_root, day)
+        except ValueError:
+            raise RuntimeError("symbol_universe_prior_trade_date_required:" + day)
+        import baostock as bs
+        from engine_core.daily_kline_capture import BaostockClient, call_with_timeout
+        client = BaostockClient(bs, timeout_seconds=baostock_timeout_seconds)
+        call_with_timeout(client.login, timeout_seconds=client.timeout_seconds)
+        try:
+            def read_all_stock():
+                result = bs.query_all_stock(day=asof)
+                if getattr(result, "error_code", "0") != "0":
+                    raise RuntimeError("symbol_universe_source_failed")
+                rows = []
+                while result.next():
+                    rows.append(result.get_row_data())
+                return rows
+            raw_rows = call_with_timeout(read_all_stock, timeout_seconds=client.timeout_seconds)
+        finally:
+            call_with_timeout(client.logout, timeout_seconds=client.timeout_seconds)
+        rows = _normalize_universe_rows(raw_rows)
+        for row in rows:
+            row["universe_asof"] = asof
+        symbols = [row["symbol"] for row in rows]
+        if not rows: raise QualityInvalid("empty_response")
+        if any(not row["name"] or not row["trade_status"] for row in rows):
+            raise SchemaInvalid("required_field_missing")
+        delta_count = 0
+        change = 0.0
+        previous = load_dataset("symbol_universe", asof, prefer="file",
+                                catalog=ArtifactCatalog(artifact_root))
+        if previous is not None:
+            old = {str(row["symbol"]) for row in previous.rows}
+            delta_count, change = _universe_delta(set(symbols), old)
+        return {"rows": rows, "expected_count": len(rows), "as_of": asof,
+                "partial": change > 0.02,
+                "universe_delta_count": delta_count,
+                "available_at": datetime.now().astimezone().isoformat()}
+
+    class DailyKlineBaostockAdapter:
+        def __init__(self):
+            self.total_timeout_seconds = baostock_total_timeout_seconds
+
+        def __call__(self, day: str, context: Any = None) -> Any:
+            return self.fetch(day, context)
+
+        def fetch(self, day: str, context: Any = None) -> Any:
+            from engine_core.daily_kline_capture import BaostockClient
+            from engine_core.data_pipeline.providers.baostock_daily_provider import BaostockDailyProvider
+
+            def client_factory() -> Any:
+                import baostock as bs
+                return BaostockClient(bs)
+
+            checkpoint = (Path(artifact_root) / ".checkpoints" / f"daily_kline-{day}.json"
+                          if (write_enabled or sample_path is not None) and td_progress_writer is None else None)
+            if checkpoint is not None and sample_token is not None:
+                checkpoint = checkpoint.with_name(f"daily_kline-{day}-sample-{sample_token}.json")
+            provider = BaostockDailyProvider(
+                client_factory=client_factory, symbols=symbols_for,
+                checkpoint_path=checkpoint, timeout_seconds=baostock_timeout_seconds,
+                source_universe_checkpoint=(Path(artifact_root) / ".checkpoints" /
+                                            f"baostock-source-universe-{day}.json"),
+                progress_writer=td_progress_writer,
+                total_timeout_seconds=self.total_timeout_seconds,
+                no_progress_timeout_seconds=baostock_no_progress_seconds,
+                sample_scope=sample_path is not None,
+            )
+            result = provider.fetch(day, context)
+            universe = load_dataset("symbol_universe", day, prefer="file",
+                                    catalog=ArtifactCatalog(artifact_root))
+            if universe is None:
+                raise CoreError("UPSTREAM_NOT_READY", "symbol_universe_artifact_required:" + day)
+            identity = {str(row.get("symbol", "")).zfill(6): row
+                        for row in universe.rows if row.get("symbol")}
+            result["expected_symbols"] = sorted(
+                symbol for symbol, row in identity.items()
+                if str(row.get("trade_status", "")).strip() != "0")
+            if td_progress_writer is not None:
+                result["rows"] = list(td_progress_writer.read_progress_rows(day, result["expected_symbols"]).values())
+            for row in result.get("rows", []):
+                source = identity.get(str(row.get("symbol", "")).zfill(6))
+                if source is not None:
+                    row["code"] = source.get("code")
+                    row["universe_version"] = universe.manifest.get("version")
+            return result
+
+    daily_fetch = DailyKlineBaostockAdapter()
+
+    def wencai_daily_fetch(day: str, context: Any = None) -> Any:
+        from engine_core.data_pipeline.providers.wencai_daily_adapter import fetch_daily_kline
+        options = dict(wencai_options or {})
+        universe = load_dataset("symbol_universe", day, prefer="file",
+                                catalog=ArtifactCatalog(artifact_root))
+        if universe is not None:
+            options["universe_symbols"] = [str(row.get("symbol", "")).zfill(6) for row in universe.rows
+                                           if row.get("symbol") and str(row.get("trade_status", "")).strip() != "0"]
+        if write_enabled:
+            options["checkpoint_path"] = (Path(artifact_root) / ".checkpoints" /
+                                          f"daily_kline-wencai-pages-{day}.json")
+        return fetch_daily_kline(day, context, **options)
+
+    class LazyKaipanClient:
+        def _sdk(self):
+            return importlib.import_module("pykaipan.pykaipan")
+
+        def get_his_bans(self, day: str, level: int) -> Any:
+            return self._sdk().getHisBans(date=day, ban=str(level), size="2000")
+
+        def get_his_plate_ids(self, plate: str, day: str, index: int, size: int) -> Any:
+            # Keep pagination parameters explicit, matching the pykaipan protocol.
+            api = self._sdk()
+            return api.getHisPlateIds(p=plate, date=day, index=str(index), size=str(size))
+
+        def get_his_plates(self, day: str, index: int, size: int) -> Any:
+            return self._sdk().getHisPlates(date=day, index=str(index), size=str(size))
+
+        def get_his_plate_mins(self, plate: str, day: str) -> Any:
+            return self._sdk().getHisPlateMins(s=plate, date=day)
+
+        def get_ban_reasons(self, symbol: str, *, st: int = 200) -> Any:
+            from engine_core.data_pipeline.providers.kaipan_sdk_adapter import get_ban_reasons
+            return get_ban_reasons(symbol, st=st)
+
+    def kaipan_provider(day: str):
+        from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
+        codes = _plate_codes(artifact_root, day, os.getenv("CORE_PLATE_REGISTRY"))
+        return KaipanProvider(LazyKaipanClient(), plate_codes=codes, max_requests=max_requests)
+
+    # Factories defer SDK construction and all requests until JobRunner invokes them.
+    def pool_fetch(day: str, context: Any = None) -> Any:
+        from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
+        return KaipanProvider(LazyKaipanClient(), max_requests=max_requests).limit_up_pool(day, context=context)
+
+    def hot_fetch(day: str, context: Any = None) -> Any:
+        from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
+        from engine_core.data_pipeline.hot_plates_builder import build_hot_plates
+        result = KaipanProvider(LazyKaipanClient(), max_requests=max_requests,
+                                min_interval_seconds=1).hot_plates(day, context=context)
+        built = build_hot_plates({"trade_date": day, "captured_at": result["fetched_at"],
+                                  "response": result["raw_response"], "page_size": 50,
+                                  "pages_received": result["pages_received"],
+                                  "event_id": f"kaipan_history_{day.replace('-', '')}",
+                                  "requested_api_date": result["requested_api_date"],
+                                  "provider_attempt": result["provider_attempt"]})
+        return {**built.manifest, "rows": built.rows, "request_count": result["request_count"]}
+
+    def reasons_fetch(day: str, context: Any = None) -> Any:
+        from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
+        from engine_core.data_pipeline.limit_pool import build_wencai
+        from engine_core.data_pipeline.limit_reasons import build_limit_reasons
+        catalog = ArtifactCatalog(artifact_root)
+        pool = load_dataset("limit_up_pool", day, prefer="file",
+                            catalog=catalog)
+        pool_status = "READY"
+        if not _dataset_read_ready(pool):
+            from examples.fetch_registry_item import _load_pool_hot
+            hot_pool = _load_pool_hot(day, datetime.now().astimezone().isoformat())
+            if hot_pool is None:
+                raise CoreError("UPSTREAM_NOT_READY", "limit_up_pool_artifact_required:" + day)
+            pool_rows, pool_manifest = hot_pool
+            pool_status = pool_manifest["status"]
+        else:
+            pool_rows, pool_manifest = pool.rows, pool.manifest
+        symbols = sorted({str(row.get("symbol", row.get("code", ""))).zfill(6)
+                          for row in pool_rows if row.get("symbol") or row.get("code")})
+        if not symbols:
+            raise CoreError("UPSTREAM_NOT_READY", "limit_up_pool_has_no_symbols:" + day)
+        pool_source = str(pool_manifest.get("provider") or pool_manifest.get("source") or "").lower()
+        has_kaipan_pool = "kaipan" in pool_source
+        direct_symbols = ({str(row.get("symbol", row.get("code", ""))).zfill(6)
+                           for row in pool_rows
+                           if (row.get("symbol") or row.get("code")) and row.get("reason_category") not in (None, "")}
+                          if has_kaipan_pool else set())
+        reasons_result: dict[str, Any] = {"rows": [], "request_count": 0, "errors": [],
+                                          "queried_symbol_count": 0, "unqueried_symbol_count": 0,
+                                          "history_page_size": 200}
+        attempts: list[dict[str, Any]] = [{"provider": "kaipan_getHisBans", "result": "READY",
+                                          "elapsed_ms": 0, "reason": "saved_limit_up_pool_rows",
+                                          "row_count": len(direct_symbols), "request_count": 0}]
+        needs_kaipan = sorted(set(symbols) - direct_symbols)
+        if needs_kaipan:
+            provider = KaipanProvider(LazyKaipanClient(), symbols=needs_kaipan,
+                                      max_requests=max(max_requests, len(needs_kaipan)))
+            started = time.monotonic()
+            try:
+                reasons_result = provider.limit_reasons(day, context=context, symbols=needs_kaipan)
+                attempts.append({"provider": "kaipan_getBanReasons(st=200)",
+                                 "result": "PARTIAL" if reasons_result.get("partial") else "READY",
+                                 "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+                                 "reason": "full_history", "row_count": len(reasons_result.get("rows", ())),
+                                 "request_count": int(reasons_result.get("request_count") or 0)})
+            except Exception as exc:  # keep the WenCai/history rungs available after provider errors
+                reasons_result = {**reasons_result, "error_code": type(exc).__name__}
+                attempts.append({"provider": "kaipan_getBanReasons(st=200)", "result": "FAILED",
+                                 "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+                                 "reason": type(exc).__name__, "row_count": len(reasons_result.get("rows", ())),
+                                 "request_count": int(reasons_result.get("request_count") or 0)})
+        else:
+            attempts.append({"provider": "kaipan_getBanReasons(st=200)", "result": "NOT_NEEDED",
+                             "elapsed_ms": 0, "reason": "pool_rows_cover_all_members", "row_count": 0,
+                             "request_count": 0})
+
+        exact_symbols = {str(row.get("symbol", "")).zfill(6) for row in reasons_result.get("rows", ())
+                         if str(row.get("event_date", ""))[:10] == day and str(row.get("type", "0")) == "0"}
+        pool_wencai_symbols = {str(row.get("symbol", row.get("code", ""))).zfill(6)
+                              for row in pool_rows
+                              if (row.get("symbol") or row.get("code")) and
+                              row.get("wc_reason_category", row.get("reason_class")) not in (None, "")}
+        needs_wencai = set(symbols) - direct_symbols - exact_symbols - pool_wencai_symbols
+        wencai_rows: list[dict[str, Any]] = []
+        wencai_request_count = 0
+        if needs_wencai:
+            started = time.monotonic()
+            try:
+                from engine_core.data_pipeline.providers.limit_pool_sources import fetch_wencai_pool
+                options = dict(wencai_options or {})
+                fetched = fetch_wencai_pool(
+                    day, cookie_file=options.get("cookie_file", "~/core-data/secrets/wencai.cookie"),
+                    max_requests=3, cooldown_seconds=60, cooldown_max_seconds=300, max_cooldowns=2)
+                partition = build_wencai(day, fetched["records"], reported_total=fetched.get("reported_total"))
+                wencai_rows = [row for row in partition.rows if row.get("symbol") in needs_wencai]
+                wencai_request_count = int(fetched.get("request_count") or 0)
+                attempts.append({"provider": "wencai_limit_up_pool.wc_reason_category", "result": "READY",
+                                 "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+                                 "reason": "fallback_pool_query", "row_count": len(wencai_rows),
+                                 "request_count": wencai_request_count})
+            except Exception as exc:  # noqa: BLE001 - a failed fallback is recorded without exposing cookies
+                attempts.append({"provider": "wencai_limit_up_pool.wc_reason_category", "result": "FAILED",
+                                 "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+                                 "reason": type(exc).__name__, "row_count": 0,
+                                 "request_count": wencai_request_count})
+        else:
+            attempts.append({"provider": "wencai_limit_up_pool.wc_reason_category", "result": "NOT_NEEDED",
+                             "elapsed_ms": 0, "reason": "higher_tier_sources_cover_members", "row_count": 0,
+                             "request_count": 0})
+
+        registry = [{"plate_code": code} for code in
+                    _plate_codes(artifact_root, day, os.getenv("CORE_PLATE_REGISTRY"))]
+        members = load_dataset("plate_members", day, prefer="file", catalog=catalog)
+        built = build_limit_reasons(
+            day, pool_rows, kaipan_rows=reasons_result.get("rows", ()), wencai_rows=wencai_rows,
+            plate_registry_rows=registry,
+            plate_registry_loaded=bool(registry),
+            plate_member_rows=members.rows if _dataset_read_ready(members) else (),
+            plate_members_loaded=_dataset_read_ready(members),
+            pool_source=pool_source)
+        attempts.append({"provider": "historical_attribution",
+                         "result": "DEGRADED" if built["historical_attribution_count"] else "NOT_NEEDED",
+                         "elapsed_ms": 0, "reason": "latest_type0_date_before_trade_date",
+                         "row_count": built["historical_attribution_count"], "request_count": 0})
+        all_sources_failed = built["status"] == "MISSING"
+        partial = built["missing_count"] > 0 or pool_status == "PARTIAL"
+        quality_status = ("PARTIAL" if partial else "DEGRADED"
+                          if built["status"] == "DEGRADED" or pool_status == "DEGRADED" else "READY")
+        used = built["source_counts"]
+        if used.get("KAIPAN_GET_HIS_BANS", 0):
+            selected_provider = "kaipan_getHisBans"
+        elif used.get("KAIPAN_GET_BAN_REASONS", 0):
+            selected_provider = "kaipan_getBanReasons(st=200)"
+        elif used.get("WENCAI_LIMIT_UP_POOL", 0):
+            selected_provider = "wencai_limit_up_pool.wc_reason_category"
+        else:
+            selected_provider = "historical_attribution"
+        business_status = ("PARTIAL" if partial else
+                           "DEGRADED" if built["historical_attribution_count"] or pool_status == "DEGRADED" else
+                           "PROVISIONAL" if used.get("WENCAI_LIMIT_UP_POOL", 0) else "FORMAL")
+        field_completeness = {
+            key: sum(row.get(key) not in (None, "") for row in built["rows"])
+            for key in ("reason", "main_reason", "plate_code")}
+        return {**built, "expected_count": len(symbols), "coverage_count": built["coverage_count"],
+                "partial": partial, "quality_status": quality_status,
+                "business_status": business_status, "degraded": business_status in {"DEGRADED", "PARTIAL"},
+                "provider": selected_provider, "field_completeness": field_completeness,
+                "request_count": int(reasons_result.get("request_count") or 0) + wencai_request_count,
+                "provider_chain": built["provider_chain"], "provider_attempts": attempts,
+                "all_sources_error": "ALL_SOURCES_FAILED" if all_sources_failed else None,
+                "kaipan_errors": reasons_result.get("errors", []),
+                "history_page_size": reasons_result.get("history_page_size", 200)}
+
+    return {"symbol_universe": universe_fetch, "daily_kline": daily_fetch,
+            "wencai_daily_kline": wencai_daily_fetch, "limit_up_pool": pool_fetch,
+            "hot_plates": hot_fetch,
+            "limit_reasons": reasons_fetch}
+
+
+def _call_universe_fetch(fetch: Any, trade_date: str) -> Any:
+    """Call adapter factories that may optionally accept a fetch context."""
+    try:
+        accepts_context = len(inspect.signature(fetch).parameters) >= 2
+    except (TypeError, ValueError):
+        accepts_context = False
+    return fetch(trade_date, None) if accepts_context else fetch(trade_date)
+
+
+def _dataset_read_ready(value: Any) -> bool:
+    """Treat explicit missing/unknown reads as unavailable, not as empty data."""
+    return value is not None and getattr(value, "status", "READY") == "READY"
+
+
+def _universe_payload_quality(payload: Any) -> bool:
+    rows = payload.get("rows") if isinstance(payload, dict) else None
+    if not isinstance(rows, list) or not rows:
+        return False
+    symbols: set[str] = set()
+    required = ("symbol", "name", "trade_status", "universe_asof")
+    for row in rows:
+        if not isinstance(row, dict) or any(row.get(key) in (None, "") for key in required):
+            return False
+        symbol = str(row["symbol"])
+        if symbol in symbols:
+            return False
+        symbols.add(symbol)
+    return True
+
+
+def _carried_forward_universe(artifact_root: str, trade_date: str) -> dict[str, Any]:
+    """Load the nearest valid published universe from the preceding five sessions."""
+    from engine_core.trade_day_context import previous_trade_date
+
+    cursor = trade_date
+    lower_bound = None
+    for _ in range(5):
+        cursor = previous_trade_date(artifact_root, cursor)
+        lower_bound = cursor
+    catalog = ArtifactCatalog(artifact_root)
+    indexed_days = catalog.read().get("datasets", {}).get("symbol_universe", {}).get("dates", {})
+    candidates = sorted((day for day in indexed_days
+                         if lower_bound is not None and lower_bound <= day < trade_date), reverse=True)
+    for source_day in candidates:
+        path = catalog.locate("symbol_universe", source_day)
+        if path is None:
+            continue
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            rows = catalog.read_rows(path)
+        except (OSError, ValueError, TypeError):
+            continue
+        quality = manifest.get("quality") if isinstance(manifest.get("quality"), dict) else {}
+        if (quality.get("status") == "FAILED" or
+                not isinstance(manifest.get("version"), str) or not rows):
+            continue
+        universe_asof = manifest.get("universe_asof") or manifest.get("as_of")
+        if not universe_asof:
+            universe_asof = next((row.get("universe_asof") for row in rows
+                                  if isinstance(row, dict) and row.get("universe_asof")), None)
+        payload = {"rows": rows, "expected_count": len(rows), "coverage_count": len(rows),
+                   "as_of": universe_asof, "universe_asof": universe_asof,
+                   "carried_forward_from": source_day, "tier": 1, "degraded": True,
+                   "quality_status": "DEGRADED", "partial": True}
+        if universe_asof and _universe_payload_quality(payload):
+            return payload
+    raise QualityInvalid("no_recent_symbol_universe")
+
+
+@contract_main("run_data_jobs")
+def main(argv: list[str] | None = None, *, now_fn=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--job", required=True, choices=["all", *DATASETS.keys()])
+    parser.add_argument("--date", default=date.today().isoformat())
+    parser.add_argument("--write", action="store_true", help="publish bounded views to Core Redis")
+    parser.add_argument("--td-write", action="store_true", help="write through an injected independent TD adapter")
+    parser.add_argument("--dry-run", action="store_true", default=True,
+                        help="fetch and validate without persisting (default)")
+    parser.add_argument("--execute", action="store_true", help="run fetch and commit the artifact version")
+    parser.add_argument("--max-requests", type=int, default=30)
+    parser.add_argument("--baostock-timeout-seconds", type=float, default=60.0,
+                        help="hard caller wait for each Baostock operation")
+    parser.add_argument("--baostock-total-timeout-seconds", type=float,
+                        help="optional wall-clock budget for the complete daily_kline fetch")
+    parser.add_argument("--baostock-no-progress-seconds", type=float, default=300.0,
+                        help="fail retryably when Baostock produces no row/checkpoint progress")
+    parser.add_argument("--budget-seconds", type=float,
+                        default=os.getenv("CORE_DAILY_KLINE_BUDGET_SECONDS") or 240.0,
+                        help="wall-clock budget for the complete daily_kline provider chain")
+    parser.add_argument("--baostock-budget-fraction", type=float, default=0.6,
+                        help="fraction of the chain budget reserved for Baostock")
+    parser.add_argument("--backfill-days", type=int, default=1,
+                        help="plate_members supports one latest TD snapshot only")
+    parser.add_argument("--hot-plates-history-days", type=int, default=3,
+                        help="most recent prior trading dates to capture; Kaipan retains about three")
+    parser.add_argument("--hot-plates-scheduled-at",
+                        help="history window start HH:MM:SS Asia/Shanghai")
+    parser.add_argument("--hot-plates-deadline",
+                        help="history window deadline HH:MM:SS Asia/Shanghai")
+    parser.add_argument("--providers",
+                        help="daily_kline source set; fixed quality order is baostock,wencai,q2_final")
+    parser.add_argument("--wencai-date-validation-threshold", type=float, default=0.95,
+                        help="minimum pre_close and pct_chg consistency ratio for WenCai dates")
+    parser.add_argument("--wencai-reference-coverage-threshold", type=float, default=0.95,
+                        help="minimum active-universe coverage in the prior-day close reference")
+    parser.add_argument("--wencai-reference-strategy",
+                        choices=["previous_trade_date", "explicit"], default="previous_trade_date",
+                        help="use the local trade calendar or an explicit prior reference date")
+    parser.add_argument("--wencai-reference-date",
+                        help="prior daily_kline date required with --wencai-reference-strategy explicit")
+    parser.add_argument("--wencai-min-interval-seconds", type=float, default=10.0,
+                        help="minimum delay between WenCai page requests; values below 10 are clamped")
+    parser.add_argument("--wencai-retry-attempts", type=int, default=2,
+                        help="same-tier WenCai attempts before returning a retryable incomplete result")
+    parser.add_argument("--wencai-retry-backoff-seconds", type=float, default=10.0,
+                        help="delay between same-tier WenCai attempts")
+    parser.add_argument("--wencai-cookie-file", default="~/core-data/secrets/wencai.cookie",
+                        help="optional WenCai login cookie file (content never printed); missing file = anonymous")
+    parser.add_argument("--wencai-cooldown-seconds", type=float, default=60.0,
+                        help="first cooldown before re-requesting a missing/truncated page; doubles per retry")
+    parser.add_argument("--wencai-cooldown-max-seconds", type=float, default=300.0)
+    parser.add_argument("--wencai-max-cooldowns", type=int, default=3, help="cooldown retries per page")
+    parser.add_argument("--wencai-max-total-requests", type=int, default=150,
+                        help="hard cap on upstream requests of one fetch (pages, retries, segments)")
+    parser.add_argument("--wencai-segments", choices=("on", "off"), default="on",
+                        help="market-cap segmented fallback when paging stays incomplete")
+    parser.add_argument("--wencai-segment-edges-yi", default="0,15,25,35,50,80,150,500,none",
+                        help="comma list of circulating market-cap edges in yi yuan, starting at 0, none = open end")
+    parser.add_argument("--wencai-segment-max-rows", type=int, default=1500,
+                        help="a segment reporting more rows than this is split before paging")
+    parser.add_argument("--wencai-coverage-threshold", type=float, default=0.95,
+                        help="segmented fetch succeeds only at this local-universe coverage")
+    parser.add_argument("--symbols-file", help="debug-only one-symbol-per-line Baostock cohort")
+    parser.add_argument("--adapter", help="injected module:function returning dataset fetch callables")
+    parser.add_argument("--artifact-root", help="artifact root (required with --symbols-file)")
+    parser.add_argument("--td-database", help="allowlisted independent database: core_data/core_intraday")
+    args = parser.parse_args(argv)
+    if bool(args.hot_plates_scheduled_at) != bool(args.hot_plates_deadline):
+        parser.error("--hot-plates-scheduled-at and --hot-plates-deadline must be used together")
+    if args.wencai_reference_strategy == "explicit" and not args.wencai_reference_date:
+        parser.error("--wencai-reference-date is required with --wencai-reference-strategy explicit")
+    artifact_root_explicit = args.artifact_root is not None
+    args.artifact_root = args.artifact_root or os.getenv("CORE_DATA_ROOT", "~/core-data")
+    args.artifact_root = str(Path(args.artifact_root).expanduser())
+    if args.job == "limit_up_pool":
+        # C580: the pool has one writer, the tiered D-1 module (catalog ledger + TD).  One pass over the rungs that
+        # schedule.json configures; nothing is fetched unless --execute/--write says so.
+        from engine_core.guardian.limit_pool_d1 import run_ladder_once
+        if not (args.execute or args.write):
+            print(json.dumps({"contract": 1, "status": "not_applicable", "error_code": "", "retryable": False,
+                              "detail": "dry_run_no_fetch"}))
+            return 0
+        code, body = run_ladder_once(args.date, args.artifact_root)
+        print(json.dumps(body, ensure_ascii=False, separators=(",", ":")))
+        return code
+    if args.symbols_file and args.job != "daily_kline":
+        parser.error("--symbols-file is only valid with --job daily_kline")
+    if args.symbols_file:
+        if args.write or args.td_write:
+            parser.error("--symbols-file cannot publish to Redis or TD")
+        if not artifact_root_explicit:
+            parser.error("--symbols-file requires an explicit --artifact-root")
+        try:
+            args.artifact_root = _require_sample_artifact_root(args.artifact_root)
+        except ValueError as exc:
+            parser.error(str(exc))
+    if args.providers is None:
+        args.providers = "baostock" if args.symbols_file else "baostock,wencai,q2_final"
+    if args.td_write and not (args.write or args.execute):
+        parser.error("--td-write requires --write or --execute")
+    if args.td_write and args.job != "daily_kline":
+        parser.error("--td-write is only valid with --job daily_kline")
+    if args.budget_seconds <= 0:
+        parser.error("--budget-seconds must be positive")
+    if not 1 <= args.hot_plates_history_days <= 3:
+        parser.error("--hot-plates-history-days must be between 1 and 3")
+    if args.baostock_no_progress_seconds <= 0:
+        parser.error("--baostock-no-progress-seconds must be positive")
+    if not 0 < args.baostock_budget_fraction <= 1:
+        parser.error("--baostock-budget-fraction must be greater than 0 and at most 1")
+    names = ([name for name in DATASETS if name != "plate_members"] if args.job == "all"
+             else ([] if args.job == "plate_members" else [args.job]))
+    hot_history_dates: list[str] = []
+    if "hot_plates" in names:
+        from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
+        sessions = [day for day in TradeCalendarStore(args.artifact_root).all_trading_dates()
+                    if day < args.date]
+        hot_history_dates = sessions[-args.hot_plates_history_days:]
+        if len(hot_history_dates) != args.hot_plates_history_days:
+            raise CoreError("UPSTREAM_NOT_READY", "hot_plates_calendar_history_unknown")
+        if args.hot_plates_deadline:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            from engine_core.data_pipeline.hot_plates_gaps import (
+                history_event_id, record_hot_plates_gap,
+            )
+            now = now_fn() if now_fn else datetime.now(ZoneInfo("Asia/Shanghai"))
+            deadline = datetime.fromisoformat(
+                f"{args.date}T{args.hot_plates_deadline}+08:00")
+            if now >= deadline:
+                scheduled = datetime.fromisoformat(
+                    f"{args.date}T{args.hot_plates_scheduled_at}+08:00")
+                observed_at = now.isoformat()
+                for target_date in hot_history_dates:
+                    gap = record_hot_plates_gap(args.artifact_root, target_date,
+                        history_event_id(target_date), scheduled.isoformat(),
+                        deadline.isoformat(), observed_at, "late_startup_after_deadline",
+                        persist=bool(args.execute or args.write))
+                    print(json.dumps({"job": "hot_plates", "date": target_date,
+                        "status": "GAP", "event_id": gap["event_id"],
+                        "reason": gap["gap_reason"],
+                        "fallback_status": gap["fallback_status"]}, sort_keys=True))
+                return 0
+    td_store = None
+    td_writer = None
+    if args.td_write:
+        from engine_core.data_pipeline.td_sink import DailyKlineTdSink
+        from engine_core.guardian.daily_kline_coverage import make_store, td_settings
+        settings = td_settings(database=args.td_database)
+        if settings is None or not os.environ.get("TD_CONFIG"):
+            raise RuntimeError("td_not_configured")
+        td_store = make_store(settings)
+        td_writer = DailyKlineTdSink(td_store, args.artifact_root)
+    adapters = _default_adapters(args.artifact_root,
+        "",
+        args.max_requests, args.write or args.execute,
+        baostock_timeout_seconds=args.baostock_timeout_seconds,
+        baostock_total_timeout_seconds=args.baostock_total_timeout_seconds,
+        baostock_no_progress_seconds=args.baostock_no_progress_seconds,
+        baostock_symbols_file=args.symbols_file,
+        wencai_options=_wencai_options(args, parser),
+        td_progress_writer=td_writer)
+    adapters.update(_load_adapter(args.adapter))
+    if td_writer is not None:
+        adapters.setdefault("td_writer", td_writer)
+    daily_providers = [name.strip() for name in args.providers.split(",") if name.strip()]
+    if args.symbols_file and daily_providers != ["baostock"]:
+        parser.error("--symbols-file requires --providers baostock")
+    unknown_providers = set(daily_providers) - {"baostock", "wencai", "q2_final"}
+    if unknown_providers:
+        parser.error("unknown daily provider: " + ",".join(sorted(unknown_providers)))
+    if "wencai" in daily_providers and args.max_requests > 15:
+        args.max_requests = 15
+    missing = [name for name in names if name not in adapters and name != "daily_kline"]
+    if missing: raise RuntimeError("fetcher_not_configured:" + ",".join(missing))
+    setup_started = time.monotonic()
+    try:
+        redis = None
+        if args.write or (args.execute and "hot_plates" in names):
+            import redis as redis_package
+            redis = redis_package.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+        td_adapter = adapters.get("td_writer") if args.td_write else None
+        runner = JobRunner(artifact_root=args.artifact_root, redis=redis, td_adapter=td_adapter,
+                           budget=RequestBudget(max_requests=args.max_requests))
+    except Exception as exc:
+        if args.job != "symbol_universe":
+            raise
+        primary_source = get_dataset("symbol_universe").source
+        result = ContractJobResult(
+            contract=1, job="symbol_universe", trade_date=args.date, status="failed",
+            tier=0, source=primary_source, dataset="symbol_universe", version=None,
+            row_count=None, coverage=None, error_code="EXECUTION_SETUP_FAILED", retryable=True,
+            attempts=0, elapsed_ms=round((time.monotonic() - setup_started) * 1000, 3),
+            detail={"exception_type": type(exc).__name__})
+        return emit_job_result(result)
+    if args.job == "symbol_universe":
+        started = time.monotonic()
+        primary_source = get_dataset("symbol_universe").source
+        result: ContractJobResult | None = None
+        try:
+            primary_fetch = adapters["symbol_universe"]
+            result, payload = run_with_degrade(
+                "symbol_universe", args.date,
+                [(0, primary_source, lambda day: _call_universe_fetch(primary_fetch, day)),
+                 (1, "carried_forward", lambda day: _carried_forward_universe(
+                     args.artifact_root, day))],
+                dataset="symbol_universe", quality_check=_universe_payload_quality)
+            if payload is None:
+                return emit_job_result(replace(
+                    result, elapsed_ms=round((time.monotonic() - started) * 1000, 3)))
+            payload = {**payload, "tier": result.tier, "degraded": result.tier >= 1}
+            stored = runner.run(
+                "symbol_universe", args.date, fetch=lambda _day: payload,
+                publish=args.write, td_write=args.td_write, source=result.source,
+                as_of=payload.get("as_of"),
+                dry_run=not (args.write or args.execute))
+            result = replace(
+                result,
+                version=stored.manifest.get("version"),
+                row_count=stored.manifest.get("row_count"),
+                coverage=stored.manifest.get("quality", {}).get("coverage"),
+                elapsed_ms=round((time.monotonic() - started) * 1000, 3),
+                detail={**(result.detail or {}),
+                        **({"carried_forward_from": payload["carried_forward_from"]}
+                           if payload.get("carried_forward_from") else {})})
+            return emit_job_result(result)
+        except Exception as exc:
+            error_code, retryable = exception_code(exc, "baostock")
+            failed_tier = result.tier if result is not None else 0
+            failed_source = result.source if result is not None else primary_source
+            failed_attempts = result.attempts if result is not None else 1
+            failed = ContractJobResult(
+                contract=1, job="symbol_universe", trade_date=args.date, status="failed",
+                tier=failed_tier, source=failed_source, dataset="symbol_universe", version=None,
+                row_count=None, coverage=None, error_code=error_code, retryable=retryable,
+                attempts=failed_attempts, elapsed_ms=round((time.monotonic() - started) * 1000, 3),
+                detail={"exception_type": type(exc).__name__})
+            return emit_job_result(failed)
+    if args.job == "plate_members":
+        if args.backfill_days != 1:
+            parser.error("plate_members stores only the latest snapshot; --backfill-days must be 1")
+        catalog = ArtifactCatalog(args.artifact_root)
+        trading_dates = sorted((day for day in catalog.read().get("datasets", {})
+                                .get("daily_kline", {}).get("dates", {}) if day <= args.date), reverse=True)
+        if not trading_dates:
+            return emit_failure("UPSTREAM_NOT_READY", job="plate_members", trade_date=args.date, dataset="plate_members",
+                                detail={"error": f"daily_kline has no trading date on or before {args.date}"})
+        target_date = trading_dates[0]
+        started = time.monotonic()
+        result = _refresh_plate_members_latest(
+            target_date, args.artifact_root, persist=bool(args.write or args.execute),
+            max_requests=args.max_requests,
+        )
+        result["elapsed_ms"] = round((time.monotonic() - started) * 1000, 3)
+        result["persisted_to_td"] = bool(args.write or args.execute)
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    daily_kline_exit_code = 0
+    for name in names:
+        if name == "hot_plates":
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            from engine_core.data_pipeline.hot_plates_gaps import (
+                history_event_id, record_hot_plates_gap,
+            )
+            observed_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
+            for target_date in hot_history_dates:
+                job_started = time.monotonic()
+                try:
+                    result = runner.run(name, target_date, fetch=adapters[name], publish=bool(args.write or args.execute),
+                        td_write=False, source=get_dataset(name).source,
+                        dry_run=not (args.write or args.execute))
+                except Exception as exc:
+                    error = str(exc).lower()
+                    reason = ("response_day_mismatch" if "date_mismatch" in error or
+                              "response_date" in error else "historical_provider_failure")
+                    gap = record_hot_plates_gap(args.artifact_root, target_date,
+                        history_event_id(target_date),
+                        f"{args.date}T{args.hot_plates_scheduled_at or '08:50:00'}+08:00",
+                        f"{args.date}T{args.hot_plates_deadline or '09:05:00'}+08:00",
+                        observed_at, reason, persist=bool(args.execute or args.write))
+                    print(json.dumps({"job": name, "date": target_date, "status": "GAP",
+                        "event_id": gap["event_id"], "reason": gap["gap_reason"],
+                        "fallback_status": gap["fallback_status"],
+                        "elapsed_ms": round((time.monotonic() - job_started) * 1000, 3)}, sort_keys=True))
+                    continue
+                print(json.dumps({"job": name, "date": target_date,
+                    "version": result.manifest.get("version"), "row_count": result.manifest["row_count"],
+                    "response_total": result.manifest.get("response_total"),
+                    "coverage": result.manifest.get("quality", {}).get("coverage"),
+                    "status": result.manifest.get("business_status"),
+                    "storage_uri": result.manifest.get("storage_uri"),
+                    "mode": result.manifest.get("mode", "WRITE")}, sort_keys=True))
+            continue
+        if name == "daily_kline":
+            daily_started = time.monotonic()
+            from engine_core.data_pipeline.providers.daily_kline_chain import (
+                DailyKlineProviderChain, Q2FinalProvider, WencaiDailyProvider,
+            )
+
+            configured: dict[str, Any] = {}
+            if "baostock" in daily_providers:
+                configured["baostock"] = adapters[name]
+            if "wencai" in daily_providers:
+                wencai_fetch = adapters.get("wencai_daily_kline")
+                if wencai_fetch is not None:
+                    universe = load_dataset("symbol_universe", args.date, prefer="file",
+                                            catalog=ArtifactCatalog(args.artifact_root))
+                    if universe is None:
+                        raise CoreError("UPSTREAM_NOT_READY", "symbol_universe_artifact_required:" + args.date)
+                    expected_count = sum(str(row.get("trade_status", "")).strip() != "0"
+                                         for row in universe.rows)
+                    configured["wencai"] = WencaiDailyProvider(
+                        wencai_fetch,
+                        # Redis when the process has a Redis URL (production); without one the throttle state
+                        # stays in this process only (offline replays and tests)
+                        state=ProviderState("wencai_daily") if redis_configured() else None,
+                        max_requests=args.max_requests, expected_count=expected_count,
+                        min_interval_seconds=args.wencai_min_interval_seconds,
+                    )
+                else:
+                    configured["wencai"] = lambda _day: {
+                        "status": "PROVIDER_UNAVAILABLE", "reason": "wencai_adapter_not_configured", "rows": []}
+            if "q2_final" in daily_providers:
+                q2_redis = adapters.get("q2_redis")
+                if q2_redis is None:
+                    redis_url = os.getenv("LEGACY_REDIS_URL") or os.getenv("CORE_REDIS_URL")
+                    if redis_url:
+                        import redis as redis_package
+                        q2_redis = redis_package.Redis.from_url(redis_url, decode_responses=False)
+                configured["q2_final"] = (Q2FinalProvider(q2_redis) if q2_redis is not None else
+                    lambda _day: {"status": "PROVIDER_UNAVAILABLE", "reason": "q2_redis_not_configured", "rows": []})
+            chain = DailyKlineProviderChain(
+                providers=configured, artifact_root=args.artifact_root,
+                wencai_date_validation_threshold=args.wencai_date_validation_threshold,
+                wencai_reference_coverage_threshold=args.wencai_reference_coverage_threshold,
+                wencai_reference_strategy=args.wencai_reference_strategy,
+                wencai_reference_date=args.wencai_reference_date,
+                wencai_retry_attempts=args.wencai_retry_attempts,
+                wencai_retry_backoff_seconds=args.wencai_retry_backoff_seconds,
+            )
+            result = chain.fetch_chain(
+                args.date, persist=bool(args.execute or args.write),
+                budget_seconds=args.budget_seconds,
+                baostock_budget_fraction=args.baostock_budget_fraction)
+            if result is None:
+                attempts = chain.last_attempts
+                stall_detected = any(
+                    attempt.get("error_code") == "STALL_NO_PROGRESS" or
+                    any(isinstance(event, Mapping) and event.get("error_code") == "STALL_NO_PROGRESS"
+                        for event in (attempt.get("error_events") or []))
+                    for attempt in attempts
+                )
+                failure_attempt = attempts[-1] if attempts else {}
+                retryable = any(bool(attempt.get("retryable")) for attempt in attempts)
+                preserve_wencai_retry = (failure_attempt.get("provider") == "wencai" and
+                                         bool(failure_attempt.get("retryable")))
+                # A single-provider run (one guardian ladder rung) keeps that provider's own TIER_* verdict
+                # (NO_DATA / DATE_MISMATCH / DATE_NO_REFERENCE) so the scheduler can advance without alerting.
+                preserve_tier_code = (len(daily_providers) == 1 and not failure_attempt.get("retryable") and
+                                      str(failure_attempt.get("error_code") or "").startswith("TIER_"))
+                if preserve_tier_code:
+                    retryable = False
+                failure_code = ("STALL_NO_PROGRESS" if stall_detected else
+                                str(failure_attempt.get("error_code") or "DAILY_KLINE_ALL_PROVIDERS_FAILED")
+                                if (preserve_wencai_retry or preserve_tier_code) else "DAILY_KLINE_ALL_PROVIDERS_FAILED")
+                print(json.dumps({"job": name, "status": "PROVIDER_UNAVAILABLE_OR_COVERAGE_LOW",
+                                  "providers": daily_providers, "mode": "DRY_RUN" if not (args.execute or args.write) else "WRITE",
+                                  "error_code": failure_code}, sort_keys=True))
+                daily_contract = ContractJobResult(
+                    contract=1, job=name, trade_date=args.date, status="failed", tier=0,
+                    source=None, dataset=name, version=None, row_count=None, coverage=None,
+                    error_code=failure_code, retryable=retryable,
+                    attempts=len(attempts),
+                    elapsed_ms=round((time.monotonic() - daily_started) * 1000, 3),
+                    detail={"providers": daily_providers, "provider_attempts": attempts})
+                daily_kline_exit_code = emit_job_result(daily_contract)
+                if td_store is not None:
+                    td_store.close()
+                if args.job != "all":
+                    return daily_kline_exit_code
+                continue
+            td_result = None
+            if args.td_write and result.manifest.get("provider") == "baostock":
+                from engine_core.data_pipeline.td_sink import (TdSourceRejected,
+                                                                TdUnavailable, TdVerifyError)
+                try:
+                    if td_writer is None:
+                        raise TdUnavailable("td_not_configured")
+                    td_result = td_writer.write_partition(args.date, result.rows, result.manifest).as_dict()
+                    if td_store is not None:
+                        td_store.close()
+                except TdUnavailable as exc:
+                    if td_store is not None:
+                        td_store.close()
+                    return emit_job_result(ContractJobResult(
+                        contract=1, job=name, trade_date=args.date, status="failed", tier=0,
+                        source="baostock", dataset=name, version=result.manifest.get("version"),
+                        row_count=len(result.rows), coverage=result.manifest.get("quality", {}).get("coverage"),
+                        error_code="TD_UNAVAILABLE", retryable=True, attempts=len(result.manifest.get("provider_attempts", [])),
+                        elapsed_ms=round((time.monotonic() - daily_started) * 1000, 3),
+                        detail={"error": str(exc)[:200], "catalog_version": result.manifest.get("version")}))
+                except (TdVerifyError, TdSourceRejected) as exc:
+                    if td_store is not None:
+                        td_store.close()
+                    return emit_job_result(ContractJobResult(
+                        contract=1, job=name, trade_date=args.date, status="failed", tier=0,
+                        source="baostock", dataset=name, version=result.manifest.get("version"),
+                        row_count=len(result.rows), coverage=result.manifest.get("quality", {}).get("coverage"),
+                        error_code="TD_VERIFY_FAILED", retryable=False,
+                        attempts=len(result.manifest.get("provider_attempts", [])),
+                        elapsed_ms=round((time.monotonic() - daily_started) * 1000, 3),
+                        detail={"error": str(exc)[:300], "catalog_version": result.manifest.get("version")}))
+                except Exception as exc:
+                    if td_store is not None:
+                        td_store.close()
+                    return emit_job_result(ContractJobResult(
+                        contract=1, job=name, trade_date=args.date, status="failed", tier=0,
+                        source="baostock", dataset=name, version=result.manifest.get("version"),
+                        row_count=len(result.rows), coverage=result.manifest.get("quality", {}).get("coverage"),
+                        error_code="TD_WRITE_FAILED", retryable=False,
+                        attempts=len(result.manifest.get("provider_attempts", [])),
+                        elapsed_ms=round((time.monotonic() - daily_started) * 1000, 3),
+                        detail={"error": type(exc).__name__ + ":" + str(exc)[:300],
+                                "catalog_version": result.manifest.get("version")}))
+            elif args.td_write:
+                td_result = {"status": "skipped_non_baostock", "provider": result.manifest.get("provider")}
+                if td_store is not None:
+                    td_store.close()
+            print(json.dumps({"job": name, "version": result.manifest.get("version"),
+                              "source": result.manifest.get("source"), "degraded": result.manifest.get("degraded"),
+                              "quality": result.manifest["quality"], "provider_attempts": result.manifest["provider_attempts"],
+                              "storage_uri": result.manifest.get("storage_uri"),
+                              "td_publish": td_result,
+                              "mode": "DRY_RUN" if not (args.execute or args.write) else "WRITE"}, sort_keys=True))
+            sample_only = result.manifest.get("sample_scope") == "symbols_file"
+            degraded = result.manifest.get("provider") != "baostock" or sample_only
+            daily_contract = ContractJobResult(
+                contract=1, job=name, trade_date=args.date,
+                status="degraded" if degraded else "ok",
+                tier=result.manifest.get("tier", 1 if result.manifest.get("provider") != "baostock" else 0),
+                source=str(result.manifest.get("provider") or result.manifest.get("source") or "UNKNOWN"),
+                dataset=name, version=result.manifest.get("version"),
+                row_count=len(result.rows), coverage=result.manifest.get("quality", {}).get("coverage"),
+                error_code=None, retryable=False,
+                attempts=len(result.manifest.get("provider_attempts", [])),
+                elapsed_ms=round((time.monotonic() - daily_started) * 1000, 3),
+                detail={"business_status": result.manifest.get("business_status"),
+                        "sample_scope": result.manifest.get("sample_scope"),
+                        "td_publish": td_result,
+                        "provider_attempts": result.manifest.get("provider_attempts", [])})
+            daily_kline_exit_code = emit_job_result(daily_contract)
+            if args.job != "all":
+                return daily_kline_exit_code
+            continue
+        job_started = time.monotonic()
+        run_kwargs = {}
+        if name == "limit_reasons":
+            run_kwargs["as_of"] = args.date + "T15:00:00+08:00"
+        result = runner.run(name, args.date, fetch=adapters[name], publish=args.write,
+                            td_write=args.td_write, source=get_dataset(name).source,
+                            dry_run=not (args.write or args.execute), **run_kwargs)
+        print(json.dumps({"job": name, "version": result.manifest.get("version"),
+                          "row_count": result.manifest["row_count"],
+                          "sha256": result.manifest.get("sha256"),
+                          "quality": result.manifest["quality"],
+                          "storage_uri": result.manifest["storage_uri"],
+                          "cache_publish": result.manifest["cache_publish"],
+                          "mode": result.manifest.get("mode", "WRITE")}, sort_keys=True))
+        if name == "limit_reasons":
+            details = result.manifest.get("provider_details", {})
+            missing_all = result.manifest.get("business_status") == "MISSING"
+            attempts = result.manifest.get("provider_attempts", [])
+            contract = ContractJobResult(
+                contract=1, job=name, trade_date=args.date,
+                status="failed" if missing_all else
+                       "degraded" if result.manifest.get("quality", {}).get("status") in {"PARTIAL", "DEGRADED"}
+                       else "ok",
+                tier=0 if result.manifest.get("provider_chain") else 1,
+                source="provider_chain", dataset=name,
+                version=result.manifest.get("version"), row_count=len(result.rows),
+                coverage=result.manifest.get("quality", {}).get("coverage"),
+                error_code="ALL_SOURCES_FAILED" if missing_all else None,
+                retryable=missing_all, attempts=len(attempts),
+                elapsed_ms=round((time.monotonic() - job_started) * 1000, 3),
+                detail={"business_status": result.manifest.get("business_status"),
+                        "provider_chain": result.manifest.get("provider_chain", []),
+                        "provider_attempts": attempts,
+                        "source_counts": details.get("source_counts"),
+                        "missing_count": result.manifest.get("quality", {}).get("missing")})
+            exit_code = emit_job_result(contract)
+            if args.job != "all":
+                return exit_code
+    return daily_kline_exit_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

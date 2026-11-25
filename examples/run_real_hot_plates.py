@@ -7,10 +7,10 @@ as observation metadata but is never promoted to historical availability.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -18,6 +18,9 @@ from typing import Any, Iterable, Mapping
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from engine_core import (
+    LEGACY_KAIPAN_OBSERVED_FIELD_UNITS,
+    LiveInputReader,
+    probe_rows_and_summary,
     DataContext,
     DataRequest,
     HotPlatesFunction,
@@ -34,72 +37,12 @@ def _date(value: str) -> str:
     return value
 
 
-def _text(value: Any) -> str:
-    if isinstance(value, bytes):
-        return value.decode("utf-8")
-    return str(value)
-
-
 def _read_redis_rows(
     client: Any,
     trade_date: str,
 ) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
-    key = "cache:hot_plates:" + trade_date
-    meta_key = "cache:hot_plates_meta:" + trade_date
-    key_type = _text(client.type(key))
-    if key_type != "hash":
-        return [], {
-            "key": key,
-            "meta_key": meta_key,
-            "redis_type": key_type,
-            "row_count": 0,
-            "scan_consistent": True,
-            "meta": None,
-        }
-
-    hlen_before = int(client.hlen(key))
-    raw_items = list(client.hscan_iter(key))
-    hlen_after = int(client.hlen(key))
-    rows: list[Mapping[str, Any]] = []
-    payload_hash = hashlib.sha256()
-    decode_errors = 0
-    for field, raw in sorted(raw_items, key=lambda item: _text(item[0])):
-        field_text = _text(field)
-        raw_text = _text(raw)
-        payload_hash.update(field_text.encode("utf-8"))
-        payload_hash.update(b"\0")
-        payload_hash.update(raw_text.encode("utf-8"))
-        payload_hash.update(b"\n")
-        try:
-            value = json.loads(raw_text)
-        except (TypeError, ValueError):
-            decode_errors += 1
-            continue
-        if isinstance(value, Mapping):
-            rows.append(value)
-        else:
-            decode_errors += 1
-
-    raw_meta = client.get(meta_key)
-    if isinstance(raw_meta, bytes):
-        raw_meta = raw_meta.decode("utf-8")
-    try:
-        meta = json.loads(raw_meta) if raw_meta else None
-    except (TypeError, ValueError):
-        meta = {"valid_json": False}
-    return rows, {
-        "key": key,
-        "meta_key": meta_key,
-        "redis_type": key_type,
-        "hlen_before_scan": hlen_before,
-        "hlen_after_scan": hlen_after,
-        "scan_item_count": len(raw_items),
-        "scan_consistent": hlen_before == hlen_after == len(raw_items),
-        "row_count": len(rows),
-        "decode_errors": decode_errors,
-        "payload_value_sha256": payload_hash.hexdigest(),
-        "meta": meta,
-    }
+    reader = LiveInputReader(client, now_ms=lambda: int(time.time() * 1000))
+    return probe_rows_and_summary(reader.read("hot_plates", trade_date=trade_date))
 
 
 def run_real_hot_plates(
@@ -112,6 +55,8 @@ def run_real_hot_plates(
     calendar_trading_dates: Iterable[str] | None = None,
     calendar_source_id: str = "explicit_probe_calendar",
     calendar_evidence_ref: str | None = None,
+    temporal_mode: str = "HISTORICAL",
+    observed_units: bool = False,
 ) -> dict[str, Any]:
     trade_date = _date(trade_date)
     observed_at_ms = int(observed_at.timestamp() * 1000)
@@ -161,6 +106,9 @@ def run_real_hot_plates(
         source_id="redis_hot_plates",
         source_schema="HotPlatesV1",
         evidence_ref="redis://cache:hot_plates/" + trade_date,
+        verified_field_units=(
+            dict(LEGACY_KAIPAN_OBSERVED_FIELD_UNITS) if observed_units else None
+        ),
     )
     request = DataRequest(
         request_id="real-hot-plates-" + trade_date,
@@ -169,6 +117,7 @@ def run_real_hot_plates(
         effective_as_of_ms=observed_at_ms,
         knowledge_as_of_ms=observed_at_ms,
         purpose="read_only_m2_probe",
+        temporal_mode=temporal_mode,
     )
     result = HotPlatesFunction(provider, calendar).execute(
         DataContext("real-hot-plates", "READ_ONLY", observed_at_ms),
@@ -201,6 +150,16 @@ def main() -> int:
     parser.add_argument("--redis-port", type=int, default=int(os.environ.get("REDIS_PORT", "6379")))
     parser.add_argument("--redis-db", type=int, default=int(os.environ.get("REDIS_DB", "0")))
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--temporal-mode", choices=("HISTORICAL", "REPLAY", "LIVE"), default="LIVE",
+        help="LIVE accepts the adapter-completion exception (a read made now); "
+        "HISTORICAL requires a verified available_at",
+    )
+    parser.add_argument(
+        "--observed-units", action="store_true",
+        help="apply the units established from the legacy Kaipan path "
+        "(strength/hot=score, net_inflow_yi=yi) instead of masking them",
+    )
     args = parser.parse_args()
     observed_at = datetime.now(timezone.utc)
     result = run_real_hot_plates(
@@ -212,6 +171,8 @@ def main() -> int:
             "db": args.redis_db,
             "password": os.environ.get("REDIS_PASSWORD"),
         },
+        temporal_mode=args.temporal_mode,
+        observed_units=args.observed_units,
     )
     result["observed_at"] = observed_at.isoformat()
     content = json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2, default=str) + "\n"

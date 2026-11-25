@@ -1,0 +1,115 @@
+{
+ "dataset": "daily_kline",
+ "status": "LEGACY: layout of partitions written before the canonical schema (C540/C563); used only with --legacy-tolerant",
+ "note": "Baseline spec. Units: price=yuan, pct_chg=percent, volume=shares, amount_yuan=yuan (units.py vocabulary). Column list taken from the real 2026-10-27 partition; not relaxed to fit it.",
+ "primary_key": [
+  "symbol"
+ ],
+ "symbol_column": "symbol",
+ "date_columns": [],
+ "row_order": "primary_key",
+ "earliest_available_local": "15:00",
+ "allowed_providers": [
+  "baostock",
+  "wencai",
+  "q2_final"
+ ],
+ "coverage": {
+  "basis": "universe_active",
+  "universe_dataset": "symbol_universe"
+ },
+ "columns": {
+  "symbol": {
+   "type": "str",
+   "nullable": false
+  },
+  "date": {
+   "type": "date",
+   "nullable": false
+  },
+  "code": {
+   "type": "str",
+   "nullable": false
+  },
+  "open": {
+   "type": "float",
+   "nullable": false,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "high": {
+   "type": "float",
+   "nullable": false,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "low": {
+   "type": "float",
+   "nullable": false,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "close": {
+   "type": "float",
+   "nullable": false,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "pre_close": {
+   "type": "float",
+   "nullable": false,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "pct_chg": {
+   "type": "float",
+   "nullable": true,
+   "unit": "percent",
+   "min": -100,
+   "max": 2000
+  },
+  "volume": {
+   "type": "float",
+   "nullable": true,
+   "unit": "shares",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "amount_yuan": {
+   "type": "float",
+   "nullable": true,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "turnover": {
+   "type": "float",
+   "nullable": true,
+   "unit": "percent",
+   "min": 0
+  },
+  "turnover_pct": {
+   "type": "float",
+   "nullable": true,
+   "unit": "percent",
+   "min": 0
+  },
+  "suspended": {
+   "type": "bool",
+   "nullable": false
+  },
+  "mismatch": {
+   "type": "bool",
+   "nullable": false
+  },
+  "universe_version": {
+   "type": "str",
+   "nullable": false
+  }
+ }
+}

@@ -1,0 +1,1025 @@
+{
+  "2026-10-16": {
+    "daily_kline": [
+      {
+        "amount_yuan": 1281599063.32,
+        "available_at": "2026-10-16T17:30:00+08:00",
+        "close": 11.5,
+        "date": "2026-10-16",
+        "high": 11.63,
+        "low": 11.36,
+        "open": 11.41,
+        "pct_chg": 0.7888,
+        "pre_close": 11.41,
+        "source": "baostock",
+        "suspended": false,
+        "symbol": "000001",
+        "turnover_pct": 0.573,
+        "volume": 111185079.0
+      },
+      {
+        "amount_yuan": 1639415015.31,
+        "available_at": "2026-10-16T17:30:00+08:00",
+        "close": 3.66,
+        "date": "2026-10-16",
+        "high": 3.85,
+        "low": 3.55,
+        "open": 3.62,
+        "pct_chg": 1.6667,
+        "pre_close": 3.6,
+        "source": "baostock",
+        "suspended": false,
+        "symbol": "000002",
+        "turnover_pct": 4.5637,
+        "volume": 443373457.0
+      },
+      {
+        "amount_yuan": 5075528306.28,
+        "available_at": "2026-10-16T17:30:00+08:00",
+        "close": 1329.0,
+        "date": "2026-10-16",
+        "high": 1329.88,
+        "low": 1301.68,
+        "open": 1311.57,
+        "pct_chg": 1.2209,
+        "pre_close": 1312.97,
+        "source": "baostock",
+        "suspended": false,
+        "symbol": "600519",
+        "turnover_pct": 0.308,
+        "volume": 3850175.0
+      }
+    ],
+    "stock_day_facts": [
+      {
+        "amount_yuan": 1281599063.32,
+        "close": 11.5,
+        "fact_source": "daily_kline",
+        "pct_chg": 0.7888,
+        "pre_close": 11.41,
+        "quality": "CLOSE_PRICE_PROXY",
+        "symbol": "000001",
+        "trade_date": "2026-10-16",
+        "volume_shares": 111185079.0
+      },
+      {
+        "amount_yuan": 1639415015.31,
+        "close": 3.66,
+        "fact_source": "daily_kline",
+        "pct_chg": 1.6667,
+        "pre_close": 3.6,
+        "quality": "CLOSE_PRICE_PROXY",
+        "symbol": "000002",
+        "trade_date": "2026-10-16",
+        "volume_shares": 443373457.0
+      },
+      {
+        "amount_yuan": 5075528306.28,
+        "close": 1329.0,
+        "fact_source": "daily_kline",
+        "pct_chg": 1.2209,
+        "pre_close": 1312.97,
+        "quality": "CLOSE_PRICE_PROXY",
+        "symbol": "600519",
+        "trade_date": "2026-10-16",
+        "volume_shares": 3850175.0
+      }
+    ],
+    "auction_stock_facts": [
+      {
+        "amount_rank": 379,
+        "amount_top50": false,
+        "auction_amount_yuan": 7392800.0,
+        "coverage": {
+          "amount": true,
+          "final_tick": true,
+          "price": true,
+          "seal": false
+        },
+        "limit_up_candidate": false,
+        "name": null,
+        "official_limit_up_price": 3.96,
+        "pct_change": 0.55,
+        "pre_close_price": 3.6,
+        "price": 3.62,
+        "seal": {
+          "basis": null,
+          "limit_price_source": "Core.limit_price",
+          "read_at": "2026-10-16T09:26:10+08:00",
+          "reason": "BID1_NOT_AT_LIMIT",
+          "received_at": "2026-10-16T09:26:10+08:00",
+          "seal_amount_yuan": null,
+          "seal_rank": null,
+          "status": "NOT_LIMIT",
+          "tick_source_ts": "2026-10-16T09:25:00+08:00"
+        },
+        "symbol": "000002",
+        "valid_price": true
+      },
+      {
+        "amount_rank": 253,
+        "amount_top50": false,
+        "auction_amount_yuan": 12077500.0,
+        "coverage": {
+          "amount": true,
+          "final_tick": true,
+          "price": true,
+          "seal": false
+        },
+        "limit_up_candidate": false,
+        "name": null,
+        "official_limit_up_price": 12.55,
+        "pct_change": 0.0,
+        "pre_close_price": 11.41,
+        "price": 11.41,
+        "seal": {
+          "basis": null,
+          "limit_price_source": "Core.limit_price",
+          "read_at": "2026-10-16T09:26:10+08:00",
+          "reason": "BID1_NOT_AT_LIMIT",
+          "received_at": "2026-10-16T09:26:10+08:00",
+          "seal_amount_yuan": null,
+          "seal_rank": null,
+          "status": "NOT_LIMIT",
+          "tick_source_ts": "2026-10-16T09:25:00+08:00"
+        },
+        "symbol": "000001",
+        "valid_price": true
+      },
+      {
+        "amount_rank": 50,
+        "amount_top50": true,
+        "auction_amount_yuan": 43937600.0,
+        "coverage": {
+          "amount": true,
+          "final_tick": true,
+          "price": true,
+          "seal": false
+        },
+        "limit_up_candidate": false,
+        "name": null,
+        "official_limit_up_price": 1444.27,
+        "pct_change": -0.1,
+        "pre_close_price": 1312.97,
+        "price": 1311.57,
+        "seal": {
+          "basis": null,
+          "limit_price_source": "Core.limit_price",
+          "read_at": "2026-10-16T09:26:10+08:00",
+          "reason": "BID1_NOT_AT_LIMIT",
+          "received_at": "2026-10-16T09:26:10+08:00",
+          "seal_amount_yuan": null,
+          "seal_rank": null,
+          "status": "NOT_LIMIT",
+          "tick_source_ts": "2026-10-16T09:25:02+08:00"
+        },
+        "symbol": "600519",
+        "valid_price": true
+      }
+    ],
+    "auction_panorama": [
+      {
+        "trade_date": "2026-10-16",
+        "overview": {
+          "auction_amount_yuan": 13788937663.0,
+          "auction_amount_yi": 137.88937663,
+          "yesterday_pool_auction_amount_yuan": null,
+          "yesterday_pool_market_share": null,
+          "yesterday_pool_open_counts": {
+            "high": 0,
+            "flat": 0,
+            "low": 0
+          },
+          "yesterday_pool_open_valid_n": 0,
+          "multi_board_mean_auction_amount_yuan": null,
+          "first_board_mean_auction_amount_yuan": null,
+          "multi_to_first_board_mean_multiple": null,
+          "yesterday_pool_worst_two": [],
+          "yesterday_pool_verified_seal_n": 0,
+          "yesterday_pool_verified_seal_sum_yuan": null,
+          "yesterday_pool_n": 0,
+          "yesterday_pool_median_pct": null,
+          "yesterday_pool_high_open_gap_pp": null,
+          "yesterday_limit_down": {
+            "status": "UNVERIFIED",
+            "source": null,
+            "n": null,
+            "valid_n": null,
+            "open_counts": null
+          },
+          "yesterday_pool_high_boards": [],
+          "yesterday_reason_buckets": [],
+          "relay_thresholds_v1": {
+            "min_n": 3,
+            "strong_pp": 15.0,
+            "weak_pp": -15.0,
+            "median_gap_pp": 1.0,
+            "note": "V1冻结工程阈值,非市场规律未回测"
+          },
+          "extreme_threshold_pp_v1": 3.0,
+          "extreme_threshold_note": "工程阈值非市场规律未回测",
+          "dispersion_visible_threshold_pp_v1": 4.0,
+          "market_extremes": {
+            "highest": {
+              "symbol": "000573",
+              "name": "粤宏远Ａ",
+              "pct_change": 10.09,
+              "auction_amount_yuan": 7924900.0,
+              "amount_rank": 355,
+              "limit_mark": "涨停封"
+            },
+            "lowest": {
+              "symbol": "600693",
+              "name": "东百集团",
+              "pct_change": -10.02,
+              "auction_amount_yuan": 13074800.0,
+              "amount_rank": 234,
+              "limit_mark": null
+            },
+            "verified_seal_max": {
+              "symbol": "600825",
+              "name": "新华传媒",
+              "seal_amount_yuan": 1765247076.0,
+              "seal_rank": 1,
+              "amount_rank": 13
+            }
+          },
+          "amount_multiple_64d": {
+            "value": 0.975237802464233,
+            "percentile": 0.42857142857142855,
+            "sample_n": 14,
+            "window_n": 64,
+            "basis": "REPLAY_EVENT_TIME",
+            "status": "PARTIAL"
+          },
+          "valid_amount_n": 5215,
+          "universe_n": 5226,
+          "valid_price_n": 5119,
+          "up_ratio": {
+            "numerator": 4617,
+            "denominator": 5119,
+            "ratio": 0.9019339714788045
+          },
+          "market_median_pct": 1.2,
+          "yesterday_limit_high_open": {
+            "numerator": 0,
+            "denominator": 0,
+            "ratio": null,
+            "valid_price_n": 0,
+            "pool_n": 0
+          },
+          "yesterday_vs_market_pp": null,
+          "verified_seal_sum_yuan": 4685868597.0,
+          "verified_seal_scope": "7/7",
+          "verified_seal_label": "回放·按事件时间",
+          "market_structure": "有效价格上涨4617/5119；中位涨幅1.20%"
+        },
+        "schema": "auction_panorama_v1",
+        "asof": "2026-10-16T09:26:00+08:00",
+        "status": "PARTIAL"
+      }
+    ],
+    "limit_up_pool": [],
+    "plate_members": [
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801007",
+        "plate_member_label": "房地产、物业服务",
+        "symbol": "000002",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801019",
+        "plate_member_label": "房地产、物业服务",
+        "symbol": "000002",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801027",
+        "plate_member_label": "银行、破净股概念",
+        "symbol": "000001",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801033",
+        "plate_member_label": "白酒、西部大开发",
+        "symbol": "600519",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801035",
+        "plate_member_label": "白酒、西部大开发",
+        "symbol": "600519",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801049",
+        "plate_member_label": "房地产、物业服务",
+        "symbol": "000002",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801076",
+        "plate_member_label": "白酒、西部大开发",
+        "symbol": "600519",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801132",
+        "plate_member_label": "房地产、物业服务",
+        "symbol": "000002",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801159",
+        "plate_member_label": "房地产、物业服务",
+        "symbol": "000002",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801161",
+        "plate_member_label": "白酒、西部大开发",
+        "symbol": "600519",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801169",
+        "plate_member_label": "房地产、物业服务",
+        "symbol": "000002",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801284",
+        "plate_member_label": "房地产、物业服务",
+        "symbol": "000002",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801287",
+        "plate_member_label": "房地产、物业服务",
+        "symbol": "000002",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801301",
+        "plate_member_label": "房地产、物业服务",
+        "symbol": "000002",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801306",
+        "plate_member_label": "房地产、物业服务",
+        "symbol": "000002",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801306",
+        "plate_member_label": "银行、破净股概念",
+        "symbol": "000001",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801366",
+        "plate_member_label": "银行、破净股概念",
+        "symbol": "000001",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801470",
+        "plate_member_label": "白酒、西部大开发",
+        "symbol": "600519",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801572",
+        "plate_member_label": "银行、破净股概念",
+        "symbol": "000001",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801622",
+        "plate_member_label": "银行、破净股概念",
+        "symbol": "000001",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801676",
+        "plate_member_label": "房地产、物业服务",
+        "symbol": "000002",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801678",
+        "plate_member_label": "房地产、物业服务",
+        "symbol": "000002",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801751",
+        "plate_member_label": "房地产、物业服务",
+        "symbol": "000002",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801751",
+        "plate_member_label": "银行、破净股概念",
+        "symbol": "000001",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801778",
+        "plate_member_label": "房地产、物业服务",
+        "symbol": "000002",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801856",
+        "plate_member_label": "房地产、物业服务",
+        "symbol": "000002",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801856",
+        "plate_member_label": "银行、破净股概念",
+        "symbol": "000001",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801859",
+        "plate_member_label": "白酒、西部大开发",
+        "symbol": "600519",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "801862",
+        "plate_member_label": "银行、破净股概念",
+        "symbol": "000001",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "803024",
+        "plate_member_label": "房地产、物业服务",
+        "symbol": "000002",
+        "trade_date": "2026-10-16"
+      },
+      {
+        "plate_class": "UNKNOWN",
+        "plate_code": "803038",
+        "plate_member_label": "房地产、物业服务",
+        "symbol": "000002",
+        "trade_date": "2026-10-16"
+      }
+    ],
+    "stock_theme_assignment": [
+      {
+        "as_of": "2026-10-15",
+        "previous_trade_date": "2026-10-15",
+        "primary_theme": {
+          "id": "801027",
+          "name": "银行"
+        },
+        "secondary_themes": [
+          {
+            "id": "801622",
+            "name": "跨境支付"
+          },
+          {
+            "id": "801856",
+            "name": "破净股概念"
+          },
+          {
+            "id": "801862",
+            "name": "高股息精选"
+          }
+        ],
+        "source": "STATIC",
+        "symbol": "000001",
+        "trade_date": "2026-10-16",
+        "used_date": "2026-10-15",
+        "version": "sha256-2948d4a96158de85"
+      },
+      {
+        "as_of": "2026-10-15",
+        "previous_trade_date": "2026-10-15",
+        "primary_theme": {
+          "id": "801007",
+          "name": "房地产"
+        },
+        "secondary_themes": [
+          {
+            "id": "801049",
+            "name": "租售同权"
+          },
+          {
+            "id": "801284",
+            "name": "举牌"
+          },
+          {
+            "id": "801287",
+            "name": "养老概念"
+          },
+          {
+            "id": "801678",
+            "name": "物业服务"
+          },
+          {
+            "id": "801778",
+            "name": "空间计算"
+          },
+          {
+            "id": "801019",
+            "name": "物流"
+          },
+          {
+            "id": "801856",
+            "name": "破净股概念"
+          }
+        ],
+        "source": "REASON_LATEST",
+        "symbol": "000002",
+        "trade_date": "2026-10-16",
+        "used_date": "2026-10-15",
+        "version": "sha256-2948d4a96158de85"
+      },
+      {
+        "as_of": "2026-10-15",
+        "previous_trade_date": "2026-10-15",
+        "primary_theme": {
+          "id": "801035",
+          "name": "酿酒"
+        },
+        "secondary_themes": [
+          {
+            "id": "801161",
+            "name": "白酒"
+          },
+          {
+            "id": "801862",
+            "name": "高股息精选"
+          }
+        ],
+        "source": "STATIC",
+        "symbol": "600519",
+        "trade_date": "2026-10-16",
+        "used_date": "2026-10-15",
+        "version": "sha256-2948d4a96158de85"
+      }
+    ]
+  },
+  "2026-10-19": {
+    "daily_kline": [
+      {
+        "amount_yuan": 1466720689.33,
+        "close": 11.65,
+        "code": "sz.000001",
+        "date": "2026-10-19",
+        "high": 11.68,
+        "low": 11.41,
+        "mismatch": false,
+        "open": 11.48,
+        "pct_chg": 1.3043,
+        "pre_close": 11.5,
+        "suspended": false,
+        "symbol": "000001",
+        "turnover": 0.6533,
+        "turnover_pct": 0.6533,
+        "universe_version": "sha256-88ec501c0c32c669",
+        "volume": 126779262.0
+      },
+      {
+        "amount_yuan": 1182136843.92,
+        "close": 3.5,
+        "code": "sz.000002",
+        "date": "2026-10-19",
+        "high": 3.65,
+        "low": 3.47,
+        "mismatch": false,
+        "open": 3.59,
+        "pct_chg": -4.3716,
+        "pre_close": 3.66,
+        "suspended": false,
+        "symbol": "000002",
+        "turnover": 3.4495,
+        "turnover_pct": 3.4495,
+        "universe_version": "sha256-88ec501c0c32c669",
+        "volume": 335126076.0
+      },
+      {
+        "amount_yuan": 5308935918.98,
+        "close": 1324.97,
+        "code": "sh.600519",
+        "date": "2026-10-19",
+        "high": 1348.6,
+        "low": 1321.0,
+        "mismatch": false,
+        "open": 1322.5,
+        "pct_chg": -0.3032,
+        "pre_close": 1329.0,
+        "suspended": false,
+        "symbol": "600519",
+        "turnover": 0.3178,
+        "turnover_pct": 0.3178,
+        "universe_version": "sha256-88ec501c0c32c669",
+        "volume": 3972894.0
+      }
+    ],
+    "stock_day_facts": [
+      {
+        "amount_yuan": 1466720689.33,
+        "close": 11.65,
+        "code": "sz.000001",
+        "fact_source": "daily_kline",
+        "pct_chg": 1.3043,
+        "pre_close": 11.5,
+        "quality": "CLOSE_PRICE_PROXY",
+        "symbol": "000001",
+        "trade_date": "2026-10-19",
+        "universe_version": "sha256-88ec501c0c32c669",
+        "volume_shares": 126779262.0
+      },
+      {
+        "amount_yuan": 1182136843.92,
+        "close": 3.5,
+        "code": "sz.000002",
+        "fact_source": "daily_kline",
+        "pct_chg": -4.3716,
+        "pre_close": 3.66,
+        "quality": "CLOSE_PRICE_PROXY",
+        "symbol": "000002",
+        "trade_date": "2026-10-19",
+        "universe_version": "sha256-88ec501c0c32c669",
+        "volume_shares": 335126076.0
+      },
+      {
+        "amount_yuan": 5308935918.98,
+        "close": 1324.97,
+        "code": "sh.600519",
+        "fact_source": "daily_kline",
+        "pct_chg": -0.3032,
+        "pre_close": 1329.0,
+        "quality": "CLOSE_PRICE_PROXY",
+        "symbol": "600519",
+        "trade_date": "2026-10-19",
+        "universe_version": "sha256-88ec501c0c32c669",
+        "volume_shares": 3972894.0
+      }
+    ],
+    "auction_stock_facts": [
+      {
+        "amount_rank": 182,
+        "amount_top50": false,
+        "auction_amount_yuan": 14565588.0,
+        "coverage": {
+          "amount": true,
+          "final_tick": false,
+          "price": false,
+          "seal": false
+        },
+        "limit_up_candidate": false,
+        "name": null,
+        "official_limit_up_price": null,
+        "pct_change": null,
+        "pre_close_price": null,
+        "price": null,
+        "seal": {
+          "basis": null,
+          "limit_price_source": null,
+          "read_at": null,
+          "reason": "OFFICIAL_LIMIT_UNAVAILABLE",
+          "received_at": null,
+          "seal_amount_yuan": null,
+          "seal_rank": null,
+          "status": "UNKNOWN",
+          "tick_source_ts": null
+        },
+        "symbol": "000002",
+        "valid_price": false
+      },
+      {
+        "amount_rank": 547,
+        "amount_top50": false,
+        "auction_amount_yuan": 4507000.0,
+        "coverage": {
+          "amount": true,
+          "final_tick": true,
+          "price": true,
+          "seal": false
+        },
+        "limit_up_candidate": false,
+        "name": null,
+        "official_limit_up_price": 12.65,
+        "pct_change": -0.17,
+        "pre_close_price": 11.5,
+        "price": 11.48,
+        "seal": {
+          "basis": null,
+          "limit_price_source": "Core.limit_price",
+          "read_at": "2026-10-19T09:28:20.045897+08:00",
+          "reason": "BID1_NOT_AT_LIMIT",
+          "received_at": "2026-10-19T09:28:20.045897+08:00",
+          "seal_amount_yuan": null,
+          "seal_rank": null,
+          "status": "NOT_LIMIT",
+          "tick_source_ts": "2026-10-19T09:25:00+08:00"
+        },
+        "symbol": "000001",
+        "valid_price": true
+      },
+      {
+        "amount_rank": 144,
+        "amount_top50": false,
+        "auction_amount_yuan": 17299600.0,
+        "coverage": {
+          "amount": true,
+          "final_tick": true,
+          "price": true,
+          "seal": false
+        },
+        "limit_up_candidate": false,
+        "name": null,
+        "official_limit_up_price": 1461.9,
+        "pct_change": -0.48,
+        "pre_close_price": 1329.0,
+        "price": 1322.5,
+        "seal": {
+          "basis": null,
+          "limit_price_source": "Core.limit_price",
+          "read_at": "2026-10-19T09:28:20.045897+08:00",
+          "reason": "BID1_NOT_AT_LIMIT",
+          "received_at": "2026-10-19T09:28:20.045897+08:00",
+          "seal_amount_yuan": null,
+          "seal_rank": null,
+          "status": "NOT_LIMIT",
+          "tick_source_ts": "2026-10-19T09:25:00+08:00"
+        },
+        "symbol": "600519",
+        "valid_price": true
+      }
+    ],
+    "auction_panorama": [
+      {
+        "trade_date": "2026-10-19",
+        "overview": {
+          "auction_amount_yuan": 13193209468.0,
+          "auction_amount_yi": 131.93209468,
+          "yesterday_pool_auction_amount_yuan": 2187912169.0,
+          "yesterday_pool_market_share": 0.1658362337312054,
+          "yesterday_pool_open_counts": {
+            "high": 25,
+            "flat": 4,
+            "low": 22
+          },
+          "yesterday_pool_open_valid_n": 51,
+          "multi_board_mean_auction_amount_yuan": 107703181.71428572,
+          "first_board_mean_auction_amount_yuan": 27576728.78846154,
+          "multi_to_first_board_mean_multiple": 3.9055822226220727,
+          "yesterday_pool_worst_two": [
+            {
+              "symbol": "601999",
+              "name": "出版传媒",
+              "pct_change": -9.93
+            },
+            {
+              "symbol": "000530",
+              "name": "冰山冷热",
+              "pct_change": -8.0
+            }
+          ],
+          "yesterday_pool_verified_seal_n": 5,
+          "yesterday_pool_verified_seal_sum_yuan": 3306453084.0,
+          "yesterday_pool_n": 61,
+          "yesterday_pool_median_pct": 0.0,
+          "yesterday_pool_high_open_gap_pp": 35.663661266923555,
+          "yesterday_limit_down": {
+            "status": "UNVERIFIED",
+            "source": null,
+            "n": null,
+            "valid_n": null,
+            "open_counts": null
+          },
+          "yesterday_pool_high_boards": [
+            {
+              "symbol": "600825",
+              "name": "新华传媒",
+              "yesterday_streak": 5.0,
+              "primary_reason": "原因未核实",
+              "pct_change": -1.05,
+              "auction_amount_yuan": 461272512.0,
+              "amount_rank": 1,
+              "promotion_status": "NOT_PROMOTED"
+            },
+            {
+              "symbol": "000530",
+              "name": "冰山冷热",
+              "yesterday_streak": 4.0,
+              "primary_reason": "原因未核实",
+              "pct_change": -8.0,
+              "auction_amount_yuan": 69725504.0,
+              "amount_rank": 17,
+              "promotion_status": "NOT_PROMOTED"
+            },
+            {
+              "symbol": "601811",
+              "name": "新华文轩",
+              "yesterday_streak": 3.0,
+              "primary_reason": "原因未核实",
+              "pct_change": null,
+              "auction_amount_yuan": 54352560.0,
+              "amount_rank": 24,
+              "promotion_status": "UNVERIFIED"
+            },
+            {
+              "symbol": "003029",
+              "name": "吉大正元",
+              "yesterday_streak": 2.0,
+              "primary_reason": "原因未核实",
+              "pct_change": 10.0,
+              "auction_amount_yuan": 73972496.0,
+              "amount_rank": 14,
+              "promotion_status": "PROVISIONAL"
+            },
+            {
+              "symbol": "603999",
+              "name": "读者传媒",
+              "yesterday_streak": 2.0,
+              "primary_reason": "原因未核实",
+              "pct_change": -6.8,
+              "auction_amount_yuan": 34288200.0,
+              "amount_rank": 50,
+              "promotion_status": "NOT_PROMOTED"
+            },
+            {
+              "symbol": "002889",
+              "name": "东方嘉盛",
+              "yesterday_streak": 2.0,
+              "primary_reason": "原因未核实",
+              "pct_change": null,
+              "auction_amount_yuan": 33945000.0,
+              "amount_rank": 52,
+              "promotion_status": "UNVERIFIED"
+            },
+            {
+              "symbol": "600668",
+              "name": "尖峰集团",
+              "yesterday_streak": 2.0,
+              "primary_reason": "原因未核实",
+              "pct_change": -3.52,
+              "auction_amount_yuan": 26366000.0,
+              "amount_rank": 82,
+              "promotion_status": "NOT_PROMOTED"
+            }
+          ],
+          "yesterday_reason_buckets": [
+            {
+              "reason": "原因未核实",
+              "count": 61,
+              "willingness": "分歧",
+              "auction_amount_yuan": 2187912169.0,
+              "market_amount_share": 0.1658362337312054,
+              "highest_streak": 5.0,
+              "valid_n": 61,
+              "open_counts": {
+                "high": 25,
+                "flat": 4,
+                "low": 22
+              },
+              "median_pct": 0.0,
+              "provisional_n": 7,
+              "not_promoted_n": 44,
+              "unverified_n": 10,
+              "extremes": {
+                "strongest": {
+                  "symbol": "300411",
+                  "name": "金盾股份",
+                  "pct_change": 11.87,
+                  "amount_rank": 37
+                },
+                "weakest": {
+                  "symbol": "601999",
+                  "name": "出版传媒",
+                  "pct_change": -9.93,
+                  "amount_rank": 59
+                }
+              }
+            }
+          ],
+          "relay_thresholds_v1": {
+            "min_n": 3,
+            "strong_pp": 15.0,
+            "weak_pp": -15.0,
+            "median_gap_pp": 1.0,
+            "note": "V1冻结工程阈值,非市场规律未回测"
+          },
+          "extreme_threshold_pp_v1": 3.0,
+          "extreme_threshold_note": "工程阈值非市场规律未回测",
+          "dispersion_visible_threshold_pp_v1": 4.0,
+          "market_extremes": {
+            "highest": {
+              "symbol": "301230",
+              "name": "泓博医药",
+              "pct_change": 19.99,
+              "auction_amount_yuan": 242118592.0,
+              "amount_rank": 4,
+              "limit_mark": "涨停封"
+            },
+            "lowest": {
+              "symbol": "301010",
+              "name": "晶雪节能",
+              "pct_change": -12.27,
+              "auction_amount_yuan": 11382800.0,
+              "amount_rank": 237,
+              "limit_mark": null
+            },
+            "verified_seal_max": {
+              "symbol": "603197",
+              "name": "保隆科技",
+              "seal_amount_yuan": 2514834312.0,
+              "seal_rank": 1,
+              "amount_rank": 65
+            }
+          },
+          "amount_multiple_64d": {
+            "value": 0.9416565888468984,
+            "percentile": 0.3333333333333333,
+            "sample_n": 15,
+            "window_n": 64,
+            "basis": "PIT",
+            "status": "PARTIAL"
+          },
+          "valid_amount_n": 5208,
+          "universe_n": 5224,
+          "valid_price_n": 4717,
+          "up_ratio": {
+            "numerator": 630,
+            "denominator": 4717,
+            "ratio": 0.13355946576213695
+          },
+          "market_median_pct": -0.58,
+          "yesterday_limit_high_open": {
+            "numerator": 25,
+            "denominator": 51,
+            "ratio": 0.49019607843137253,
+            "valid_price_n": 51,
+            "pool_n": 61
+          },
+          "yesterday_vs_market_pp": 35.663661266923555,
+          "verified_seal_sum_yuan": 3985358806.0,
+          "verified_seal_scope": "7/11",
+          "verified_seal_label": "已核实",
+          "market_structure": "有效价格上涨630/4717；中位涨幅-0.58%"
+        },
+        "schema": "auction_panorama_v1",
+        "asof": "2026-10-19T09:26:00+08:00",
+        "status": "PARTIAL"
+      }
+    ],
+    "limit_up_pool": [],
+    "stock_theme_assignment": [
+      {
+        "as_of": "2026-10-16",
+        "input_version": "sha256-0ad4cf35598d271e",
+        "previous_trade_date": "2026-10-16",
+        "primary_theme": {
+          "id": "801007",
+          "name": "房地产"
+        },
+        "secondary_themes": [],
+        "source": "REASON_LATEST",
+        "symbol": "000002",
+        "trade_date": "2026-10-19",
+        "used_date": "2026-10-16",
+        "version": "sha256-815220fd82b91265",
+        "visibility_sha256": "f973899560d5241c818b43410d2c6bd56c81382009bc8fe61900aa03455dc827"
+      }
+    ]
+  }
+}

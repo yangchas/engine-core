@@ -92,6 +92,9 @@ class PreviousDayLimitFeedbackFact:
     records: Tuple[Mapping[str, Any], ...] = ()
     missing_fields: Tuple[str, ...] = ()
     invalid_fields: Tuple[str, ...] = ()
+    # Pool rows the source rejected as invalid.  When > 0 every count and the
+    # board-height summary are lower bounds of the true pool, never exact.
+    excluded_row_count: int = 0
     source_time_min_ms: Optional[int] = None
     source_time_max_ms: Optional[int] = None
     source_content_hash: Optional[str] = None
@@ -105,6 +108,14 @@ class PreviousDayLimitFeedbackFact:
             raise ValueError("business_anchor must be 0925")
         if self.prior_limit_up_count is not None and self.prior_limit_up_count < 0:
             raise ValueError("prior_limit_up_count must be non-negative")
+        if (
+            isinstance(self.excluded_row_count, bool)
+            or not isinstance(self.excluded_row_count, int)
+            or self.excluded_row_count < 0
+        ):
+            raise ValueError("excluded_row_count must be a non-negative integer")
+        if self.excluded_row_count and self.status is FactStatus.READY:
+            raise ValueError("a feedback fact with excluded rows cannot be READY")
         for name in ("valid_return_count", "return_unavailable_count", "up_count", "down_count", "flat_count"):
             value = getattr(self, name)
             if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
@@ -155,6 +166,8 @@ class PreviousDayLimitFeedbackFact:
             "source_time_min_ms": self.source_time_min_ms,
             "source_time_max_ms": self.source_time_max_ms,
         }
+        if self.excluded_row_count:
+            semantic_payload["excluded_row_count"] = self.excluded_row_count
         evidence_payload = {
             "contract_version": PREVIOUS_DAY_LIMIT_FEEDBACK_CONTRACT_VERSION,
             "previous_trade_date": self.previous_trade_date,
@@ -190,6 +203,8 @@ class PreviousDayLimitFeedbackFact:
             "records": self.records,
             "missing_fields": self.missing_fields,
             "invalid_fields": self.invalid_fields,
+            "excluded_row_count": self.excluded_row_count,
+            "counts_are_lower_bound": self.excluded_row_count > 0,
             "source_time_min_ms": self.source_time_min_ms,
             "source_time_max_ms": self.source_time_max_ms,
             "source_content_hash": self.source_content_hash,
@@ -342,9 +357,14 @@ def build_previous_day_limit_feedback(
     up = sum(value > 0 for value in valid_returns)
     down = sum(value < 0 for value in valid_returns)
     flat = sum(value == 0 for value in valid_returns)
+    excluded = data.get("rejected_count") if isinstance(data, Mapping) else 0
+    excluded = excluded if isinstance(excluded, int) and not isinstance(excluded, bool) and excluded > 0 else 0
+    if excluded:
+        missing_fields.add("previous.excluded_rows:%d" % excluded)
     status = (
         FactStatus.READY
         if previous_result.status is DataStatus.READY
+        and not excluded
         and valid_returns
         and not missing_returns
         and not any(field.startswith("source_record_time_ms:") for field in missing_fields)
@@ -369,6 +389,7 @@ def build_previous_day_limit_feedback(
         board_height_distribution=distribution,
         records=tuple(records),
         missing_fields=tuple(sorted(missing_fields)),
+        excluded_row_count=excluded,
         source_time_min_ms=min(source_times) if source_times else None,
         source_time_max_ms=max(source_times) if source_times else None,
         source_content_hash=previous_result.content_hash,

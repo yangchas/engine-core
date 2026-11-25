@@ -1,0 +1,57 @@
+{
+  "plan": "D8",
+  "inputs": {
+    "/home/exedev/validation/acceptance/289f271/c852/daily_kline.jsonl": {
+      "sha256": "202eb2034de2c71843fb7f8dbac480ed080f298d798a75b7ae5d01c61a7d9e8f",
+      "bytes": 243500,
+      "lines": 847
+    },
+    "/home/exedev/validation/acceptance/289f271/c852/factor_events.json": {
+      "sha256": "0b4e7fc3ebab9d640f670dfac124b8eaad348598f756076fc06e44d449b95350",
+      "bytes": 21403,
+      "lines": 802
+    },
+    "/home/exedev/validation/acceptance/289f271/c852/factor_snapshots.json": {
+      "sha256": "c340618e1661fe2027009540236d07237d5a14ad38b9fdcd2f7e002ec5d657c8",
+      "bytes": 5390,
+      "lines": 18
+    },
+    "/home/exedev/validation/acceptance/289f271/c852/baostock_responses.json": {
+      "sha256": "1247ce528fdb8d7fe4b147aa46ff3c2cf6488d2cb9bc93e0a2e650dbb2447744",
+      "bytes": 16080,
+      "lines": 875
+    },
+    "/home/exedev/repos/stock-situation-runtime/engine_next/adapters/runtime_chip_runner.py": {
+      "sha256": "68599f708a4b888a7f3b5a9d5272da1835820c52522d49cc89b55561bdafb5e0",
+      "bytes": 14858,
+      "lines": 345
+    },
+    "/home/exedev/repos/engine_core/docs/indicators/CHIP_CLUSTER.md": {
+      "sha256": "25094710b0e2e5a24b93f6531641e0b4bddd2f9a46a29a9ed16020f9e6d61f0d",
+      "bytes": 16778,
+      "lines": 152
+    }
+  },
+  "files": {
+    "PROVENANCE_chip.md": {
+      "sha256": "43c306a24586f9496855f25a0230750e4acaf1d8e88839b1c47ce435dfd72377",
+      "bytes": 3556,
+      "lines": 15
+    },
+    "boundary_cases.jsonl": {
+      "sha256": "226a4d56aadac9c1ba9d116dd59804c055579d0a269598ec62b12ee930cb7dc4",
+      "bytes": 6808,
+      "lines": 5
+    },
+    "expected_chip.jsonl": {
+      "sha256": "caff56141e194daaa2535d60de1abb80c7ae1cec8af391659e59496f2dae6376",
+      "bytes": 238300,
+      "lines": 823
+    },
+    "expected_chip_legacy.jsonl": {
+      "sha256": "dd5078438a9c9bd19c85916a04d94b6943e65cce30ae9b8ba500b1720daa295b",
+      "bytes": 211225,
+      "lines": 823
+    }
+  }
+}

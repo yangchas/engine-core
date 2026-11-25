@@ -160,6 +160,14 @@ def normalize_hot_plates_rows(
             if field not in field_units or not isinstance(unit, str) or not unit.strip():
                 raise ValueError("invalid verified field unit: " + str(field))
             field_units[field] = unit.strip()
+    if field_units["net_inflow_yi"] == "yi" and any(
+        item["net_inflow_yi"] is not None
+        and abs(item["net_inflow_yi"]) > _MAX_PLAUSIBLE_NET_INFLOW_YI
+        for item in normalized
+    ):
+        # The legacy dict path stores yuan under this name; a value this large
+        # means the unit claim does not hold for this payload.
+        field_units["net_inflow_yi"] = "UNKNOWN"
     unit_uncertainties = tuple(
         sorted(field for field, unit in field_units.items() if unit == "UNKNOWN")
     )
@@ -172,6 +180,51 @@ def normalize_hot_plates_rows(
         "scope": "provider_declared_top_plates",
         "field_units": field_units,
         "unit_uncertainties": unit_uncertainties,
+    }
+
+
+_VALUE_FIELDS = ("rank", "strength", "hot", "change_pct", "net_inflow_yi")
+
+_MAX_PLAUSIBLE_NET_INFLOW_YI = 1000.0
+
+# Units established from the legacy Kaipan normalizer plus a live check on
+# 2026-10-13 (50 rows; cache updated 09:27:29, phase=auction):
+# - change_pct: percentage points; 28 plates with >=5 members correlate with the
+#   Core plate mean of (a25-pc)/pc (median |kaipan| 0.69 vs Core 0.69, 26/28
+#   same sign).
+# - strength: index score taken from tuple item[2]; negative values occur
+#   (-86..883).  ``hot`` is the same tuple item, so hot == strength for all 50
+#   rows; it is an alias, not an independent measure.
+# - net_inflow_yi: tuple item[6] / 1e8 in the legacy connector; observed range
+#   -1.34..1.20, consistent with yi and not with yuan.  The legacy dict path
+#   does not divide, hence the magnitude guard above.
+# This is evidence for the producer path seen, not a producer-published
+# contract, so it is opt-in via ``verified_field_units`` rather than default.
+LEGACY_KAIPAN_OBSERVED_FIELD_UNITS = {
+    "strength": "score",
+    "hot": "score",
+    "net_inflow_yi": "yi",
+}
+
+
+def _known_field_fraction(unit_uncertainties: Iterable[str]) -> float:
+    unknown = {field for field in unit_uncertainties if field in _VALUE_FIELDS}
+    return (len(_VALUE_FIELDS) - len(unknown)) / float(len(_VALUE_FIELDS))
+
+
+def _mask_unknown_unit_fields(
+    data: Mapping[str, Any], unit_uncertainties: Iterable[str]
+) -> Mapping[str, Any]:
+    unknown = {field for field in unit_uncertainties if field in _VALUE_FIELDS}
+
+    def mask(row: Mapping[str, Any]) -> dict[str, Any]:
+        return {key: (None if key in unknown else value) for key, value in row.items()}
+
+    rows = [mask(row) for row in data.get("rows", ())]
+    return {
+        **dict(data),
+        "rows": rows,
+        "by_plate": {row["plate_name"]: row for row in rows},
     }
 
 
@@ -385,12 +438,16 @@ class HotPlatesFunction:
         result = TemporalDataGuard.check(result, request)
         if result.status in (DataStatus.UNAVAILABLE, DataStatus.INVALID, DataStatus.ERROR):
             return result
-        unit_uncertainties = result.data.get("unit_uncertainties", ())
+        unit_uncertainties = tuple(result.data.get("unit_uncertainties", ()))
         if unit_uncertainties:
+            # Soft gate: a field whose unit is not verified is withheld (None,
+            # never zero), while rank/name/verified fields stay usable.
+            masked = _mask_unknown_unit_fields(result.data, unit_uncertainties)
             return replace(
                 result,
-                status=DataStatus.UNAVAILABLE,
-                completeness=0.0,
+                data=masked,
+                status=DataStatus.PARTIAL,
+                completeness=_known_field_fraction(unit_uncertainties),
                 missing_fields=tuple(
                     sorted(
                         set(result.missing_fields)

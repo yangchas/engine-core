@@ -1,0 +1,1144 @@
+# DATA: spec (guardian timeline/schedule config)
+import pytest
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from engine_core.errors import CoreError
+
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _schedule_events():
+    schedule = json.loads((ROOT / "src/engine_core/guardian/schedule.json").read_text())
+    return schedule.get("events", schedule)
+
+
+def _core_request(event_id, trade_date="2026-10-19"):
+    # Shape written by guardiand runtime.go invoke(): "event" is the event id string.
+    return {"contract": 1, "event": event_id, "instance": event_id, "attempt": 1,
+            "run_id": "t-" + event_id, "idem_key": trade_date + "/" + event_id,
+            "trade_date": trade_date, "data_date": trade_date, "degrade_requested": False,
+            "sandbox": {"on": False, "root": ""}, "args": None,
+            "gate": {"ref": "", "params": None, "probe": False}}
+
+
+def test_kaipan_default_reuses_recorded_hot_pool_and_keeps_missing_behavior(tmp_path, monkeypatch):
+    from datetime import datetime
+    from examples import core_guardian
+    from engine_core.data_pipeline import limit_pool, limit_pool_hot_view as hot
+
+    day = "2026-10-26"
+    pages = json.loads((ROOT / "tests/fixtures/limit_pool/kaipan_pool_20261026.json").read_text())["pages"]
+    partition = limit_pool.build_kaipan(day, {int(k): v for k, v in pages.items()})
+    manifest = {**partition.manifest, "version": "recorded-pool", "available_at": "2026-10-28T10:11:25+08:00"}
+
+    class Redis:
+        value = None
+
+        def get(self, key):
+            assert key == f"core:view:limit_up_pool:{day}"
+            return self.value
+
+    redis = Redis()
+    monkeypatch.setattr(hot, "_client", lambda: redis)
+    monkeypatch.setattr(hot, "_td_store", lambda: (_ for _ in ()).throw(RuntimeError("no TD")))
+    monkeypatch.delenv("TD_CONFIG", raising=False)
+    monkeypatch.setattr(core_guardian, "previous_trade_date", lambda root, date: day)
+    jobs = []
+    monkeypatch.setattr(core_guardian, "build_handler_command",
+                        lambda name, event, opts, root, target, py, repo: [opts.job, target])
+    monkeypatch.setattr(core_guardian.subprocess, "run",
+                        lambda cmd, **kwargs: jobs.append(tuple(cmd)) or SimpleNamespace(returncode=0))
+    event = SimpleNamespace(event_id="kaipan_refresh_0850", args={}, data_date_offset=-1, timeout_seconds=300)
+    handler = core_guardian._command_handler("kaipan_fetch", SimpleNamespace(write=False), tmp_path)
+    now = datetime.fromisoformat("2026-10-29T08:50:00+08:00")
+    all_jobs = [(job, day) for job in ("limit_up_pool", "limit_reasons", "hot_plates", "plate_members")]
+
+    handler(event, now, {}, False)
+    assert jobs == all_jobs
+    jobs.clear()
+    redis.value = json.dumps(hot.envelope(day, partition.rows, manifest))
+    handler(event, now, {}, False)
+    assert jobs == all_jobs[1:]
+    jobs.clear()
+    redis.value = json.dumps({**hot.envelope(day, partition.rows, manifest), "rows": [], "row_count": 0})
+    handler(event, now, {}, False)
+    assert jobs == all_jobs
+    jobs.clear()
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    pool_manifest = tmp_path / "pool_manifest.json"
+    pool_manifest.write_text(json.dumps(manifest))
+    monkeypatch.setattr(ArtifactCatalog, "locate", lambda self, dataset, target:
+                        pool_manifest if dataset == "limit_up_pool" else None)
+    handler(event, now, {}, False)
+    assert jobs == all_jobs[1:]
+
+
+def test_static_data_refresh_event_routes_to_adapter(monkeypatch, tmp_path):
+    from datetime import datetime
+    from examples import core_guardian, static_data_refresh
+
+    event = SimpleNamespace(event_id="static_data_refresh_0850",
+                            args={"static_data_refresh": {"datasets": ["stock_static"]}})
+    now = datetime.fromisoformat("2026-10-29T08:55:00+08:00")
+    seen = {}
+    monkeypatch.setattr(
+        static_data_refresh, "refresh_static_data",
+        lambda actual_event, actual_now, root:
+            seen.update(event=actual_event, now=actual_now, root=root) or "REFRESHED",
+    )
+    handler = core_guardian._command_handler("premarket_data", SimpleNamespace(), tmp_path)
+    assert handler(event, now, {}, False) == "REFRESHED"
+    assert seen == {"event": event, "now": now, "root": tmp_path}
+
+
+def test_incomplete_kaipan_plate_members_is_retryable():
+    from examples import guardian_handler
+
+    class IncompletePlateMembers(RuntimeError):
+        error_code = "KAIPAN_PLATE_MEMBERS_INCOMPLETE"
+
+    code, payload = guardian_handler._failure_response(
+        {"event": "static_data_refresh_0850", "args": {}},
+        error=IncompletePlateMembers("failed_plates=2"),
+    )
+    assert code == 75
+    assert payload["error_code"] == "KAIPAN_PLATE_MEMBERS_INCOMPLETE"
+    assert payload["retryable"] is True
+
+
+def test_handler_run_contract_round_trip_close_capture_not_applicable():
+    event_id = next(e["event_id"] for e in _schedule_events() if e["handler"] == "close_capture")
+    result = subprocess.run([sys.executable, "examples/guardian_handler.py", "run"],
+                            cwd=ROOT, input=json.dumps(_core_request(event_id)), text=True,
+                            capture_output=True)
+    payload = json.loads(result.stdout.splitlines()[-1])
+    assert result.returncode == 0
+    assert payload["contract"] == 1 and payload["status"] == "not_applicable"
+    assert payload["error_code"] == ""
+
+
+def test_report_requests_email_with_mail_enabled_without_audit_marker(tmp_path, monkeypatch):
+    from datetime import datetime
+    from examples import core_guardian
+    from engine_core import daily_pipeline
+
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("CORE_ALLOW_FILE_FALLBACK", "0")
+    (tmp_path / ".mail_enabled").touch()
+    monkeypatch.setattr("engine_core.daily_pipeline._connect_redis", lambda: None)
+    sends = []
+    commands = []
+    monkeypatch.setattr("engine_core.report_mailer.send_message",
+                        lambda *args, **kwargs: sends.append(kwargs) or
+                        SimpleNamespace(status="test_suppressed"))
+    def run_report(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=daily_pipeline.main(command[2:]),
+                               stdout="", stderr="")
+    monkeypatch.setattr(core_guardian.subprocess, "run", run_report)
+    opts = SimpleNamespace(write=False, td_write=False, simulate_clock=False,
+                           email_self=True, run=False, job="")
+    event = SimpleNamespace(event_id="auction_report_0926", data_date_offset=0,
+                            timeout_seconds=60, start="09:26:00", args={"asof": "09:26:00"})
+    result = core_guardian._command_handler("auction_report", opts, tmp_path)(
+        event, datetime.fromisoformat("2026-10-21T09:26:30+08:00"), {}, False)
+    reports = list((tmp_path / "reports" / "2026-10-21").glob("auction_0926/*"))
+    assert reports and any(path.name == "manifest.json" for path in reports)
+    assert "email_withheld" not in result
+    assert any(["--email-send", "--email-to", "412826313@qq.com"] == command[i:i + 3]
+               for command in commands for i in range(len(command) - 2))
+    assert sends == [{"dry_run": False, "allow_recipients": ["412826313@qq.com"]}]
+
+
+def test_close_report_handler_result_is_successful_contract(tmp_path, monkeypatch):
+    from examples import core_guardian, guardian_handler
+    from engine_core.guardian.scheduler import default_events
+
+    event = next(item for item in default_events() if item.handler == "close_report")
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("GUARDIAN_DRY_RUN", "0")
+    monkeypatch.setenv("GUARDIAN_EMAIL_SELF", "1")
+    monkeypatch.setattr(core_guardian, "_command_handler", lambda *_:
+                        lambda *_args: "report_generated")
+    code, payload = guardian_handler._run({"event": event.event_id, "trade_date": "2026-10-20"})
+    assert code == 0
+    assert payload["status"] == "ok"
+    assert payload["detail"] == "report_generated"
+    assert payload["retryable"] is False
+
+
+def test_unknown_event_id_is_config_error():
+    result = subprocess.run([sys.executable, "examples/guardian_handler.py", "run"],
+                            cwd=ROOT, input=json.dumps(_core_request("no_such_event")), text=True,
+                            capture_output=True)
+    assert result.returncode == 64
+    assert json.loads(result.stdout.splitlines()[-1])["error_code"] == "CONFIG_ERROR"
+
+
+def test_core_startup_missed_summary_is_one_dry_run_mail():
+    # Shape written by guardiand applyStartup(): one summary listing all missed instances.
+    ids = [e["event_id"] for e in _schedule_events()][:42]
+    request = {"contract": 1, "event": "alert", "reason": "MISSED",
+               "request": {"count": len(ids), "instances": ids, "summary": True}}
+    result = subprocess.run([sys.executable, "examples/guardian_handler.py", "alert", "--dry-run"],
+                            cwd=ROOT, input=json.dumps(request), text=True, capture_output=True)
+    payload = json.loads(result.stdout.splitlines()[-1])
+    assert result.returncode == 0 and payload["status"] == "dry_run"
+    assert payload["events"] == 42
+    assert all(f"{i}: MISSED (1)" in payload["body"] for i in ids)
+
+
+def test_core_single_event_failure_alert_is_formatted():
+    request = {"contract": 1, "event": "alert", "reason": "CIRCUIT_OPEN",
+               "request": {"event": "startup_0830", "date": "2026-10-20", "error": "timeout"}}
+    result = subprocess.run([sys.executable, "examples/guardian_handler.py", "alert", "--dry-run"],
+                            cwd=ROOT, input=json.dumps(request), text=True, capture_output=True)
+    payload = json.loads(result.stdout.splitlines()[-1])
+    assert "startup_0830: CIRCUIT_OPEN (1)" in payload["body"]
+
+
+def test_every_schedule_event_dispatches_to_its_handler(monkeypatch):
+    from examples import guardian_handler
+    from examples import core_guardian
+    from engine_core.data_pipeline import daily_kline_fill, adjust_factor, price_volume
+    from engine_core.guardian import contract, startup
+
+    monkeypatch.setattr(startup, "fetch_item", lambda *args, **kwargs: {"contract": 1, "status": "ok", "error_code": "", "retryable": False, "artifacts": [], "detail": {}})
+    monkeypatch.setattr(adjust_factor, "run", lambda *a, **kw: (0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False, "artifacts": [], "detail": {}}))
+    monkeypatch.setattr(price_volume, "run", lambda *a, **kw: (0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False, "artifacts": [], "detail": {}}))
+    events = _schedule_events()
+    called = []
+    seen_opts = []
+    backfill_calls = []
+    listing_calls = []
+    original_run = subprocess.run
+
+    def isolated_run(argv, *args, **kwargs):
+        if isinstance(argv, (list, tuple)) and any(str(x).endswith("build_stock_listing.py") for x in argv):
+            listing_calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"contract": 1, "status": "ok",
+                "error_code": "", "retryable": False, "artifacts": [], "detail": "stub"}), "")
+        return original_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", isolated_run)
+
+    # The dispatch smoke test uses the event's real schedule args. Its date and
+    # neighbours come from the captured BaoStock calendar response, normalized
+    # into the isolated Core calendar consumed by previous_trade_date().
+    trade_date = "2026-10-19"
+    captured_calendar = json.loads((ROOT / "tests/fixtures/trade_calendar/baostock-2026-01-01_2026-12-31.json").read_text())
+    calendar_rows = [row for row in captured_calendar["rows"]
+                     if "2026-10-15" <= row["calendar_date"] <= "2026-10-21"]
+    assert any(row["calendar_date"] == trade_date and row["is_trading_day"] == "1"
+               for row in calendar_rows)
+    root = Path(os.environ["CORE_DATA_ROOT"])
+    calendar_dir = root / "trade_calendar"
+    calendar_dir.mkdir(parents=True, exist_ok=True)
+    calendar = [{"d": row["calendar_date"], "t": int(row["is_trading_day"]),
+                 "src": "BS", "u": "captured-real-response"} for row in calendar_rows]
+    (calendar_dir / "calendar.json").write_text(json.dumps({
+        "schema": "CoreTradeCalendarMatrixV1", "lit_from": calendar[0]["d"],
+        "lit_to": calendar[-1]["d"], "days": calendar,
+    }), encoding="utf-8")
+
+    def fake_backfill(backfill_root, target, *, args):
+        backfill_calls.append((backfill_root, target, args))
+        return {"status": "NO_GAPS"}
+
+    # Since C630 every Baostock trigger point and the backfill event run the TD-driven per-symbol fill.
+    monkeypatch.setattr(daily_kline_fill, "run_daily_kline_fill_from_root", fake_backfill)
+
+    def fake_factory(name, opts, root):
+        called.append(name)
+        seen_opts.append(opts)
+        return lambda *_: "dispatched"
+    monkeypatch.setattr(core_guardian, "_command_handler", fake_factory)
+    from engine_core.guardian import commands
+    monkeypatch.setattr(commands, "validate_handler_postcondition", lambda *_: (True, ""))
+    for event in events:
+        # boot_apply_plan uses the direct reconciliation/fetch_item bridge and
+        # is exercised by the configured runtime-reconciliation Go test.
+        if event.get("trigger_type") == "startup" or event.get("handler") == "boot_apply_plan":
+            continue
+        request = _core_request(event["event_id"], trade_date=trade_date)
+        if event["handler"] in ("daily_kline_backfill", "baostock_probe", "fetch_item"):
+            request["args"] = event["args"]
+        faked_before = len(called)
+        code, payload = guardian_handler._run(request)
+        assert contract.check_reply(code, payload) == [], (event["event_id"], payload)   # every reply obeys the matrix
+        if event["handler"] == "daily_kline_close":
+            # Providers come from the ladder rung's args; a bare request is refused, never defaulted (C566).
+            assert payload["error_code"] == "CONFIG_ERROR", payload
+        elif event["handler"] in ("daily_kline_backfill", "baostock_probe", "fetch_item"):
+            assert payload["status"] == "ok", payload
+        elif event["handler"] == "close_capture":
+            assert payload["status"] == "not_applicable"
+        elif len(called) > faked_before:
+            assert payload["status"] == "ok", (event["event_id"], payload)
+        else:
+            # Handlers that are not stubbed (the pool/self-check/fetch/provider runners) execute for real against the
+            # empty isolated root and an unreachable Redis: they must reach their own code and answer in the contract
+            # with a specific outcome, never an unmapped or internal one.
+            assert payload["error_code"] not in ("INTERNAL_ERROR", "NOT_IMPLEMENTED", "UNKNOWN_EVENT"), (
+                event["event_id"], payload)
+    assert set(called) == {e["handler"] for e in events
+                           if e.get("trigger_type") != "startup" and e.get("handler") != "boot_apply_plan"} - {
+                               "close_capture", "daily_kline_close", "daily_kline_backfill",
+                               # handled by their own runners, not by the command factory:
+                               "baostock_probe", "boot_data_health", "intraday_data", "fetch_item"}
+    assert all(o.write and o.run for o in seen_opts)  # live mode writes, like the old guardian
+    fills = [e for e in events if e["handler"] in ("daily_kline_backfill", "baostock_probe")]
+    assert len(backfill_calls) == len(fills) and len(fills) >= 5          # probe + retries + the post-close backfill
+    for call, event in zip(backfill_calls, fills):
+        assert call[0] == root and call[2] == event["args"], event["event_id"]
+    assert [c[1] for c, e in zip(backfill_calls, fills) if e["handler"] == "daily_kline_backfill"] == ["2026-10-16"]
+    assert len(listing_calls) == 1 and listing_calls[0][-2:] == ["--date", trade_date]
+
+
+def test_stock_listing_dry_run_never_invokes_baostock(monkeypatch):
+    from examples import guardian_handler
+    from engine_core.data_pipeline import stock_listing
+    from engine_core.guardian.contract import check_reply
+
+    monkeypatch.setenv("GUARDIAN_DRY_RUN", "1")
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Baostock must not be invoked")
+    monkeypatch.setattr(stock_listing, "_fetch_live", forbidden)
+    monkeypatch.setattr(guardian_handler.subprocess, "run", forbidden)
+    code, reply = guardian_handler._run(_core_request("stock_listing_0045"))
+    assert code == 0 and reply["status"] == "ok"
+    assert check_reply(code, reply) == []
+
+
+def test_successful_command_fails_when_postcondition_is_missing(monkeypatch):
+    from examples import guardian_handler
+    from examples import core_guardian
+    from engine_core.guardian import commands
+
+    event = next(e for e in _schedule_events() if e["handler"] == "premarket_data")
+    monkeypatch.setattr(core_guardian, "_command_handler",
+                        lambda *_: (lambda *_args: "command_succeeded"))
+    monkeypatch.setattr(commands, "validate_handler_postcondition",
+                        lambda *_: (False, "symbol_universe_manifest_missing"))
+    code, payload = guardian_handler._run(_core_request(event["event_id"]))
+    assert code == 40
+    assert payload["status"] == "failed"
+    assert payload["error_code"] == "POSTCONDITION_FAILED"        # the real code, no longer the generic one
+    assert payload["retryable"] is False
+
+
+def _baostock_probe_request():
+    request = _core_request("baostock_probe_1730")
+    request.update(handler="baostock_probe", asof="2026-10-20T17:30:00+08:00")
+    event = next(e for e in _schedule_events() if e["event_id"] == "baostock_probe_1730")
+    request["args"] = event.get("args") or {}
+    return request
+
+
+def _set_external_baostock_command(monkeypatch, *argv):
+    import shlex
+    monkeypatch.setenv("CORE_BAOSTOCK_PROBE_COMMAND", shlex.join(argv))
+    monkeypatch.setenv("GUARDIAN_DRY_RUN", "1")
+
+
+def test_baostock_exit_two_is_fast_deterministic_failure(monkeypatch):
+    import time
+    from examples import guardian_handler
+
+    _set_external_baostock_command(monkeypatch, sys.executable, "-c", "import sys; sys.exit(2)")
+    started = time.monotonic()
+    code, payload = guardian_handler._run(_baostock_probe_request())
+
+    assert time.monotonic() - started < 1.0
+    assert code == 40
+    assert payload["error_code"] == "DETERMINISTIC_FAILURE"
+    assert payload["retryable"] is False
+
+
+@pytest.mark.parametrize(("message", "want_code", "want_retryable"), [
+    ('{"error_code":"BAOSTOCK_RECEIVE_EXCEPTION","detail":"recv failed"}', 75, True),
+    ('{"error_code":"COMMAND_ARGUMENT_ERROR","detail":"invalid symbol argument"}', 40, False),
+])
+def test_baostock_failure_stdout_is_classified_and_preserved(monkeypatch, message, want_code, want_retryable):
+    from examples import guardian_handler
+
+    script = f"import sys; print({message!r}); sys.exit(1)"
+    _set_external_baostock_command(monkeypatch, sys.executable, "-c", script)
+
+    code, payload = guardian_handler._run(_baostock_probe_request())
+
+    assert code == want_code
+    assert payload["retryable"] is want_retryable
+    assert message in str(payload["detail"])
+
+
+@pytest.mark.parametrize(("command", "timeout_seconds"), [
+    ((sys.executable, "-c", "import time; time.sleep(2)"), 1),
+    ((sys.executable, "-c", "import sys; sys.stderr.write('BAOSTOCK_CONNECTION_ERROR: receive exception'); sys.exit(1)"), 5),
+])
+def test_baostock_timeout_and_receive_failures_keep_retry_path(monkeypatch, command, timeout_seconds):
+    from examples import guardian_handler
+
+    _set_external_baostock_command(monkeypatch, *command)
+    request = _baostock_probe_request()
+    request["timeout_seconds"] = timeout_seconds
+    code, payload = guardian_handler._run(request)
+
+    assert code == 75
+    assert payload["status"] == "failed"
+    assert payload["retryable"] is True
+
+
+def test_baostock_failure_classification_comes_from_request_args(monkeypatch):
+    from examples import guardian_handler
+
+    _set_external_baostock_command(monkeypatch, sys.executable, "-c", "import sys; sys.exit(2)")
+    request = _baostock_probe_request()
+    classes = request["args"]["failure_classes"]
+    classes["deterministic"]["exit_codes"].remove(2)
+    classes["retryable"]["exit_codes"].append(2)
+
+    code, payload = guardian_handler._run(request)
+
+    assert code == 75
+    assert payload["retryable"] is True
+
+
+def test_fetch_item_and_baostock_profiles_keep_their_retry_contracts():
+    schedule = json.loads((ROOT / "src/engine_core/guardian/schedule.json").read_text())
+    profiles = schedule["profiles"]
+    events = {event["event_id"]: event for event in schedule["events"]}
+    baostock_ids = ("baostock_probe_1730", "baostock_retry_1740",
+                    "baostock_retry_1830", "baostock_retry_2000")
+
+    for event_id in baostock_ids:
+        assert events[event_id]["profile"] == "policy_11"
+        assert events[event_id]["late_until"] == "23:30:00"
+    assert events["fetch_item"]["profile"] == "policy_04"
+    policy_04 = profiles["policy_04"]
+    assert policy_04["retry_backoff"] == "5m"
+    fetch_rung = policy_04["ladder"][0]
+    assert (fetch_rung["attempts"], fetch_rung["backoff"], fetch_rung["timeout"]) == (3, "5m*2", "20m")
+
+    policy_11 = profiles["policy_11"]
+    assert policy_11["silent_until_last"] is True
+    baostock_rung = policy_11["ladder"][0]
+    assert (baostock_rung["attempts"], baostock_rung["backoff"], baostock_rung["backoff_cap"],
+            baostock_rung["timeout"], baostock_rung["until"]) == (32, "30m*1", "30m", "130m", "late_until")
+    assert all("failure_classes" in events[event_id].get("args", {})
+               for event_id in (*baostock_ids, "fetch_item"))
+
+
+def test_runtime_reconciliation_uses_enqueue_only_bridge(monkeypatch, tmp_path):
+    from examples import guardian_handler
+    from engine_core.guardian import startup
+
+    called = {}
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(startup, "boot_reconcile", lambda *args, **kwargs: {
+        "status": "ok", "detail": {"plan": [{"id": "light", "partition": "2026-10-22",
+                                                    "action": "FETCH_NOW"}]}})
+
+    def apply(*args, **kwargs):
+        called.update(kwargs)
+        return {"status": "ok", "detail": {"results": [], "deferred": []}}
+
+    monkeypatch.setattr(startup, "boot_apply_plan", apply)
+    code, payload = guardian_handler._run({
+        "event": "runtime_reconcile_0900", "handler": "boot_apply_plan",
+        "trade_date": "2026-10-22", "phase": "PRE_MARKET", "now": "2026-10-22T09:00:00+08:00"})
+
+    assert code == 0 and payload["status"] == "ok"
+    assert called["enqueue_only"] is True
+
+
+def test_dry_run_skips_postcondition_validation(monkeypatch):
+    from examples import guardian_handler
+    from examples import core_guardian
+    from engine_core.guardian import commands
+
+    event = next(e for e in _schedule_events() if e["handler"] == "premarket_data")
+    monkeypatch.setattr(core_guardian, "_command_handler",
+                        lambda *_: (lambda *_args: "command_succeeded"))
+    monkeypatch.setattr(commands, "validate_handler_postcondition",
+                        lambda *_: (_ for _ in ()).throw(AssertionError("validation called")))
+    monkeypatch.setenv("GUARDIAN_DRY_RUN", "1")
+    _, payload = guardian_handler._run(_core_request(event["event_id"]))
+    assert payload["status"] == "ok"
+
+
+def test_dry_run_env_disables_writes_and_mail(monkeypatch):
+    from examples import guardian_handler
+    from examples import core_guardian
+
+    seen = []
+    monkeypatch.setattr(core_guardian, "_command_handler",
+                        lambda name, opts, root: (seen.append(opts), (lambda *_: "x"))[1])
+    monkeypatch.setenv("GUARDIAN_DRY_RUN", "1")
+    event = next(e for e in _schedule_events() if e.get("trigger_type") == "window")
+    guardian_handler._run(_core_request(event["event_id"]))
+    assert seen and not seen[0].write and not seen[0].email_self and not seen[0].run
+
+
+def test_new_event_id_dispatches_from_configured_handler_without_python_event_entry(monkeypatch):
+    from examples import guardian_handler, core_guardian
+    from engine_core.guardian import commands
+
+    seen = []
+    monkeypatch.setattr(core_guardian, "_command_handler",
+                        lambda name, *_: (seen.append(name), lambda *_args: "dispatched")[1])
+    monkeypatch.setattr(commands, "validate_handler_postcondition", lambda *_: (True, ""))
+    request = _core_request("config_only_extension")
+    request.update(handler="kaipan_fetch", asof="2026-10-19T08:03:00+08:00", args={"job": "watch"})
+    code, payload = guardian_handler._run(request)
+    assert code == 0 and payload["status"] == "ok"
+    assert seen == ["kaipan_fetch"]
+
+
+def test_gate_names_from_stdin_and_cli_are_recognized_and_unknown_is_not_ready():
+    events = _schedule_events()
+    for event in events:
+        gate = event.get("gate")
+        if not gate:
+            continue
+        req = _core_request(event["event_id"]); req["gate"] = {"ref": gate, "probe": True}
+        result = subprocess.run([sys.executable, "examples/guardian_handler.py", "gate"],
+                                cwd=ROOT, input=json.dumps(req), text=True, capture_output=True)
+        payload = json.loads(result.stdout.splitlines()[-1])
+        assert payload["status"] in {"ready", "not_ready"}
+        assert payload["reason"] != "unknown_gate", gate
+    result = subprocess.run([sys.executable, "examples/guardian_handler.py", "gate", "unknown"],
+                            cwd=ROOT, text=True, capture_output=True, input="{}")
+    assert json.loads(result.stdout.splitlines()[-1]) == {
+        "status": "not_ready", "reason": "unknown_gate"}
+
+
+def test_shared_command_builder_preserves_legacy_command_shape():
+    from engine_core.guardian.commands import build_handler_command
+    from types import SimpleNamespace
+
+    event = SimpleNamespace(data_date_offset=0, start="09:26:00", timeout_seconds=30)
+    opts = SimpleNamespace(write=False, td_write=False, simulate_clock=False, email_self=False)
+    command = build_handler_command("auction_report", event, opts, ROOT / "artifacts",
+                                    "2026-10-19", sys.executable, ROOT)
+    assert command == [sys.executable, str(ROOT / "examples/run_daily_reports.py"),
+                       "--stage", "auction", "--trade-date", "2026-10-19",
+                       "--out-root", str(ROOT / "artifacts/reports"), "--asof", "09:26:00",
+                       "--dry-run"]
+
+
+def test_fakeclock_kaipan_job_persists_only_to_artifact_root():
+    from engine_core.guardian.commands import build_handler_command
+    from types import SimpleNamespace
+
+    opts = SimpleNamespace(write=False, td_write=False, simulate_clock=True,
+                           email_self=False, job="limit_up_pool")
+    command = build_handler_command("kaipan_job", SimpleNamespace(), opts,
+                                    ROOT / "artifacts", "2026-10-21", sys.executable, ROOT)
+    assert command[-1] == "--execute"
+    assert "--write" not in command
+
+
+def test_hot_plate_history_schedule_uses_artifact_only_job_command():
+    from engine_core.guardian.commands import build_handler_command
+    from types import SimpleNamespace
+
+    event = SimpleNamespace(event_id="hot_plates_history_0815", start="08:15:00",
+        deadline="08:30:00", args={"hot_plates_history_days": 3,
+                                   "datasets": ["hot_plates_history",
+                                                "hot_plates_history_days=3"]})
+    opts = SimpleNamespace(write=True, td_write=False, simulate_clock=False,
+                           email_self=False, job="daily_kline")
+
+    command = build_handler_command("kaipan_hot_capture", event, opts,
+        ROOT / "artifacts", "2026-10-29", sys.executable, ROOT)
+
+    assert command[:4] == [sys.executable, str(ROOT / "examples/run_data_jobs.py"),
+                           "--job", "hot_plates"]
+    assert command[command.index("--hot-plates-history-days") + 1] == "3"
+    assert command[command.index("--hot-plates-scheduled-at") + 1] == "08:15:00"
+    assert command[command.index("--hot-plates-deadline") + 1] == "08:30:00"
+    assert command[-1] == "--execute"
+    assert "--write" not in command
+
+
+def test_hot_plate_history_handler_passes_runtime_deadline_to_cli(monkeypatch, tmp_path):
+    from examples import core_guardian, guardian_handler
+    from engine_core.guardian.commands import build_handler_command
+    from engine_core.guardian.scheduler import default_events
+
+    schedule_event = next(item for item in default_events()
+                          if item.event_id == "hot_plates_history_0815")
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("GUARDIAN_DRY_RUN", "1")
+    seen = {}
+
+    def command_handler(name, opts, root):
+        def run(event, now, _context, _degraded):
+            seen["event"] = event
+            seen["command"] = build_handler_command(
+                name, event, opts, root, "2026-10-29", sys.executable, ROOT)
+            return "history_capture_command_built"
+        return run
+
+    monkeypatch.setattr(core_guardian, "_command_handler", command_handler)
+    code, payload = guardian_handler._run({
+        "event": schedule_event.event_id,
+        "handler": schedule_event.handler,
+        "trade_date": "2026-10-29",
+        "data_date": "2026-10-29",
+        "asof": "2026-10-29T08:20:00+08:00",
+        "deadline_at": "2026-10-29T08:22:00+08:00",
+        "now": "2026-10-29T08:20:00+08:00",
+        "args": schedule_event.args,
+    })
+
+    command = seen["command"]
+    assert code == 0 and payload["status"] == "ok"
+    assert command[command.index("--hot-plates-scheduled-at") + 1] == "08:20:00"
+    assert command[command.index("--hot-plates-deadline") + 1] == "08:22:00"
+
+
+def test_hot_plate_postcondition_receives_isolated_runtime_event_id(monkeypatch, tmp_path):
+    from examples import core_guardian, guardian_handler
+    from engine_core.guardian import commands
+    from engine_core.guardian.scheduler import default_events
+
+    schedule_event = next(item for item in default_events()
+                          if item.event_id == "kaipan_hot_093220")
+    runtime_event_id = schedule_event.event_id + "_rhfixture"
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.delenv("GUARDIAN_DRY_RUN", raising=False)
+    seen = {}
+
+    def command_handler(name, opts, root):
+        return lambda event, now, _context, _degraded: "capture_complete"
+
+    def validate(name, day, root, datasets=None, event_args=None):
+        seen.update(name=name, day=day, datasets=datasets, event_args=event_args)
+        return True, ""
+
+    monkeypatch.setattr(core_guardian, "_command_handler", command_handler)
+    monkeypatch.setattr(commands, "validate_handler_postcondition", validate)
+    code, payload = guardian_handler._run({
+        "event": runtime_event_id,
+        "handler": schedule_event.handler,
+        "trade_date": "2026-10-29",
+        "data_date": "2026-10-29",
+        "asof": "2026-10-29T09:32:20+08:00",
+        "deadline_at": "2026-10-29T10:32:20+08:00",
+        "now": "2026-10-29T09:32:20+08:00",
+        "args": schedule_event.args,
+    })
+
+    assert code == 0
+    assert payload["status"] == "ok"
+    assert seen["datasets"] == schedule_event.args["datasets"]
+    assert seen["event_args"]["event_id"] == runtime_event_id
+
+
+def test_auction_report_asof_is_clamped_to_0926_when_started_later(monkeypatch, tmp_path):
+    from examples import core_guardian, guardian_handler
+
+    seen = {}
+    monkeypatch.setattr(core_guardian, "_command_handler", lambda name, opts, root: lambda event, now, ctx, degrade:
+                        seen.update(start=event.start, now=now.isoformat()) or "ok")
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("GUARDIAN_DRY_RUN", "1")
+    code, payload = guardian_handler._run(_core_request("auction_report_0926", "2026-10-22"))
+    assert code == 0 and payload["status"] == "ok"
+    assert seen["start"] == "09:26:00" and seen["now"].startswith("2026-10-22T09:26:00")
+
+
+def _premarket_request():
+    request = _core_request("startup_0900", "2026-10-22")
+    request.update(handler="premarket_data", active_events={"premarket_slice_0850": "2026-10-22"})
+    return request
+
+
+def test_premarket_handler_skips_only_while_a_prep_process_really_holds_the_lock(monkeypatch, tmp_path):
+    from engine_core.data_pipeline.ops import FileLock
+    from examples import guardian_handler
+
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    ran = []
+    monkeypatch.setattr(guardian_handler, "_run_event", lambda request: ran.append(1) or (0, {"status": "ok"}))
+    holder = FileLock(tmp_path / ".locks" / "premarket-prep.lock")
+    holder.acquire()                                        # another prep process is alive
+    try:
+        code, payload = guardian_handler._run(_premarket_request())
+    finally:
+        holder.release()
+    assert (code, payload["status"], payload["detail"]) == (0, "ok", "same_date_premarket_prep_process_running")
+    assert ran == []
+
+
+def test_premarket_handler_runs_when_the_owner_event_is_only_waiting_for_a_retry(monkeypatch, tmp_path):
+    # 2026-11-02 09:00: premarket_slice_0850 sat in RETRY_WAIT (listed in active_events, no process); the old guard
+    # reported success without doing anything and the owner then timed out twice more.
+    from examples import guardian_handler
+
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    ran = []
+    monkeypatch.setattr(guardian_handler, "_run_event", lambda request: ran.append(1) or (0, {"status": "ok"}))
+    assert guardian_handler._run(_premarket_request())[0] == 0 and ran == [1]
+    # and the lock is released afterwards, also when the run raises
+    monkeypatch.setattr(guardian_handler, "_run_event", lambda request: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError):
+        guardian_handler._run(_premarket_request())
+    monkeypatch.setattr(guardian_handler, "_run_event", lambda request: ran.append(2) or (0, {"status": "ok"}))
+    guardian_handler._run(_premarket_request())
+    assert ran == [1, 2]
+
+
+def test_other_handlers_never_touch_the_prep_lock(monkeypatch, tmp_path):
+    from examples import guardian_handler
+
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(guardian_handler, "_run_event", lambda request: (0, {"status": "ok"}))
+    request = _core_request("auction_report_0926", "2026-10-22")
+    assert guardian_handler._run(request) == (0, {"status": "ok"})
+    assert not (tmp_path / ".locks").exists()
+
+
+def _prep_event_args(event_id):
+    schedule = json.loads((Path(__file__).resolve().parents[1] /
+                           "src/engine_core/guardian/schedule.json").read_text(encoding="utf-8"))
+    return next(e for e in schedule["events"] if e["event_id"] == event_id)["args"]
+
+
+@pytest.mark.parametrize("event_id", ["startup_0830", "premarket_slice_0850", "startup_0900"])
+def test_prep_errors_from_late_upstream_data_or_a_td_hiccup_are_retryable(event_id):
+    from examples import guardian_handler
+
+    request = {"args": _prep_event_args(event_id)}
+    late = RuntimeError("prep_errors:daily_features:DAILY_KLINE_MISSING:2026-10-30;plate_amount_baseline:COMMAND_FAILED:"
+                        "taos.error.ProgrammingError command_exit=40")
+    code, payload = guardian_handler._failure_response(request, error=late)
+    assert (code, payload["retryable"]) == (75, True)
+    hiccup = RuntimeError("prep_errors:plate_amount_baseline:COMMAND_FAILED: taos_query raise ProgrammingError")
+    assert guardian_handler._failure_response(request, error=hiccup)[0] == 75
+    # the rest of the classification is intact: timeouts retry, contract errors and missing critical steps do not
+    assert guardian_handler._failure_response(request, error=TimeoutError("slow"))[0] == 75
+    assert guardian_handler._failure_response(request, error=CoreError("PREP_CRITICAL_MISSING", "symbol_universe"))[0] == 40
+    assert guardian_handler._failure_response(request, error=ValueError("bad config"))[0] == 40
+
+
+def test_daily_kline_job_budget_follows_event_timeout():
+    from engine_core.guardian.commands import build_handler_command
+    from types import SimpleNamespace
+
+    opts = SimpleNamespace(write=True, td_write=False, simulate_clock=False, email_self=False)
+    for job, expect in (("daily_kline", "900"), ("limit_up_pool", None)):
+        opts.job = job
+        cmd = build_handler_command("kaipan_job", SimpleNamespace(timeout_seconds=1000), opts,
+                                    ROOT / "artifacts", "2026-10-26", sys.executable, ROOT)
+        if expect:
+            assert cmd[cmd.index("--budget-seconds") + 1] == expect
+        else:
+            assert "--budget-seconds" not in cmd
+
+
+def test_schedule_args_control_daily_kline_budget_and_providers():
+    from engine_core.guardian.commands import build_handler_command
+    from types import SimpleNamespace
+
+    opts = SimpleNamespace(write=True, td_write=False, simulate_clock=False,
+                           email_self=False, job="daily_kline")
+    event = SimpleNamespace(timeout_seconds=1000, args={
+        "budget_ratio": 0.5, "budget_floor_seconds": 1,
+        "baostock_no_progress_seconds": 43,
+        "providers": ["wencai", "q2_final", "wencai"],
+    })
+    cmd = build_handler_command("kaipan_job", event, opts, ROOT / "artifacts",
+                                "2026-10-26", sys.executable, ROOT)
+    assert cmd[cmd.index("--budget-seconds") + 1] == "500"
+    assert cmd[cmd.index("--providers") + 1] == "wencai,q2_final"
+    assert cmd[cmd.index("--baostock-no-progress-seconds") + 1] == "43"
+
+
+def test_daily_kline_budget_defaults_floor_and_custom_values():
+    from engine_core.guardian.commands import daily_kline_budget_seconds
+
+    assert daily_kline_budget_seconds(None, {}) is None
+    assert daily_kline_budget_seconds("", {}) is None
+    assert daily_kline_budget_seconds(1000, {}) == 900
+    assert daily_kline_budget_seconds(30, {}) == 60
+    assert daily_kline_budget_seconds(1000, {"budget_ratio": 0.5,
+                                               "budget_floor_seconds": 1}) == 500
+    assert daily_kline_budget_seconds(1000, SimpleNamespace(budget_ratio=1,
+                                                              budget_floor_seconds=1)) == 1000
+    assert daily_kline_budget_seconds(100, {"budget_floor_seconds": 95}) == 95
+
+
+@pytest.mark.parametrize("args", [
+    {"budget_ratio": True}, {"budget_ratio": 0}, {"budget_ratio": -0.1},
+    {"budget_ratio": 1.01}, {"budget_ratio": "0.5"},
+    {"budget_ratio": float("nan")}, {"budget_ratio": float("inf")},
+    {"budget_floor_seconds": True}, {"budget_floor_seconds": 0},
+    {"budget_floor_seconds": 1.5}, {"budget_floor_seconds": "60"},
+])
+def test_invalid_daily_kline_budget_values_raise(args):
+    from engine_core.guardian.commands import daily_kline_budget_seconds
+
+    with pytest.raises(ValueError):
+        daily_kline_budget_seconds(1000, args)
+
+
+@pytest.mark.parametrize(("providers", "expected"), [
+    ("wencai", "wencai"),
+    ("baostock, wencai ,baostock", "baostock,wencai"),
+    ([" wencai", "q2_final", "wencai "], "wencai,q2_final"),
+    ((" q2_final", "baostock", "baostock "), "q2_final,baostock"),
+])
+def test_daily_kline_provider_argument_forms_are_normalized(providers, expected):
+    from engine_core.guardian.commands import build_handler_command
+
+    opts = SimpleNamespace(write=True, td_write=False, simulate_clock=False,
+                           email_self=False, job="daily_kline")
+    event = SimpleNamespace(timeout_seconds=1000, args={"providers": providers})
+    cmd = build_handler_command("kaipan_job", event, opts, ROOT / "artifacts",
+                                "2026-10-26", sys.executable, ROOT)
+    assert cmd[cmd.index("--providers") + 1] == expected
+
+
+@pytest.mark.parametrize("providers", [
+    [], "", " , ", "baostock,nope", ["wencai", ""], 5, ["baostock", 3],
+])
+def test_invalid_daily_kline_providers_raise(providers):
+    from engine_core.guardian.commands import build_handler_command
+
+    opts = SimpleNamespace(write=True, td_write=False, simulate_clock=False,
+                           email_self=False, job="daily_kline")
+    event = SimpleNamespace(timeout_seconds=1000, args={"providers": providers})
+    with pytest.raises(ValueError):
+        build_handler_command("kaipan_job", event, opts, ROOT / "artifacts",
+                              "2026-10-26", sys.executable, ROOT)
+
+
+def test_missing_providers_keeps_default_command_shape_and_other_jobs_ignore_bad_args():
+    from engine_core.guardian.commands import build_handler_command
+
+    opts = SimpleNamespace(write=True, td_write=False, simulate_clock=False,
+                           email_self=False, job="daily_kline")
+    event = SimpleNamespace(timeout_seconds=1000, args={})
+    cmd = build_handler_command("kaipan_job", event, opts, ROOT / "artifacts",
+                                "2026-10-26", sys.executable, ROOT)
+    assert cmd == [sys.executable, str(ROOT / "examples/run_data_jobs.py"),
+                   "--job", "daily_kline", "--date", "2026-10-26",
+                   "--artifact-root", str(ROOT / "artifacts"),
+                   "--budget-seconds", "900", "--write"]
+    assert "--providers" not in cmd
+
+    opts.job = "limit_up_pool"
+    bad_event = SimpleNamespace(timeout_seconds=1000, args={
+        "budget_ratio": True, "budget_floor_seconds": 0, "providers": "bad",
+    })
+    unaffected = build_handler_command("kaipan_job", bad_event, opts, ROOT / "artifacts",
+                                       "2026-10-26", sys.executable, ROOT)
+    assert "--budget-seconds" not in unaffected and "--providers" not in unaffected
+
+
+def test_baostock_probe_budget_is_bounded_and_external_command_is_unchanged(monkeypatch):
+    from engine_core.guardian.commands import build_handler_command
+
+    opts = SimpleNamespace(write=False, td_write=False)
+    event = SimpleNamespace(timeout_seconds=1000, args={
+        "budget_ratio": 0.5, "budget_floor_seconds": 1,
+        "baostock_no_progress_seconds": 43,
+        "daily_kline_policy": {"formal_coverage_threshold": 0.995, "source_empty_max": 20},
+    })
+    monkeypatch.delenv("CORE_BAOSTOCK_PROBE_COMMAND", raising=False)
+    builtin = build_handler_command("baostock_probe", event, opts, ROOT / "artifacts",
+                                    "2026-10-26", sys.executable, ROOT)
+    assert builtin[builtin.index("--baostock-total-timeout-seconds") + 1] == "500"
+    assert builtin[builtin.index("--baostock-no-progress-seconds") + 1] == "43"
+    assert builtin[builtin.index("--baostock-formal-coverage-threshold") + 1] == "0.995"
+    assert builtin[builtin.index("--baostock-source-empty-max") + 1] == "20"
+    assert "--skip-redis-publish" in builtin
+
+    postmarket = build_handler_command("postmarket_data", event, opts, ROOT / "artifacts",
+                                       "2026-10-26", sys.executable, ROOT)
+    assert postmarket[postmarket.index("--baostock-formal-coverage-threshold") + 1] == "0.995"
+    assert postmarket[postmarket.index("--baostock-source-empty-max") + 1] == "20"
+
+    monkeypatch.setenv("CORE_BAOSTOCK_PROBE_COMMAND", "python custom_probe.py")
+    invalid_event = SimpleNamespace(timeout_seconds=1000, args={"budget_ratio": True})
+    external = build_handler_command("baostock_probe", invalid_event, opts, ROOT / "artifacts",
+                                     "2026-10-26", sys.executable, ROOT)
+    assert external == ["python", "custom_probe.py", "2026-10-26"]
+
+
+def test_baostock_not_delivered_yet_is_retryable_even_with_a_deterministic_exit_code():
+    """The declared code wins over the exit status; with nothing declared the exit status decides (design/33)."""
+    from examples import guardian_handler
+    from engine_core.errors import CommandFailed
+
+    for code in ("BAOSTOCK_GAP_UNRESOLVED", "TD_REQUIRES_BAOSTOCK", "RATE_LIMITED"):
+        failure = CommandFailed("command_exit=40", returncode=40, error_code=code, retryable=True, unclassified=False)
+        for request in ({"args": {}}, _baostock_probe_request()):
+            status, payload = guardian_handler._failure_response(request, error=failure)
+            assert (status, payload["retryable"], payload["error_code"]) == (75, True, code), code
+    undeclared = CommandFailed("command_exit=40", returncode=40, error_code=None, retryable=None, unclassified=True)
+    status, payload = guardian_handler._failure_response({"args": {}}, error=undeclared)
+    assert (status, payload["retryable"]) == (40, False)
+
+
+@pytest.mark.parametrize("outcome,expected", [
+    ({"status": "COMPLETE"}, (0, "ok", False)),
+    ({"status": "NO_GAPS"}, (0, "ok", False)),
+    ({"status": "BUSY"}, (20, "not_applicable", False)),
+    (CoreError("BAOSTOCK_GAP_UNRESOLVED", "consecutive_failures:attempted=5"), (75, "failed", True)),   # what the fill raises
+])
+def test_baostock_probe_runs_the_td_fill_for_every_trigger_point(monkeypatch, outcome, expected):
+    from examples import guardian_handler
+    from engine_core.data_pipeline import daily_kline_fill
+
+    seen = {}
+
+    def fake(root, target, *, args=None, **_kwargs):
+        seen["target"] = target
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(daily_kline_fill, "run_daily_kline_fill_from_root", fake)
+    monkeypatch.delenv("GUARDIAN_DRY_RUN", raising=False)
+    request = _baostock_probe_request()
+    code, payload = guardian_handler._run(request)
+    assert (code, payload["status"], payload["retryable"]) == expected
+    assert seen["target"] == (request.get("data_date") or request["trade_date"])
+
+
+def test_fetch_item_uses_scheduled_args_item_id(monkeypatch, tmp_path):
+    from examples import guardian_handler
+    from engine_core.guardian import startup
+
+    calls = []
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(startup, "fetch_item", lambda *args, **kwargs: calls.append((args, kwargs)) or {"status": "ok", "detail": {}})
+    request = _core_request("plate_amount_baseline_0815")
+    request.update(handler="fetch_item", args={"item_id": "plate_amount_baseline"})
+    code, _ = guardian_handler._run_event(request)
+    assert code == 0
+    assert calls[0][0][:2] == ("plate_amount_baseline", "2026-10-19")
+    assert calls[0][1]["schedule_args"] == request["args"]
+
+
+def test_auction_amount_facts_routes_window_and_max_days(monkeypatch, tmp_path):
+    from examples import guardian_handler
+    from engine_core.data_pipeline import auction_amount_facts
+
+    calls = []
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("GUARDIAN_DRY_RUN", "1")
+    monkeypatch.setattr(auction_amount_facts, "run", lambda request, root, **kwargs:
+                        calls.append((request, root, kwargs)) or (20, {"status": "not_applicable"}))
+    request = _core_request("auction_amount_facts_0530", "2026-11-09")
+    request.update(handler="postmarket_data", args={"dataset": "auction_amount_facts", "window": 64, "max_days": 64})
+    assert guardian_handler._run_event(request)[0] == 20
+    assert calls == [({"end_date": "2026-11-08", "window": 64, "max_days": 64},
+                      tmp_path, {"dry_run": True})]
+
+
+def test_adjust_factor_handler_routes_and_dry_run(monkeypatch):
+    from examples import guardian_handler
+    from engine_core.data_pipeline import adjust_factor
+    from engine_core.guardian.contract import check_reply
+    original = adjust_factor.run
+    seen = []
+    def wrapped(request, root, **kwargs):
+        seen.append((request, kwargs))
+        return original(request, root, **kwargs)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("dry run connected to a service")
+    monkeypatch.setenv("GUARDIAN_DRY_RUN", "1")
+    monkeypatch.setattr(adjust_factor, "run", wrapped)
+    monkeypatch.setattr(adjust_factor, "_lease_factory", forbidden)
+    monkeypatch.setattr(adjust_factor, "_fetch_live", forbidden)
+    for event in ("adjust_factor_postclose", "adjust_factor_0115", "adjust_factor_postclose_rh1", "adjust_factor_0115_rh1"):
+        request = _core_request(event)
+        request.update(handler="postmarket_data", data_date="2026-10-16")
+        code, reply = guardian_handler._run(request)
+        assert code == 0 and check_reply(code, reply) == []
+    assert all(req == {"trade_date": "2026-10-16", "args": {"mode": "incremental"}} and kw["dry_run"] for req, kw in seen)
+    assert len(seen) == 4
+
+
+def test_price_volume_handler_routes_and_dry_run(monkeypatch):
+    from examples import guardian_handler
+    from engine_core.data_pipeline import price_volume, td_sink
+    from engine_core.guardian.contract import check_reply
+    original = price_volume.run
+    seen = []
+    def wrapped(request, root, **kwargs):
+        seen.append((request, kwargs))
+        return original(request, root, **kwargs)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('dry run connected to a service')
+    monkeypatch.setenv('GUARDIAN_DRY_RUN', '1')
+    monkeypatch.setattr(price_volume, 'run', wrapped)
+    monkeypatch.setattr(td_sink, 'TaosStore', forbidden)
+    for event in ('price_volume_postclose', 'price_volume_0130', 'price_volume_postclose_rh1', 'price_volume_0130_rh1'):
+        request = _core_request(event)
+        request.update(handler='postmarket_data', data_date='2026-10-16')
+        code, reply = guardian_handler._run(request)
+        assert code == 0 and check_reply(code, reply) == []
+    assert len(seen) == 4
+    assert all(req == {'trade_date': '2026-10-16', 'args': {'mode': 'incremental'}} and kw['dry_run'] for req, kw in seen)
+
+
+def test_chip_and_dde_handler_routes_and_dry_run(monkeypatch):
+    from examples import guardian_handler
+    from engine_core.data_pipeline import chip_peak, dde_derived, td_sink
+    from engine_core.guardian.contract import check_reply
+    seen = []
+    for module in (chip_peak, dde_derived):
+        original = module.run
+        def wrapped(request, root, _original=original, _module=module, **kwargs):
+            seen.append((_module.__name__, request, kwargs))
+            return _original(request, root, **kwargs)
+        monkeypatch.setattr(module, 'run', wrapped)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('dry run connected to a service')
+    monkeypatch.setenv('GUARDIAN_DRY_RUN', '1')
+    monkeypatch.setattr(td_sink, 'TaosStore', forbidden)
+    monkeypatch.setattr(dde_derived, 'TaosStore', forbidden)
+    for event in ('chip_peak_postclose', 'chip_peak_0145', 'dde_derived_0445'):
+        for suffix in ('', '_rh1'):
+            request = _core_request(event + suffix)
+            request.update(handler='postmarket_data', data_date='2026-10-16')
+            code, reply = guardian_handler._run(request)
+            assert code == 0 and check_reply(code, reply) == []
+    assert len(seen) == 6
+    for module, request, kwargs in seen:
+        expected = {'trade_date': '2026-10-16'}
+        if module.endswith('chip_peak'):
+            expected['args'] = {'mode': 'incremental'}
+        assert request == expected and kwargs['dry_run']
+
+
+def test_chip_and_dde_run_dry_reply_contract(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import chip_peak, dde_derived, td_sink
+    from engine_core.guardian.contract import check_reply
+    def forbidden(*args, **kwargs):
+        raise AssertionError('dry run connected to a service')
+    monkeypatch.setattr(td_sink, 'TaosStore', forbidden)
+    monkeypatch.setattr(dde_derived, 'TaosStore', forbidden)
+    for module in (chip_peak, dde_derived):
+        code, reply = module.run({'trade_date': '2026-10-16'}, tmp_path, dry_run=True)
+        assert code == 0 and check_reply(code, reply) == []
+
+
+def test_chip_and_dde_handler_reports_unavailable_td(monkeypatch):
+    from examples import guardian_handler
+    from engine_core.data_pipeline import chip_peak, dde_derived
+    from engine_core.data_pipeline.td_sink import TdUnavailable
+    from engine_core.guardian.contract import check_reply
+    def unavailable(*args, **kwargs):
+        raise TdUnavailable('connection failed')
+    monkeypatch.setattr(chip_peak, 'run', unavailable)
+    monkeypatch.setattr(dde_derived, 'run', unavailable)
+    for event in ('chip_peak_postclose', 'chip_peak_0145', 'dde_derived_0445'):
+        request = _core_request(event)
+        request.update(handler='postmarket_data', data_date='2026-10-16')
+        code, reply = guardian_handler._run(request)
+        assert code == 75 and reply['error_code'] == 'TD_UNAVAILABLE'
+        assert check_reply(code, reply) == []
+
+
+def test_auction_seal_handler_real_fixtures_and_missing_tick(monkeypatch):
+    import gzip
+    from examples import guardian_handler
+    from engine_core.data_pipeline import auction_redis_view, reference_snapshot_td, td_sink, trade_calendar, cold_archive, redis_day_view
+
+    real = ROOT / 'tests/fixtures/real'
+    with gzip.open(real / 'c1256/auction.json.gz', 'rt') as f:
+        auction = json.load(f)
+    with gzip.open(real / 'core_artifacts/c594/stock_static/2026-10-29/c573_guardian/rows.jsonl.gz', 'rt') as f:
+        listing = [json.loads(line) for line in f]
+    raw = json.loads(next(real.glob('td_stock_tick_2026-11-16_002242_092430_092600_*.json')).read_text())
+    columns = ('ts', 'px_milli', 'bp1_milli', 'ap1_milli', 'bv1', 'bv2', 'av1', 'av2')
+    ticks = [tuple(row[raw['columns'].index(c)] for c in columns) for row in raw['rows']]
+    listing = [r for r in listing if r['symbol'] != '002129']
+    calendar = json.loads((real.parent / 'trade_calendar/baostock-2026-01-01_2026-12-31.json').read_text())
+    dates = [r['calendar_date'] for r in calendar['rows'] if r['is_trading_day'] == '1']
+    class Redis:
+        def set(self, key, value, **kwargs):
+            self.value = json.loads(value)
+            return True
+    client = Redis()
+    class Ref:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read_latest(self, dataset): return {'trade_date': '2026-11-16', 'rows': listing}
+        def read_as_of(self, dataset, asof): return {'trade_date': '2026-11-16', 'rows': listing}
+    class Cursor:
+        def execute(self, sql): pass
+        def fetchall(self): return ticks
+        def close(self): pass
+    class Conn:
+        def cursor(self): return Cursor()
+        def close(self): pass
+    monkeypatch.setattr(auction_redis_view, 'redis_client', lambda: client)
+    monkeypatch.setattr(auction_redis_view, 'read_auction_view', lambda *args: [dict(auction[symbol], symbol=symbol) for symbol in ('002242', '002129')])
+    monkeypatch.setattr(reference_snapshot_td, 'ReferenceSnapshotStore', Ref)
+    monkeypatch.setattr(trade_calendar.TradeCalendarStore, 'all_trading_dates', lambda self: dates)
+    monkeypatch.setattr(td_sink, 'connect_td', lambda *args: Conn())
+    monkeypatch.setattr(redis_day_view, 'expire_at', lambda day: 2000000000)
+    monkeypatch.setattr(cold_archive, 'archive', lambda *args: None)
+    request = _core_request('auction_seal_facts_0926', '2026-11-16')
+    request['dry_run'] = True
+    code, payload = guardian_handler._run(request)
+    assert payload['detail']['unknown_listing'] == ['002129']
+    assert code == 0 and payload['status'] == 'degraded' and not payload['retryable'] and payload['error_code'] == ''
+    assert payload['contract'] == 1 and 'artifacts' in payload
+    assert client.value['rows'][0]['seal_amount_yuan'] == 848119626
+    ticks.clear()
+    code, payload = guardian_handler._run(request)
+    assert code == 75 and payload['status'] == 'failed' and payload['retryable'] and payload['error_code']
+    monkeypatch.setenv('GUARDIAN_DRY_RUN', '1')
+    monkeypatch.setattr(auction_redis_view, 'redis_client', lambda: pytest.fail('dry run accessed Redis'))
+    code, payload = guardian_handler._run(request)
+    assert code == 0 and payload['status'] == 'ok' and payload['detail'] == 'auction_seal_facts dry run'
+
+
+def test_plate_stock_index_dispatch_and_unavailable_retry(monkeypatch):
+    from examples import guardian_handler
+    from engine_core.data_pipeline import auction_redis_view, plate_stock_index
+    from engine_core.storage.two_layer import StoreResult
+    calls = []
+    monkeypatch.setattr(auction_redis_view, 'redis_client', lambda: object())
+    def run(day, asof, **kwargs):
+        calls.append((day, asof, kwargs))
+        return StoreResult(status='published', version='v', archive_status='FAILED', reason='cold_failure')
+    monkeypatch.setattr(plate_stock_index, 'run', run)
+    request = _core_request('plate_stock_index_0905', '2026-11-16')
+    request['dry_run'] = True
+    request['asof'] = '2026-11-16T09:20:00+08:00'
+    code, payload = guardian_handler._run(request)
+    assert code == 0 and payload['status'] == 'degraded' and not payload['retryable']
+    assert calls[0][0:2] == ('2026-11-16', '2026-11-16T09:05:00+08:00')
+    assert calls[0][2]['store'].redis is calls[0][2]['redis_client']
+    def unavailable(*args, **kwargs):
+        raise ValueError('plate_members_unavailable')
+    monkeypatch.setattr(plate_stock_index, 'run', unavailable)
+    code, payload = guardian_handler._run(request)
+    assert code == 75 and payload['status'] == 'failed' and payload['retryable']
+
+
+def test_stock_cap_event_dispatches_to_dry_run():
+    from examples import guardian_handler
+
+    event = next(e for e in _schedule_events() if e['event_id'] == 'stock_cap_2130')
+    assert event['handler'] == 'intraday_data' and event['args']['dataset'] == 'stock_cap'
+    request = _core_request(event['event_id'], '2026-11-16')
+    request['dry_run'] = True
+    code, payload = guardian_handler._run(request)
+    assert code == 0 and payload['status'] == 'ok' and payload['detail'] == 'stock_cap dry run'

@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package dataservice;
+option go_package = ".;dataservice"; // 添加这一行
+service DataService {
+  rpc SendDataStream (stream DataRequest) returns (DataResponse) {}
+  rpc SendData (DataRequest) returns (DataResponse) {}
+}
+
+message DataRecord {
+  int64 tss = 1;
+  float lp = 2;
+  float o = 3;
+  float h = 4;
+  float l = 5;
+  float lc = 6;
+  float a = 7;
+  int64 v = 8;
+  int64 p = 9;
+  float ap1 = 10;
+  float ap2 = 11;
+  float ap3 = 12;
+  float ap4 = 13;
+  float ap5 = 14;
+  float bp1 = 15;
+  float bp2 = 16;
+  float bp3 = 17;
+  float bp4 = 18;
+  float bp5 = 19;
+  int64 av1 = 20;
+  int64 av2 = 21;
+  int64 av3 = 22;
+  int64 av4 = 23;
+  int64 av5 = 24;
+  int64 bv1 = 25;
+  int64 bv2 = 26;
+  int64 bv3 = 27;
+  int64 bv4 = 28;
+  int64 bv5 = 29;
+  string symbol=30;
+  string exchange=31;
+  string market=32;
+}
+
+message DataBatch {
+  string batch_id = 1;
+  repeated DataRecord records = 2;
+  int64 sent_at = 3;
+}
+
+message DataRequest {
+  CompressionType compression = 1;
+  bytes compressed_data = 2;
+}
+
+message DataResponse {
+  bool success = 1;
+  string message = 2;
+  int32 processed_count = 3;
+}
+
+enum CompressionType {
+  NONE = 0;
+  GZIP = 1;
+  DEFLATE = 2;
+}

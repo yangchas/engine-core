@@ -1,0 +1,13 @@
+{
+ "dataset": "auction_baseline input",
+ "file": "td_rows.jsonl.gz",
+ "rows": 146247,
+ "bytes": 943465,
+ "sha256": "c8899879fa36cbf2876d1a7d1b4d0e3a3f41ccd5631c5ca7c4a17f23a41e0556",
+ "source": "TDengine market_data1.auction_snapshot_v2 (read-only, TD_CONFIG=/home/exedev/validation/operator-runs/taos-cfg)",
+ "query": "SELECT ts, symbol, trade_date, auction_tag, match_amt_yuan FROM market_data1.auction_snapshot_v2 WHERE trade_date IN (28 dates < 20261106) AND auction_tag=\"0925\" ORDER BY trade_date, symbol, ts",
+ "call": "engine_core.auction_baseline._read_td_window(\"2026-11-06\")",
+ "captured_at": "2026-11-07T15:21:29+08:00",
+ "expected_file": "live_expected.json = market_summary/quality/row_count from the live artifact ~/core-data/auction_baseline/trade_date=2026-11-06/source=core_td_0925/sha256-bb035fe3e9b3a708/manifest.json (built by the live job 2026-11-06 08:33)",
+ "note": "ts is stored as string; trade_date as YYYYMMDD string as returned by TD"
+}

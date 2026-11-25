@@ -1,0 +1,7 @@
+C1077 已实现并提交 `95f09b5`，工作树干净。两个 builder 配方的默认措辞已更新；真实 C1072/C1074 卡头和 C1031 危险对照已加入测试。
+
+**状态为 PARTIAL**：完整验收首次运行结果为 `2 failed, 96 passed, 1 skipped in 40.45s`。修复其中的夹具命名冲突后，相关测试复查结果为 `1 failed, 50 passed in 12.20s`。剩余失败是 `test_staff_dispatch_real_history` 未找到预期的 C1059 历史提交文本，需进一步排查；修复后尚未重跑完整验收。
+
+当前对额外采集需求的识别覆盖了 C1031 的表述形式，其他表述尚未验证。真实 gate 尚未运行，不能标记 DONE。
+
+报告和原始证据见 [C1077.md](/home/exedev/fw/reports/C1077.md)。

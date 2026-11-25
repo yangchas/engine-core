@@ -1,0 +1,148 @@
+{
+  "retrieved_at_utc": "2026-10-19T16:20:01.591011+00:00",
+  "requests": [
+    {
+      "source": "SZSE",
+      "query": "2026-01",
+      "status": 200,
+      "bytes": 1335,
+      "elapsed_s": 0.843,
+      "fetched_at_utc": "2026-10-19T16:19:48.315232+00:00",
+      "sha256": "a5af35e3da3e5e7ab03ce71ddfc6c60f116fb8e9e7e06e29bcb48f7e97a1a96d",
+      "rows": 31,
+      "trading_dates": 20
+    },
+    {
+      "source": "SZSE",
+      "query": "2026-02",
+      "status": 200,
+      "bytes": 1209,
+      "elapsed_s": 0.839,
+      "fetched_at_utc": "2026-10-19T16:19:49.404961+00:00",
+      "sha256": "8d06c0051cb6ee8895bfc2fb6710284d6d13c457fa550ad6657217fecc827802",
+      "rows": 28,
+      "trading_dates": 14
+    },
+    {
+      "source": "SZSE",
+      "query": "2026-03",
+      "status": 200,
+      "bytes": 1335,
+      "elapsed_s": 0.652,
+      "fetched_at_utc": "2026-10-19T16:19:50.307774+00:00",
+      "sha256": "07cd044ecf1225b42b7555e6f5b3c1298db46c0acb647f8124c9fc7d3328bf48",
+      "rows": 31,
+      "trading_dates": 22
+    },
+    {
+      "source": "SZSE",
+      "query": "2026-04",
+      "status": 200,
+      "bytes": 1293,
+      "elapsed_s": 0.704,
+      "fetched_at_utc": "2026-10-19T16:19:51.263282+00:00",
+      "sha256": "ed5d6a95390257bb18ff6aedc63b22dfc4635368dfd996833e6270ad61788179",
+      "rows": 30,
+      "trading_dates": 21
+    },
+    {
+      "source": "SZSE",
+      "query": "2026-05",
+      "status": 200,
+      "bytes": 1335,
+      "elapsed_s": 0.678,
+      "fetched_at_utc": "2026-10-19T16:19:52.191936+00:00",
+      "sha256": "66a6f4594fb00fe7c4bf5fa315b8a8ccd32851ef428d4aa91d17130caf113a88",
+      "rows": 31,
+      "trading_dates": 18
+    },
+    {
+      "source": "SZSE",
+      "query": "2026-06",
+      "status": 200,
+      "bytes": 1293,
+      "elapsed_s": 0.816,
+      "fetched_at_utc": "2026-10-19T16:19:53.259180+00:00",
+      "sha256": "3206691a1607021197aa78f29461dfaffd72456c231e9021abb00a4eaee63f83",
+      "rows": 30,
+      "trading_dates": 21
+    },
+    {
+      "source": "SZSE",
+      "query": "2026-07",
+      "status": 200,
+      "bytes": 1335,
+      "elapsed_s": 0.67,
+      "fetched_at_utc": "2026-10-19T16:19:54.180708+00:00",
+      "sha256": "a622f8f3bcb50ba808faba389823994da812b208582ee2f535d66ae7df118a51",
+      "rows": 31,
+      "trading_dates": 23
+    },
+    {
+      "source": "SZSE",
+      "query": "2026-08",
+      "status": 200,
+      "bytes": 1335,
+      "elapsed_s": 0.592,
+      "fetched_at_utc": "2026-10-19T16:19:55.023183+00:00",
+      "sha256": "f82c51965b3922e86c3eb3ad6f3b15349f572a1b13414d4d8dc60acbbd0fd95a",
+      "rows": 31,
+      "trading_dates": 21
+    },
+    {
+      "source": "SZSE",
+      "query": "2026-09",
+      "status": 200,
+      "bytes": 1293,
+      "elapsed_s": 0.662,
+      "fetched_at_utc": "2026-10-19T16:19:55.936182+00:00",
+      "sha256": "8baf05693ec4a5b4683c1899d74991d81a55eb0dfa9add7ed33323a9ddaf1471",
+      "rows": 30,
+      "trading_dates": 21
+    },
+    {
+      "source": "SZSE",
+      "query": "2026-10",
+      "status": 200,
+      "bytes": 1335,
+      "elapsed_s": 0.582,
+      "fetched_at_utc": "2026-10-19T16:19:56.769263+00:00",
+      "sha256": "afc00dbfb8a7e9c7a0e82fdfb4986c1791ab1c86dd0f58a5befed02dd2aa2142",
+      "rows": 31,
+      "trading_dates": 17
+    },
+    {
+      "source": "SZSE",
+      "query": "2026-11",
+      "status": 200,
+      "bytes": 1293,
+      "elapsed_s": 0.667,
+      "fetched_at_utc": "2026-10-19T16:19:57.695128+00:00",
+      "sha256": "82b69174ad64c3e213ebb46a42ddb31e2dfe98e8d41d4633c8d045ecfda41bc6",
+      "rows": 30,
+      "trading_dates": 21
+    },
+    {
+      "source": "SZSE",
+      "query": "2026-12",
+      "status": 200,
+      "bytes": 1335,
+      "elapsed_s": 0.67,
+      "fetched_at_utc": "2026-10-19T16:19:58.615714+00:00",
+      "sha256": "d6640f26f80a3967fb9b907fd36f8c5531b9cdd4a4fc8028185f83130fb09b93",
+      "rows": 31,
+      "trading_dates": 23
+    },
+    {
+      "source": "BaoStock",
+      "query": "2026-01-01..2026-12-31",
+      "status": "success",
+      "bytes": 19042,
+      "elapsed_s": 1.319,
+      "fetched_at_utc": "2026-10-19T16:20:01.590544+00:00",
+      "sha256": "bbe28cebc7ab5e70b64ca0d68528d203258b7d1e4f9b7b682fef53fd496d7b1e",
+      "rows": 365,
+      "trading_dates": 242
+    }
+  ]
+}

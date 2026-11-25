@@ -1,0 +1,1 @@
+C1055 的修复已提交，提交号 `034c647`，工作树干净。新增了派发状态生命周期和 `pm metrics`，并修复了 newcard、testlist 和 wait-card 的四个问题。

@@ -1,0 +1,34 @@
+{
+  "core:view:limit_up_pool:2026-11-13": {
+    "fields": {
+      "available_at": "2026-11-15T09:20:05.375970Z"
+    },
+    "source_sha256": "ea8b9a144d6bb24632eeb3f3a716bc4e18f172ae04c6ec8eab87637cec7a8a4a"
+  },
+  "core:view:hot_rank:2026-11-16": {
+    "fields": {
+      "available_at": "2026-11-16T08:31:09+08:00",
+      "declared_available_at": "2026-11-16T08:31:06.420052+08:00",
+      "fetched_at": "2026-11-16T00:31:06.420052Z",
+      "captured_at": "2026-11-16T08:31:06+08:00",
+      "committed_at": "2026-11-16T00:31:09.473208Z"
+    },
+    "source_sha256": "a86f2e5a8a50ee274ad121fce2301e99f6f8242b42d17298338333fb01476289",
+    "first_row": {
+      "captured_at": "2026-11-16T08:31:06+08:00",
+      "code": "600715",
+      "heat": 33321.0,
+      "name": "文投控股",
+      "rank": 1,
+      "source": "ths_hot_rank",
+      "symbol": "600715"
+    }
+  },
+  "core:view:intraday_checkpoint:2026-11-16:09:45:00": {
+    "fields": {
+      "manifest_captured_at": "2026-11-16T01:48:25.311537+00:00",
+      "row_ts": "2026-11-16T09:45:06.000+08:00"
+    },
+    "source_sha256": "d699f67f86858cdd1e294f73118093d75f175a1ca497b54b8afd7ba3417eea68"
+  }
+}

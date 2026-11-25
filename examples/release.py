@@ -1,0 +1,493 @@
+#!/usr/bin/env python3
+"""Release of merged Core code to the live bridge checkout - one evidence-gated, reversible step (C693).
+
+  release.py plan                         what is merged but not live, what kind of change it is, and whether it may go
+  release.py accept [--date D]            run EVERY scheduled data function once, sealed, for the candidate commit
+  release.py apply --go --authorized-by   switch the live checkout to the candidate (Python code: no restart)
+  release.py rollback --go --authorized-by
+  release.py merge --branch B --card C### merge a branch: card exists, its tests and the Go tests pass (exit codes), no open errors
+  release.py errors add|status|close       the two-errors rule: two unreviewed errors block merge and release until reviewed
+
+Why this exists: the 2026-11-05 audit found 18 merged cards that were not live and no way to say "this is ready". The
+handlers run from the live checkout, one new process per attempt, so Python changes take effect at the next attempt and
+need no restart; only schedule.json / timeline.json changes need a guardiand config swap (a separate, restart-window
+step this tool does not do) and Go changes only matter if the binary is rebuilt (not done here).
+
+``apply`` refuses unless: the candidate commit has a PASS acceptance record, the live checkout is clean and on the
+commit this release started from, no handler is running (a running one imports lazily from the tree being switched),
+and no event is due within the next two minutes. The user's go-word is recorded with the release.
+"""
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "examples"))
+LIVE = Path("/home/exedev/repos/engine_core-live")
+EVIDENCE = Path("/home/exedev/fw/evidence/release")
+CARDS = Path("/home/exedev/fw/cards")
+ERRORS = Path("/home/exedev/fw/retros/errors.jsonl")
+ERRORS_BEFORE_REVIEW = 2          # the rule: the second unreviewed error stops new work until audit and retrospective
+BRANCH = "codex/feature-session-engine-integration"
+QUIET_BEFORE, QUIET_AFTER = 30, 120        # seconds around "now" in which no event may be due
+SMOKE_MODULES = ("engine_core.guardian.startup", "engine_core.data_pipeline.jobs", "engine_core.errors")
+GLOBAL_INVARIANT_TESTS = ("tests/test_real_fixtures.py", "tests/test_trade_day_context.py",
+                          "tests/test_registry_storage.py", "tests/test_guardian_contract_static.py",
+                          "tests/test_dataset_registry.py", "tests/test_baseline_window_declaration.py",
+                          "tests/test_data_pipeline.py", "tests/test_registry_package.py")
+PYTEST_LOCK = Path("/tmp/engine_core_pytest.lock")
+
+
+@contextmanager
+def pytest_lock(path: Path = PYTEST_LOCK, timeout: float = 1200):
+    if os.environ.get("ENGINE_CORE_PYTEST_LOCK_HELD") == "1":
+        yield
+        return
+    with path.open("a") as lock:
+        deadline = time.monotonic() + timeout
+        waiting = False
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if not waiting:
+                    print("waiting for another pytest run", flush=True)
+                    waiting = True
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("waiting for another pytest run timed out")
+                time.sleep(min(1, remaining))
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def pytest_summary(log: Path, file_count: int, deep: bool, mode: str | None = None) -> str:
+    content = log.read_text(encoding="utf-8") if log.exists() else ""
+    match = re.search(r"^.*?((?:\d+ (?:passed|failed|skipped|xfailed|xpassed|error|errors|deselected)(?:, )?)+)(?:, \d+ warnings?)? in ([\d.]+)s.*$", content, re.MULTILINE)
+    count = str(sum(int(n) for n in re.findall(r"(\d+) (?:passed|failed|skipped|xfailed|xpassed|error|errors|deselected)", match.group(1)))) if match else "UNKNOWN"
+    elapsed = match.group(2) if match else "UNKNOWN"
+    return f"选中 {file_count} 个测试文件、共 {count} 个测试、耗时 {elapsed} 秒; --deep={'yes' if deep else 'no'}; mode={mode or ('deep' if deep else 'depth1')}"
+
+
+def git(repo: Path, *args: str) -> str:
+    done = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    if done.returncode:
+        raise SystemExit(f"git {' '.join(args)} failed in {repo} (exit {done.returncode}): "
+                         f"stdout: {done.stdout.strip()} stderr: {done.stderr.strip()}")
+    return done.stdout.strip()
+
+
+def card_header(path: Path) -> tuple[str, str]:
+    """Return the first line-start ROLE and INLINE_OK values in a card."""
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^(ROLE|INLINE_OK):(.*)$", line)
+        if match:
+            values.setdefault(match.group(1), match.group(2).strip())
+    return values.get("ROLE", ""), values.get("INLINE_OK", "")
+
+
+def kind_of(path: str) -> str:
+    if path.startswith(("tests/", "docs/", ".claude/")):
+        return "tests_docs"
+    if path.endswith(("src/engine_core/guardian/schedule.json", "src/engine_core/guardian/timeline.json")) \
+            or path.startswith("native/guardiand/testdata/"):
+        return "config"
+    if path.startswith("native/"):
+        return "go"
+    return "python"
+
+
+def classify(files: list[str]) -> dict[str, list[str]]:
+    kinds: dict[str, list[str]] = {"python": [], "config": [], "go": [], "tests_docs": []}
+    for name in files:
+        kinds[kind_of(name)].append(name)
+    return kinds
+
+
+def running_handlers(live: Path, ps_lines: list[str] | None = None) -> list[str]:
+    """Handler processes of the live checkout (gate and alert probes are short and do not import lazily)."""
+    if ps_lines is None:
+        ps_lines = subprocess.run(["ps", "-eo", "pid,args"], capture_output=True, text=True).stdout.splitlines()
+    return [line.strip() for line in ps_lines if str(live) in line and "guardian_handler.py run" in line]
+
+
+def events_due_soon(live: Path, now: datetime) -> list[str]:
+    schedule = json.loads((live / "src" / "engine_core" / "guardian" / "schedule.json").read_text(encoding="utf-8"))
+    seconds = now.hour * 3600 + now.minute * 60 + now.second
+    due = []
+    for event in schedule["events"]:
+        text = event.get("at") or event.get("start")
+        if isinstance(text, str) and text.count(":") >= 1:
+            parts = [int(x) for x in text.split(":")] + [0, 0]
+            at = parts[0] * 3600 + parts[1] * 60 + parts[2]
+            if -QUIET_BEFORE <= at - seconds <= QUIET_AFTER:
+                due.append(f"{event['event_id']} at {text}")
+    return due
+
+
+def acceptance(evidence_dir: Path, commit: str) -> dict[str, Any] | None:
+    path = evidence_dir / f"accept-{commit}.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+def load_errors(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()] \
+        if path.is_file() else []
+
+
+def open_errors(path: Path) -> list[dict[str, Any]]:
+    return [entry for entry in load_errors(path) if not entry.get("retro")]
+
+
+def run_checked(command: list[str], cwd: Path, log: Path, env: dict[str, str] | None = None) -> tuple[int, list[str]]:
+    """Run a test command; the exit code decides, the full output goes to ``log``, the failing lines are returned.
+    Never read a test run through ``| tail``: a FAIL line can be the last line or hide behind the last line."""
+    done = subprocess.run(command, cwd=str(cwd), capture_output=True, text=True,
+                          env={**os.environ, **env} if env else None)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(done.stdout + done.stderr, encoding="utf-8")
+    failing = [line for line in (done.stdout + done.stderr).splitlines()
+               if line.startswith(("FAILED", "ERROR", "--- FAIL", "FAIL\t", "panic:"))]
+    if done.returncode:
+        print(f"test log: {log}")
+        for line in [line for line in (done.stdout + done.stderr).splitlines() if line.startswith("E   ")][:3]:
+            print(line)
+    return done.returncode, failing
+
+
+def build_plan(live: Path, repo: Path, candidate: str, evidence_dir: Path, now: datetime,
+               ps_lines: list[str] | None = None, errors_path: Path = ERRORS) -> dict[str, Any]:
+    live_sha = git(live, "rev-parse", "HEAD")
+    cand_sha = git(repo, "rev-parse", candidate)
+    merges = git(repo, "log", "--first-parent", "--format=%h %s", f"{live_sha}..{cand_sha}").splitlines()
+    files = [f for f in git(repo, "diff", "--name-only", f"{live_sha}..{cand_sha}").splitlines() if f]
+    kinds = classify(files)
+    record = acceptance(evidence_dir, cand_sha[:12])
+    blockers = []
+    if live_sha == cand_sha:
+        blockers.append("live is already on the candidate")
+    if git(live, "status", "--porcelain", "--untracked-files=no"):
+        blockers.append("the live checkout has uncommitted changes")
+    if not record or record.get("verdict") != "PASS":
+        blockers.append("no PASS acceptance record for the candidate (run: release.py accept)")
+    if len(unreviewed := open_errors(errors_path)) >= ERRORS_BEFORE_REVIEW:
+        blockers.append(f"{len(unreviewed)} unreviewed errors: audit and retrospective first (release.py errors status)")
+    if running := running_handlers(live, ps_lines):
+        blockers.append(f"{len(running)} handler(s) running from the live checkout")
+    if due := events_due_soon(live, now):
+        blockers.append("events due within two minutes: " + ", ".join(due[:4]))
+    return {"live": live_sha[:12], "candidate": cand_sha[:12], "merges": merges, "files": {k: len(v) for k, v in kinds.items()},
+            "config_files": kinds["config"], "go_files": kinds["go"],
+            "restart_needed_for": ("the schedule/timeline change: swap guardiand config in a restart window "
+                                   "(separate step)" if kinds["config"] else None),
+            "acceptance": (record or {}).get("verdict"), "blockers": blockers, "ready": not blockers}
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    plan = build_plan(args.live, ROOT, args.candidate, args.evidence_dir, datetime.now(), errors_path=args.errors_file)
+    print(f"live {plan['live']} -> candidate {plan['candidate']}: {len(plan['merges'])} merged change(s)")
+    for line in plan["merges"]:
+        print("  " + line)
+    print("files:", ", ".join(f"{k}={v}" for k, v in plan["files"].items()))
+    if plan["go_files"]:
+        print("go source changed (the live binary is not rebuilt by this tool; fake-clock/test code only is expected)")
+    if plan["restart_needed_for"]:
+        print("config part: " + plan["restart_needed_for"] + " - " + ", ".join(plan["config_files"]))
+    print("acceptance:", plan["acceptance"] or "none")
+    for blocker in plan["blockers"]:
+        print("BLOCKED:", blocker)
+    print("READY" if plan["ready"] else "NOT READY")
+    return 0 if plan["ready"] else 1
+
+
+def judge(outcomes: list[dict[str, Any]], gaps: dict[str, list[str]]
+          ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """(summary, answers outside the contract, answers nobody classified) of one run of every function.
+
+    "Nobody classified" is INTERNAL_ERROR, the default for an exception whose type says nothing. A code the exception's
+    type gave (a timeout, a Redis error, a programming error) is a classification by type and passes."""
+    summary, outside, unclassified = [], [], []
+    for item in outcomes:
+        reply = item["reply"] or {}
+        row = {"event": item["event"], "exit": item["exit"], "status": reply.get("status"),
+               "error_code": reply.get("error_code") or None, "gaps": sorted(set(gaps.get(item["event"], [])))}
+        summary.append(row)
+        if item["problems"] or item["reply"] is None:
+            outside.append({**row, "problems": item["problems"]})
+        if reply.get("error_code") == "INTERNAL_ERROR":
+            unclassified.append(row)
+    return summary, outside, unclassified
+
+
+def cmd_accept(args: argparse.Namespace) -> int:
+    import run_function
+    commit = git(ROOT, "rev-parse", "--short=12", "HEAD")
+    dirty = git(ROOT, "status", "--porcelain", "--untracked-files=no")
+    if dirty:
+        raise SystemExit("acceptance is recorded for a commit; commit or stash the changes first")
+    schedule = json.loads(run_function.SCHEDULE.read_text(encoding="utf-8"))
+    work = args.work_dir or Path(os.environ.get("TMPDIR", "/tmp")) / f"accept-{commit}"
+    for sub in ("core-data", "replay", "home"):
+        (work / sub).mkdir(parents=True, exist_ok=True)
+    from replay_day import _seed_calendar
+    dates = _seed_calendar(work / "core-data")
+    outcomes = []
+    for event in run_function.select(schedule, event=None, start="00:00:00", until="23:59:59", handler=None):
+        outcomes.append(run_function.run_one(run_function.request_for(event, args.date, dates, schedule),
+                                             event["handler"], work))
+    summary, outside, unclassified = judge(outcomes, run_function.gaps_by_event(work / "replay"))
+    verdict = "PASS" if not outside and not unclassified else "FAIL"
+    record = {"commit": commit, "date": args.date, "at": datetime.now().isoformat(timespec="seconds"),
+              "events": len(summary), "outside_contract": outside, "unclassified": unclassified, "verdict": verdict,
+              "method": "examples/run_function.py: every scheduled function once, sealed (recorded Kaipan only; "
+                        "Baostock/WenCai/Redis/TD are recorded gaps), reply checked against the contract",
+              "outcomes": summary}
+    args.evidence_dir.mkdir(parents=True, exist_ok=True)
+    (args.evidence_dir / f"accept-{commit}.json").write_text(json.dumps(record, ensure_ascii=False, indent=1) + "\n",
+                                                             encoding="utf-8")
+    print(f"{commit}: {len(summary)} functions, {len(outside)} outside the contract, {len(unclassified)} unclassified"
+          f" -> {verdict}")
+    return 0 if verdict == "PASS" else 1
+
+
+def _record(evidence_dir: Path, name: str, payload: dict[str, Any]) -> Path:
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    path = evidence_dir / f"{name}-{datetime.now():%Y%m%dT%H%M%S}.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    return path
+
+
+def cmd_apply(args: argparse.Namespace) -> int:
+    if not args.go or not args.authorized_by:
+        raise SystemExit("apply changes the live checkout: pass --go and --authorized-by '<what the user said>'")
+    plan = build_plan(args.live, ROOT, args.candidate, args.evidence_dir, datetime.now(), errors_path=args.errors_file)
+    if not plan["ready"]:
+        for blocker in plan["blockers"]:
+            print("BLOCKED:", blocker)
+        return 1
+    previous = git(args.live, "rev-parse", "HEAD")
+    target = git(ROOT, "rev-parse", args.candidate)
+    git(args.live, "checkout", "--detach", target)
+    now = git(args.live, "rev-parse", "HEAD")
+    if now != target:
+        git(args.live, "checkout", "--detach", previous)
+        raise SystemExit("the live checkout did not land on the candidate; restored the previous commit")
+    smoke = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, 'src'); sys.path.insert(0, '.'); "
+                            "import " + ", ".join(SMOKE_MODULES)], cwd=str(args.live), capture_output=True,
+                           text=True) if SMOKE_MODULES else subprocess.CompletedProcess([], 0, "", "")
+    if smoke.returncode:
+        git(args.live, "checkout", "--detach", previous)
+        raise SystemExit("import smoke failed, restored the previous commit:\n" + smoke.stderr[-600:])
+    path = _record(args.evidence_dir, "deploy", {"previous": previous, "deployed": target, "merges": plan["merges"],
+                                                 "authorized_by": args.authorized_by, "scope": "python (no restart)",
+                                                 "config_not_applied": plan["config_files"],
+                                                 "acceptance": plan["acceptance"]})
+    print(f"live {previous[:12]} -> {target[:12]}; record {path}\nrollback: release.py rollback --go --authorized-by '...'")
+    return 0
+
+
+def cmd_rollback(args: argparse.Namespace) -> int:
+    if not args.go or not args.authorized_by:
+        raise SystemExit("rollback changes the live checkout: pass --go and --authorized-by")
+    records = sorted(args.evidence_dir.glob("deploy-*.json"))
+    if not records:
+        raise SystemExit("no deploy record to roll back")
+    last = json.loads(records[-1].read_text(encoding="utf-8"))
+    if git(args.live, "rev-parse", "HEAD") != last["deployed"]:
+        raise SystemExit("the live checkout is not on the last deployed commit; nothing to roll back automatically")
+    if handlers := running_handlers(args.live):
+        raise SystemExit(f"{len(handlers)} handler(s) running from the live checkout")
+    git(args.live, "checkout", "--detach", last["previous"])
+    _record(args.evidence_dir, "rollback", {"from": last["deployed"], "to": last["previous"],
+                                            "authorized_by": args.authorized_by})
+    print(f"live back on {last['previous'][:12]}")
+    return 0
+
+
+def cmd_errors(args: argparse.Namespace) -> int:
+    action = args.rest[0] if args.rest else "status"
+    entries = load_errors(args.errors_file)
+    if action == "add":
+        if not (args.kind and args.note):
+            raise SystemExit("errors add needs --kind and --note")
+        args.errors_file.parent.mkdir(parents=True, exist_ok=True)
+        entry = {"at": datetime.now().isoformat(timespec="seconds"), "kind": args.kind, "note": args.note,
+                 "impact": args.impact, "retro": None}
+        with args.errors_file.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        entries.append(entry)
+    elif action == "close":
+        if not args.retro:
+            raise SystemExit("errors close needs --retro <the retrospective's file name>")
+        for entry in entries:
+            entry["retro"] = entry.get("retro") or args.retro
+        args.errors_file.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries), encoding="utf-8")
+    elif action != "status":
+        raise SystemExit("errors: add | status | close")
+    unreviewed = [e for e in entries if not e.get("retro")]
+    print(f"{len(unreviewed)} unreviewed error(s) of {len(entries)} logged")
+    for entry in unreviewed:
+        print(f"  {entry['at']} [{entry['kind']}] {entry['note']}")
+    due = len(unreviewed) >= ERRORS_BEFORE_REVIEW
+    if due:
+        print(f"REVIEW DUE: {ERRORS_BEFORE_REVIEW} errors reached - audit and retrospective before new work, merges or releases")
+    return 1 if due else 0
+
+
+def cmd_merge(args: argparse.Namespace) -> int:
+    if not args.branch or not re.fullmatch(r"C\d+[a-z]?", args.card or ""):
+        raise SystemExit("merge needs --branch and --card C###")
+    problems = []
+    card_path = args.cards_dir / f"{args.card}.md"
+    if not card_path.is_file():
+        problems.append(f"no card {card_path} (a change without a card is not merged)")
+    else:
+        role, inline_ok = card_header(card_path)
+        code_lines = 0
+        for row in git(ROOT, "diff", "--numstat", f"{args.candidate}...{args.branch}").splitlines():
+            added, deleted, path = row.split("\t", 2)
+            if path.startswith(("src/", "examples/", "native/")):
+                code_lines += (int(added) if added.isdecimal() else 0) \
+                    + (int(deleted) if deleted.isdecimal() else 0)
+        if not role.startswith("builder") and code_lines > 5 and not inline_ok:
+            problems.append(f"card ROLE: {role!r}, {code_lines} code lines changed; "
+                            "实现卡由 Codex 运行(ROLE: builder);大脑只改 ≤5 行,或在卡里写 INLINE_OK: <理由>")
+    if len(unreviewed := open_errors(args.errors_file)) >= ERRORS_BEFORE_REVIEW:
+        problems.append(f"{len(unreviewed)} unreviewed errors: audit and retrospective first")
+    base = args.candidate
+    files = [f for f in git(ROOT, "diff", "--name-only", f"{base}...{args.branch}").splitlines() if f]
+    log_dir = args.evidence_dir / "merge"
+    stamp = f"{args.card}-{datetime.now():%Y%m%dT%H%M%S}"
+    failing: list[str] = []
+    merged = False
+    if not problems:
+        # The tests must see the merged result, not the base: merge without committing, test, then commit or abort.
+        done = subprocess.run(["git", "-C", str(ROOT), "merge", "--no-ff", "--no-commit", args.branch],
+                              capture_output=True, text=True)
+        if done.returncode:
+            subprocess.run(["git", "-C", str(ROOT), "merge", "--abort"], capture_output=True)
+            problems.append("the branch does not merge cleanly: " + (done.stdout + done.stderr).strip()[-300:])
+        else:
+            merged = True
+            staged = subprocess.run(["git", "-C", str(ROOT), "diff", "--cached", "--quiet"],
+                                    capture_output=True, text=True)
+            if "Already up to date" in done.stdout + done.stderr or staged.returncode == 0:
+                problems.append(f"branch {args.branch} has no new commits over HEAD")
+            elif staged.returncode != 1:
+                problems.append(f"could not inspect staged changes (exit {staged.returncode}): "
+                                f"{(staged.stdout + staged.stderr).strip()}")
+    if merged and not problems:
+        tests = []
+        deep = getattr(args, "deep", False)
+        mode = "deep" if deep else "depth1"
+        exact_notice = ""
+        if files:
+            selector = [sys.executable, str(ROOT / "examples" / "affected_tests.py"), "--files", *files, "--command"]
+            if not deep:
+                selector += ["--depth", "1"]
+            select = subprocess.run(selector,
+                                    cwd=str(ROOT), capture_output=True, text=True)
+            tests = [t for t in select.stdout.split() if t.startswith("tests/")] if select.returncode == 0 else []
+            if select.returncode:
+                problems.append(f"test selection failed (exit {select.returncode})")
+            selected_count = len({t for t in tests if (ROOT / t).is_file()})
+            if not deep and selected_count > getattr(args, "max_tests_files", 40):
+                mode = "exact"
+                exact_notice = f"EXACT_SET (depth1 selected {selected_count} > cap)"
+                print(exact_notice)
+                tests = [f"tests/test_{Path(f).stem}.py" for f in files
+                         if f.startswith(("src/", "examples/")) and f.endswith(".py")]
+        changed_tests = [f for f in files if f.startswith("tests/") and Path(f).name.startswith("test_") and f.endswith(".py")]
+        tests = list(dict.fromkeys(t for t in [*tests, *changed_tests, *GLOBAL_INVARIANT_TESTS] if (ROOT / t).is_file()))
+        if tests:
+            log = log_dir / f"{stamp}-pytest.log"
+            try:
+                with pytest_lock():
+                    code, failing = run_checked([sys.executable, "-m", "pytest", "-q", "--no-header", "-p", "no:cacheprovider",
+                                                 "--durations=10", *tests], ROOT, log,
+                                                env={"ENGINE_CORE_PYTEST_LOCK_HELD": "1"})
+                summary = pytest_summary(log, len(tests), deep, mode)
+                log.parent.mkdir(parents=True, exist_ok=True)
+                with log.open("a", encoding="utf-8") as output:
+                    if exact_notice:
+                        output.write(exact_notice + "\n")
+                    output.write(summary + "\n")
+                print(summary)
+                if code:
+                    problems.append(f"tests failed (exit {code}): {', '.join(tests)}; {len(failing)} failing line(s)")
+            except TimeoutError as exc:
+                problems.append(str(exc))
+        if any(f.startswith("native/") for f in files):
+            # TMPDIR=/tmp: the guardiand tests open unix sockets under t.TempDir(), whose path must stay under 108 bytes
+            code, go_failing = run_checked(["/bin/go", "test", "./..."], ROOT / "native" / "guardiand",
+                                           log_dir / f"{stamp}-go.log", env={"TMPDIR": "/tmp"})
+            failing += go_failing
+            if code:
+                problems.append(f"go tests failed (exit {code})")
+    if problems:
+        if merged:
+            subprocess.run(["git", "-C", str(ROOT), "merge", "--abort"], capture_output=True)
+        for problem in problems:
+            print("REFUSED:", problem)
+        for line in failing[:10]:
+            print("  " + line)
+        return 1
+    git(ROOT, "commit", "-q", "-m",
+        f"Merge {args.card} ({args.message or args.branch})\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>")
+    print(f"merged {args.branch} as {git(ROOT, 'rev-parse', '--short=12', 'HEAD')}; tests ran on the merged tree "
+          f"({len(files)} changed file(s))")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    python = "/home/exedev/services/engine-next/shared/venv/bin/python"
+    if sys.executable != python and Path(python).is_file() and "RELEASE_NO_REEXEC" not in os.environ:
+        os.execv(python, [python, *sys.argv])
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("command", choices=["plan", "accept", "apply", "rollback", "merge", "errors"])
+    parser.add_argument("rest", nargs="*")
+    parser.add_argument("--branch")
+    parser.add_argument("--deep", action="store_true", help="merge: select tests with two import hops")
+    parser.add_argument("--max-tests-files", type=int, default=40, help="merge: depth-1 selector file cap (default 40)")
+    parser.add_argument("--card")
+    parser.add_argument("--message", default="")
+    parser.add_argument("--kind")
+    parser.add_argument("--note")
+    parser.add_argument("--impact", default="")
+    parser.add_argument("--retro")
+    parser.add_argument("--errors-file", type=Path, default=ERRORS)
+    parser.add_argument("--cards-dir", type=Path, default=CARDS)
+    parser.add_argument("--repo", type=Path, help="the checkout to merge into / accept (default: this tool's own)")
+    parser.add_argument("--live", type=Path, default=LIVE)
+    parser.add_argument("--candidate", default=BRANCH)
+    parser.add_argument("--evidence-dir", type=Path, default=EVIDENCE)
+    parser.add_argument("--date", default="2026-11-05", help="accept: the trading day whose schedule is exercised")
+    parser.add_argument("--work-dir", type=Path)
+    parser.add_argument("--go", action="store_true")
+    parser.add_argument("--authorized-by", default="")
+    args = parser.parse_args(argv)
+    if args.repo:
+        global ROOT
+        ROOT = args.repo.resolve()
+        sys.path.insert(0, str(ROOT / "examples"))
+    return {"plan": cmd_plan, "accept": cmd_accept, "apply": cmd_apply, "rollback": cmd_rollback,
+            "merge": cmd_merge, "errors": cmd_errors}[args.command](args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

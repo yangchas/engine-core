@@ -1,0 +1,104 @@
+from datetime import datetime, timezone
+
+import pytest
+
+from engine_core.guardian.registry import (
+    PHASES,
+    load_registry,
+    stale_items,
+    validate_registry,
+)
+
+
+def test_registry_schema_and_phases():
+    registry = load_registry()
+    assert registry
+    assert validate_registry(registry) > 0  # unresolved fields stay visible
+    assert all(set(item["phases"]) <= PHASES for item in registry)
+    assert all({"id", "owner", "artifact", "phases", "cadence", "rule",
+                "freshness", "retry", "degrade", "lifecycle", "notes", "guardian_event"} <= item.keys()
+               for item in registry)
+
+
+def test_invalid_phase_is_rejected():
+    with pytest.raises(ValueError, match="phase"):
+        validate_registry([{"id": "x", "owner": None, "artifact": "x",
+                            "phases": ["NOT_A_PHASE"], "cadence": "UNKNOWN",
+                            "rule": "UNKNOWN", "freshness": "UNKNOWN",
+                            "retry": "UNKNOWN", "degrade": [],
+                            "lifecycle": "UNKNOWN", "notes": "UNKNOWN", "guardian_event": None}])
+
+
+def test_real_catalog_freshness_smoke():
+    items = load_registry()
+    stale = stale_items(datetime.now(timezone.utc), "/home/exedev/core-data/catalog.json")
+    assert isinstance(stale, list)
+    assert any(item["id"] == "daily_kline" for item in items)
+    assert all("status" in item and "id" in item for item in stale)
+
+
+def test_partition_freshness_states(monkeypatch):
+    from pathlib import Path
+    from engine_core.guardian.presence import resolve_presence
+    raw = (Path(__file__).parent / "fixtures/real/c1147/limit_up_pool_1112_formal.json").read_bytes()
+    class Redis:
+        def get(self, key):
+            return raw if key.endswith("2026-11-12") else None
+    monkeypatch.setattr("engine_core.guardian.presence.resolve_presence",
+                        lambda dataset, day: resolve_presence(dataset, day, redis_client=Redis())
+                        if dataset == "limit_up_pool" else "UNKNOWN")
+    from datetime import timedelta
+    tz = timezone(timedelta(hours=8))
+    items = load_registry()
+    catalog = {"datasets": {"daily_kline": {"dates": {"2026-11-12": [{}]}},
+                            "limit_up_pool": {"dates": {"2026-11-12": [{}]}}}}
+    early = datetime(2026, 11, 13, 8, 0, tzinfo=tz)
+    late = datetime(2026, 11, 13, 19, 0, tzinfo=tz)
+    by = lambda rows: {r["id"]: r["status"] for r in rows}
+    pending = by(stale_items(early, catalog, items, trade_date="2026-11-13", prev_trade_date="2026-11-12"))
+    overdue = by(stale_items(late, catalog, items, trade_date="2026-11-13", prev_trade_date="2026-11-12"))
+    assert pending["daily_kline"] == "PENDING" and overdue["daily_kline"] == "OVERDUE"
+    assert pending["limit_up_pool"] == overdue["limit_up_pool"] == "OK"
+
+
+def test_event_scoped_freshness_rule_is_unknown_not_a_crash():
+    from engine_core.guardian.registry import load_registry
+
+    gaps = [item for item in load_registry() if item["id"] == "hot_plates_gaps"]
+    assert gaps
+    catalog = {"datasets": {"hot_plates_gaps": {"dates": {}}}}
+    now = datetime(2026, 10, 30, 9, 13, tzinfo=timezone.utc)
+    result = stale_items(now, catalog, gaps, trade_date="2026-10-30", prev_trade_date="2026-10-29")
+    assert [(row["id"], row["status"]) for row in result] == [("hot_plates_gaps", "UNKNOWN")]
+
+
+def test_adjust_factor_registry_entry():
+    item = next(item for item in load_registry() if item['id'] == 'adjust_factor')
+    assert item['cadence'] and item['td_sink']['stable'] == 'adjust_factor_v1'
+
+
+def test_price_volume_registry_entry():
+    item = next(item for item in load_registry() if item['id'] == 'price_volume')
+    assert item['cadence'] and item['td_sink']['stable'] == 'price_volume_indicators_v1'
+
+
+def test_chip_and_dde_registry_entries():
+    items = {item['id']: item for item in load_registry()}
+    for name, stable in [('chip_peak', 'chip_indicators_v1'), ('dde_derived', 'dde_indicators_v1')]:
+        assert items[name]['cadence'] and items[name]['td_sink']['stable'] == stable
+
+
+def test_plate_members_freshness_prefers_td_snapshot(monkeypatch):
+    from engine_core import prep_trade_day
+
+    item = next(item for item in load_registry() if item['id'] == 'plate_members')
+    catalog = {'datasets': {'plate_members': {'dates': {'2026-10-30': [
+        {'row_count': 1, 'available_at': '2026-10-30T09:00:00+08:00'}]}}}}
+    now = datetime.fromisoformat('2026-11-24T15:20:00+08:00')
+    monkeypatch.setattr(prep_trade_day, '_plate_members_snapshot',
+                        lambda **kwargs: {'available_at': '2026-11-24T09:00:13+08:00'})
+    monkeypatch.delenv('TD_CONFIG', raising=False)
+    assert stale_items(now, catalog, [item])[0]['status'] == 'STALE'
+    monkeypatch.setenv('TD_CONFIG', 'configured')
+    row = stale_items(now, catalog, [item])[0]
+    assert (row['status'], row['partition']) == ('OK', '2026-11-24')

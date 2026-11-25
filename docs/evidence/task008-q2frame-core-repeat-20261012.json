@@ -1,0 +1,58 @@
+{
+  "contract": "Task008Q2FrameCoreRepeatReplayV1",
+  "recorded_date": "2026-10-12",
+  "trade_date": "2026-10-09",
+  "status": "REPEAT_DETERMINISM_PASS_FOR_FROZEN_INPUT",
+  "task008_overall": "PARTIAL_EVIDENCE",
+  "normal_opening_acceptance": "UNPROVEN",
+  "input": {
+    "path": "/home/exedev/validation/task009-f-t1-prefix-q2frame-vs-capture-20261011/run/prefix.q2frame.jsonl",
+    "sha256": "7474de28bfc60e8777cef0f359b4f6d2ab1b4f1ab6bcdf4fee5211a721483467",
+    "first_logical_ts_ms": 1791508500000,
+    "last_logical_ts_ms": 1791509966000,
+    "frame_count": 1190,
+    "update_count": 1146352
+  },
+  "execution": {
+    "runner": "run_q2frame_auction_engine_shadow",
+    "continue_through_input": true,
+    "worktree_head": "78a28604f4e3489f31156085f48f8e91eafaa85d",
+    "equivalent_code_and_tests_commit": "cbd455815bb6450d7f32e468cef036dad9122165",
+    "deterministic": true,
+    "ordered": {
+      "frames": 1190,
+      "updates": 1146352,
+      "virtual_clock_ms": 1791509966000,
+      "final_state_hash": "61316993dfb529dc900debd25ea79dd52eebe7e917178b5e7e68809d21e5960a",
+      "auction_revision_counts": {
+        "0920": 18,
+        "0924": 11,
+        "0925": 1
+      }
+    },
+    "repeat": {
+      "frames": 1190,
+      "updates": 1146352,
+      "virtual_clock_ms": 1791509966000,
+      "final_state_hash": "61316993dfb529dc900debd25ea79dd52eebe7e917178b5e7e68809d21e5960a",
+      "auction_revision_counts": {
+        "0920": 18,
+        "0924": 11,
+        "0925": 1
+      }
+    },
+    "duration": "NOT_PRECISELY_CAPTURED; observed active at 1h52m55s",
+    "side_effects": "NONE_OBSERVED"
+  },
+  "limits": [
+    "Captured Q2Frame replay only; this run did not query TD, Redis, or RabbitMQ",
+    "Repeat determinism is not Rabbit arrival-order equivalence",
+    "Only one 0925 revision was emitted; late 0925 correction remains unproven",
+    "Historical available_at, producer build identity, and full-market completeness remain unknown or unproven"
+  ],
+  "code_verification": {
+    "pytest": "1008 passed",
+    "compileall": "PASS",
+    "diff_check": "PASS"
+  }
+}

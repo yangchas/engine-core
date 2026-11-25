@@ -1,0 +1,132 @@
+[
+  {
+    "report_date": "2026-10-16",
+    "dataset": "daily_kline",
+    "artifact_date": "2026-10-16",
+    "version": "sha256-baf21404fb6ce515",
+    "manifest_sha256": "242befa276c7fe9f61b3627291d4efaae3ac13f087b095ddae4932c09be78329",
+    "artifact_sha256": "baf21404fb6ce5153e5016cc702ce452496e6545f6150dcfa7886264fd69f93c",
+    "sample_symbols": 3,
+    "sampled_from": "/home/exedev/core-data/daily_kline/trade_date=2026-10-16/source=baostock/sha256-baf21404fb6ce515/rows.jsonl.gz"
+  },
+  {
+    "report_date": "2026-10-16",
+    "dataset": "stock_day_facts",
+    "artifact_date": "2026-10-16",
+    "version": "sha256-43ed02400ce183c8",
+    "manifest_sha256": "5aa1675a4ea3271c002e82d25bb935169c36bb263369c0e21cba7b612617eed4",
+    "artifact_sha256": "43ed02400ce183c8e140c0de0618923fae86a697cd75623dfa78ceffe634e6ce",
+    "sample_symbols": 3,
+    "sampled_from": "/home/exedev/core-data/stock_day_facts/trade_date=2026-10-16/source=core_derived/sha256-43ed02400ce183c8/rows.jsonl.gz"
+  },
+  {
+    "report_date": "2026-10-16",
+    "dataset": "auction_stock_facts",
+    "artifact_date": "2026-10-16",
+    "version": "sha256-5e4c51c60a8d058e",
+    "manifest_sha256": "40d4b73f58ea6b44b6476772caa7c41acc7cb1be3a360adba8658cabb3cdc541",
+    "artifact_sha256": "5e4c51c60a8d058e9960638f06c48292c710001646ca2fa534b47685791137f2",
+    "sample_symbols": 3,
+    "sampled_from": "/home/exedev/core-data/auction_stock_facts/trade_date=2026-10-16/source=auction_stock_facts/sha256-5e4c51c60a8d058e/rows.jsonl.gz"
+  },
+  {
+    "report_date": "2026-10-16",
+    "dataset": "auction_panorama",
+    "artifact_date": "2026-10-16",
+    "version": "sha256-eab4563323c9654a",
+    "manifest_sha256": "c10bd6a1cd5ebdbeff96a40d5f2054bfb9cf84dacb2572e3925ea2220c6939c0",
+    "artifact_sha256": "eab4563323c9654a3351add1b1c62375ee9cbfeefae828cfccabfaff2a0dbfa3",
+    "sample_symbols": 1,
+    "sampled_from": "/home/exedev/core-data/auction_panorama/trade_date=2026-10-16/source=auction_panorama/sha256-eab4563323c9654a/rows.jsonl.gz"
+  },
+  {
+    "report_date": "2026-10-16",
+    "dataset": "limit_up_pool",
+    "artifact_date": "2026-10-15",
+    "version": "sha256-d47a1d135123cd8d",
+    "manifest_sha256": "948c3f0288ea6bf0c218abe39c9bdf6c0bc6ce044d04b79bdff67f2576d26d18",
+    "artifact_sha256": "d47a1d135123cd8d53d14fc21000d106e436e11b2fba3032aca03732c0acbc44",
+    "sample_symbols": 0,
+    "sampled_from": "/home/exedev/core-data/limit_up_pool/trade_date=2026-10-15/source=import_from_validation/sha256-d47a1d135123cd8d/rows.jsonl.gz"
+  },
+  {
+    "report_date": "2026-10-16",
+    "dataset": "plate_members",
+    "artifact_date": "2026-10-16",
+    "version": "sha256-7b21ab52a219e0f9",
+    "manifest_sha256": "1581498710e1bce2a3ee78a430aaa9c8dbf97329aa6f5a5f8dcf480c99ff88d3",
+    "artifact_sha256": "7b21ab52a219e0f90a292d0510a25bacf705306629e864e171122b5f071cafcb",
+    "sample_symbols": 31,
+    "sampled_from": "/home/exedev/core-data/plate_members/trade_date=2026-10-16/source=kaipan_getHisPlateIds/sha256-7b21ab52a219e0f9/rows.jsonl.gz"
+  },
+  {
+    "report_date": "2026-10-16",
+    "dataset": "stock_theme_assignment",
+    "artifact_date": "2026-10-16",
+    "version": "sha256-4b27e478da5ddaef",
+    "manifest_sha256": "fdffcf08e60ae6ea254ad0c5d21bd41f21973c07083ba4c7d1cd1457501e61ba",
+    "artifact_sha256": "4b27e478da5ddaef884ebd42e2a84f8c2001ecbbf5cc5cec5aec7d57172b7b3a",
+    "sample_symbols": 3,
+    "sampled_from": "/home/exedev/core-data/stock_theme_assignment/trade_date=2026-10-16/source=prep_trade_day/sha256-4b27e478da5ddaef/rows.jsonl.gz"
+  },
+  {
+    "report_date": "2026-10-19",
+    "dataset": "daily_kline",
+    "artifact_date": "2026-10-19",
+    "version": "sha256-d762be07d413ecaf",
+    "manifest_sha256": "915aeea78f58ad3d3d6bc580cc8db82ce807474405515dc8208b120a5829a775",
+    "artifact_sha256": "d762be07d413ecafc9aa3de0adf591b04f5c48ee1ea436ea4ba78fa005e722fc",
+    "sample_symbols": 3,
+    "sampled_from": "/home/exedev/core-data/daily_kline/trade_date=2026-10-19/source=baostock/sha256-d762be07d413ecaf/rows.jsonl.gz"
+  },
+  {
+    "report_date": "2026-10-19",
+    "dataset": "stock_day_facts",
+    "artifact_date": "2026-10-19",
+    "version": "sha256-a062437cb6fbd979",
+    "manifest_sha256": "07bea725f394440c392f91b57a3b5bf00f4f9ce81070a45358ee939e361ca2dc",
+    "artifact_sha256": "a062437cb6fbd979a1d6dfd09cc181af20496fd76a354784aca2e825378ed929",
+    "sample_symbols": 3,
+    "sampled_from": "/home/exedev/core-data/stock_day_facts/trade_date=2026-10-19/source=core_derived/sha256-a062437cb6fbd979/rows.jsonl.gz"
+  },
+  {
+    "report_date": "2026-10-19",
+    "dataset": "auction_stock_facts",
+    "artifact_date": "2026-10-19",
+    "version": "sha256-50d45c166aff9722",
+    "manifest_sha256": "c48041a67844a01b9e0023a1102e0d15f13abdbc3bc7054aca6a329a4b6a8d5c",
+    "artifact_sha256": "50d45c166aff97228f4e60c69a1bffba89618c006373dee316ae6e5f15480a97",
+    "sample_symbols": 3,
+    "sampled_from": "/home/exedev/core-data/auction_stock_facts/trade_date=2026-10-19/source=auction_stock_facts/sha256-50d45c166aff9722/rows.jsonl.gz"
+  },
+  {
+    "report_date": "2026-10-19",
+    "dataset": "auction_panorama",
+    "artifact_date": "2026-10-19",
+    "version": "sha256-42fcac03373deb7a",
+    "manifest_sha256": "bc164d536151b53c5661f6a1c059834431ab7e0b57d03b18e25b907c05a7b7be",
+    "artifact_sha256": "42fcac03373deb7ad3c682bf471c9f0c23116c5e8c8dfb636ac6044179fe76cb",
+    "sample_symbols": 1,
+    "sampled_from": "/home/exedev/core-data/auction_panorama/trade_date=2026-10-19/source=auction_panorama/sha256-42fcac03373deb7a/rows.jsonl.gz"
+  },
+  {
+    "report_date": "2026-10-19",
+    "dataset": "limit_up_pool",
+    "artifact_date": "2026-10-16",
+    "version": "sha256-c85972dd1b2cf937",
+    "manifest_sha256": "ed8c0c860e007c162a640521cd075366f5c9a548145f0ec36f059bb08ce42311",
+    "artifact_sha256": "c85972dd1b2cf9372d150d6569798aac4e8df3157168a140f859ed9817040326",
+    "sample_symbols": 0,
+    "sampled_from": "/home/exedev/core-data/limit_up_pool/trade_date=2026-10-16/source=kaipan_getHisBans/sha256-c85972dd1b2cf937/rows.jsonl.gz"
+  },
+  {
+    "report_date": "2026-10-19",
+    "dataset": "stock_theme_assignment",
+    "artifact_date": "2026-10-19",
+    "version": "sha256-2a6bb2af26d45d5d",
+    "manifest_sha256": "1c5dba3accf63c2737a843ab2c4f4d3bf5040d87de3f38ea42610305c8b12cb2",
+    "artifact_sha256": "2a6bb2af26d45d5d0cca3b66b7e6c5bc8c7e8663f77d3b12eaf6a72648853c93",
+    "sample_symbols": 1,
+    "sampled_from": "/home/exedev/core-data/stock_theme_assignment/trade_date=2026-10-19/source=prep_trade_day/sha256-2a6bb2af26d45d5d/rows.jsonl.gz"
+  }
+]

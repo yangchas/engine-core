@@ -13,6 +13,9 @@ from engine_core import (
 
 
 CAPTURE = Path(__file__).parent / "fixtures/facts/auction_market_summary_20260914.json"
+LIVE_0925_CAPTURE = (
+    Path(__file__).parent / "fixtures/facts/auction_market_summary_20260930.json"
+)
 
 
 def _raw_summary() -> dict:
@@ -38,6 +41,34 @@ def test_real_capture_summary_maps_to_canonical_a2_fact():
     assert fact.as_mapping()["limit_up_seal_amount_yuan"] == 2743276692
     assert fact.missing_fields == ()
     assert fact.content_hash and fact.evidence_hash
+
+
+def test_live_20260930_0925_summary_maps_to_canonical_a2_fact():
+    capture = json.loads(LIVE_0925_CAPTURE.read_text(encoding="utf-8"))
+    source = capture["source_capture"]
+    fact = normalize_auction_market_summary(
+        capture["summary"],
+        trade_date="2026-09-30",
+        source_id=source["source_id"],
+        source_table=source["source_table"],
+        observation_time_ms=source["observation_time_ms"],
+        evidence_refs=(source["capture_sha256"],),
+    )
+
+    assert source["capture_sha256"] == (
+        "90a0f5b83aaabc69c762936d4e0454b84b89192e9b72549c5deb0be41d1fe2dc"
+    )
+    assert fact.status is FactStatus.READY
+    assert fact.stock_count == 5210
+    assert fact.valid_stock_count == 5030
+    assert fact.unavailable_stock_count == 180
+    assert (fact.positive_count, fact.negative_count, fact.flat_count) == (
+        3534, 785, 711
+    )
+    assert fact.auction_amount_yuan == 11881094371
+    assert (fact.limit_up_count, fact.limit_down_count) == (10, 4)
+    assert fact.limit_up_seal_amount_yuan == 15056893
+    assert fact.missing_fields == ()
 
 
 def test_summary_preserves_explicit_zero_and_marks_missing_separately():

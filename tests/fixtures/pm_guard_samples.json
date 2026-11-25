@@ -1,0 +1,107 @@
+{
+ "_doc": "C732 spec: commands/paths observed or required in the 2026-11-07 PM session. allow = must pass pm_guard.decide; deny = must be rejected (reason names the rule). VENV=/home/exedev/services/engine-next/shared/venv/bin/python, REPO=/home/exedev/repos/engine_core, FW=/home/exedev/fw",
+ "bash_allow": [
+  "cd /home/exedev/fw && python3 bin/ops_state",
+  "cd /home/exedev/repos/engine_core && TMPDIR=/tmp /home/exedev/services/engine-next/shared/venv/bin/python examples/release.py merge --branch C1-x --card C1 > $CLAUDE_JOB_DIR/tmp/m.out 2>&1; echo exit=$?; tail -2 $CLAUDE_JOB_DIR/tmp/m.out",
+  "cd /home/exedev/repos/engine_core && TMPDIR=/tmp /home/exedev/services/engine-next/shared/venv/bin/python examples/release.py errors add --kind process --note \"role drift: captured data instead of dispatching a runner card\" --impact \"PM time\"",
+  "cd /home/exedev/fw && bin/runcard C731 2>&1 | head -8",
+  "cd /home/exedev/fw && bin/card_callback --ack C730",
+  "cd /home/exedev/fw && bin/preflight_card cards/C731.md; echo preflight=$?",
+  "cd /home/exedev/repos/engine_core && git worktree add -b C9-x /home/exedev/repos/engine_core-wt-C9 4406757",
+  "git -C /home/exedev/repos/engine_core log --oneline -3",
+  "grep -n \"def \" /home/exedev/repos/engine_core/src/engine_core/auction_baseline.py | head",
+  "cd /home/exedev/repos/engine_core && TMPDIR=/tmp /home/exedev/services/engine-next/shared/venv/bin/python examples/audit_card.py --card C730 --branch C730-x --base 8cf4e07 --repo /home/exedev/repos/engine_core",
+  "mkdir -p /home/exedev/validation/realdata/x/work",
+  "python3 /home/exedev/fw/bin/ops_state --inline \"reason\"",
+  "python3 /home/exedev/fw/bin/ops_state --board",
+  "ls /home/exedev/fw/cards | tail -3",
+  "sed -n 1,40p /home/exedev/fw/design/35-PM-MODE.md",
+  "head -4 /tmp/claude-1000/-home-exedev-repos/8015506a-dd64-445f-b3aa-cc30ae36df5d/tasks/b1.output | cut -c1-300",
+  "cat /home/exedev/fw/reports/C732.md | cut -c1-400",
+  "ls /home/exedev/fw/cards | sort | uniq | tail -3",
+  "cd /home/exedev/repos/engine_core-wt-C732 && TMPDIR=/tmp PYTHONPATH=src:. env -u TD_CONFIG -u REDIS_URL /home/exedev/services/engine-next/shared/venv/bin/python -m pytest -q --no-header -p no:cacheprovider tests/test_pm_guard.py 2>&1 | tail -3",
+  "cd /home/exedev/repos/engine_core-wt-C732 && TMPDIR=/tmp PYTHONPATH=src:. env -u REDIS_URL -u TD_CONFIG /home/exedev/services/engine-next/shared/venv/bin/python -m pytest -q tests/test_pm_guard.py",
+  "sed -n 280,330p examples/core_guardian.py",
+  "sed -n 1,60p /home/exedev/fw/design/35-PM-MODE.md; sed -n 100,140p /home/exedev/fw/bin/ops_state",
+  "VERBOSE=1; cd /home/exedev/fw && bin/preflight_card cards/C751.md",
+  "cd /home/exedev/repos/engine_core && git status --short | head -3",
+  "date +%H:%M:%S; ls /tmp | grep -c '^rh'",
+  "ls -la --time-style=+%H:%M /tmp | grep rh | head",
+  "/home/exedev/fw/bin/pm wait --ledger-event td_resource_check_1735 --timeout 1700"
+ ],
+ "bash_deny": [
+  "TD_CONFIG=/home/exedev/validation/operator-runs/taos-cfg REDIS_URL=redis://127.0.0.1:6380/0 timeout 300 /home/exedev/services/engine-next/shared/venv/bin/python /home/exedev/.claude/jobs/8015506a/tmp/real_ab.py",
+  "python3 - <<'E'\nimport taos\nE",
+  "redis-cli -p 6380 get x",
+  "/home/exedev/services/engine-next/shared/venv/bin/python examples/run_function.py --date 2026-10-23 --event x",
+  "/home/exedev/services/engine-next/shared/venv/bin/python examples/build_auction_baseline.py --date 2026-11-06 --write",
+  "/home/exedev/services/engine-next/shared/venv/bin/python examples/rehearse_event.py --event premarket_slice_0850",
+  "sed -i 's/ready/DONE/' /home/exedev/fw/cards/C722.md",
+  "cat >> /home/exedev/fw/design/34.md <<'EOF'\nx\nEOF",
+  "cp a.py /home/exedev/repos/engine_core/src/x.py",
+  "curl https://example.com/api",
+  "git push",
+  "git reset --hard HEAD~1",
+  "rm -rf /home/exedev/validation/x",
+  "kill -TERM 123",
+  "python3 -c \"import sys; sys.path.insert(0,'/home/exedev/repos/engine_core/src'); from engine_core import auction_baseline\"",
+  "cd /home/exedev/repos/engine_core-wt-C732 && TMPDIR=/tmp PYTHONPATH=src:. /home/exedev/services/engine-next/shared/venv/bin/python -m pytest -q tests/test_pm_guard.py env -u TD_CONFIG -u REDIS_URL",
+  "cd /home/exedev/repos/engine_core-wt-C732 && TMPDIR=/tmp PYTHONPATH=src:. /home/exedev/services/engine-next/shared/venv/bin/python -m pytest -q tests/test_pm_guard.py",
+  "cd /home/exedev/repos/engine_core-wt-C732 && TMPDIR=/tmp PYTHONPATH=src:. env -u TD_CONFIG /home/exedev/services/engine-next/shared/venv/bin/python -m pytest -q tests/",
+  "env -u TD_CONFIG -u REDIS_URL /home/exedev/services/engine-next/shared/venv/bin/python -m pytest -q --live tests/test_pm_guard.py",
+  "cd /home/exedev/repos/engine_core-wt-C732 && TMPDIR=/tmp PYTHONPATH=src:. env -u TD_CONFIG -u REDIS_URL /home/exedev/services/engine-next/shared/venv/bin/python -c \"print(1)\"",
+  "PY=/home/exedev/services/engine-next/shared/venv/bin/python; $PY examples/run_function.py --date 2026-10-23",
+  "pgrep -fa rehearse_event",
+  "sed -i 's/a/b/' /home/exedev/fw/cards/C751.md",
+  "sed -n 1,5p x > /home/exedev/fw/bin/role_guard",
+  "f=/x; until grep -q y \"$f\"; do sleep 30; done"
+ ],
+ "file_allow": [
+  "/home/exedev/fw/cards/C740.md",
+  "/home/exedev/fw/design/35-PM-MODE.md",
+  "/home/exedev/fw/FUNCTION-SHEET.md",
+  "/home/exedev/.claude/projects/-home-exedev-repos/memory/x.md"
+ ],
+ "file_deny": [
+  "/home/exedev/repos/engine_core/examples/x.py",
+  "/home/exedev/.claude/jobs/8015506a/tmp/x.py",
+  "/home/exedev/fw/bin/role_guard"
+ ],
+ "real_denied_2026_11": {
+  "_doc": "来源 /home/exedev/fw/retros/guard.log；仅选 DENY Bash 且 detail 长度小于 120 字符的完整记录；抽取日期 2026-11-13。",
+  "real_should_allow": [
+   {
+    "command": "cd /home/exedev/fw && ed=$(grep -c \"^SCOPE_WRITE\" cards/C844.md); echo scope_lines=$ed",
+    "feature": "subst"
+   },
+   {
+    "command": "ls -l /home/exedev/fw/cards/C957.md /home/exedev/fw/reports/C957.md; free -m",
+    "feature": "tool"
+   },
+   {
+    "command": "date +%T; cd /home/exedev/fw; sed -n 1,30p bin/dispatch | head -30; free -m | head -2",
+    "feature": "tool"
+   },
+   {
+    "command": "cd /home/exedev/repos/engine_core-live && sed -n '955,1046p;1106,1130p' src/engine_core/guardian/schedule.json",
+    "feature": "sed"
+   },
+   {
+    "command": "cd /home/exedev/fw/evidence/C995 && sha256sum chain.txt ledger_extracts.txt report.txt",
+    "feature": "tool"
+   },
+   {
+    "command": "date +%H:%M; free -m | head -2; cd /home/exedev/fw; bin/ops_state 2>&1 | head -4",
+    "feature": "tool"
+   }
+  ],
+  "real_should_deny": [
+   "cd /home/exedev/fw && echo \"# C971 报告(占位)\" > reports/C971.md && echo ok",
+   "until [ \"$(date +%H%M)\" -ge 0950 ]; do sleep 20; done; echo \"09:50 reached\"",
+   "sleep 1500; echo \"quiet-window-check\"",
+   "free -m | head -3; ps -eo pid,rss,etime,args --sort=-rss | head -8 | cut -c1-150",
+   "sha256sum -c SHA256SUMS",
+   "ps -eo pid,lstart,cmd | grep -i '[c]odex'"
+  ]
+ }
+}

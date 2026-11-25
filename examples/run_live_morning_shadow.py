@@ -47,7 +47,6 @@ from engine_core import (  # noqa: E402
 )
 
 try:  # Script execution resolves sibling examples directly.
-    from run_engine_next_auction_loader_probe import probe as probe_legacy_auction_loader
     from run_real_auction_reference_readiness import (
         run_real_auction_reference_readiness,
     )
@@ -61,7 +60,6 @@ try:  # Script execution resolves sibling examples directly.
     from run_real_auction_engine_shadow import run_engine_shadow as run_auction_engine_shadow
     from run_real_opening_engine_shadow import run_opening_engine_shadow_from_projection
 except ModuleNotFoundError:  # Pytest/import execution resolves the package.
-    from examples.run_engine_next_auction_loader_probe import probe as probe_legacy_auction_loader
     from examples.run_real_auction_reference_readiness import (
         run_real_auction_reference_readiness,
     )
@@ -450,6 +448,12 @@ def _legacy_loader_evidence(
 ) -> dict[str, Any]:
     if legacy_root is None:
         return {"status": "NOT_CONFIGURED"}
+    try:
+        from run_engine_next_auction_loader_probe import probe as probe_legacy_auction_loader
+    except ModuleNotFoundError as exc:
+        if exc.name != "run_engine_next_auction_loader_probe":
+            raise
+        from examples.run_engine_next_auction_loader_probe import probe as probe_legacy_auction_loader
     return probe_legacy_auction_loader(
         legacy_root=legacy_root,
         trade_date=trade_date,

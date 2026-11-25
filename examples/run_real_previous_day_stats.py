@@ -74,6 +74,7 @@ def _fetch_td_rows(
     try:
         cursor = connection.cursor()
         rows: list[dict[str, Any]] = []
+        failed_symbols: list[str] = []
         for symbol in symbols:
             symbol = _symbol(symbol)
             table = "d_" + symbol
@@ -84,14 +85,24 @@ def _fetch_td_rows(
                 f"FROM {table} WHERE ts >= '{previous_trade_date}' "
                 f"AND ts <= '{previous_trade_date}' ORDER BY ts"
             )
-            cursor.execute(sql)
-            for row in cursor.fetchall():
+            try:
+                cursor.execute(sql)
+                fetched = cursor.fetchall()
+            except Exception:
+                # A missing child table (new listing, BJ code, delisted) must
+                # not discard every other symbol; it surfaces as a missing
+                # symbol in the function result.
+                failed_symbols.append(symbol)
+                continue
+            for row in fetched:
                 rows.append(
                     {
                         "symbol": symbol,
                         "close": row[4],
                         "amount": row[6],
                         "volume": row[5],
+                        # evidence only (opening auction price); not in the Core data contract
+                        "open": row[1],
                     }
                 )
         return rows
@@ -107,6 +118,7 @@ def run_real_previous_day_stats(
     observed_at: datetime,
     td_kwargs: dict[str, Any],
     fetch_rows_override: Any = None,
+    allow_unverified_previous_day_availability: bool = False,
 ) -> dict[str, Any]:
     """Execute the core data function with real TD rows and a fixed calendar."""
 
@@ -150,6 +162,7 @@ def run_real_previous_day_stats(
         effective_as_of_ms=observed_at_ms,
         knowledge_as_of_ms=observed_at_ms,
         symbols=tuple(sorted(symbols)),
+        allow_unverified_previous_day_availability=allow_unverified_previous_day_availability,
     )
     result = function.execute(
         DataContext("real-previous-day-probe", "READ_ONLY", observed_at_ms),
@@ -160,6 +173,9 @@ def run_real_previous_day_stats(
         "previous_trade_date": previous_trade_date,
         "symbols": tuple(sorted(symbols)),
         "rows_seen": len(rows_seen),
+        "open_by_symbol": {
+            row["symbol"]: row["open"] for row in rows_seen if row.get("open") is not None
+        },
         "result_status": result.status,
         "actual_source": result.actual_source,
         "actual_trade_date": result.actual_trade_date,
@@ -183,6 +199,10 @@ def main() -> int:
     parser.add_argument("--previous-trade-date", required=True)
     parser.add_argument("--symbols", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--strict-availability", action="store_true",
+        help="do not accept previous-day data without a verified available_at",
+    )
     args = parser.parse_args()
     trade_date = _date(args.trade_date)
     previous_trade_date = _date(args.previous_trade_date)
@@ -202,6 +222,7 @@ def main() -> int:
             "config": os.environ.get("TDENGINE_CONFIG", "/etc/taos"),
             "timezone_name": os.environ.get("TDENGINE_TIMEZONE", "Asia/Shanghai"),
         },
+        allow_unverified_previous_day_availability=not args.strict_availability,
     )
     result["observed_at"] = observed_at.isoformat()
     with args.output.open("x", encoding="utf-8") as output:

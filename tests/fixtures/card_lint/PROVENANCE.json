@@ -1,0 +1,57 @@
+{
+  "copied_date": "2026-11-13",
+  "files": {
+    "C1031.md": {
+      "source": "/home/exedev/fw/cards/C1031.md",
+      "sha256": "aa56f7e8a2f988230a8b34b9a96e0b93232f4c252594203c9e882e4c402eab1d"
+    },
+    "C1039.md": {
+      "source": "/home/exedev/fw/cards/C1039.md",
+      "sha256": "7f8543afc98f2e719a2607913ff6ea5a64e7bf9c900719c97aeca8c01ff3f378"
+    },
+    "C1040.md": {
+      "source": "/home/exedev/fw/cards/C1040.md",
+      "sha256": "84621a2898803f665f69c5b5656c4b93d988c55fdf7eb8b87808488ebf9c655e"
+    },
+    "C1047.md": {
+      "source": "/home/exedev/fw/cards/C1047.md",
+      "sha256": "dae837e559e15f8d22604333c8a247c0cdc547ad470c7955517bde93767d0f85"
+    },
+    "C1046.md": {
+      "source": "/home/exedev/fw/cards/C1046.md",
+      "sha256": "effac0a84185f968b6ca0b4b445e6bd757e1debea3979a51faaeb50df6a5275a"
+    },
+    "C1028.md": {
+      "source": "/home/exedev/fw/cards/C1028.md",
+      "sha256": "69c64269afd7573b5a1837fabb17d13955163798193eefa8e9c889e7c30b453e"
+    },
+    "real_PROVENANCE.json": {
+      "source": "tests/fixtures/real/PROVENANCE.json",
+      "sha256": "6b1b8e37597a4bf9cad18bc9ad39ffe8451067b0187b82b127d1eea541c3c808"
+    },
+    "ledger_PROVENANCE.json": {
+      "source": "tests/fixtures/real/ledger_instance_state_PROVENANCE.json",
+      "sha256": "c79e84e4bfa48a40ed08c7841aefbf299565e8d837af0ce87b29982316c18419"
+    },
+    "auction_PROVENANCE.json": {
+      "source": "tests/fixtures/real/auction_baseline_20261106/PROVENANCE.json",
+      "sha256": "63df6948404ce14ab72100b7dc971b0e0f65a0185f3c0e48b5c1f5e2171c0581"
+    },
+    "C1056.md": {
+      "source": "/home/exedev/fw/cards/C1056.md",
+      "sha256": "189327a11388db01b524b23d6b099c4c3fef9b65d1c13c2848f69f43098c6d4b"
+    },
+    "card_C1072.md": {
+      "source": "/home/exedev/fw/cards/C1072.md",
+      "extraction": "lines 1-20, unmodified; captured 2026-11-14",
+      "source_sha256": "8971e00a3cb4ebda03ecbf0b30b364678b7acc3c71c19904a35383bd54a940a2",
+      "sha256": "5a45f3fe0695568a6a294cddc717f65b8667818dd571e15e06ec32dbbd283fa8"
+    },
+    "card_C1074.md": {
+      "source": "/home/exedev/fw/cards/C1074.md",
+      "extraction": "lines 1-20, unmodified; captured 2026-11-14",
+      "source_sha256": "89d4500cac93816ec6091d344e971649d76e61d53a4493110c2b2fc37c67e131",
+      "sha256": "426f0fa863fd0719b1dba4e0b5c0ae9a899c4ce7301f5d0f5e2baf54139a73d0"
+    }
+  }
+}

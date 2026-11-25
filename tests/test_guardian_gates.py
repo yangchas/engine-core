@@ -1,0 +1,350 @@
+from datetime import date, datetime
+from pathlib import Path
+
+import pytest
+
+from engine_core.guardian.gates import auction_snapshot_ready, checkpoint_ready, daily_kline_ready
+
+
+def test_daily_kline_td_ready_without_catalog(tmp_path, monkeypatch):
+    from engine_core.guardian import gates
+    from engine_core.data_pipeline.td_sink import TaosStore
+    from engine_core.data_pipeline import storage
+
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("TD_CONFIG", "configured")
+    monkeypatch.setattr(TaosStore, "day_counts", lambda self, days: {days[0]: 5224})
+    monkeypatch.setattr(TaosStore, "close", lambda self: None)
+    monkeypatch.setattr(storage, "ArtifactCatalog", lambda *_: pytest.fail("catalog accessed"))
+    gates._CACHE.clear()
+    event = type("Event", (), {"gate": "daily_kline_ready"})()
+    result = daily_kline_ready(event, datetime.fromisoformat("2026-11-24T18:00:00+08:00"), {})
+    assert (result["status"], result["reason"], result["row_count"]) == ("ready", "DAILY_KLINE_TD_READY", 5224)
+    assert not (tmp_path / "catalog.json").exists()
+
+
+@pytest.fixture(autouse=True)
+def _offline_snapshot_redis(monkeypatch):
+    import engine_core.data_pipeline.auction_redis_view as view
+    def unavailable():
+        raise ConnectionError("offline")
+    monkeypatch.setattr(view, "redis_client", unavailable)
+
+
+def test_snapshot_gate_uses_universe_and_exact_threshold():
+    event = type("Event", (), {"gate": "snapshot_0920_ready"})()
+    now = datetime.fromisoformat("2026-10-19T09:20:00+08:00")
+    assert auction_snapshot_ready(event, now, {"td": FakeTD(4500), "universe_count": 5000})
+    later = now.replace(second=1)
+    assert not auction_snapshot_ready(event, later, {"td": FakeTD(4499), "universe_count": 5000})
+
+
+def test_checkpoint_cutoff_and_unavailable_fail_closed():
+    event = type("Event", (), {"gate": "checkpoint_ready", "handler": "open_report",
+                                  "start": "09:32:10"})()
+    now = datetime.fromisoformat("2026-10-19T09:32:10+08:00")
+    assert checkpoint_ready(event, now, {"checkpoint_count": 4000, "checkpoint_ts": "09:32:00"})
+    assert not checkpoint_ready(event, now.replace(second=11), {"checkpoint_count": 3999, "checkpoint_ts": "09:32:00"})
+    assert not checkpoint_ready(event, now.replace(second=12), {"td_unavailable": True})
+
+
+def test_snapshot_gate_td_exception_fails_closed():
+    event = type("Event", (), {"gate": "snapshot_0920_ready"})()
+    now = datetime.fromisoformat("2026-10-19T09:20:03+08:00")
+    class BrokenTD:
+        def snapshot_count(self, *_):
+            raise RuntimeError("backend details must not escape")
+    assert not auction_snapshot_ready(event, now, {"td": BrokenTD(), "universe_count": 5000})
+
+
+def test_snapshot_universe_query_failure_uses_logged_fallback(monkeypatch, caplog):
+    import logging
+    import engine_core.guardian.gates as gates
+    caplog.set_level(logging.INFO)
+    calls = []
+    def query(sql):
+        calls.append(sql)
+        return [(str(i),) for i in range(4000)]
+    monkeypatch.setattr(gates, "_query", query)
+    now = datetime.fromisoformat("2026-10-19T09:20:06+08:00")
+    stats = gates.auction_snapshot_stats(now, "0920")
+    assert stats == {"row_count": 4000, "universe_count": 4500, "coverage": 4000 / 4500,
+                     "source": "td", "degraded": True}
+    assert "trusted universe unavailable; using fallback=4500" in caplog.text
+    assert len(calls) == 1
+    assert "private backend detail" not in caplog.text
+
+
+def test_daily_kline_gate_requires_same_date_coverage_and_available_at(monkeypatch, tmp_path):
+    import json
+    import engine_core.guardian.gates as gates
+
+    manifest = tmp_path / "daily.json"
+    universe = tmp_path / "universe.json"
+    rows = tmp_path / "rows.jsonl"
+    rows.write_text("{}\n" * 95)
+    universe.write_text('{"row_count":100}')
+    def install(trade_date="2026-10-19", row_count=95, available="2026-10-19T17:30:00+08:00", provider="baostock"):
+        manifest.write_text(json.dumps({"trade_date": trade_date, "row_count": row_count, "provider": provider,
+                                        "available_at": available, "rows_uri": str(rows)}))
+    class Catalog:
+        def __init__(self, *_): pass
+        def locate(self, dataset, day): return manifest if dataset == "daily_kline" else universe
+        def read(self): return {"datasets": {"symbol_universe": {"dates": {"2026-10-19": [{"row_count": 100, "manifest": str(universe)}]}}}}
+    import engine_core.data_pipeline.storage as storage
+    monkeypatch.setattr(storage, "ArtifactCatalog", Catalog)
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    event = type("Event", (), {"gate": "daily_kline_ready"})()
+    now = datetime.fromisoformat("2026-10-19T18:00:00+08:00")
+    install(row_count=94)
+    assert not daily_kline_ready(event, now, {})
+    install(trade_date="2026-10-18", row_count=100)
+    assert not daily_kline_ready(event, now.replace(second=2), {})
+    install(row_count=95)
+    assert daily_kline_ready(event, now.replace(second=3), {})
+    # a quick-recap close (wencai) is usable before 17:00 but never counts as the day's bars afterwards
+    install(row_count=95, available="2026-10-19T15:10:00+08:00", provider="wencai")
+    assert daily_kline_ready(event, datetime.fromisoformat("2026-10-19T16:30:04+08:00"), {})
+    not_ready = daily_kline_ready(event, now.replace(second=4), {})
+    assert not not_ready and not_ready["reason"] == "DAILY_KLINE_REQUIRES_BAOSTOCK_AFTER_1700"
+
+
+class FakeTD:
+    def __init__(self, count):
+        self.count = count
+
+    def snapshot_count(self, day, tag):
+        return self.count
+
+
+def test_intraday_0933_uses_093300_window_not_090000(monkeypatch):
+    from engine_core.guardian.scheduler import default_events
+    import dataclasses
+    event = dataclasses.replace(next(e for e in default_events() if e.event_id == "intraday_33"), args=None)  # TD-only path
+    calls = []
+    def query(sql):
+        calls.append(sql)
+        return [(str(i),) for i in range(4000)] if "09:33:00" in sql else []
+    monkeypatch.setattr("engine_core.guardian.gates._query", query)
+    now = datetime.fromisoformat("2026-10-19T09:33:05+08:00")
+    assert checkpoint_ready(event, now, {})
+    assert all("09:00:00" not in sql for sql in calls)
+
+
+def test_intraday_deadlines_cover_their_three_minute_data_windows():
+    from engine_core.guardian.scheduler import default_events
+    events = {e.event_id: e for e in default_events()}
+    assert {event_id: events[event_id].deadline
+            for event_id in ("intraday_33", "intraday_36", "intraday_39", "intraday_42", "intraday_45")} == {
+                # C587: cutoff + 3:59 (TD wrote ~2:45-2:53 after the cutoff; the old +2:54 deadline lost the race)
+                "intraday_33": "09:36:59",
+                "intraday_36": "09:39:59",
+                "intraday_39": "09:42:59",
+                "intraday_42": "09:45:59",
+                "intraday_45": "09:48:59",
+            }
+
+
+def test_same_tick_cache_does_not_confuse_two_event_cutoffs(monkeypatch):
+    from engine_core.guardian.scheduler import default_events
+    events = {e.event_id: e for e in default_events()}
+    def query(sql):
+        return [(str(i),) for i in range(4000)] if "09:45:18" in sql else []
+    monkeypatch.setattr("engine_core.guardian.gates._query", query)
+    now = datetime.fromisoformat("2026-10-19T09:45:30+08:00")
+    import dataclasses
+    assert not checkpoint_ready(dataclasses.replace(events["intraday_45"], args=None), now, {})
+    assert checkpoint_ready(events["open_report_0945"], now, {})
+
+
+def test_snapshot_partial_observed_ticks_cannot_be_full_market_denominator(monkeypatch):
+    from engine_core.guardian.scheduler import default_events
+    event = next(e for e in default_events() if e.event_id == "auction_0925_check")
+    monkeypatch.setattr("engine_core.guardian.gates._query", lambda sql: [(str(i),) for i in range(1000)])
+    now = datetime.fromisoformat("2026-10-19T09:25:10+08:00")
+    assert not auction_snapshot_ready(event, now, {})
+
+
+def test_checkpoint_never_queries_future_window(monkeypatch):
+    from engine_core.guardian.scheduler import default_events
+    event = next(e for e in default_events() if e.event_id == "open_report_0945")
+    calls = []
+    monkeypatch.setattr("engine_core.guardian.gates._query", lambda sql: calls.append(sql) or [(str(i),) for i in range(4000)])
+    now = datetime.fromisoformat("2026-10-19T09:45:10+08:00")
+    assert not checkpoint_ready(event, now, {})
+    assert calls == []
+
+
+@pytest.mark.parametrize(("event_id", "start", "cutoff"), [
+    ("open_report_0932", "09:32:10", "09:32:00"),
+    ("open_report_0935", "09:35:10", "09:35:00"),
+    ("open_report_0940", "09:40:10", "09:40:00"),
+    ("open_report_0945", "09:45:30", "09:45:18"),
+])
+def test_report_gate_cutoff_matches_report_checkpoint(event_id, start, cutoff):
+    from engine_core.guardian.gates import _checkpoint_cutoff
+    from engine_core.guardian.scheduler import default_events
+
+    event = next(e for e in default_events() if e.event_id == event_id)
+    assert event.start == start
+    assert _checkpoint_cutoff(event, date(2026, 10, 19)).strftime("%H:%M:%S") == cutoff
+
+
+def test_checkpoint_timeout_returns_diagnostic_reason(monkeypatch):
+    import time
+    import engine_core.guardian.gates as gates
+    from engine_core.guardian.scheduler import default_events
+
+    import dataclasses
+    event = dataclasses.replace(next(e for e in default_events() if e.event_id == "intraday_33"), args=None)
+    monkeypatch.setenv("GUARDIAN_TD_QUERY_TIMEOUT_SECONDS", "0.01")
+    monkeypatch.setattr(gates, "_query", lambda _sql: (time.sleep(0.1), [])[1])
+    gates._CACHE.clear()
+    result = checkpoint_ready(event, datetime.fromisoformat("2026-10-19T09:33:05+08:00"), {})
+    assert not result
+    assert result["reason"] == "TD_QUERY_TIMEOUT"
+    assert result["query_window"] == ["2026-10-19 09:33:00", "2026-10-19 09:33:03"]
+    assert result["threshold"] == gates.MIN_CHECKPOINT_SYMBOLS
+    assert result["elapsed_ms"] < 100
+
+
+def test_checkpoint_gate_reports_latest_visible_tick_timestamp(monkeypatch):
+    import engine_core.guardian.gates as gates
+    from engine_core.guardian.scheduler import default_events
+
+    import dataclasses
+    event = dataclasses.replace(next(e for e in default_events() if e.event_id == "intraday_33"), args=None)
+    gates._CACHE.clear()
+    monkeypatch.setattr(gates, "_query_bounded", lambda _sql: (
+        [(f"600{i:03d}", "2026-10-19 09:33:02.750000") for i in range(gates.MIN_CHECKPOINT_SYMBOLS)], 1.0))
+    result = gates.checkpoint_ready(event, datetime.fromisoformat("2026-10-19T09:33:05+08:00"), {})
+    assert result["status"] == "ready"
+    assert result["checkpoint_ts"] == "2026-10-19 09:33:02.750000"
+
+
+def test_handler_gate_emits_diagnostic_reason_json(monkeypatch, capsys):
+    import json
+    from examples import guardian_handler
+    from engine_core.guardian import gates
+
+    monkeypatch.setattr(gates, "default_gates", lambda: {"checkpoint_ready": lambda *_: {
+        "status": "not_ready", "reason": "TD_QUERY_TIMEOUT", "row_count": 0,
+        "query_window": ["09:33:00", "09:33:03"], "elapsed_ms": 15,
+        "exception_type": "TimeoutError"}})
+    code = guardian_handler._gate("checkpoint_ready", {"event": "intraday_33"})
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 75 and payload["reason"] == "TD_QUERY_TIMEOUT"
+    assert payload["query_window"] == ["09:33:00", "09:33:03"]
+
+
+class _RealOutcomeCatalog:
+    """The 2026-11-02 18:42 state, from the copied production files: locate() answers the wencai recap (it outranks the
+    Baostock PROVISIONAL by coverage 1.0 vs 0.995) while a Baostock version exists in the version list."""
+
+    def __init__(self, root, baostock=True):
+        import json
+        self.root = root
+        fixture = Path(__file__).parent / "fixtures" / "real" / "core_artifacts" / "c641"
+        self.wencai = next((fixture / "daily_kline").glob("trade_date=2026-11-02/source=wencai/*/manifest.json"))
+        self.baostock = next((fixture / "daily_kline").glob("trade_date=2026-11-02/source=baostock/*/manifest.json"))
+        universe = next((fixture / "symbol_universe").glob("trade_date=2026-11-02/*/*/manifest.json"))
+        versions = [{"manifest": str(self.wencai)}] + ([{"manifest": str(self.baostock)}] if baostock else [])
+        self._data = {"datasets": {"daily_kline": {"dates": {"2026-11-02": versions}},
+                                   "symbol_universe": {"dates": {"2026-11-02": [{"manifest": str(universe)}]}}}}
+
+    def locate(self, dataset, day):
+        return self.wencai if dataset == "daily_kline" else None
+
+    def read(self):
+        return self._data
+
+
+def _gate_with(monkeypatch, tmp_path, now, **kwargs):
+    import engine_core.data_pipeline.storage as storage
+    monkeypatch.setattr(storage, "ArtifactCatalog", lambda root: _RealOutcomeCatalog(root, **kwargs))
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    event = type("Event", (), {"gate": "daily_kline_ready"})()
+    return daily_kline_ready(event, datetime.fromisoformat(now), {})
+
+
+def test_after_17_a_published_baostock_version_opens_the_gate_even_when_locate_answers_wencai(monkeypatch, tmp_path):
+    result = _gate_with(monkeypatch, tmp_path, "2026-11-02T18:45:11+08:00")     # distinct second: the gate caches per instant
+    assert result["status"] == "ready" and result["reason"] == "DAILY_KLINE_READY"
+    assert result["row_count"] == 5191 and result["version"] == "sha256-0842910cd5bcf104"     # the Baostock partition
+
+
+def test_after_17_without_a_baostock_version_the_wencai_recap_still_does_not_count(monkeypatch, tmp_path):
+    result = _gate_with(monkeypatch, tmp_path, "2026-11-02T18:45:22+08:00", baostock=False)
+    assert result["status"] == "not_ready" and result["reason"] == "DAILY_KLINE_REQUIRES_BAOSTOCK_AFTER_1700"
+
+
+def test_before_17_the_quick_recap_is_still_enough(monkeypatch, tmp_path):
+    result = _gate_with(monkeypatch, tmp_path, "2026-11-02T16:30:33+08:00", baostock=False)
+    assert result["status"] == "ready" and result["version"] == "sha256-5a4b196545b5c719"
+
+
+def test_checkpoint_shards_share_one_timeout_budget(monkeypatch):
+    import time
+    from engine_core.guardian import gates
+    from engine_core.guardian.scheduler import default_events
+    import dataclasses
+    event = dataclasses.replace(next(e for e in default_events() if e.event_id == 'intraday_33'), args=None)
+    monkeypatch.setenv('GUARDIAN_TD_QUERY_TIMEOUT_SECONDS', '0.05')
+    monkeypatch.setattr(gates, '_query', lambda sql: (time.sleep(0.03), [])[1])
+    gates._CACHE.clear()
+    start = time.monotonic()
+    result = gates.checkpoint_ready(event, datetime.fromisoformat('2026-10-19T09:33:05+08:00'), {})
+    assert result['reason'] == 'TD_QUERY_TIMEOUT'
+    assert 'CHECKPOINT_QUERY[gate]' in result['error_detail']
+    assert time.monotonic() - start < 0.14
+
+
+def test_snapshot_redis_real_pair_and_invalid_metadata(monkeypatch):
+    import json
+    import engine_core.guardian.gates as gates
+    import engine_core.data_pipeline.auction_redis_view as view
+
+    fixture = Path(__file__).parent / 'fixtures' / 'gate_redis'
+    payload = (fixture / '0925.json').read_bytes()
+    meta = json.loads((fixture / '0925.meta.json').read_bytes())
+    class Redis:
+        def __init__(self, pair): self.pair = pair
+        def mget(self, keys):
+            assert keys == ['core:auction:full:2026-11-13:0925', 'core:auction:full:2026-11-13:0925:meta']
+            return self.pair
+    event = type('Event', (), {'gate': 'auction_coverage'})()
+    now = datetime.fromisoformat('2026-11-13T09:25:10+08:00')
+    for changed, source, count in [(meta, 'redis', 5211),
+                                   ({**meta, 'rows': meta['rows'] - 1}, 'td', 1),
+                                   ({**meta, 'sha256': '0' * 64}, 'td', 1),
+                                   ({**meta, 'status': 'INCOMPLETE'}, 'td', 1),
+                                   (None, 'td', 1)]:
+        monkeypatch.setattr(view, 'redis_client', lambda: Redis((payload, json.dumps(changed).encode() if changed else None)))
+        gates._CACHE.clear()
+        result = auction_snapshot_ready(event, now, {'td': FakeTD(1), 'universe_count': 5000})
+        assert (result['source'], result['degraded'], result['row_count']) == (source, source == 'td', count)
+
+
+def test_snapshot_redis_rejects_future_tick(monkeypatch):
+    import hashlib
+    import json
+    import engine_core.guardian.gates as gates
+    import engine_core.data_pipeline.auction_redis_view as view
+
+    fixture = Path(__file__).parent / 'fixtures' / 'gate_redis'
+    rows = json.loads((fixture / '0925.json').read_bytes())
+    meta = json.loads((fixture / '0925.meta.json').read_bytes())
+    now = datetime.fromisoformat('2026-11-13T09:25:10+08:00')
+    row = next(iter(rows.values()))
+    row['ask_amount_yuan'] = row['amount_yuan']
+    class Redis:
+        def mget(self, keys): return payload, json.dumps(meta).encode()
+    monkeypatch.setattr(view, 'redis_client', Redis)
+    event = type('Event', (), {'gate': 'auction_coverage'})()
+    for offset, source in [(0, 'redis'), (1, 'td')]:
+        row['tick_ts_ms'] = int(now.timestamp() * 1000) + offset
+        payload = json.dumps(rows, separators=(',', ':')).encode()
+        meta['sha256'] = hashlib.sha256(payload).hexdigest()
+        gates._CACHE.clear()
+        result = auction_snapshot_ready(event, now, {'td': FakeTD(1), 'universe_count': 5000})
+        assert (result['source'], result['degraded']) == (source, source == 'td')

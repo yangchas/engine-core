@@ -1,0 +1,2900 @@
+{
+  "schema_version": 1,
+  "phase_names": [
+    "NIGHT",
+    "PRE_MARKET",
+    "AUCTION",
+    "AUCTION_END",
+    "OPEN",
+    "INTRADAY_AM",
+    "MIDDAY_BREAK",
+    "PM_OPEN",
+    "INTRADAY_PM",
+    "CLOSE_AUCTION",
+    "CLOSE",
+    "POST_MARKET"
+  ],
+  "items": [
+    {
+      "id": "trade_calendar",
+      "owner": "calendar_maintenance",
+      "artifact": {
+        "catalog_dataset": null,
+        "source_dataset": "local trade calendar matrix",
+        "date_basis": "覆盖历史/当前/未来交易日"
+      },
+      "phases": [
+        "NIGHT",
+        "PRE_MARKET"
+      ],
+      "cadence": "每周全量+每日读取",
+      "rule": "日历为交易日主判据；预测与已冻结历史不可被失败更新覆盖。",
+      "freshness": "UNKNOWN",
+      "retry": "event=calendar_refresh_0005 profile=policy_05 rungs=legacy; legacy attempts=3 backoff=60s*2 timeout=300s cap=10m until=15:00; event=calendar_refresh_0800 profile=policy_05 rungs=legacy; legacy attempts=3 backoff=60s*2 timeout=300s cap=10m until=15:00",
+      "degrade": [],
+      "lifecycle": {
+        "init": "cold fetch when absent",
+        "force": "fetch regardless of freshness",
+        "clear": "move aside to timestamped .bak; restore on failure"
+      },
+      "notes": "calendar maintenance event exists in code; exact guardian schedule event id not visible in schedule.json.",
+      "guardian_event": null,
+      "storage": [
+        {
+          "kind": "file",
+          "name": "trade_calendar/calendar.json",
+          "role": "authority"
+        }
+      ]
+    },
+    {
+      "id": "symbol_universe",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": "symbol_universe",
+        "date_basis": "目标交易日；universe_asof=前一交易日"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "每交易日 08:30",
+      "rule": "以前一交易日证券清单构造当日 A 股 universe；覆盖/身份变化质量门槛。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "08:45",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "event=startup_0830 profile=policy_06 rungs=legacy; legacy attempts=3 backoff=60s*2 timeout=901s cap=10m until=09:10; event=fetch_item profile=policy_04 rungs=legacy; legacy attempts=3 backoff=5m*2 timeout=20m cap=5m; per-item requeue details UNKNOWN",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "prep_trade_day and run_data_jobs produce; guardian startup_0830/premarket_slice_0850/startup_0900 share broad handler.",
+      "guardian_event": "startup_0830",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": null,
+        "depends_on": [],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_event": "startup_0830"
+      },
+      "cost": {
+        "class": "medium",
+        "basis": "prep_trade_day ~55s covers universe+baselines",
+        "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/run_data_jobs.py",
+          "--job",
+          "symbol_universe",
+          "--date",
+          "{date}",
+          "--execute"
+        ],
+        "timeout_seconds": 300
+      },
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "symbol_universe",
+          "role": "authority"
+        }
+      ]
+    },
+    {
+      "id": "daily_kline",
+      "owner": "postmarket_data",
+      "artifact": {
+        "catalog_dataset": "daily_kline",
+        "date_basis": "被查询的交易日 D；文件可于 D+1 到达"
+      },
+      "phases": [
+        "POST_MARKET"
+      ],
+      "cadence": "15:05 降级探测；17:40 Baostock 正式获取",
+      "rule": "Baostock 日线；日历/universe 与来源覆盖质量门槛。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "18:30",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "event=daily_kline_close_1505 profile=daily_kline_close rungs=wencai>q2_final; wencai attempts=2 backoff=60s*1 timeout=25m; q2_final attempts=2 backoff=30s*1 timeout=3m; event=baostock_probe_1730 profile=policy_11 rungs=legacy; legacy attempts=32 backoff=30m*1 timeout=130m cap=30m until=23:30",
+      "degrade": [
+        "15:05 event=daily_kline_close_1505 profile=daily_kline_close rungs=wencai>q2_final; schedule 顺序为问财优先、Q2 补空字段；逐行/逐字段标来源，coverage/missing 明示，quality.status 固定 PARTIAL；不得推进 latest 或冒充正式版",
+        "17:40 event=baostock_probe_1730 profile=policy_11 rungs=legacy; Baostock 正式获取"
+      ],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "Provider priority is baostock>wencai>q2_final; the 15:05 schedule event explicitly runs wencai>q2_final. Schedule v23 sets baostock_probe_1730 at 17:40 with late_until 23:30.",
+      "guardian_event": "postmarket_publish",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": null,
+        "depends_on": [],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "partition_before_trigger": "D-1",
+        "trigger_event": "baostock_probe_1730"
+      },
+      "cost": {
+        "class": "heavy",
+        "basis": "C616 2026-10-29: full real Baostock run processed 5224 queries in 54m46s; 2x=109m32s, so policy_11 uses a 130m rung; resumable per 25 symbols",
+        "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/backfill_td_daily_kline.py",
+          "--date",
+          "{date}",
+          "--artifact-root",
+          "{artifact_root}"
+        ],
+        "timeout_seconds": 7200,
+        "degraded": {
+          "argv": [
+            "{python}",
+            "examples/capture_daily_kline_degraded.py",
+            "--date",
+            "{date}",
+            "--artifact-root",
+            "{artifact_root}"
+          ],
+          "timeout_seconds": 300,
+          "default_mode": "dry-run",
+          "write_flag": "--write"
+        }
+      },
+      "td_sink": {
+        "database": "core_data",
+        "super_table": "daily_kline_v1",
+        "meta_table": "daily_kline_versions",
+        "self_check": true,
+        "history_min_trading_days": 10,
+        "baostock_total_timeout_seconds": 6900,
+        "authority": "Baostock is the only daily_kline provider written to TD; TD watermarks decide gaps",
+        "doc": "docs/DAILY_KLINE_TD.md"
+      },
+      "redis_ttl_seconds": 604800,
+      "storage": [
+        {
+          "kind": "td_stable",
+          "name": "daily_kline_v1",
+          "role": "authority"
+        },
+        {
+          "kind": "td_stable",
+          "name": "daily_kline_versions",
+          "role": "marker"
+        },
+        {
+          "kind": "catalog",
+          "name": "daily_kline",
+          "role": "marker"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:daily_kline",
+          "role": "view",
+          "ttl_seconds": 604800
+        }
+      ]
+    },
+    {
+      "id": "daily_dde",
+      "owner": "postmarket_data",
+      "artifact": {
+        "td_stable": "daily_dde_v1",
+        "date_basis": "Kaipan 响应逐行 Date；目标分区日期须由响应包含"
+      },
+      "phases": [
+        "POST_MARKET",
+        "NIGHT",
+        "PRE_MARKET"
+      ],
+      "cadence": "每日 02:00（D+1），目标为前一交易日；F1 完成后 F2 才可计算（F2 另卡）",
+      "rule": "唯一来源 Kaipan getHisStockDDE；单股一次取回全史，按 history_trading_days 配置只写最近交易日（默认 250），新日期优先。字段缺失为 NULL，回显日期早于目标日视为 stale。",
+      "freshness": {
+        "partition": "D-1",
+        "expected_by": "06:30",
+        "basis": "trading_day",
+        "set_by": "C600"
+      },
+      "retry": "event=daily_dde_0200 profile=daily_dde rungs=kaipan; 每股最多 3 次，退避 0.5s*2 cap=30s；事件重试 5m*2 cap=30m，截止 06:30",
+      "degrade": [
+        "无降级链；缺失逐股记录 known_missing 并等待重试至次日盘前。"
+      ],
+      "td_sink": {
+        "database": "core_data",
+        "stable": "daily_dde_v1",
+        "columns": [
+          "ddje",
+          "version"
+        ],
+        "tags": [
+          "symbol"
+        ],
+        "timestamp": "ts"
+      },
+      "lifecycle": {
+        "init": "检查 core_data 存在并创建库内 daily_dde_v1 stable；按 symbol 聚合水位，只对缺目标日的股票回补",
+        "force": "重取指定股票并原子批量写入后读回",
+        "clear": "不提供删除操作"
+      },
+      "redis_hot_view": {
+        "namespace": "core:cache:data:daily_dde",
+        "key_pattern": "{namespace}:{date}",
+        "type": "hash",
+        "field": "symbol",
+        "ttl_seconds": 86400
+      },
+      "notes": "来源响应提供 Date 与 DDJE；large_net/DDX/DDY/DDZ 不存在于源响应。旧库四列恒为 0，不是数据。Redis 只写 core:cache:data:daily_dde:{date} hash，TTL 由本登记项配置。",
+      "guardian_event": "daily_dde_0200",
+      "storage": [
+        {
+          "kind": "td_stable",
+          "name": "daily_dde_v1",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:daily_dde",
+          "role": "view",
+          "ttl_seconds": 86400
+        }
+      ]
+    },
+    {
+      "id": "daily_indicators",
+      "owner": "postmarket_data",
+      "artifact": {
+        "catalog_dataset": "daily_indicators",
+        "date_basis": "daily_kline trade_date D"
+      },
+      "phases": [
+        "POST_MARKET"
+      ],
+      "cadence": "日K就绪(>=PROVISIONAL)即派生;日K升FORMAL后重算为新版本",
+      "rule": "从 daily_kline 派生；要求前置日K与足够历史窗口。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "19:00",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "prep_trade_day can materialize after daily_kline; retry owner/late cutoff UNKNOWN.",
+      "guardian_event": "postmarket_publish",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": null,
+        "depends_on": [
+          "daily_kline",
+          "symbol_universe"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "partition_before_trigger": "D-1",
+        "trigger_event": "baostock_probe_1730"
+      },
+      "cost": {
+        "class": "medium",
+        "basis": "measured C571 2026-10-28: 10.1s for 2026-10-27 over 82 daily_kline partitions (5224 rows); no network, one catalog read/write",
+        "set_by": "claude C571 2026-10-28"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/build_daily_derived.py",
+          "--dataset",
+          "daily_indicators",
+          "--date",
+          "{date}",
+          "--artifact-root",
+          "{artifact_root}",
+          "--no-cascade"
+        ],
+        "timeout_seconds": 600
+      },
+      "derive": {
+        "algorithm": "derived_v1",
+        "min_upstream_status": "PROVISIONAL",
+        "upstream": [
+          "daily_kline",
+          "symbol_universe"
+        ],
+        "recompute_on_input_change": true,
+        "window_days": 120,
+        "trigger": "upstream daily_kline partition present at >= min_upstream_status (gate), not a fixed clock time; a PROVISIONAL result is recomputed as a new version once daily_kline is FORMAL"
+      },
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "daily_indicators",
+          "role": "authority"
+        }
+      ]
+    },
+    {
+      "id": "daily_report_features",
+      "owner": "postmarket_data",
+      "artifact": {
+        "catalog_dataset": "daily_report_features",
+        "date_basis": "特征 trade_date D；盘前消费前一交易日"
+      },
+      "phases": [
+        "POST_MARKET"
+      ],
+      "cadence": "日K与指标就绪即派生;任一上游版本变化后重算为新版本",
+      "rule": "派生报告特征；依赖 daily_kline/daily_indicators。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "19:00",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "prep_trade_day can materialize after prerequisites; report-specific freshness cutoff UNKNOWN.",
+      "guardian_event": "postmarket_publish",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": null,
+        "depends_on": [
+          "daily_kline",
+          "daily_indicators",
+          "symbol_universe"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "partition_before_trigger": "D-1",
+        "trigger_event": "baostock_probe_1730"
+      },
+      "cost": {
+        "class": "medium",
+        "basis": "measured C366 sandbox 2026-10-20: 11.5s median x3, 5227 rows",
+        "set_by": "claude 2026-10-21 from fw/research/C366/timings.json"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/build_daily_derived.py",
+          "--dataset",
+          "daily_report_features",
+          "--date",
+          "{date}",
+          "--artifact-root",
+          "{artifact_root}",
+          "--no-cascade"
+        ],
+        "timeout_seconds": 300
+      },
+      "derive": {
+        "algorithm": "derived_v1",
+        "min_upstream_status": "PROVISIONAL",
+        "upstream": [
+          "daily_kline",
+          "daily_indicators",
+          "symbol_universe"
+        ],
+        "recompute_on_input_change": true,
+        "window_days": 120,
+        "trigger": "upstream daily_kline (>= min_upstream_status) and the same-day daily_indicators version; recomputed as a new version when either changes"
+      },
+      "redis_ttl_seconds": 604800,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "daily_report_features",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:daily_report_features",
+          "role": "view",
+          "ttl_seconds": 604800
+        }
+      ]
+    },
+    {
+      "id": "limit_up_pool",
+      "redis_ttl_trade_days": 5,
+      "owner": "kaipan_fetch",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "D 日取前一交易日 D-1 的池(name=D-1, 抓取时刻另记 fetched_at);D-1 数据 D 日 00:30 起可得"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "每交易日 00:40 起(limit_pool_d1);Kaipan 每 15 分钟重试至 08:50,之后问财、TD 推导",
+      "rule": "阶梯在 schedule.json 配置(profile limit_pool_d1):Kaipan getHisBans(FORMAL,保留 23 个位置字段) → 问财'{date}涨停;连板天数;去除st'(PROVISIONAL) → TD 日K 推导(DEGRADED,推导池,去 ST 取不到则 st_filter=UNAVAILABLE)。只有配置里写了的降级才发生;低质量版本不覆盖高质量版本。",
+      "freshness": {
+        "partition": "D-1",
+        "expected_by": "08:50",
+        "basis": "trading_day",
+        "set_by": "C580 2026-10-28"
+      },
+      "retry": "event=limit_pool_d1 profile=limit_pool_d1 rungs=kaipan>wencai>td_derived; kaipan attempts=34 backoff=15m*1 timeout=5m retry_until=08:50; wencai attempts=2 backoff=30m*1 timeout=10m; td_derived attempts=2 backoff=5m*1 timeout=5m; 全链失败 FAILED_FINAL + 告警一次",
+      "degrade": [
+        "08:50 之后 Kaipan 仍未发布 → 问财池(PROVISIONAL,成员与 Kaipan 一致)",
+        "问财失败 → TD 日K 推导池(DEGRADED,推导而非供应商事实,无封单证据)",
+        "全部失败 → 显式 MISSED/FAILED_FINAL,不伪造"
+      ],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "昨日池由 guardian/limit_pool_d1.py 发布 Redis 热视图；历史 TD 仅用于显式降级读取或恢复，历史 catalog 是迁移资料。健康热命中直接 ALREADY_SATISFIED。",
+      "guardian_event": "limit_pool_d1",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": null,
+        "depends_on": [],
+        "set_by": "C580 2026-10-28",
+        "trigger_event": "limit_pool_d1"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "Kaipan 6-12 次请求(10s 间隔);问财 1 页;TD 一次 SELECT",
+        "set_by": "C580 2026-10-28"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/run_data_jobs.py",
+          "--job",
+          "limit_up_pool",
+          "--date",
+          "{date}",
+          "--execute"
+        ],
+        "timeout_seconds": 900
+      },
+      "td_sink": {
+        "database": "core_data",
+        "super_table": "limit_up_pool_v1",
+        "meta_table": "limit_up_pool_versions",
+        "authority": "historical TD fallback only; normal producer writes Redis",
+        "doc": "docs/LIMIT_UP_POOL.md"
+      },
+      "storage": [
+        {
+          "kind": "td_stable",
+          "name": "limit_up_pool_v1",
+          "role": "legacy"
+        },
+        {
+          "kind": "td_stable",
+          "name": "limit_up_pool_versions",
+          "role": "legacy"
+        },
+        {
+          "kind": "catalog",
+          "name": "limit_up_pool",
+          "role": "legacy",
+          "note": "historical ledger; not a producer or report prerequisite"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:view:limit_up_pool:{data_date}",
+          "role": "authority",
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
+        },
+        {
+          "kind": "td_snapshot",
+          "name": "cold_limit_up_pool_<identity>",
+          "role": "mirror",
+          "note": "best-effort asynchronous cold archive"
+        }
+      ],
+      "kind": "day_refetchable",
+      "hot_store": {
+        "key": "core:view:limit_up_pool:{data_date}"
+      },
+      "cold_store": {
+        "dataset": "limit_up_pool"
+      }
+    },
+    {
+      "id": "limit_up_pool_today",
+      "owner": "intraday_data",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "D 的采样时点版本；主键 (symbol,date,as_of)"
+      },
+      "phases": [
+        "AUCTION",
+        "AUCTION_END",
+        "OPEN",
+        "INTRADAY_AM",
+        "MIDDAY_BREAK",
+        "PM_OPEN",
+        "INTRADAY_PM",
+        "CLOSE"
+      ],
+      "cadence": "与 schedule.json 的 kaipan_hot_* 时点对齐；15:20 另做一次 WenCai 收盘确认",
+      "rule": "C582: Redis q2 active/hash 的 px/pc 按板块涨停幅度和分位价格计算为主；封单额仅来源有可验证的金额字段时填写。ST 信息缺失标 UNAVAILABLE。WenCai 每日最多一次、间隔至少 30 分钟，只用于收盘互校或配置的收盘回补。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "15:20",
+        "basis": "trading_day",
+        "set_by": "C582 2026-10-29"
+      },
+      "retry": "盘中 Redis 事件按各 schedule event 配置重试（如 event=limit_up_today_091600 max_attempts=3 retry_backoff=1s timeout=30s）；WenCai 收盘 event=limit_up_today_close_confirm_152000 max_attempts=1 timeout=300s，每日最多 1 次，不在盘中重试阶梯中",
+      "degrade": [
+        "Redis 盘中失败时不自动请求 WenCai；只有 schedule 明确配置的收盘确认事件才请求",
+        "收盘 Redis 失败时按 close_confirm 事件配置使用一次 WenCai，并标 PROVISIONAL",
+        "没有可验证的封单字段时 seal_amount=null；ST 信息缺失时 st_status=UNAVAILABLE"
+      ],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute a new as_of version",
+        "clear": "clear then rebuild"
+      },
+      "notes": "C900: hot view uses Core Redis namespace core:cache:data:limit_up_pool_today:* with the registered TTL; Redis is authoritative; TD is a best-effort cold archive. Redis expiry: fifth following trading day at 00:00 Asia/Shanghai; late backfills retain at least 24 hours.",
+      "guardian_event": "limit_up_today_091600",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": null,
+        "depends_on": [
+          "symbol_universe"
+        ],
+        "set_by": "C582 2026-10-29",
+        "trigger_event": "limit_up_today_091600"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "Redis q2 active set plus HGETALL batch per sample; WenCai one bounded 100-row page after close",
+        "set_by": "C582 2026-10-29"
+      },
+      "redis_hot_view": {
+        "namespace": "core:cache:data:limit_up_pool_today",
+        "version_key": "{namespace}:{date}:{version}",
+        "date_key": "{namespace}:{date}",
+        "latest_key": "{namespace}:latest",
+        "retention": {
+          "kind": "trading_days",
+          "count": 5,
+          "anchor": "data_date",
+          "expire_time": "00:00:00",
+          "timezone": "Asia/Shanghai"
+        }
+      },
+      "storage": [
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:limit_up_pool_today",
+          "role": "authority",
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
+        },
+        {
+          "kind": "td_snapshot",
+          "name": "cold_limit_up_pool_today_<identity>",
+          "role": "mirror",
+          "note": "best-effort asynchronous cold archive"
+        }
+      ],
+      "redis_ttl_trade_days": 5,
+      "kind": "point_snapshot",
+      "hot_store": {
+        "key": "core:cache:data:limit_up_pool_today:{trade_date}:{version}"
+      },
+      "cold_store": {
+        "dataset": "limit_up_pool_today"
+      }
+    },
+    {
+      "id": "limit_reasons",
+      "owner": "kaipan_fetch",
+      "artifact": {
+        "catalog_dataset": "limit_reasons",
+        "date_basis": "08:50 目标交易日 D 获取前一交易日 D-1 池/原因"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "每交易日 08:50",
+      "rule": "Kaipan 历史接口获取昨日条目；限频和分页由 provider 执行。",
+      "freshness": {
+        "partition": "D-1",
+        "expected_by": "09:05",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "event=limit_reasons_d1 profile=limit_reasons_d1 rungs=legacy; legacy attempts=3 backoff=5m*2 timeout=5m cap=5m until=08:50",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "schedule event limit_reasons_d1; source adapter in run_data_jobs. | C389 2026-10-21: Kaipan getBanReasons returns only the LATEST reason per stock; a symbol that limited up again on D loses its D-1 entry. Late backfill after D's reasons start (>~09:20) is therefore PARTIAL: overwritten symbols are counted missing (quality.partial, provider_details.overwritten_symbol_count). The 08:50 capture is the only complete one.",
+      "guardian_event": "kaipan_refresh_0850",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": null,
+        "depends_on": [
+          "limit_up_pool"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_event": "kaipan_refresh_0850"
+      },
+      "cost": {
+        "class": "medium",
+        "basis": "C379 真实取数 531.854s/54 symbols；只查当日涨停池成员，900s timeout，逐证券 checkpoint 可续跑",
+        "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/run_data_jobs.py",
+          "--job",
+          "limit_reasons",
+          "--date",
+          "{date}",
+          "--execute"
+        ],
+        "timeout_seconds": 900
+      },
+      "redis_ttl_seconds": 345600,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "limit_reasons",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:limit_reasons",
+          "role": "view",
+          "ttl_seconds": 345600
+        }
+      ]
+    },
+    {
+      "id": "hot_plates_yesterday",
+      "owner": "kaipan_hot_capture",
+      "artifact": {
+        "date_basis": "D-1 历史接口取数；只供昨日热板报告消费，不代表盘中时点抓拍",
+        "redis_dataset": "hot_plates"
+      },
+      "phases": [
+        "PRE_MARKET",
+        "MIDDAY_BREAK",
+        "PM_OPEN",
+        "INTRADAY_PM",
+        "CLOSE",
+        "POST_MARKET"
+      ],
+      "cadence": "D 08:15 fetch D-1 and latest configured N trading dates; expired windows are gap_only",
+      "rule": "getHisPlates historical rows are accepted only when response Day matches the requested trade date; fetch D-1 plus the configured latest N trading dates (default 3). Outside vendor retention, or on mismatch, record gap_only; never substitute today rows.",
+      "freshness": {
+        "partition": "D-1",
+        "expected_by": "08:30",
+        "basis": "trading_day",
+        "set_by": "C379 2026-10-21"
+      },
+      "retry": "event=hot_plates_history_0815 profile=hot_plates_history max_attempts=1 timeout=300s; failed dates and expired windows are gap_only",
+      "degrade": [],
+      "lifecycle": {
+        "init": "fetch historical date when absent",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "C379 observed response Day mismatch for an older date; retention is roughly three trading dates. Do not retry dates outside the configured retention window or manufacture rows.",
+      "guardian_event": "hot_plates_history_0815",
+      "late_policy": {
+        "mode": "gap_only",
+        "valid_until": null,
+        "depends_on": [],
+        "set_by": "C583; premarket history event deadline in schedule.json",
+        "partition_before_trigger": "D-1",
+        "trigger_event": "hot_plates_history_0815"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "gap record only",
+        "set_by": "C379/claude 2026-10-21"
+      },
+      "redis_ttl_trade_days": 5,
+      "storage": [
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:hot_plates",
+          "role": "authority",
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
+        }
+      ],
+      "kind": "point_snapshot",
+      "hot_store": {
+        "key": "core:cache:data:hot_plates:{trade_date}:{version}"
+      },
+      "cold_store": {
+        "dataset": "hot_plates"
+      }
+    },
+    {
+      "id": "hot_plates",
+      "owner": "kaipan_hot_capture",
+      "artifact": {
+        "date_basis": "目标交易日 D + captured_at；历史接口仅有限回溯",
+        "redis_dataset": "hot_plates"
+      },
+      "phases": [
+        "AUCTION",
+        "AUCTION_END",
+        "OPEN",
+        "INTRADAY_AM",
+        "MIDDAY_BREAK",
+        "PM_OPEN",
+        "INTRADAY_PM",
+        "CLOSE"
+      ],
+      "cadence": "18 Kaipan snapshots per trading day; each scheduled point appends a version",
+      "rule": "Kaipan getHisPlates today mode; captured_at is available_at. Failed/late point records a gap_only row with latest earlier snapshot marked STALE; no Wencai fallback exists.",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "09:20",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "Schedule: 09:16:10, 09:21:10, 09:25:20, 09:28:30, 09:32:20, 09:35:20, 09:40:20, 09:45:20, 10:10, 10:20, 10:30, 10:45, 11:00, 11:25, 13:30, 14:30, 14:50, 15:10. Each point preserves a new captured_at version.",
+      "guardian_event": "kaipan_hot_capture",
+      "late_policy": {
+        "mode": "gap_only",
+        "valid_until": null,
+        "depends_on": [],
+        "set_by": "C583; per-event deadline in schedule.json",
+        "trigger_event": "kaipan_hot_091610"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "one bounded Kaipan snapshot; page interval >=1s",
+        "set_by": "C583"
+      },
+      "redis_ttl_trade_days": 5,
+      "storage": [
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:hot_plates",
+          "role": "authority",
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
+        },
+        {
+          "kind": "td_snapshot",
+          "name": "cold_hot_plates_<identity>",
+          "role": "mirror",
+          "note": "best-effort asynchronous cold archive"
+        }
+      ],
+      "kind": "point_snapshot",
+      "hot_store": {
+        "key": "core:cache:data:hot_plates:{trade_date}:{version}"
+      },
+      "cold_store": {
+        "dataset": "hot_plates"
+      }
+    },
+    {
+      "id": "hot_plates_gaps",
+      "owner": "kaipan_hot_capture",
+      "artifact": {
+        "date_basis": "scheduled event trade date",
+        "redis_dataset": "hot_plates_gaps"
+      },
+      "phases": [
+        "AUCTION",
+        "AUCTION_END",
+        "OPEN",
+        "INTRADAY_AM",
+        "MIDDAY_BREAK",
+        "PM_OPEN",
+        "INTRADAY_PM",
+        "CLOSE"
+      ],
+      "cadence": "after each expired hot-plate capture window",
+      "rule": "One idempotent GAP row per missed event; late_policy=gap_only; reference earlier snapshot as STALE when present.",
+      "freshness": {
+        "partition": "D/event_id",
+        "expected_by": "event deadline",
+        "basis": "schedule event",
+        "set_by": "C583"
+      },
+      "retry": "none; gap records do not trigger source retries",
+      "degrade": [],
+      "lifecycle": {
+        "init": "record at next hot capture or late startup",
+        "force": "idempotent by event_id",
+        "clear": "not provided"
+      },
+      "notes": "No Wencai hot-plate fallback; missing points remain explicit gaps.",
+      "guardian_event": "kaipan_hot_capture",
+      "late_policy": {
+        "mode": "gap_only",
+        "valid_until": null,
+        "depends_on": [],
+        "set_by": "C583",
+        "partition_before_trigger": "D/event_id",
+        "trigger_event": "kaipan_hot_091610"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "local append only; no source request",
+        "set_by": "C583"
+      },
+      "storage": [
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:hot_plates_gaps",
+          "role": "authority",
+          "ttl_seconds": 432000
+        },
+        {
+          "kind": "td_snapshot",
+          "name": "cold_hot_plates_gaps_<identity>",
+          "role": "mirror",
+          "note": "best-effort asynchronous cold archive"
+        }
+      ],
+      "redis_ttl_seconds": 432000,
+      "kind": "point_snapshot",
+      "hot_store": {
+        "key": "core:cache:data:hot_plates_gaps:{trade_date}:{event_id}"
+      },
+      "cold_store": {
+        "dataset": "hot_plates_gaps"
+      }
+    },
+    {
+      "id": "plate_members",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": "plate_members",
+        "date_basis": "trade_date snapshot; source as_of may precede target date"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "weekly PRE_MARKET + new security detected in symbol_universe",
+      "rule": "按板块码获取成员快照；目标日结论只消费可用的点时成员。",
+      "freshness": {
+        "partition": "latest",
+        "max_age_days": 8,
+        "basis": "calendar_days",
+        "set_by": "C573: weekly_days=7; stale_alert after 8 calendar days"
+      },
+      "retry": "event=static_data_refresh_0850 profile=policy_06 rungs=legacy; legacy attempts=3 backoff=60s*2 timeout=901s cap=10m until=15:00; no fallback",
+      "degrade": [],
+      "lifecycle": {
+        "init": "cold fetch when absent",
+        "force": "fetch regardless of freshness",
+        "clear": "move aside to timestamped .bak; restore on failure"
+      },
+      "notes": "C573: refresh uses the latest plate_registry code identity and bounded Kaipan getHisPlateIds requests; incomplete provider results fail and retry. Unregistered member codes are retained and counted.",
+      "guardian_event": "static_data_refresh_0850",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": "15:00:00",
+        "depends_on": [
+          "symbol_universe"
+        ],
+        "set_by": "C573: weekly PRE_MARKET refresh; daily new-symbol check; startup catches up in the configured window",
+        "trigger_event": "static_data_refresh_0850"
+      },
+      "cost": {
+        "class": "medium",
+        "basis": "10-day member backfill is long; daily refresh unknown",
+        "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/run_data_jobs.py",
+          "--job",
+          "plate_members",
+          "--date",
+          "{date}",
+          "--execute"
+        ],
+        "timeout_seconds": 300
+      },
+      "redis_ttl_seconds": 345600,
+      "storage": [
+        {
+          "kind": "td_snapshot",
+          "name": "plate_members",
+          "role": "authority"
+        },
+        {
+          "kind": "catalog",
+          "name": "plate_members",
+          "role": "legacy",
+          "note": "no new partitions since C618 (last 2026-10-29)"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:plate_members",
+          "role": "view",
+          "ttl_seconds": 345600
+        }
+      ]
+    },
+    {
+      "id": "plate_registry",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": "plate_registry",
+        "date_basis": "snapshot trade_date"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "weekly PRE_MARKET + new symbol_universe code",
+      "rule": "板块代码登记/名称映射，需与成员关系身份一致。",
+      "freshness": {
+        "partition": "latest",
+        "max_age_days": 8,
+        "basis": "calendar_days",
+        "set_by": "C573: weekly_days=7; stale_alert after 8 calendar days"
+      },
+      "retry": "event=static_data_refresh_0850 profile=policy_06 rungs=legacy; legacy attempts=3 backoff=60s*2 timeout=901s cap=10m until=15:00; no fallback",
+      "degrade": [],
+      "lifecycle": {
+        "init": "cold fetch when absent",
+        "force": "fetch regardless of freshness",
+        "clear": "move aside to timestamped .bak; restore on failure"
+      },
+      "notes": "C573: full live registry source is not configured. The event records SOURCE_NOT_CONFIGURED and stale age; hot-board ranking and prior snapshots are not used as substitutes. Configure an explicit complete source before writes.",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": "15:00:00",
+        "depends_on": [
+          "symbol_universe"
+        ],
+        "set_by": "C573: weekly PRE_MARKET refresh; daily new-symbol check; startup catches up in the configured window",
+        "trigger_event": "static_data_refresh_0850"
+      },
+      "guardian_event": "static_data_refresh_0850",
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "plate_registry",
+          "role": "authority",
+          "note": "td_snapshot table plate_registry_latest exists in code but is not populated (verified 2026-11-03)"
+        }
+      ]
+    },
+    {
+      "id": "stock_static",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": "stock_static",
+        "date_basis": "snapshot trade_date; source date echo for Baostock basic is UNKNOWN"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "weekly PRE_MARKET + new symbol_universe code",
+      "rule": "静态证券属性/名称映射；不可将非点时快照作为历史真值。",
+      "freshness": {
+        "partition": "latest",
+        "max_age_days": 8,
+        "basis": "calendar_days",
+        "set_by": "C573: weekly_days=7; stale_alert after 8 calendar days"
+      },
+      "retry": "event=static_data_refresh_0850 profile=policy_06 rungs=legacy; legacy attempts=3 backoff=60s*2 timeout=901s cap=10m until=15:00; no fallback",
+      "degrade": [],
+      "lifecycle": {
+        "init": "cold fetch when absent",
+        "force": "fetch regardless of freshness",
+        "clear": "move aside to timestamped .bak; restore on failure"
+      },
+      "notes": "C573: stock_static joins latest symbol_universe with Baostock query_stock_basic; source date echo is absent, missing basic/listing fields remain null and are counted. No fallback provider is configured.",
+      "guardian_event": "static_data_refresh_0850",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": "15:00:00",
+        "depends_on": [
+          "symbol_universe"
+        ],
+        "set_by": "C573: weekly PRE_MARKET refresh; daily new-symbol check; startup catches up in the configured window",
+        "trigger_event": "static_data_refresh_0850"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "UNKNOWN",
+        "set_by": "claude 2026-10-20 default"
+      },
+      "redis_ttl_seconds": 3600,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "stock_static",
+          "role": "authority",
+          "note": "td_snapshot table stock_static_latest exists in code but is not populated (verified 2026-11-03)"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:stock_static",
+          "role": "view",
+          "ttl_seconds": 3600
+        }
+      ]
+    },
+    {
+      "id": "auction_snapshot_v2",
+      "owner": "snapshot_check",
+      "artifact": {
+        "catalog_dataset": null,
+        "source_dataset": "TD market_data1.auction_snapshot_v2",
+        "date_basis": "same-day D; label timestamps 09:20/09:24/09:25; 09:25 final arrivals may follow"
+      },
+      "phases": [
+        "AUCTION",
+        "AUCTION_END"
+      ],
+      "cadence": "09:20/09:24/09:25 source snapshots",
+      "rule": "TD market_data1 read-only; tags indicate source snapshots, not complete arrival time.",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "none",
+        "force": "none",
+        "clear": "none"
+      },
+      "notes": "External TD dataset, not Core catalog; Core guardian checks readiness. TD freshness threshold UNKNOWN; ask data operator.",
+      "guardian_event": "auction_0920_check",
+      "storage": [
+        {
+          "kind": "td_external",
+          "name": "market_data1.auction_snapshot_v2",
+          "role": "authority",
+          "note": "owned by t1_v2; Core only reads"
+        }
+      ]
+    },
+    {
+      "id": "auction_baseline",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": "auction_baseline",
+        "date_basis": "target trade_date D"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "每日盘前构建",
+      "rule": "由历史竞价快照计算基线；窗口/覆盖率规则待核。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "09:20",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
+      "guardian_event": "premarket_slice_0850",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": null,
+        "depends_on": [
+          "daily_kline",
+          "symbol_universe"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_event": "premarket_slice_0850"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "measured C366 sandbox 2026-10-20: 0.9s median x3, 88816 rows",
+        "set_by": "claude 2026-10-21 from fw/research/C366/timings.json"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/build_auction_baseline.py",
+          "--date",
+          "{date}",
+          "--write"
+        ],
+        "timeout_seconds": 300
+      },
+      "redis_ttl_seconds": 345600,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "auction_baseline",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:auction_baseline",
+          "role": "view",
+          "ttl_seconds": 345600
+        }
+      ],
+      "requires": [
+        {
+          "dataset": "auction_amount",
+          "window_days": 64,
+          "min_days": 5,
+          "min_quality": "FORMAL"
+        }
+      ]
+    },
+    {
+      "id": "auction_stock_facts",
+      "owner": "auction_report",
+      "artifact": {
+        "catalog_dataset": "auction_stock_facts",
+        "date_basis": "same-day D; cutoff from snapshot availability"
+      },
+      "phases": [
+        "AUCTION",
+        "AUCTION_END",
+        "AUCTION_END"
+      ],
+      "cadence": "竞价快照到达后构建",
+      "rule": "PIT 读取当日竞价快照；保留缺失/部分状态。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "09:30",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner. Redis expiry: fifth following trading day at 00:00 Asia/Shanghai; late backfills retain at least 24 hours.",
+      "guardian_event": "auction_facts_0925",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": null,
+        "depends_on": [
+          "auction_baseline"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_event": "auction_facts_0925"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "built inside auction report (~10s compute)",
+        "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/fetch_auction_item.py",
+          "--item",
+          "{item}",
+          "--date",
+          "{date}",
+          "--execute"
+        ],
+        "timeout_seconds": 180
+      },
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "auction_stock_facts",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:auction_stock_facts",
+          "role": "view",
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
+        }
+      ],
+      "redis_ttl_trade_days": 5
+    },
+    {
+      "id": "auction_points",
+      "owner": "auction_report",
+      "artifact": {
+        "catalog_dataset": "auction_points",
+        "date_basis": "same-day D and tagged point"
+      },
+      "phases": [
+        "AUCTION",
+        "AUCTION_END",
+        "AUCTION_END"
+      ],
+      "cadence": "竞价报告消费时构建",
+      "rule": "由竞价 snapshot/points 聚合；精确前置门槛待核。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "09:30",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner. Redis expiry: fifth following trading day at 00:00 Asia/Shanghai; late backfills retain at least 24 hours.",
+      "guardian_event": "auction_facts_0925",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": null,
+        "depends_on": [
+          "auction_stock_facts"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_event": "auction_facts_0925"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "inside auction report",
+        "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/fetch_auction_item.py",
+          "--item",
+          "{item}",
+          "--date",
+          "{date}",
+          "--execute"
+        ],
+        "timeout_seconds": 180
+      },
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "auction_points",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:auction_points",
+          "role": "view",
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
+        }
+      ],
+      "redis_ttl_trade_days": 5
+    },
+    {
+      "id": "auction_points_raw",
+      "owner": "auction_report",
+      "artifact": {
+        "catalog_dataset": "auction_points_raw",
+        "date_basis": "same-day D and tagged point"
+      },
+      "phases": [
+        "AUCTION",
+        "AUCTION_END",
+        "AUCTION_END"
+      ],
+      "cadence": "竞价报告消费时构建",
+      "rule": "原始竞价点保留来源时点，不补造缺失。",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
+      "guardian_event": "auction_report_0926",
+      "retired": {
+        "since": "2026-10-21",
+        "reason": "raw t1_v2 Redis archive captures last written 2026-10-16 (dirs trade_date=2026-10-15/16 only); auction_points is now rebuilt from TD (C373) and nothing in the production path reads this archive",
+        "set_by": "claude 2026-10-21"
+      },
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "auction_points_raw",
+          "role": "legacy",
+          "note": "retired 2026-10-21"
+        }
+      ]
+    },
+    {
+      "id": "auction_panorama",
+      "owner": "auction_report",
+      "artifact": {
+        "catalog_dataset": "auction_panorama",
+        "date_basis": "same-day D"
+      },
+      "phases": [
+        "AUCTION",
+        "AUCTION_END",
+        "AUCTION_END"
+      ],
+      "cadence": "竞价报告消费时构建",
+      "rule": "报告侧车绑定 sha256；需通过报告门槛。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "09:30",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner. Redis expiry: fifth following trading day at 00:00 Asia/Shanghai; late backfills retain at least 24 hours.",
+      "guardian_event": "auction_facts_0925",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": null,
+        "depends_on": [
+          "auction_stock_facts"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_event": "auction_facts_0925"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "inside auction report",
+        "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/fetch_auction_item.py",
+          "--item",
+          "{item}",
+          "--date",
+          "{date}",
+          "--execute"
+        ],
+        "timeout_seconds": 180
+      },
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "auction_panorama",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:auction_panorama",
+          "role": "view",
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
+        }
+      ],
+      "redis_ttl_trade_days": 5
+    },
+    {
+      "id": "ladder_daily",
+      "owner": "postmarket_data",
+      "artifact": {
+        "catalog_dataset": "ladder_daily",
+        "date_basis": "trade_date D"
+      },
+      "phases": [
+        "POST_MARKET"
+      ],
+      "cadence": "日K(D)就绪(>=PROVISIONAL)即派生;输入版本变化后重算为新版本",
+      "rule": "C577 ladder_v1:逐日涨停集合(日K连贯>Kaipan指定历史日涨停池>问财>UNKNOWN),窗口内无状态,不接力上一分区。docs/LADDER_DAILY.md",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "19:00",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "Catalog contains this dataset. guardian owner event not directly assigned by current schedule.",
+      "guardian_event": "postmarket_publish",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": null,
+        "depends_on": [
+          "daily_kline"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "partition_before_trigger": "D-1",
+        "trigger_event": "baostock_probe_1730"
+      },
+      "cost": {
+        "class": "medium",
+        "basis": "C577: catalog-only run (daily bars) measured in docs/LADDER_DAILY.md; Kaipan/WenCai rungs add network only for days without usable bars",
+        "set_by": "claude C577 2026-10-28"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/build_ladder_daily.py",
+          "--date",
+          "{date}",
+          "--artifact-root",
+          "{artifact_root}"
+        ],
+        "timeout_seconds": 600
+      },
+      "derive": {
+        "algorithm": "ladder_v1",
+        "min_upstream_status": "PROVISIONAL",
+        "upstream": [
+          "daily_kline",
+          "limit_up_pool"
+        ],
+        "recompute_on_input_change": true,
+        "window_days": 20,
+        "source_ladder": [
+          "daily_kline",
+          "kaipan",
+          "wencai"
+        ],
+        "continuity_min_ratio": 0.95,
+        "kaipan": {
+          "live": true,
+          "max_requests": 12
+        },
+        "wencai": {
+          "live": true,
+          "min_interval_seconds": 10,
+          "max_queries_per_run": 2,
+          "cookie_path": "~/core-data/secrets/wencai.cookie"
+        },
+        "trigger": "daily_kline(D) present at >= min_upstream_status (gate, not a clock time); rebuilt as a new version when a recorded input version changes or the partition predates ladder_v1"
+      },
+      "td_sink": {
+        "table": "ladder_daily_v1",
+        "version_table": "ladder_daily_versions"
+      },
+      "redis_ttl_seconds": 604800,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "ladder_daily",
+          "role": "authority"
+        },
+        {
+          "kind": "td_stable",
+          "name": "ladder_daily_v1",
+          "role": "legacy",
+          "note": "not maintained: last row 2026-10-30; ladder_daily_v2 not built"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:ladder_daily",
+          "role": "view",
+          "ttl_seconds": 604800
+        }
+      ]
+    },
+    {
+      "id": "hot_rank",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "capture trade_date/time"
+      },
+      "phases": [
+        "PRE_MARKET",
+        "AUCTION",
+        "AUCTION_END",
+        "OPEN",
+        "INTRADAY_AM",
+        "MIDDAY_BREAK",
+        "PM_OPEN",
+        "INTRADAY_PM"
+      ],
+      "cadence": "按报告消费点采样",
+      "rule": "外部热榜快照；来源/排名定义需保留。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "09:40",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "Presence is resolved from Redis and TD; historical point snapshots cannot be backfilled.",
+      "guardian_event": "premarket_slice_0850",
+      "late_policy": {
+        "mode": "gap_only",
+        "valid_until": "15:05",
+        "depends_on": [],
+        "set_by": "C1214: missing point snapshots cannot be backfilled",
+        "trigger_event": "premarket_slice_0850"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "measured one call ~3s (2026-10-21 capture)",
+        "set_by": "claude 2026-10-21"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/capture_ths_hot_rank.py",
+          "--trade-date",
+          "{date}",
+          "--artifact-root",
+          "{artifact_root}",
+          "--execute"
+        ],
+        "timeout_seconds": 120
+      },
+      "kind": "point_snapshot",
+      "source": "ths",
+      "source_kinds": {
+        "ths": "point_snapshot",
+        "wencai": "day_refetchable"
+      },
+      "hot_store": {
+        "key": "core:view:hot_rank:{trade_date}"
+      },
+      "cold_store": {
+        "dataset": "hot_rank"
+      },
+      "redis_ttl_seconds": 172800,
+      "storage": [
+        {
+          "kind": "td_stable",
+          "name": "hot_rank",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:view:hot_rank:{trade_date}",
+          "role": "view",
+          "ttl_seconds": 172800
+        }
+      ]
+    },
+    {
+      "id": "hot_plate_minutes",
+      "owner": "postmarket_data",
+      "artifact": {
+        "catalog_dataset": "hot_plate_minutes",
+        "date_basis": "UNKNOWN"
+      },
+      "phases": [
+        "POST_MARKET"
+      ],
+      "cadence": "UNKNOWN",
+      "rule": "分钟级热板/汇总数据；生成方式及消费方待核。",
+      "freshness": "UNKNOWN",
+      "retry": "none (no guardian event)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "Catalog contains this dataset. guardian owner event not directly assigned by current schedule.",
+      "guardian_event": null,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "hot_plate_minutes",
+          "role": "legacy",
+          "note": "retired; last partition 2026-10-16"
+        }
+      ]
+    },
+    {
+      "id": "auction_amount_facts",
+      "owner": "postmarket_data",
+      "artifact": {
+        "date_basis": "closed trade days through yesterday"
+      },
+      "phases": [
+        "NIGHT"
+      ],
+      "cadence": "每个日历日 05:30",
+      "rule": "逐时点补齐最近交易日的竞价和 09:45 金额事实，优先最近日。",
+      "freshness": {
+        "partition": "trade_date",
+        "expected_by": "07:30",
+        "basis": "trading_day",
+        "set_by": "C803"
+      },
+      "retry": "event=auction_amount_facts_0530 profile=policy_13 rungs=legacy; legacy attempts=3 backoff=10m*2 timeout=3600s cap=20m until=07:30; exit 75 retryable, 10 and 20 non-retryable",
+      "degrade": [
+        "未齐全的时点不发布完整日标记；已完成事实保留。"
+      ],
+      "lifecycle": {
+        "init": "incrementally backfill missing days",
+        "force": "not supported",
+        "clear": "not supported"
+      },
+      "notes": "无上游数据集依赖；每次最多补 64 个交易日。超过保护期且源表原始行数为零的时点标记 SOURCE_ABSENT，不再重试；窗口读者按缺失而非零处理，统计须标 PARTIAL。",
+      "guardian_event": "auction_amount_facts_0530",
+      "requires": [],
+      "produces": [
+        "auction_amount",
+        "slot0945_amount"
+      ],
+      "cost": {
+        "class": "heavy",
+        "basis": "C803: 64 日窗口逐日读取 TD，使用重型槽串行执行。",
+        "set_by": "C803"
+      },
+      "storage": [
+        {
+          "kind": "td_stable",
+          "name": "core_data.auction_amount_facts_v1",
+          "role": "authority"
+        },
+        {
+          "kind": "td_stable",
+          "name": "core_data.auction_amount_facts_days",
+          "role": "marker"
+        }
+      ]
+    },
+    {
+      "id": "plate_amount_baseline",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": "plate_amount_baseline",
+        "date_basis": "target trade_date D"
+      },
+      "phases": [
+        "NIGHT",
+        "PRE_MARKET"
+      ],
+      "cadence": "每日盘前构建",
+      "rule": "根据历史板块金额生成基线。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "09:20",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "event=plate_amount_baseline_0815 policy=policy_12 attempts=1 timeout=540s no backoff",
+      "degrade": [
+        "读取遵循 slices/__init__.py：沿用不晚于请求日期且 available_at ≤ asof 的最新合格版本 DATE_FALLBACK，标 PARTIAL"
+      ],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "Independent premarket event; date fallback is applied by the slice reader.",
+      "guardian_event": "plate_amount_baseline_0815",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": null,
+        "depends_on": [
+          "daily_kline"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_event": "plate_amount_baseline_0815"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "measured C366 sandbox 2026-10-20: 0.3s median x3",
+        "set_by": "claude 2026-10-21 from fw/research/C366/timings.json"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/build_plate_amount_baseline.py",
+          "--date",
+          "{date}",
+          "--write"
+        ],
+        "timeout_seconds": 300
+      },
+      "redis_ttl_seconds": 2592000,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "plate_amount_baseline",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:plate_amount_baseline",
+          "role": "view",
+          "ttl_seconds": 2592000
+        }
+      ],
+      "requires": [
+        {
+          "dataset": "auction_amount",
+          "window_days": 64,
+          "min_days": 5,
+          "min_quality": "FORMAL"
+        },
+        {
+          "dataset": "slot0945_amount",
+          "window_days": 64,
+          "min_days": 5,
+          "min_quality": "FORMAL"
+        },
+        {
+          "dataset": "plate_members",
+          "window_days": 64,
+          "min_days": 5,
+          "min_quality": "FORMAL"
+        }
+      ]
+    },
+    {
+      "id": "stock_day_facts",
+      "owner": "postmarket_data",
+      "artifact": {
+        "catalog_dataset": "stock_day_facts",
+        "date_basis": "trade_date D"
+      },
+      "phases": [
+        "POST_MARKET"
+      ],
+      "cadence": "盘后构建",
+      "rule": "每日个股事实派生；字段/依赖确认中。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "19:00",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "C360: stock_day_facts 从 D 日 daily_kline 派生收盘代理 CLOSE_PRICE_PROXY；早盘字段不可由日K补齐。",
+      "guardian_event": "postmarket_publish",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": null,
+        "depends_on": [
+          "daily_kline",
+          "daily_indicators"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "partition_before_trigger": "D-1",
+        "trigger_event": "baostock_probe_1730"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "measured C366 sandbox 2026-10-20: 0.5s median x3, 5224 rows",
+        "set_by": "claude 2026-10-21 from fw/research/C366/timings.json"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/fetch_registry_item.py",
+          "--item",
+          "stock_day_facts",
+          "--date",
+          "{date}",
+          "--artifact-root",
+          "{artifact_root}",
+          "--execute"
+        ],
+        "timeout_seconds": 300
+      },
+      "redis_ttl_seconds": 604800,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "stock_day_facts",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:stock_day_facts",
+          "role": "view",
+          "ttl_seconds": 604800
+        }
+      ]
+    },
+    {
+      "id": "stock_theme_assignment",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": "stock_theme_assignment",
+        "date_basis": "target trade_date D; input as-of recorded"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "每日盘前准备",
+      "rule": "基于当时可用的成员/原因/板块登记；保留 source as-of。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "09:20",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "C360: 输入为 PIT 可见 D-1 涨停池/热板/成员/原因及板块登记；晚到版本 NON_AUTHORITATIVE_AUDIT_ONLY，与 09:08 原快照并存。",
+      "guardian_event": "premarket_slice_0850",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": null,
+        "depends_on": [
+          "plate_members",
+          "limit_reasons"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_event": "premarket_slice_0850"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "measured C366 sandbox 2026-10-20: 4.5s median x3, 5876 rows",
+        "set_by": "claude 2026-10-21 from fw/research/C366/timings.json"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/fetch_registry_item.py",
+          "--item",
+          "stock_theme_assignment",
+          "--date",
+          "{date}",
+          "--artifact-root",
+          "{artifact_root}",
+          "--execute"
+        ],
+        "timeout_seconds": 300
+      },
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "stock_theme_assignment",
+          "role": "authority"
+        }
+      ]
+    },
+    {
+      "id": "intraday_tick_stream",
+      "owner": "intraday_data",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "trade_date = per-row q2 ts date; checkpoint time in manifest.checkpoint (C587, docs/INTRADAY_CHECKPOINT.md)"
+      },
+      "phases": [
+        "OPEN",
+        "INTRADAY_AM",
+        "PM_OPEN",
+        "INTRADAY_PM",
+        "CLOSE_AUCTION"
+      ],
+      "cadence": "3-minute schedule checkpoints; input source is Redis q2 (primary, whole session) with TD stock_tick as check/fallback through 09:45:59; checkpoint output is published to Redis and archived to TD on a best-effort basis; no catalog partition.",
+      "rule": "盘中检查点以 Redis 为权威，尽力归档至 TD，不写 catalog 临时分区。",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "replace the same trade-date and cutoff view",
+        "clear": "not provided"
+      },
+      "notes": "Checkpoint output is authoritative in Redis with a best-effort TD cold archive; no catalog temporary partition.",
+      "guardian_event": "intraday_33",
+      "storage": [
+        {
+          "kind": "redis_view",
+          "name": "core:view:intraday_checkpoint:{trade_date}:{cutoff}",
+          "role": "authority",
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
+        },
+        {
+          "kind": "td_snapshot",
+          "name": "cold_intraday_checkpoint_<identity>",
+          "role": "mirror",
+          "note": "best-effort asynchronous cold archive"
+        }
+      ],
+      "kind": "point_snapshot",
+      "hot_store": {
+        "key": "core:view:intraday_checkpoint:{trade_date}:{cutoff}"
+      },
+      "cold_store": {
+        "dataset": "intraday_checkpoint"
+      }
+    },
+    {
+      "id": "intraday_report",
+      "owner": "intraday_data",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "same trade_date and captured_at; exact output date key UNKNOWN"
+      },
+      "phases": [
+        "OPEN",
+        "INTRADAY_AM",
+        "PM_OPEN",
+        "INTRADAY_PM"
+      ],
+      "cadence": "schedule checkpoints; report artifact catalog location UNKNOWN",
+      "rule": "报告/时点产物按阶段生成；未发现对应 Core catalog dataset，产物路径/格式待确认。",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
+      "guardian_event": "intraday_33",
+      "storage": [
+        {
+          "kind": "unknown",
+          "name": "unverified",
+          "role": "authority",
+          "note": "report output location not verified (only the close stage was read back on 2026-11-03)"
+        }
+      ]
+    },
+    {
+      "id": "night_report",
+      "owner": "night_report",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "same trade_date and captured_at; exact output date key UNKNOWN"
+      },
+      "phases": [
+        "NIGHT"
+      ],
+      "cadence": "night_recap 01:00",
+      "rule": "报告/时点产物按阶段生成；未发现对应 Core catalog dataset，产物路径/格式待确认。",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
+      "guardian_event": "night_recap",
+      "storage": [
+        {
+          "kind": "unknown",
+          "name": "unverified",
+          "role": "authority",
+          "note": "report output location not verified (only the close stage was read back on 2026-11-03)"
+        }
+      ]
+    },
+    {
+      "id": "premarket_report",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "same trade_date and captured_at; exact output date key UNKNOWN"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "startup_0830/premarket_slice_0850/startup_0900",
+      "rule": "报告/时点产物按阶段生成；未发现对应 Core catalog dataset，产物路径/格式待确认。",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
+      "guardian_event": "startup_0830",
+      "storage": [
+        {
+          "kind": "unknown",
+          "name": "unverified",
+          "role": "authority",
+          "note": "report output location not verified (only the close stage was read back on 2026-11-03)"
+        }
+      ]
+    },
+    {
+      "id": "auction_report",
+      "owner": "auction_report",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "same trade_date and captured_at; exact output date key UNKNOWN"
+      },
+      "phases": [
+        "AUCTION_END"
+      ],
+      "cadence": "auction_report_0926 with 09:29 degraded deadline",
+      "rule": "报告/时点产物按阶段生成；未发现对应 Core catalog dataset，产物路径/格式待确认。",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
+      "guardian_event": "auction_report_0926",
+      "storage": [
+        {
+          "kind": "unknown",
+          "name": "unverified",
+          "role": "authority",
+          "note": "report output location not verified (only the close stage was read back on 2026-11-03)"
+        }
+      ]
+    },
+    {
+      "id": "open_report",
+      "owner": "open_report",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "same trade_date and captured_at; exact output date key UNKNOWN"
+      },
+      "phases": [
+        "OPEN"
+      ],
+      "cadence": "open_report checkpoints starting 09:32:10",
+      "rule": "报告/时点产物按阶段生成；未发现对应 Core catalog dataset，产物路径/格式待确认。",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
+      "guardian_event": "open_report_0932",
+      "storage": [
+        {
+          "kind": "unknown",
+          "name": "unverified",
+          "role": "authority",
+          "note": "report output location not verified (only the close stage was read back on 2026-11-03)"
+        }
+      ]
+    },
+    {
+      "id": "close_report",
+      "owner": "close_report",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "same trade_date and captured_at; exact output date key UNKNOWN"
+      },
+      "phases": [
+        "POST_MARKET"
+      ],
+      "cadence": "close_recap starting 17:40",
+      "rule": "报告/时点产物按阶段生成；未发现对应 Core catalog dataset，产物路径/格式待确认。",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
+      "guardian_event": "close_recap",
+      "storage": [
+        {
+          "kind": "redis_view",
+          "name": "core:cache:report",
+          "role": "authority",
+          "ttl_seconds": 172800,
+          "note": "key core:cache:report:{date}:{stage}; read back for close on 2026-11-03"
+        }
+      ]
+    },
+    {
+      "id": "intraday_analysis",
+      "owner": "intraday_data",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "same trade_date and captured_at; exact output date key UNKNOWN"
+      },
+      "phases": [
+        "OPEN",
+        "INTRADAY_AM",
+        "MIDDAY_BREAK",
+        "PM_OPEN",
+        "INTRADAY_PM"
+      ],
+      "cadence": "3-minute schedule events",
+      "rule": "报告/时点产物按阶段生成；未发现对应 Core catalog dataset，产物路径/格式待确认。",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
+      "guardian_event": "intraday_33",
+      "storage": [
+        {
+          "kind": "unknown",
+          "name": "unverified",
+          "role": "authority",
+          "note": "report output location not verified (only the close stage was read back on 2026-11-03)"
+        }
+      ]
+    },
+    {
+      "id": "name_map",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": "stock_static",
+        "date_basis": "stock_static trade_date snapshot"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "与 stock_static 同步：每周 PRE_MARKET + symbol_universe 新证券触发",
+      "rule": "名称映射视图；实际 catalog artifact is stock_static。",
+      "freshness": {
+        "partition": "latest",
+        "max_age_days": 8,
+        "basis": "calendar_days",
+        "set_by": "claude 2026-10-20 default (cadence is weekly + new-security trigger)"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "cold fetch when absent",
+        "force": "fetch regardless of freshness",
+        "clear": "move aside to timestamped .bak; restore on failure"
+      },
+      "notes": "name_map is a derived view of stock_static; C573 refreshes the shared stock_static catalog snapshot and records Baostock/universe evidence.",
+      "guardian_event": "static_data_refresh_0850",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": "15:00:00",
+        "depends_on": [
+          "stock_static"
+        ],
+        "set_by": "C573: stock_static weekly PRE_MARKET refresh; daily new-symbol check; startup catches up in the configured window",
+        "trigger_event": "static_data_refresh_0850"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "derived from stock_static",
+        "set_by": "claude 2026-10-20 default"
+      },
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "stock_static",
+          "role": "authority",
+          "note": "shares the stock_static snapshot"
+        }
+      ]
+    },
+    {
+      "id": "path_stats",
+      "owner": "UNKNOWN",
+      "guardian_event": null,
+      "artifact": {
+        "catalog_dataset": "path_stats",
+        "date_basis": "trade_date UNKNOWN"
+      },
+      "phases": [
+        "POST_MARKET"
+      ],
+      "cadence": "UNKNOWN",
+      "rule": "Catalog 历史统计条目；生成来源与消费方待确认。",
+      "freshness": "UNKNOWN",
+      "retry": "none (no guardian event)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "No guardian event found; ask data pipeline owner.",
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "path_stats",
+          "role": "legacy",
+          "note": "no producer event; last partition 2026-10-15"
+        }
+      ]
+    },
+    {
+      "id": "stock_tick_v2",
+      "owner": "intraday_data",
+      "guardian_event": "intraday_33",
+      "artifact": {
+        "catalog_dataset": null,
+        "source_dataset": "TD market_data1.stock_tick_v2",
+        "date_basis": "same-day D; observed ts range is bounded to source availability"
+      },
+      "phases": [
+        "OPEN",
+        "INTRADAY_AM"
+      ],
+      "cadence": "3-minute event checks; source table observed only through 09:45:59",
+      "rule": "TD market_data1 read-only; no write action.",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "none",
+        "force": "none",
+        "clear": "none"
+      },
+      "notes": "TD stores no tick after 09:45:59 (C377); since C587 the intraday gate/handler read Redis q2 first and use this table only up to args.checkpoint.td_until.",
+      "storage": [
+        {
+          "kind": "td_external",
+          "name": "market_data1.stock_tick_v2",
+          "role": "authority",
+          "note": "owned by t1_v2; Core only reads; ticks stop 09:45:59"
+        }
+      ]
+    },
+    {
+      "id": "limit_up_detail",
+      "owner": "kaipan_fetch",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "D+1 00:50 起抓取开盘啦 D-1 昨日池明细及 Type=0 涨停原因"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "每交易日 00:50 起；依赖 limit_pool_d1 成功，Kaipan 每 5 分钟重试至 08:50",
+      "rule": "Kaipan getHisBans 原始 23 位行按 C610 高置信字段映射；候选位只留 kp_XX_raw。getBanReasons 仅用 Type=0 且 Date<=trade_date 的原文/主题/板块码；同日原因 FORMAL，历史归因 DEGRADED。TD 保存历史，Redis 提供热读。日期回补只补缺日，默认最近 20 个交易日。",
+      "freshness": {
+        "partition": "D-1",
+        "expected_by": "08:50",
+        "basis": "trading_day",
+        "set_by": "C611 2026-10-29"
+      },
+      "retry": "event=limit_up_detail_d1 profile=limit_up_detail_d1 rungs=kaipan; kaipan attempts=100 backoff=5m*1 timeout=5m until=08:50",
+      "degrade": [
+        "无降级链，等待重试到 08:50 前"
+      ],
+      "lifecycle": {
+        "init": "backfill missing trading dates from Kaipan, newest first, default depth 20",
+        "force": "refetch exact requested dates and write a new TD version",
+        "clear": "not supported; retained TD history is not deleted"
+      },
+      "notes": "C611: no catalog partition; TD core_data.limit_up_detail_v1 + limit_up_detail_versions; Redis core:yest_limit_detail:{trade_date} and core:limit_up_reason:{trade_date}. Pool date echo must equal request date.",
+      "guardian_event": "limit_up_detail_d1",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": "08:50",
+        "depends_on": [
+          "limit_up_pool"
+        ],
+        "set_by": "C611 2026-10-29",
+        "trigger_event": "limit_up_detail_d1"
+      },
+      "cost": {
+        "class": "medium",
+        "basis": "Kaipan getHisBans 最多 10 个连板梯队请求，另按池内股票逐只请求 getBanReasons Type=0；深度回补默认 20 个交易日。",
+        "set_by": "C611 2026-10-29"
+      },
+      "td_sink": {
+        "database": "core_data",
+        "super_table": "limit_up_detail_v1",
+        "meta_table": "limit_up_detail_versions",
+        "authority": "cold data -> TD; no catalog partition",
+        "doc": "fw/evidence/C610/limit_up_detail_design.md"
+      },
+      "redis_hot_view": {
+        "namespace": "core:yest_limit_detail",
+        "ttl_seconds": 259200,
+        "date_key": "core:yest_limit_detail:{trade_date}",
+        "reason_key": "core:limit_up_reason:{trade_date}"
+      },
+      "redis_ttl_seconds": 259200,
+      "storage": [
+        {
+          "kind": "td_stable",
+          "name": "limit_up_detail_v1",
+          "role": "authority"
+        },
+        {
+          "kind": "td_stable",
+          "name": "limit_up_detail_versions",
+          "role": "marker"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:yest_limit_detail",
+          "role": "view",
+          "ttl_seconds": 259200
+        }
+      ]
+    },
+    {
+      "id": "stock_listing",
+      "owner": "postmarket_data",
+      "artifact": {
+        "date_basis": "prev_trade_day"
+      },
+      "phases": [
+        "NIGHT"
+      ],
+      "cadence": "交易日 00:45",
+      "rule": "Baostock 股票上市信息快照。",
+      "freshness": "UNKNOWN",
+      "retry": "event=stock_listing_0045 profile=kline_backfill rungs=primary; attempts=6 backoff=5m*2 timeout=12h cap=30m; deadline=00:59",
+      "degrade": [],
+      "lifecycle": {
+        "init": "fetch snapshot",
+        "force": "not supported",
+        "clear": "not supported"
+      },
+      "notes": "不依赖其他数据集或新鲜度门禁。",
+      "guardian_event": "stock_listing_0045",
+      "requires": [],
+      "storage": [
+        {
+          "kind": "td_external",
+          "name": "core_data.stock_listing_latest",
+          "role": "authority"
+        },
+        {
+          "kind": "td_external",
+          "name": "core_data.reference_snapshot_versions",
+          "role": "marker"
+        }
+      ]
+    },
+    {
+      "id": "adjust_factor",
+      "owner": "postmarket_data",
+      "artifact": {
+        "date_basis": "daily_kline trade_date"
+      },
+      "phases": [
+        "CLOSE",
+        "POST_MARKET",
+        "NIGHT"
+      ],
+      "cadence": "交易日 17:10 收盘日K后及每日 01:15 夜间补数后；检查疑似除权并整股替换快照；窗口依赖对降级成功会 SKIPPED_DEP，故使用时间槽",
+      "rule": "incremental 检查疑似除权股票的完整因子快照",
+      "freshness": "UNKNOWN",
+      "retry": "使用 kline_backfill 策略，缺失标 PARTIAL",
+      "degrade": [
+        "刷新失败使用旧因子并标 PARTIAL，不阻塞下游。"
+      ],
+      "td_sink": {
+        "database": "core_data",
+        "stable": "adjust_factor_v1",
+        "columns": [
+          "version",
+          "event_count",
+          "sha256",
+          "events_json"
+        ],
+        "tags": [
+          "symbol"
+        ],
+        "timestamp": "ts"
+      },
+      "lifecycle": {
+        "init": "整股快照",
+        "force": "不支持",
+        "clear": "不支持"
+      },
+      "notes": "events_json 每股一行；日标记 row_count 为本次成功处理股票数。",
+      "guardian_event": "adjust_factor_postclose",
+      "requires": [],
+      "storage": [
+        {
+          "kind": "td_stable",
+          "name": "adjust_factor_v1",
+          "role": "authority"
+        },
+        {
+          "kind": "td_external",
+          "name": "core_data.adjust_factor_days",
+          "role": "marker"
+        }
+      ]
+    },
+    {
+      "id": "price_volume",
+      "owner": "postmarket_data",
+      "artifact": {
+        "date_basis": "daily_kline trade_date"
+      },
+      "phases": [
+        "CLOSE",
+        "POST_MARKET",
+        "NIGHT"
+      ],
+      "cadence": "交易日 17:25 收盘日K后及每日 01:30 夜间补数后，增量计算目标日指标",
+      "rule": "incremental 计算日K价量指标",
+      "freshness": "UNKNOWN",
+      "retry": "使用 kline_backfill 策略；日K缺失或不全时重试；空状态 NEEDS_REBUILD，需手动 rebuild",
+      "degrade": [
+        "缺失只标 PARTIAL；因子未处理的股票跳过；空状态提示 NEEDS_REBUILD。"
+      ],
+      "td_sink": {
+        "database": "core_data",
+        "stable": "price_volume_indicators_v1",
+        "columns": [
+          "version",
+          "algo_version",
+          "input_refs",
+          "available_at",
+          "quality",
+          "warm"
+        ],
+        "tags": [
+          "symbol"
+        ],
+        "timestamp": "ts"
+      },
+      "lifecycle": {
+        "init": "整股快照",
+        "force": "不支持",
+        "clear": "不支持"
+      },
+      "notes": "首次部署需手动 rebuild；日标记记录本次处理结果。",
+      "guardian_event": "price_volume_postclose",
+      "requires": [],
+      "storage": [
+        {
+          "kind": "td_stable",
+          "name": "price_volume_indicators_v1",
+          "role": "authority"
+        },
+        {
+          "kind": "td_external",
+          "name": "core_data.price_volume_days",
+          "role": "marker"
+        }
+      ]
+    },
+    {
+      "id": "chip_peak",
+      "owner": "postmarket_data",
+      "artifact": {
+        "date_basis": "daily_kline trade_date"
+      },
+      "phases": [
+        "CLOSE",
+        "POST_MARKET",
+        "NIGHT"
+      ],
+      "cadence": "交易日 17:40 和每日 01:45 增量计算目标日筹码峰",
+      "rule": "增量计算筹码峰",
+      "freshness": "UNKNOWN",
+      "retry": "使用 kline_backfill 策略；空状态 NEEDS_REBUILD，需手动 rebuild",
+      "degrade": [
+        "缺失只标 PARTIAL；因子未处理的股票跳过；空状态返回 NEEDS_REBUILD，首次部署需手动 rebuild。"
+      ],
+      "td_sink": {
+        "database": "core_data",
+        "stable": "chip_indicators_v1",
+        "columns": [
+          "version",
+          "algo_version",
+          "input_refs",
+          "available_at",
+          "quality",
+          "warm"
+        ],
+        "tags": [
+          "symbol"
+        ],
+        "timestamp": "ts"
+      },
+      "lifecycle": {
+        "init": "整股快照",
+        "force": "不支持",
+        "clear": "不支持"
+      },
+      "notes": "首次部署需手动 rebuild；日标记记录本次处理结果。",
+      "guardian_event": "chip_peak_postclose",
+      "requires": [],
+      "storage": [
+        {
+          "kind": "td_stable",
+          "name": "chip_indicators_v1",
+          "role": "authority"
+        },
+        {
+          "kind": "td_external",
+          "name": "core_data.chip_peak_days",
+          "role": "marker"
+        }
+      ]
+    },
+    {
+      "id": "dde_derived",
+      "owner": "postmarket_data",
+      "artifact": {
+        "date_basis": "daily_kline trade_date"
+      },
+      "phases": [
+        "CLOSE",
+        "POST_MARKET",
+        "NIGHT"
+      ],
+      "cadence": "每日 04:45 重算前一交易日 DDE 比率",
+      "rule": "整日重算 DDE 比率",
+      "freshness": "UNKNOWN",
+      "retry": "使用 kline_backfill 策略；窗口内可重试并覆盖 PARTIAL 结果",
+      "degrade": [
+        "任一输入缺失输出 NULL+PARTIAL；两边均无行才降级。"
+      ],
+      "td_sink": {
+        "database": "core_data",
+        "stable": "dde_indicators_v1",
+        "columns": [
+          "ddje_ratio",
+          "version",
+          "algo_version",
+          "input_refs",
+          "available_at",
+          "quality"
+        ],
+        "tags": [
+          "symbol"
+        ],
+        "timestamp": "ts"
+      },
+      "lifecycle": {
+        "init": "整股快照",
+        "force": "不支持",
+        "clear": "不支持"
+      },
+      "notes": "无状态，按目标日整日重算。",
+      "guardian_event": "dde_derived_0445",
+      "requires": [],
+      "storage": [
+        {
+          "kind": "td_stable",
+          "name": "dde_indicators_v1",
+          "role": "authority"
+        },
+        {
+          "kind": "td_external",
+          "name": "core_data.dde_indicators_days",
+          "role": "marker"
+        }
+      ]
+    },
+    {
+      "id": "auction_seal_facts",
+      "redis_ttl_trade_days": 5,
+      "owner": "data_function",
+      "artifact": {
+        "catalog_dataset": null,
+        "source_dataset": "core:auction:full + TD stock_tick_v2",
+        "date_basis": "D"
+      },
+      "phases": [
+        "AUCTION_END"
+      ],
+      "cadence": "09:26:05 trading day",
+      "rule": "候选股终局封单",
+      "freshness": "UNKNOWN",
+      "retry": "auction_seal_facts_0926",
+      "degrade": [],
+      "lifecycle": {
+        "init": "auction_seal_facts_0926",
+        "force": "refetch",
+        "clear": "UNKNOWN"
+      },
+      "notes": "独立数据函数；guardian 竞价终局事件触发",
+      "guardian_event": "auction_seal_facts_0926",
+      "storage": [
+        {
+          "kind": "redis_view",
+          "name": "core:view:auction_seal_facts:{date}",
+          "role": "authority",
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
+        },
+        {
+          "kind": "td_stable",
+          "name": "cold_auction_seal_facts_archive",
+          "role": "mirror"
+        }
+      ],
+      "kind": "day_refetchable",
+      "hot_store": {
+        "key": "core:view:auction_seal_facts:{date}"
+      },
+      "cold_store": {
+        "dataset": "auction_seal_facts"
+      }
+    },
+    {
+      "id": "auction_theme_board",
+      "redis_ttl_trade_days": 5,
+      "owner": "data_function",
+      "artifact": {
+        "catalog_dataset": null,
+        "source_dataset": "derived",
+        "date_basis": "D"
+      },
+      "phases": [
+        "AUCTION_END"
+      ],
+      "cadence": "daily",
+      "rule": "竞价题材榜纯装配",
+      "freshness": "UNKNOWN",
+      "retry": "UNKNOWN",
+      "degrade": [],
+      "lifecycle": {
+        "init": "on demand",
+        "force": "refetch",
+        "clear": "UNKNOWN"
+      },
+      "notes": "竞价题材榜日视图",
+      "guardian_event": null,
+      "storage": [
+        {
+          "kind": "redis_view",
+          "name": "core:view:auction_theme_board:{date}",
+          "role": "authority",
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
+        }
+      ],
+      "fields": [
+        "digest_md",
+        "board_md",
+        "summary_json",
+        "buckets_json"
+      ]
+    },
+    {
+      "id": "stock_cap",
+      "redis_ttl_trade_days": 5,
+      "owner": "data_function",
+      "artifact": {
+        "catalog_dataset": null,
+        "source_dataset": "wencai",
+        "date_basis": "D"
+      },
+      "phases": ["POST_MARKET"],
+      "cadence": "daily",
+      "rule": "A股流通市值与总市值",
+      "freshness": "UNKNOWN",
+      "retry": "UNKNOWN",
+      "degrade": [],
+      "lifecycle": {
+        "init": "on demand",
+        "force": "refetch",
+        "clear": "UNKNOWN"
+      },
+      "notes": "问财日视图；交易日 21:30 生成",
+      "guardian_event": "stock_cap_2130",
+      "storage": [
+        {
+          "kind": "redis_view",
+          "name": "core:view:stock_cap:{date}",
+          "role": "authority",
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
+        }
+      ],
+      "fields": [
+        "symbol",
+        "float_cap_yuan",
+        "total_cap_yuan",
+        "a_total_cap_yuan",
+        "cap_as_of"
+      ]
+    },
+    {
+      "id": "plate_stock_index",
+      "redis_ttl_trade_days": 5,
+      "owner": "data_function",
+      "artifact": {
+        "catalog_dataset": null,
+        "source_dataset": "TD plate_members snapshot",
+        "date_basis": "D"
+      },
+      "phases": [
+        "AUCTION_END"
+      ],
+      "cadence": "on demand",
+      "rule": "按股票倒排板块成员",
+      "freshness": "UNKNOWN",
+      "retry": "UNKNOWN",
+      "degrade": [],
+      "lifecycle": {
+        "init": "on demand",
+        "force": "refetch",
+        "clear": "UNKNOWN"
+      },
+      "notes": "独立数据函数；交易日 09:05 生成",
+      "guardian_event": "plate_stock_index_0905",
+      "storage": [
+        {
+          "kind": "redis_view",
+          "name": "core:view:plate_stock_index:{date}",
+          "role": "authority",
+          "retention": {
+            "kind": "trading_days",
+            "count": 5,
+            "anchor": "data_date",
+            "expire_time": "00:00:00",
+            "timezone": "Asia/Shanghai"
+          }
+        },
+        {
+          "kind": "td_stable",
+          "name": "cold_plate_stock_index_archive",
+          "role": "mirror"
+        }
+      ],
+      "kind": "day_refetchable",
+      "hot_store": {
+        "key": "core:view:plate_stock_index:{date}"
+      },
+      "cold_store": {
+        "dataset": "plate_stock_index"
+      }
+    }
+  ],
+  "quiet_phases_for_heavy": [
+    "NIGHT",
+    "PRE_MARKET",
+    "MIDDAY_BREAK",
+    "CLOSE",
+    "POST_MARKET"
+  ],
+  "heavy_rules": {
+    "max_concurrent_heavy": 1,
+    "defer_if_load1_above_cores": true,
+    "never_during": [
+      "AUCTION",
+      "AUCTION_END",
+      "OPEN",
+      "INTRADAY_AM",
+      "PM_OPEN",
+      "INTRADAY_PM",
+      "CLOSE_AUCTION"
+    ],
+    "if_consumer_needs_before_quiet": "use degrade chain / previous available version, labelled; fetch fully in the next quiet phase"
+  }
+}

@@ -1,0 +1,9 @@
+VERDICT: BLOCKED（本次部署按卡片时间限制中止）
+
+FACTS: 首次核时为 14:54:23 CST，已过 14:53 开始切换截止时间，**未切换、未重启**。现网仍为 `20261111_C979_46348ab`，服务 active/running，PID 3850309，NRestarts=0。运行 ELF 的 SHA256 与现网 build_info 一致；候选源码 HEAD 为 `52d11d9`。
+
+CHANGES: 已在既有 [C1047 报告](/home/exedev/fw/reports/C1047.md)追加本次中止记录，并保存[命令证据](/home/exedev/fw/evidence/C1047/c1047-fourth-dispatch-cutoff.txt)。
+
+EVIDENCE: `systemctl show` 返回 `ActiveState=active`、`SubState=running`；`readlink -f current` 指向原 release。证据文件 SHA256：`18f65b706f9d0475886aaadb1b90cace2682dcee4366c26038f5a71fe701eef3`。
+
+OPEN: 本次未执行构建、自测、隔离回放及切换前后健康对照；候选尚未部署，新字段的线上表现尚未验证。

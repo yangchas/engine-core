@@ -1,0 +1,13 @@
+# AUTO C1077 2026-11-14 02:08:44
+verdict: 
+police: changed files: 0 validation files written (check they are NEW dirs only): /home/exedev/validation/operator-runs/taos-log  POLICE OK 
+HEAD: 95f09b5 C1077: avoid fixture warnings for builder defaults
+ examples/card_lint.py                        |  6 +++++-
+ examples/card_recipes/builder-fix.json       |  2 +-
+ examples/card_recipes/builder-framework.json |  2 +-
+ tests/fixtures/card_lint/PROVENANCE.json     | 12 ++++++++++++
+ tests/fixtures/card_lint/card_C1072.md       | 20 ++++++++++++++++++++
+ tests/fixtures/card_lint/card_C1074.md       | 20 ++++++++++++++++++++
+ tests/test_card_lint.py                      | 26 ++++++++++++++++++++++++++
+ 7 files changed, 85 insertions(+), 3 deletions(-)
+AUTO-RESULT: GREEN → /home/exedev/fw/evidence/C1077/AUTO.md

@@ -1,0 +1,15 @@
+{
+ "captures": {
+  "2026-10-27": {
+   "authentication": "anonymous",
+   "captured_at": "2026-10-28T17:30:05+08:00",
+   "fixed_setup_requests": 2,
+   "max_daily_requests": 40,
+   "page_size": 100,
+   "query": "2026-10-27开盘价，最高价，最低价，收盘价，前收盘价，涨跌幅，成交量(股)，成交额(元)，股票代码;股票代码小于600000",
+   "source": "iwencai landing getDataList raw JSON",
+   "status": "started",
+   "trade_date": "2026-10-27"
+  }
+ }
+}

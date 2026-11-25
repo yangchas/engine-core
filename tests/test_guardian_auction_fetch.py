@@ -1,0 +1,169 @@
+import json
+from datetime import datetime
+from pathlib import Path
+
+import engine_core.auction_stock_facts as stock_facts
+
+
+ROOT = Path(__file__).resolve().parents[1]
+FIXTURE = ROOT / "tests/fixtures/auction_snapshot_20261021_0925.json"
+
+
+def _real_snapshot_sample():
+    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    assert payload["source"].startswith("TD market_data1.auction_snapshot_v2")
+    assert payload["trade_date"] == "2026-10-21" and payload["auction_tag"] == "0925"
+    return payload["rows"]
+
+
+def test_auction_facts_event_is_scheduled_and_registered_consistently():
+    from engine_core.guardian.management import load_schedule
+
+    schedule, _ = load_schedule(ROOT / "src/engine_core/guardian/schedule.json")
+    event = next(item for item in schedule if item.event_id == "auction_facts_0925")
+    assert event.handler == "auction_report"
+    assert event.start == "09:25:10" and event.deadline == "09:29:59"
+    assert event.max_attempts == 3 and event.catchup is True
+    registry = json.loads((ROOT / "src/engine_core/guardian/datasets.registry.json").read_text())
+    items = {item["id"]: item for item in registry["items"]}
+    for item_id in ("auction_stock_facts", "auction_points", "auction_panorama"):
+        assert items[item_id]["guardian_event"] == event.event_id
+        assert items[item_id]["late_policy"]["trigger_event"] == event.event_id
+        assert "trigger_at" not in items[item_id]["late_policy"]
+
+
+def test_real_td_snapshot_rows_sort_and_repeat_to_one_version(tmp_path):
+    from engine_core.auction_stock_facts import store_auction_stock_facts
+
+    snapshots = _real_snapshot_sample()
+    first = stock_facts.build_auction_stock_facts(
+        "2026-10-21", "2026-10-21T09:25:10+08:00", snapshots, [])
+    second = stock_facts.build_auction_stock_facts(
+        "2026-10-21", "2026-10-21T09:25:10+08:00", list(reversed(snapshots)), [])
+    assert [row["symbol"] for row in first["rows"]] == sorted(row["symbol"] for row in snapshots)
+    first_version = store_auction_stock_facts(
+        first, artifact_root=tmp_path, capture_semantics="late_td_rebuild")["version"]
+    second_version = store_auction_stock_facts(
+        second, artifact_root=tmp_path, capture_semantics="late_td_rebuild")["version"]
+    assert first_version == second_version
+
+
+def test_real_catalog_pit_inputs_and_temporally_missing_case(monkeypatch):
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from examples.fetch_auction_item import _pit_rows
+    from engine_core.data_pipeline import limit_pool_hot_view as hot
+    from engine_core.guardian.limit_pool_d1 import existing_partition
+    from test_limit_pool_hot_view import RedisSpy
+
+    root = Path.home() / "core-data"
+    catalog = ArtifactCatalog(root)
+    datasets = catalog.read()["datasets"]
+    target_cutoff = datetime.fromisoformat("2026-10-21T09:25:10+08:00")
+    for dataset in ("plate_members",):
+        dates = datasets[dataset]["dates"]
+        rows, meta = _pit_rows(catalog, dataset, (day for day in dates if day < "2026-10-21"), target_cutoff)
+        # A late-recovered version carries its refetch time as available_at, so the newest visible day may be older.
+        assert rows and meta and meta["trade_date"] < "2026-10-21"
+        assert datetime.fromisoformat(meta["available_at"].replace("Z", "+00:00")) <= target_cutoff
+    # The real 2026-10-20 plate snapshot was not yet visible at this earlier cutoff.
+    rows, meta = _pit_rows(
+        catalog, "plate_members", ["2026-10-20"],
+        datetime.fromisoformat("2026-10-20T23:59:00+08:00"))
+    assert rows is None and meta is None
+    _, pool, manifest = existing_partition(root, "2026-11-10")
+    redis = RedisSpy()
+    redis.writes["core:view:limit_up_pool:2026-11-10"] = json.dumps(hot.envelope("2026-11-10", pool, manifest))
+    monkeypatch.setattr(hot, "_td_store", lambda: (_ for _ in ()).throw(RuntimeError("unexpected TD")))
+    rows, meta = hot.read("2026-11-10", "2026-11-11T09:25:10+08:00", redis_client=redis)
+    assert rows == pool and meta["trade_date"] == "2026-11-10" and meta["storage_source"] == "redis"
+    assert datetime.fromisoformat(meta["available_at"].replace("Z", "+00:00")) <= datetime.fromisoformat("2026-11-11T09:25:10+08:00")
+
+
+def test_real_historical_auction_with_no_pit_references_is_saved_partial(tmp_path):
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from examples.fetch_auction_item import _products
+
+    payload = json.loads((ROOT / "tests/fixtures/auction_snapshot_20260918_0925.json").read_text())
+    result = _products(payload["trade_date"], "auction_panorama", tmp_path,
+                       payload["rows"], [], source_catalog_root=Path.home() / "core-data")
+    assert result["status"] == "degraded"
+    assert result["missing_inputs"] == ["plate_members", "yesterday_pool"]
+    catalog = ArtifactCatalog(tmp_path)
+    manifest_path = catalog.locate("auction_panorama", payload["trade_date"])
+    manifest = json.loads(manifest_path.read_text())
+    product = json.loads(catalog.read_rows(manifest_path)[0]["product_json"])
+    assert product["status"] == "PARTIAL"
+    assert manifest["quality"]["missing_inputs"] == result["missing_inputs"]
+
+
+def test_dry_run_replay_never_targets_the_production_catalog(tmp_path):
+    from engine_core.daily_pipeline import _dry_run_artifact_root
+
+    assert _dry_run_artifact_root(tmp_path, False) is None
+    assert _dry_run_artifact_root(tmp_path, True) == tmp_path / ".dry_run_artifacts"
+
+
+def test_real_late_rebuild_accepts_late_stored_prior_day_pool_but_flags_it(monkeypatch):
+    from engine_core.data_pipeline import limit_pool_hot_view as hot
+    from engine_core.guardian.limit_pool_d1 import existing_partition
+    from test_limit_pool_hot_view import RedisSpy
+    _, pool, manifest = existing_partition(Path.home() / "core-data", "2026-11-10")
+    redis = RedisSpy()
+    redis.writes["core:view:limit_up_pool:2026-11-10"] = json.dumps(hot.envelope("2026-11-10", pool, manifest))
+    monkeypatch.setattr(hot, "_td_store", lambda: (_ for _ in ()).throw(RuntimeError("TD unavailable")))
+    early = "2026-11-11T00:00:00+08:00"
+    assert hot.read("2026-11-10", early, redis_client=redis)[1]["status"] == "MISSING"
+    rows, meta = hot.read("2026-11-10", early, redis_client=redis, late_rebuild=True,
+                          late_asof="2026-11-11T09:25:10+08:00")
+    assert rows == pool and meta["trade_date"] == "2026-11-10" and meta["late_visible"] is True
+    assert meta["status"] == "PARTIAL"
+
+
+def test_listing_exemption_from_real_auction_and_static_fixtures(tmp_path, monkeypatch):
+    from examples.fetch_auction_item import _products, SnapshotRows
+    from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+
+    real = ROOT / 'tests/fixtures/real'
+    listings = []
+    for symbol in ('688827', '001381'):
+        raw = json.loads(next(real.glob(f'td_stock_static_2026-11-16_{symbol}_*.json')).read_text())
+        listings.append(json.loads(raw['rows'][0][-1]))
+    monkeypatch.setattr(ReferenceSnapshotStore, 'read_latest', lambda self, dataset: {'rows': listings})
+    captured = []
+    monkeypatch.setattr(stock_facts, 'store_auction_stock_facts', lambda facts, **kw: captured.append(facts) or {})
+    for day, symbol, expected in [('2026-11-10', '688827', None),
+                                  ('2026-11-09', '001381', None),
+                                  ('2026-11-10', '001381', 'limited')]:
+        raw = json.loads(next(real.glob(f'td_stock_tick_{day}_{symbol}_092500_092503_1619.json')).read_text())
+        tick = dict(zip(raw['columns'], raw['rows'][0]))
+        snap = {'symbol': symbol, 'ts': tick['ts'], 'auction_tag': '0925',
+                'pre_close_milli': tick['pc_milli'], 'price_milli': tick['px_milli']}
+        snapshots = SnapshotRows([snap], {'0925': {'source': 'redis_auction_full'}})
+        _products(day, 'auction_stock_facts', tmp_path, snapshots, [tick], source_catalog_root=Path.home() / 'core-data')
+        price = captured[-1]['rows'][0]['official_limit_up_price']
+        assert not captured[-1]['unknown_listing'], captured[-1]['listing_error']
+        assert (price is None) if expected is None else (price is not None)
+
+
+def test_listing_snapshot_failure_degrades_real_auction(tmp_path, monkeypatch):
+    from examples.fetch_auction_item import _products, SnapshotRows
+    from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+
+    real = ROOT / 'tests/fixtures/real'
+    raw = json.loads(next(real.glob('td_stock_tick_2026-11-10_688827_092500_092503_1619.json')).read_text())
+    tick = dict(zip(raw['columns'], raw['rows'][0]))
+    snap = {'symbol': tick['symbol'], 'ts': tick['ts'], 'auction_tag': '0925',
+            'pre_close_milli': tick['pc_milli'], 'price_milli': tick['px_milli']}
+    def fail(self, dataset):
+        raise RuntimeError('snapshot unavailable')
+    monkeypatch.setattr(ReferenceSnapshotStore, 'read_latest', fail)
+    captured = []
+    monkeypatch.setattr(stock_facts, 'store_auction_stock_facts', lambda facts, **kw: captured.append(facts) or {})
+    snapshots = SnapshotRows([snap], {'0925': {'source': 'redis_auction_full'}})
+    result = _products('2026-11-10', 'auction_stock_facts', tmp_path, snapshots, [tick])
+    facts = captured[0]
+    assert result['status'] == facts['input_status'] == 'degraded'
+    assert facts['unknown_listing'] == ['688827']
+    assert facts['listing_error'] == 'RuntimeError: snapshot unavailable'
+    assert facts['rows'][0]['official_limit_up_price'] is None
+    assert facts['rows'][0]['seal']['reason'] == 'LISTING_UNKNOWN'

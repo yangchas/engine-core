@@ -1,0 +1,9 @@
+{
+  "source": "Redis read-only MGET core:auction:full:2026-11-13:0925 and :meta",
+  "trade_date": "2026-11-13",
+  "tag": "0925",
+  "evidence": "/home/exedev/fw/evidence/C1083/redis-output.txt",
+  "payload_sha256": "971924aac7f3bd9c6f84b16f1a2336f9cc4d82737e9bac71b9a4fd5b55f2826f",
+  "metadata_sha256": "85ed6b11963a2155f819e977125a729c66aea01a00109e7bc2572faa6ffe3bc1",
+  "note": "Raw pair copied from C1084; tests derive metadata and a tick timestamp negative control in memory. available_at is absent in original metadata."
+}

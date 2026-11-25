@@ -1,0 +1,8 @@
+{
+  "source": "/home/exedev/fw/evidence/C1350/inputs.json",
+  "source_sha256": "edada8ff711ca50125d101628fe08b87dcf1274c85d33cfc20e6d47e5f79a4f9",
+  "excerpt_sha256": "4b392652adf6f7f8c15ab29136c6c895eb7473c4564fd5acc223dc50fed76c56",
+  "selection": "Unmodified C1350 pool and reason_rows, stock mappings for C1387 quote symbols and pool symbols, C1386 latest registry names",
+  "registry_source": "/home/exedev/fw/evidence/C1386/inputs.json",
+  "registry_source_sha256": "0ab05feb5885ea0eb02116896486dea166b8d98f696b10fbc49f798edce93503"
+}

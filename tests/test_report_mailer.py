@@ -1,0 +1,297 @@
+# DATA: spec (message mechanics: transport selection, recipient policy, idempotency) - report bodies are placeholders
+import json
+import pytest
+
+from engine_core import report_mailer
+from engine_core.runtime_state import StateStore
+from tests.memory_redis import MemoryRedis
+
+
+def _state(down=False):
+    return StateStore(MemoryRedis(down=down))
+
+
+@pytest.fixture(autouse=True)
+def _mail_enabled_root(tmp_path_factory, monkeypatch):
+    root = tmp_path_factory.mktemp("mail_root")
+    (root / ".mail_enabled").write_text("")
+    monkeypatch.setenv("CORE_DATA_ROOT", str(root))
+
+
+def test_real_send_is_forced_to_dry_run_without_marker(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))  # no .mail_enabled here
+    sent = []
+    monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", lambda *a, **k: sent.append(a))
+    msg = _message(tmp_path)
+    receipt = report_mailer.send_message(_config(), msg, dry_run=False, state=_state())
+    assert sent == [] and receipt.status != "sent"
+
+
+def _config(port=465, starttls=False):
+    return report_mailer.SmtpConfig(host="smtp.invalid", port=port, user="mailer",
+                                    password="super-secret", from_addr="reports@example.test",
+                                    starttls=starttls)
+
+
+def _message(tmp_path, recipient=report_mailer.ALLOWED_RECIPIENT):
+    html = tmp_path / "report.html"
+    payload = tmp_path / "report.json"
+    html.write_text("<h1>summary</h1>", encoding="utf-8")
+    payload.write_text(json.dumps({"conclusion": "第一句。第二句。", "degraded": ["MISSING_X"],
+                                   "count": 12}, ensure_ascii=False), encoding="utf-8")
+    return report_mailer.build_report_message("Core", "2026-10-15", "auction", html, payload,
+                                              [recipient], "reports@example.test")
+
+
+def test_allowlist_rejects_before_transport(tmp_path, monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("transport must not be constructed")
+    monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", forbidden)
+    with pytest.raises(ValueError, match="fixed recipient policy"):
+        report_mailer.send_message(_config(), _message(tmp_path, "other@example.test"), dry_run=False,
+                                   allow_recipients=[report_mailer.ALLOWED_RECIPIENT], state=_state())
+
+
+def test_dry_run_does_not_touch_transport(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", lambda *a, **k: pytest.fail("SMTP touched"))
+    receipt = report_mailer.send_message(_config(), _message(tmp_path), state=_state())
+    assert receipt.status == "dry_run"
+
+
+def test_message_recovers_matching_panorama_for_compact_auction_body(tmp_path, monkeypatch):
+    import hashlib
+
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path / "empty-core-data"))
+    quickbrief = {"email_lines": ["09:26 竞价速览 · 2026-10-16", "市场:覆盖不足,不下结论。",
+        "主看:暂无", "备看:暂无", "风险:待核实", "阈值为 V1 冻结工程阈值,非市场规律,未回测"]}
+    product = {"schema": "auction_panorama_v1", "trade_date": "2026-10-16",
+        "asof": "2026-10-16T09:26:00+08:00", "overview": {"status": "PARTIAL"},
+        "quickbrief": quickbrief, "plates": [], "yesterday_ladder": [], "lineage": {}}
+    report = tmp_path / "reports"
+    report.mkdir()
+    (report / "report.html").write_text("<h1>full V6</h1>", encoding="utf-8")
+    panorama_bytes = json.dumps(product, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    sidecar = {"trade_date": product["trade_date"], "asof": product["asof"],
+        "version": product["schema"], "sha256": hashlib.sha256(panorama_bytes).hexdigest(),
+        "panorama": product}
+    sidecar_bytes = json.dumps(sidecar, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    digest = hashlib.sha256(sidecar_bytes).hexdigest()
+    (report / "auction_panorama.json").write_bytes(sidecar_bytes)
+    (report / "report.json").write_text(json.dumps({"trade_date": "2026-10-16", "asof": product["asof"],
+        "auction_quickbrief": quickbrief, "auction_panorama_file": "auction_panorama.json",
+        "auction_panorama_sha256": digest}), encoding="utf-8")
+    message = report_mailer.build_report_message("Core", "2026-10-16", "auction",
+        report / "report.html", report / "report.json", [report_mailer.ALLOWED_RECIPIENT],
+        "reports@example.test")
+    html = message.get_body(preferencelist=("html",)).get_content()
+    assert "竞价全景 V6" in html and 'data-matrix="ladder-2d"' in html
+    assert "附件" not in message.get_body(preferencelist=("plain",)).get_content()
+    assert "完整明细已存档于 Core 报告目录" in message.get_body(preferencelist=("plain",)).get_content()
+
+
+@pytest.mark.parametrize("port,starttls,expected", [(465, False, "ssl"), (587, True, "starttls")])
+def test_selects_ssl_or_starttls_transport(tmp_path, monkeypatch, port, starttls, expected):
+    calls = []
+
+    class FakeSmtp:
+        def __init__(self, *args, **kwargs): calls.append(("init", expected))
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def ehlo(self): calls.append(("ehlo",))
+        def starttls(self, **kwargs): calls.append(("starttls",))
+        def login(self, user, password): calls.append(("login",))
+        def send_message(self, message, **kwargs): calls.append(("send",))
+
+    monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", FakeSmtp)
+    monkeypatch.setattr(report_mailer.smtplib, "SMTP", FakeSmtp)
+    receipt = report_mailer.send_message(_config(port, starttls), _message(tmp_path), dry_run=False,
+                                         allow_recipients=["other@example.test"], state=_state())
+    assert receipt.status == "sent"
+    assert ("starttls",) in calls if expected == "starttls" else ("starttls",) not in calls
+
+
+def test_password_never_in_repr_or_transport_exception(tmp_path, monkeypatch, caplog):
+    config = _config()
+    assert "super-secret" not in repr(config)
+
+    class BrokenSmtp:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def login(self, user, password): raise RuntimeError("failed with super-secret")
+        def send_message(self, message, **kwargs): pass
+
+    monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", BrokenSmtp)
+    with pytest.raises(RuntimeError) as exc:
+        report_mailer.send_message(config, _message(tmp_path), dry_run=False,
+                                   allow_recipients=[report_mailer.ALLOWED_RECIPIENT], state=_state())
+    assert "super-secret" not in str(exc.value)
+    assert "super-secret" not in caplog.text
+
+
+def test_dedupe_skips_successful_repeat(tmp_path, monkeypatch):
+    class FakeSmtp:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def login(self, user, password): pass
+        def send_message(self, message, **kwargs): pass
+
+    monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", FakeSmtp)
+    kwargs = dict(dry_run=False, allow_recipients=["other@example.test"], state=_state())
+    assert report_mailer.send_message(_config(), _message(tmp_path), **kwargs).status == "sent"
+    assert report_mailer.send_message(_config(), _message(tmp_path), **kwargs).status == "skipped"
+
+
+def test_large_html_is_ignored_by_default(tmp_path):
+    html = tmp_path / "report.html"
+    payload = tmp_path / "report.json"
+    html.write_bytes(b"x" * (report_mailer.MAX_HTML_ATTACHMENT_BYTES + 1))
+    payload.write_text('{"conclusion":"fine"}', encoding="utf-8")
+    message = report_mailer.build_report_message("Core", "2026-10-15", "close", html, payload,
+                                                 ["me@example.test"], "reports@example.test")
+    assert list(message.iter_attachments()) == []
+    assert message.get_content_type() == "multipart/alternative"
+
+
+def test_auction_report_has_no_attachment_or_attachment_copy_by_default(tmp_path):
+    message = _message(tmp_path)
+    assert message.get_content_type() == "multipart/alternative"
+    assert [part.get_content_type() for part in message.iter_parts()] == ["text/plain", "text/html"]
+    assert list(message.iter_attachments()) == []
+    assert "附件" not in message.get_body(preferencelist=("plain",)).get_content()
+    assert "附件" not in message.get_body(preferencelist=("html",)).get_content()
+    assert "V6_PANORAMA_MISSING:DATA_MISSING" in message.get_body(preferencelist=("html",)).get_content()
+
+
+def test_attach_full_html_is_opt_in_and_size_limited(tmp_path):
+    html_path = tmp_path / "report.html"
+    json_path = tmp_path / "report.json"
+    html_path.write_text("<h1>full</h1>", encoding="utf-8")
+    json_path.write_text('{"conclusion":["ok"]}', encoding="utf-8")
+    message = report_mailer.build_report_message("Core", "2026-10-15", "close", html_path, json_path,
+                                                 ["me@example.test"], "reports@example.test",
+                                                 attach_full_html=True)
+    assert message.get_content_type() == "multipart/mixed"
+    assert [part.get_filename() for part in message.iter_attachments()] == ["report.html"]
+
+    html_path.write_bytes(b"x" * (report_mailer.MAX_HTML_ATTACHMENT_BYTES + 1))
+    oversized = report_mailer.build_report_message("Core", "2026-10-15", "close", html_path, json_path,
+                                                   ["me@example.test"], "reports@example.test",
+                                                   attach_full_html=True)
+    assert list(oversized.iter_attachments()) == []
+    assert "超过 1.5 MB" in oversized.get_body(preferencelist=("plain",)).get_content()
+
+
+def test_panorama_hash_mismatch_degrades_to_controlled_error(tmp_path):
+    product = {"trade_date": "2026-10-16", "asof": "2026-10-16T09:30:00+08:00",
+               "quickbrief": {"email_lines": ["09:30 竞价速览"]}, "plates": []}
+    report = tmp_path / "reports"
+    report.mkdir()
+    (report / "report.html").write_text("<h1>09:26 full V6</h1>", encoding="utf-8")
+    import hashlib
+    panorama_bytes = json.dumps(product, ensure_ascii=False, allow_nan=False,
+                                 separators=(",", ":")).encode("utf-8")
+    sidecar = {"trade_date": product["trade_date"], "asof": product["asof"],
+        "version": "auction_panorama_v1", "sha256": hashlib.sha256(panorama_bytes).hexdigest(),
+        "panorama": product}
+    sidecar_bytes = json.dumps(sidecar, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    (report / "auction_panorama.json").write_bytes(sidecar_bytes)
+    (report / "report.json").write_text(json.dumps({"trade_date": "2026-10-16",
+        "asof": "2026-10-16T09:26:00+08:00", "auction_quickbrief": product["quickbrief"],
+        "auction_panorama": product,
+        "auction_panorama_file": "auction_panorama.json", "auction_panorama_sha256": "0" * 64}),
+        encoding="utf-8")
+    message = report_mailer.build_report_message("Core", "2026-10-16", "auction",
+        report / "report.html", report / "report.json", [report_mailer.ALLOWED_RECIPIENT],
+        "reports@example.test")
+    html = message.get_body(preferencelist=("html",)).get_content()
+    plain = message.get_body(preferencelist=("plain",)).get_content()
+    assert "V6_PANORAMA_MISSING:DATA_MISSING" in html
+    assert "V6_PANORAMA_MISSING:DATA_MISSING" in plain
+    assert "09:30 竞价速览" not in html
+    attachments = list(message.iter_attachments())
+    assert attachments == []
+
+
+def test_fixed_recipient_cannot_be_changed_by_caller_allowlist(tmp_path, monkeypatch):
+    class FakeSmtp:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def login(self, user, password): pass
+        def send_message(self, message, **kwargs): pass
+
+    monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", FakeSmtp)
+    state = _state()
+    first = _message(tmp_path)
+    assert report_mailer.send_message(_config(), first, dry_run=False,
+        allow_recipients=["other@example.test"], state=state).status == "sent"
+    second = _message(tmp_path, "other@example.test")
+    with pytest.raises(ValueError, match="fixed recipient policy"):
+        report_mailer.send_message(_config(), second, dry_run=False,
+            allow_recipients=["other@example.test"], state=state)
+
+
+class _Smtp:
+    sent = 0
+
+    def __init__(self, *args, **kwargs): pass
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
+    def login(self, user, password): pass
+
+    def send_message(self, message, **kwargs):
+        type(self).sent += 1
+
+
+def _smtp(monkeypatch, fail=False):
+    class Smtp(_Smtp):
+        sent = 0
+
+        def send_message(self, message, **kwargs):
+            if fail:
+                raise OSError("smtp down")
+            type(self).sent += 1
+    monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", Smtp)
+    return Smtp
+
+
+def test_sent_marker_lives_in_redis_with_a_ttl_and_no_state_directory_is_created(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    smtp = _smtp(monkeypatch)
+    state = _state()
+    msg = _message(tmp_path)
+    assert report_mailer.send_message(_config(), msg, dry_run=False, state=state).status == "sent"
+    key = f"core:mail:sent:{report_mailer._report_digest(msg)}"
+    assert state._client.values[key] == '"sent"' and 0 < state._client.ttl(key) <= 7 * 86400
+    assert smtp.sent == 1 and not (tmp_path / ".mail_state").exists()
+
+
+def test_a_failed_send_releases_the_claim_so_the_retry_can_send(tmp_path, monkeypatch):
+    state = _state()
+    msg = _message(tmp_path)
+    _smtp(monkeypatch, fail=True)
+    with pytest.raises(RuntimeError, match="SMTP delivery failed"):
+        report_mailer.send_message(_config(), msg, dry_run=False, state=state)
+    assert state._client.values == {}
+    smtp = _smtp(monkeypatch)
+    assert report_mailer.send_message(_config(), msg, dry_run=False, state=state).status == "sent" and smtp.sent == 1
+
+
+def test_a_message_another_sender_has_claimed_is_skipped_without_touching_the_transport(tmp_path, monkeypatch):
+    state = _state()
+    msg = _message(tmp_path)
+    state._client.set(f"core:mail:sent:{report_mailer._report_digest(msg)}", '"sending"', ex=3600)
+    smtp = _smtp(monkeypatch)
+    assert report_mailer.send_message(_config(), msg, dry_run=False, state=state).status == "skipped"
+    assert smtp.sent == 0
+
+
+def test_an_unreachable_redis_stops_a_real_send_but_not_a_dry_run(tmp_path, monkeypatch):
+    smtp = _smtp(monkeypatch)
+    msg = _message(tmp_path)
+    with pytest.raises(RuntimeError, match="mail_state_unavailable"):
+        report_mailer.send_message(_config(), msg, dry_run=False, state=_state(down=True))
+    assert smtp.sent == 0
+    assert report_mailer.send_message(_config(), msg, dry_run=True, state=_state(down=True)).status == "dry_run"

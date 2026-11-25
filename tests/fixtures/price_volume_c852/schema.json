@@ -1,0 +1,119 @@
+[
+  {
+    "field": "ts",
+    "type": "TIMESTAMP",
+    "length": 8,
+    "note": "",
+    "encode": "delta-i",
+    "compress": "lz4",
+    "level": "medium"
+  },
+  {
+    "field": "open",
+    "type": "DOUBLE",
+    "length": 8,
+    "note": "",
+    "encode": "delta-d",
+    "compress": "lz4",
+    "level": "medium"
+  },
+  {
+    "field": "high",
+    "type": "DOUBLE",
+    "length": 8,
+    "note": "",
+    "encode": "delta-d",
+    "compress": "lz4",
+    "level": "medium"
+  },
+  {
+    "field": "low",
+    "type": "DOUBLE",
+    "length": 8,
+    "note": "",
+    "encode": "delta-d",
+    "compress": "lz4",
+    "level": "medium"
+  },
+  {
+    "field": "close",
+    "type": "DOUBLE",
+    "length": 8,
+    "note": "",
+    "encode": "delta-d",
+    "compress": "lz4",
+    "level": "medium"
+  },
+  {
+    "field": "pre_close",
+    "type": "DOUBLE",
+    "length": 8,
+    "note": "",
+    "encode": "delta-d",
+    "compress": "lz4",
+    "level": "medium"
+  },
+  {
+    "field": "pct_chg",
+    "type": "DOUBLE",
+    "length": 8,
+    "note": "",
+    "encode": "delta-d",
+    "compress": "lz4",
+    "level": "medium"
+  },
+  {
+    "field": "volume_shares",
+    "type": "BIGINT",
+    "length": 8,
+    "note": "",
+    "encode": "simple8b",
+    "compress": "lz4",
+    "level": "medium"
+  },
+  {
+    "field": "amount_yuan",
+    "type": "DOUBLE",
+    "length": 8,
+    "note": "",
+    "encode": "delta-d",
+    "compress": "lz4",
+    "level": "medium"
+  },
+  {
+    "field": "turnover_pct",
+    "type": "DOUBLE",
+    "length": 8,
+    "note": "",
+    "encode": "delta-d",
+    "compress": "lz4",
+    "level": "medium"
+  },
+  {
+    "field": "suspended",
+    "type": "BOOL",
+    "length": 1,
+    "note": "",
+    "encode": "bit-packing",
+    "compress": "zstd",
+    "level": "medium"
+  },
+  {
+    "field": "version",
+    "type": "VARCHAR",
+    "length": 24,
+    "note": "",
+    "encode": "disabled",
+    "compress": "zstd",
+    "level": "medium"
+  },
+  {
+    "field": "symbol",
+    "type": "VARCHAR",
+    "length": 8,
+    "note": "TAG",
+    "encode": "disabled",
+    "compress": "disabled",
+    "level": "disabled"
+  }
+]

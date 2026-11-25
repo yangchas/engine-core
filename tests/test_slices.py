@@ -1,0 +1,458 @@
+from engine_core.slices import SliceReader, SliceResult
+
+
+def test_reader_reuses_manifest_rows_conversion_and_pit_filter(tmp_path):
+    import json
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"available_at": "2026-10-16T09:00:00+08:00"}), encoding="utf-8")
+
+    class Catalog:
+        calls = 0
+
+        def read_rows(self, _path):
+            self.calls += 1
+            return [{"symbol": "000001", "available_at": "2026-10-16T09:00:00+08:00"}]
+
+    catalog = Catalog()
+    reader = SliceReader()
+    assert reader.read_manifest(manifest) is reader.read_manifest(manifest)
+    raw_rows = reader.read_rows(catalog, manifest)
+    assert raw_rows is reader.read_rows(catalog, manifest)
+    rows = reader.as_rows(raw_rows)
+    assert rows is reader.as_rows(raw_rows)
+    filtered = reader.pit_rows(rows, "2026-10-16T09:26:00+08:00")
+    assert filtered is reader.pit_rows(rows, "2026-10-16T09:26:00+08:00")
+    assert catalog.calls == 1
+    assert filtered[0] == [{"symbol": "000001", "available_at": "2026-10-16T09:00:00+08:00"}]
+
+
+def test_core_data_root_is_isolated_per_test(tmp_path):
+    import os
+
+    assert os.environ["CORE_DATA_ROOT"] == str(tmp_path / "core-data")
+
+
+def test_slice_reader_uses_core_provider_once_and_rejects_future_data():
+    calls = []
+
+    def core_provider(reader, request):
+        calls.append(request)
+        return SliceResult.create(
+            [{"symbol": "600001", "event_time": "2026-10-15T09:00:00+08:00",
+              "available_at": "2026-10-15T09:01:00+08:00"}],
+            {"slice_id": "daily_history", "trade_date": request.trade_date,
+             "asof": request.asof, "source": "core_data", "version": "v1",
+             "built_at": "2026-10-15T10:00:00+08:00",
+             "available_at": "2026-10-15T09:01:00+08:00", "quality": {},
+             "status": "READY", "lineage": []},
+        )
+
+    reader = SliceReader({"daily_history": [core_provider]}, snapshot_id="test")
+    first = reader.get("daily_history", trade_date="2026-10-15",
+                       asof="2026-10-15T09:02:00+08:00")
+    second = reader.get("daily_history", trade_date="2026-10-15",
+                        asof="2026-10-15T09:02:00+08:00")
+    assert first is second
+    assert len(calls) == 1
+    assert first.meta["source"] == "core_data"
+
+
+def test_slice_provider_priority_and_pit_filtering(tmp_path):
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.slices import SliceProviders
+
+    from conftest import use_declared_time_as_test_commit_clock
+    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path / "core"))
+    catalog.commit("stock_static", "2026-10-15", [
+        {"symbol": "600001", "event_time": "2026-10-14T00:00:00+08:00",
+         "available_at": "2026-10-14T01:00:00+08:00", "name": "Core"},
+        {"symbol": "600002", "event_time": "2026-10-14T00:00:00+08:00",
+         "available_at": "2026-10-15T09:03:00+08:00", "name": "Late"},
+    ], {"available_at": "2026-10-14T01:00:00+08:00",
+        "point_in_time_date": "2026-10-14"}, source="test")
+
+    class Redis:
+        def hgetall(self, key):
+            return {"600001": '{"name":"Legacy"}'}
+
+    providers = SliceProviders(catalog=catalog, redis=Redis(), file_fallback=False)
+    reader = SliceReader(providers.providers())
+    result = reader.get("stock_name_map", trade_date="2026-10-15",
+                        asof="2026-10-15T09:02:00+08:00")
+    assert result.meta["source"] == "core_data"
+    assert result.meta["pit_date"] == "2026-10-14"
+    assert result.meta["status"] == "PARTIAL"
+    assert [row["symbol"] for row in result.rows] == ["600001"]
+
+
+def test_hot_rank_slice_selects_latest_core_capture_not_after_asof(tmp_path):
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.slices import SliceProviders
+
+    from conftest import use_declared_time_as_test_commit_clock
+    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path / "core"))
+    for captured, symbol in (("2026-10-17T10:00:00+08:00", "000001"),
+                             ("2026-10-17T11:00:00+08:00", "000002")):
+        catalog.commit("hot_rank", "2026-10-17", [{"symbol": symbol, "rank": 1,
+            "captured_at": captured, "available_at": captured}],
+            {"available_at": captured, "point_in_time_date": "2026-10-17"}, source="ths_hot_rank")
+
+    class Redis:
+        def hgetall(self, key): return {"000099": '{"rank":1}'}
+
+    reader = SliceReader(SliceProviders(catalog=catalog, redis=Redis(), file_fallback=False).providers())
+    result = reader.get("hot_rank", trade_date="2026-10-17", asof="2026-10-17T10:30:00+08:00")
+    assert result.meta["source"] == "ths_hot_rank"
+    assert result.meta["status"] == "UNKNOWN"
+    assert result.meta["lineage"][0]["store_status"] == "UNKNOWN"
+    assert [row["symbol"] for row in result.rows] == ["000099"]
+    no_redis = SliceReader(SliceProviders(catalog=catalog, redis=None,
+                                         file_fallback=False).providers())
+    next_day = no_redis.get("hot_rank", trade_date="2026-10-18",
+                            asof="2026-10-18T09:00:00+08:00")
+    assert next_day.meta["status"] == "UNKNOWN"
+    assert next_day.rows == []
+
+
+def test_hot_plates_and_plate_members_read_core_artifacts_before_legacy(tmp_path):
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.slices import SliceProviders
+
+    from conftest import use_declared_time_as_test_commit_clock
+    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path / "core"))
+    from real_hot_plates import real_plate_rows
+    plates = real_plate_rows("2026-10-17T09:20:00+08:00", trade_date="2026-10-16")
+    catalog.commit("hot_plates", "2026-10-16", plates, {
+        "available_at": "2026-10-17T09:20:00+08:00", "captured_at": "2026-10-17T09:20:00+08:00",
+    }, source="kaipan_getHisPlates")
+    catalog.commit("plate_members", "2026-10-16", [{
+        "plate_code": "801001", "symbol": "600001",
+        "captured_at": "2026-10-17T09:20:00+08:00",
+        "available_at": "2026-10-17T09:20:00+08:00",
+    }], {"available_at": "2026-10-17T09:20:00+08:00"}, source="kaipan_getHisPlateIds")
+
+    class Redis:
+        def hgetall(self, key):
+            return {"legacy": '{"symbol":"000001"}'}
+
+    reader = SliceReader(SliceProviders(catalog=catalog, redis=Redis(),
+                                        file_fallback=False).providers())
+    asof = "2026-10-17T09:30:00+08:00"
+    hot = reader.get("hot_plates_today", trade_date="2026-10-16", asof=asof)
+    members = reader.get("plate_members", trade_date="2026-10-16", asof=asof)
+    assert hot.meta["status"] == "MISSING"
+    assert members.meta["source"] == "core_data"
+    assert [row["symbol"] for row in members.rows] == ["600001"]
+
+
+def test_hot_plates_today_uses_latest_dated_capture_visible_at_asof(tmp_path):
+    import json
+    from pathlib import Path
+    from engine_core.slices import SliceProviders
+
+    fixture = Path(__file__).parent / "fixtures/real/c1094/view.json"
+    raw = fixture.read_bytes()
+    view = json.loads(raw)
+    class Redis:
+        def scan_iter(self, match, count=100):
+            return ["captured-view"]
+        def get(self, key):
+            return raw
+    reader = SliceReader(SliceProviders(redis=Redis(), file_fallback=False).providers())
+    result = reader.get("hot_plates_today", trade_date=view["trade_date"],
+                        asof=view["available_at"])
+    assert result.meta["status"] == "READY"
+    assert len(result.rows) == len(view["rows"])
+    before = reader.get("hot_plates_today", trade_date=view["trade_date"],
+                        asof="2026-11-13T00:00:00+08:00")
+    assert before.meta["status"] == "MISSING"
+
+
+def test_stock_theme_assignment_slice_reads_only_pit_valid_hot_product(tmp_path):
+    import json
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.slices import SliceProviders
+
+    payload = {"trade_date": "2026-10-16", "used_date": "2026-10-15",
+               "as_of": "2026-10-16T08:50:00+08:00", "version": "v1",
+               "input_version": "inputs-v1", "visibility_sha256": "visible-v1",
+               "assignments": {"600001": {"symbol": "600001", "source": "reason",
+                   "available_at": "2026-10-16T08:50:00+08:00", "input_version": "inputs-v1",
+                   "visibility_sha256": "visible-v1", "trade_date": "2026-10-16",
+                   "used_date": "2026-10-15"}}}
+
+    class Redis:
+        def get(self, key):
+            assert key == "core:cache:data:stock_theme_assignment:2026-10-16"
+            return json.dumps(payload).encode()
+
+    reader = SliceReader(SliceProviders(catalog=ArtifactCatalog(tmp_path / "core"),
+                                        redis=Redis(), file_fallback=False).providers())
+    result = reader.get("stock_theme_assignment", trade_date="2026-10-16",
+                        asof="2026-10-16T09:32:00+08:00", prior_trade_date="2026-10-15")
+    assert result.meta["source"] == "core_redis"
+    assert result.meta["pit_date"] == "2026-10-15"
+    assert result.rows[0]["symbol"] == "600001"
+
+    too_early = reader.get("stock_theme_assignment", trade_date="2026-10-16",
+                           asof="2026-10-16T08:40:00+08:00", prior_trade_date="2026-10-15")
+    assert too_early.meta["status"] == "MISSING"
+
+
+def test_pit_rejects_future_available_at_even_when_event_time_is_missing_and_normalizes_naive():
+    from engine_core.slices import _pit_rows
+
+    rows, unknown = _pit_rows([
+        {"symbol": "600001", "available_at": "2026-10-16T09:27:00"},
+        {"symbol": "600002", "event_time": "2026-10-16T09:00:00",
+         "available_at": "2026-10-16T09:25:00"},
+        {"symbol": "600003", "value": 1},
+    ], "2026-10-16T09:26:00+08:00")
+
+    assert [row["symbol"] for row in rows] == ["600002", "600003"]
+    assert unknown is True
+
+    only_available, unknown = _pit_rows(
+        [{"symbol": "600004", "available_at": "2026-10-16T09:25:00"}],
+        "2026-10-16T09:26:00+08:00")
+    assert [row["symbol"] for row in only_available] == ["600004"]
+    assert unknown is False
+
+
+def test_daily_history_legacy_adapter_decodes_bytes_symbols():
+    import json
+    import zlib
+    from engine_core.slices import SliceProviders, SliceRequest
+
+    class Pipe:
+        def __init__(self): self.keys = []
+        def get(self, key): self.keys.append(key); return self
+        def execute(self):
+            return [zlib.compress(json.dumps([{"time": "2026-10-15", "close": 12.3}]).encode()).hex().encode()]
+
+    class Redis:
+        def __init__(self): self.pipe = Pipe()
+        def hkeys(self, key): return [b"000001"]
+        def pipeline(self): return self.pipe
+
+    redis = Redis()
+    providers = SliceProviders(redis=redis, file_fallback=False)
+    request = SliceRequest("daily_history", "2026-10-16", "2026-10-16T09:26:00+08:00",
+                           {"prior_trade_date": "2026-10-15"})
+    rows = providers._legacy_rows(request)
+    assert redis.pipe.keys == ["cache:kline:d:000001"]
+    assert rows[0]["symbol"] == "000001"
+    assert rows[0]["date"] == "2026-10-15"
+
+
+def test_daily_history_legacy_adapter_keeps_each_mixed_symbol_with_its_prices():
+    import json
+    import zlib
+    from engine_core.slices import SliceProviders, SliceRequest
+
+    blobs = [
+        zlib.compress(json.dumps([{"time": "2026-10-15", "close": price}]).encode()).hex()
+        for price in (10, 20, 30)
+    ]
+    class Pipe:
+        def __init__(self): self.keys = []
+        def get(self, key): self.keys.append(key); return self
+        def execute(self): return [value.encode() for value in blobs]
+    class Redis:
+        def __init__(self): self.pipe = Pipe()
+        def hkeys(self, key): return [b"000001", "000002", b"000003"]
+        def pipeline(self): return self.pipe
+    rows = SliceProviders(redis=Redis(), file_fallback=False)._legacy_rows(
+        SliceRequest("daily_history", "2026-10-16", "2026-10-16T09:26:00+08:00",
+                     {"prior_trade_date": "2026-10-15"}))
+    assert [(row["symbol"], row["close"]) for row in rows] == [
+        ("000001", 10), ("000002", 20), ("000003", 30)]
+
+
+def test_historical_reason_artifact_availability_is_checked_before_ready(tmp_path):
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.slices import SliceProviders, SliceReader
+
+    catalog = ArtifactCatalog(tmp_path / "core")
+    catalog.commit("limit_reasons", "2026-10-16", [{
+        "symbol": "600001", "Date": "2026-10-15", "available_at": "2026-10-16T08:50:00+08:00",
+        "ZSCode": ["801001"], "Reason": "future artifact"}],
+        {"available_at": "2026-10-16T15:00:00+08:00"}, source="test")
+    result = SliceReader(SliceProviders(catalog=catalog, file_fallback=False).providers()).get(
+        "limit_reason_history", trade_date="2026-10-16", asof="2026-10-16T09:26:00+08:00")
+    assert result.meta["status"] == "MISSING"
+    assert result.rows == []
+
+
+def test_pit_filter_reuses_timestamp_parses_within_dataset(monkeypatch):
+    from engine_core import slices
+
+    original = slices._parse_pit_timestamp
+    calls = []
+
+    def counted(value):
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(slices, "_parse_pit_timestamp", counted)
+    rows, unknown = slices._pit_rows([
+        {"date": "2026-10-15", "available_at": "2026-10-15T08:00:00+08:00"}
+        for _ in range(20)
+    ], "2026-10-16T09:26:00+08:00")
+
+    assert len(rows) == 20
+    assert not unknown
+    assert calls.count("2026-10-15") == 1
+    assert calls.count("2026-10-15T08:00:00+08:00") == 1
+
+
+def test_limit_reason_history_applies_pit_filter_once_for_multidate_rows(tmp_path, monkeypatch):
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core import slices
+
+    from conftest import use_declared_time_as_test_commit_clock
+    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path / "core"))
+    for artifact_date in ("2026-10-15", "2026-10-16"):
+        catalog.commit("limit_reasons", artifact_date, [{
+            "symbol": "600001", "Date": artifact_date, "ZSCode": ["801001"],
+            "Reason": artifact_date,
+        }], {"available_at": f"{artifact_date}T08:00:00+08:00"}, source="test")
+
+    original = slices._pit_rows
+    calls = 0
+
+    def counted(rows, asof):
+        nonlocal calls
+        calls += 1
+        return original(rows, asof)
+
+    monkeypatch.setattr(slices, "_pit_rows", counted)
+    result = slices.SliceReader(
+        slices.SliceProviders(catalog=catalog, file_fallback=False).providers()).get(
+            "limit_reason_history", trade_date="2026-10-16",
+            asof="2026-10-16T09:26:00+08:00")
+
+    assert len(result.rows) == 2
+    assert calls == 2
+
+
+def test_daily_history_decoder_handles_5200_symbols_without_cross_symbol_state():
+    import json
+    import zlib
+    from engine_core.slices import SliceProviders, SliceRequest
+    symbols = [f"{index:06d}" for index in range(1, 5201)]
+    values = [zlib.compress(json.dumps([{"time": "2026-10-15", "close": index}]).encode()).hex().encode()
+              for index in range(1, len(symbols) + 1)]
+    class Pipe:
+        def get(self, key): return self
+        def execute(self): return values
+    class Redis:
+        def hkeys(self, key): return symbols
+        def pipeline(self): return Pipe()
+    rows = SliceProviders(redis=Redis(), file_fallback=False)._legacy_rows(
+        SliceRequest("daily_history", "2026-10-16", "2026-10-16T09:26:00+08:00",
+                     {"prior_trade_date": "2026-10-15"}))
+    assert len(rows) == 5200
+    assert rows[0]["symbol"] == "000001" and rows[0]["close"] == 1
+    assert rows[-1]["symbol"] == "005200" and rows[-1]["close"] == 5200
+
+
+def test_previous_trade_date_uses_observed_core_dates_and_fails_closed():
+    from engine_core.slices import previous_trade_date
+
+    class Catalog:
+        def __init__(self, dates): self.dates = dates
+        def read(self): return {"datasets": {"daily_kline": {"dates": {day: [] for day in self.dates}}}}
+
+    assert previous_trade_date(Catalog(["2026-10-14", "2026-10-16"]), "2026-10-17") is None
+    assert previous_trade_date(Catalog([]), "2026-10-17") is None
+
+
+def test_legacy_source_and_file_fallback_are_explicit(monkeypatch):
+    from engine_core.slices import SliceProviders
+    from engine_core.data_pipeline import limit_pool_hot_view
+    from pathlib import Path
+
+    def no_td():
+        raise ValueError("td_unavailable")
+
+    monkeypatch.setattr(limit_pool_hot_view, "_td_store", no_td)
+    class Redis:
+        def get(self, key):
+            assert key == "core:view:limit_up_pool:2026-10-23"
+            return None
+
+        def hgetall(self, key):
+            raise AssertionError("legacy Redis must not be read")
+
+    def forbidden(*args):
+        raise AssertionError("legacy and file fallback must not be called")
+
+    monkeypatch.setattr(SliceProviders, "_legacy", forbidden)
+    monkeypatch.setattr(SliceProviders, "_file", forbidden)
+    file_path = Path(__file__).parent / "fixtures/real/kaipan_pool_2026-10-23_L1_0537.json"
+    assert file_path.is_file()
+    for allow_file in (False, True):
+        reader = SliceReader(SliceProviders(redis=Redis(), file_fallback=allow_file).providers())
+        missing = reader.get("yest_limit_pool", trade_date="2026-10-26",
+                             asof="2026-10-26T09:02:00+08:00", source_date="2026-10-23",
+                             fallback_file=str(file_path))
+        assert missing.rows == []
+        assert missing.meta["status"] == "MISSING"
+        assert missing.meta["source"] == "td"
+        assert missing.meta["reason"] == "td_unavailable"
+        assert missing.meta["fallback_reason"] == "redis_missing"
+
+
+def test_reference_import_dry_run_and_execute(tmp_path):
+    import importlib.util
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+
+    path = tmp_path / "input.csv"
+    path.write_text("symbol,name\n600001,样例\n", encoding="utf-8")
+    module_path = __import__("pathlib").Path(__file__).parents[1] / "examples/import_reference_to_core_store.py"
+    spec = importlib.util.spec_from_file_location("slice_import_tool", module_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    catalog = ArtifactCatalog(tmp_path / "store")
+    mapping = [f"stock_static={path}"]
+    preview = module.import_files(mapping, catalog=catalog, trade_date="2026-10-15",
+                                  as_of="2026-10-15T09:00:00+08:00", pit_date="2026-10-14")
+    assert preview[0]["version"] is None
+    assert catalog.locate("stock_static", "2026-10-15") is None
+    committed = module.import_files(mapping, catalog=catalog, trade_date="2026-10-15",
+                                    as_of="2026-10-15T09:00:00+08:00", pit_date="2026-10-14",
+                                    execute=True)
+    manifest = __import__("json").loads(catalog.locate("stock_static", "2026-10-15").read_text())
+    assert committed[0]["version"]
+    assert manifest["provenance"] == "import_from_validation"
+    assert manifest["source_sha256"] == preview[0]["source_sha256"]
+
+
+def test_reference_import_flattens_point_in_time_kaipan_reasons(tmp_path):
+    import importlib.util
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+
+    source = tmp_path / "kaipan" / "reasons"
+    source.mkdir(parents=True)
+    (source / "600001.json").write_text(
+        '{"StockID":"600001","List":[{"ZSCode":["801001"],"PZSCode":"803023",'
+        '"Reason":"样例原因","Date":"2026-10-14","SCLT":"1","Type":"0"}]}',
+        encoding="utf-8")
+    module_path = __import__("pathlib").Path(__file__).parents[1] / "examples/import_reference_to_core_store.py"
+    spec = importlib.util.spec_from_file_location("slice_import_tool_dir", module_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    catalog = ArtifactCatalog(tmp_path / "store")
+    module.import_files([f"limit_reasons={source.parent}"], catalog=catalog,
+                        trade_date="2026-10-14", as_of="2026-10-14T18:00:00+08:00",
+                        pit_date="2026-10-14", execute=True)
+    manifest = catalog.locate("limit_reasons", "2026-10-14")
+    row = catalog.read_rows(manifest)[0]
+    assert row["symbol"] == "600001"
+    assert row["ZSCode"] == ["801001"]
+    assert row["PZSCode"] == "803023"
+    assert row["Reason"] == "样例原因"

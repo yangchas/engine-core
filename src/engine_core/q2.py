@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Mapping, Optional, Protocol, Sequence, Tuple
 from zoneinfo import ZoneInfo
@@ -15,8 +15,11 @@ from .contracts import (
     PayloadKind,
     Provenance,
     deep_freeze,
+    evidence_hash,
     semantic_hash,
 )
+
+Q2_PROJECTION_CONTRACT_VERSION = "Q2CanonicalProjectionV3"
 
 
 @dataclass(frozen=True)
@@ -41,18 +44,101 @@ class Q2FieldSpec:
     unit: str
     semantic: str
     required: bool
+    source_event_time_window: Optional[Tuple[str, str]] = None
+    candidate_update_order: Optional[str] = None
+    snapshot_trigger_not_before: Optional[str] = None
 
 
 Q2_FIELD_CONTRACT: Tuple[Q2FieldSpec, ...] = (
     Q2FieldSpec("px", "price_milli", "int", "milli_price", "current price", True),
     Q2FieldSpec("pc", "pre_close_milli", "int", "milli_price", "previous close", True),
     Q2FieldSpec("amt", "amount_yuan", "int", "yuan", "cumulative trading amount", True),
-    Q2FieldSpec("vol", "volume_lots", "int", "lots", "cumulative board-lot volume", False),
+    Q2FieldSpec(
+        "vol",
+        "volume_lots",
+        "int",
+        "lots",
+        "cumulative volume snapshot; observed scale is consistent with board lots, but upstream unit provenance is UNKNOWN because production C++ comments say shares while the converter and Redis writer pass the value through",
+        False,
+    ),
+    Q2FieldSpec(
+        "iv",
+        "instant_volume_lots",
+        "int",
+        "lots",
+        "t1-emitted latest-event volume delta, not a window sum; same observed unit as vol, with upstream unit provenance UNKNOWN",
+        False,
+    ),
+    Q2FieldSpec(
+        "ia",
+        "instant_amount_yuan",
+        "int",
+        "yuan",
+        "t1-emitted latest-event amount delta, not a window sum",
+        False,
+    ),
+    Q2FieldSpec(
+        "ln",
+        "large_net_yuan",
+        "int",
+        "yuan",
+        "signed t1-emitted event-level large-net amount",
+        False,
+    ),
     Q2FieldSpec("ts", "source_record_time_ms", "epoch_ms", "epoch_ms", "upstream record or batch snapshot time", True),
     Q2FieldSpec("ph", "phase", "int", "code", "market phase", False),
-    Q2FieldSpec("br", "auction_bid_amount_yuan", "int", "yuan", "derived level-2 resting bid amount", False),
-    Q2FieldSpec("ar", "auction_ask_amount_yuan", "int", "yuan", "derived level-2 resting ask amount", False),
+    Q2FieldSpec("b1a", "bid1_amount_yuan", "int", "yuan", "real-time best bid amount", False),
+    Q2FieldSpec("a1a", "ask1_amount_yuan", "int", "yuan", "real-time best ask amount", False),
+    Q2FieldSpec(
+        "br",
+        "auction_bid_amount_yuan",
+        "int",
+        "yuan",
+        "auction-only derived notional: level-1 bid/reference price multiplied by level-2 unmatched bid volume in board lots, converted to yuan by integer floor (price_milli * lots * 100) // 1000; not level-2 price times level-2 volume",
+        False,
+    ),
+    Q2FieldSpec(
+        "ar",
+        "auction_ask_amount_yuan",
+        "int",
+        "yuan",
+        "auction-only derived notional: level-1 ask/reference price multiplied by level-2 unmatched ask volume in board lots, converted to yuan by integer floor (price_milli * lots * 100) // 1000; not level-2 price times level-2 volume",
+        False,
+    ),
     Q2FieldSpec("am", "auction_amount_yuan", "int", "yuan", "current auction matched amount", False),
+    Q2FieldSpec(
+        "a20",
+        "auction_anchor_0920_price_milli",
+        "int",
+        "milli_price",
+        "matching-price candidate overwritten by each qualifying source-event tick in processing order; source time is Shanghai whole-second truncated and qualifies in the half-open window; this Q2 field may be present before the scheduled snapshot trigger; replay event-time order does not prove production processing order or historical available_at; zero means unavailable",
+        False,
+        ("09:20:00", "09:20:21"),
+        "LAST_PROCESSED_QUALIFYING_TICK",
+        "09:20:03",
+    ),
+    Q2FieldSpec(
+        "a24",
+        "auction_anchor_0924_price_milli",
+        "int",
+        "milli_price",
+        "matching-price candidate overwritten by each qualifying source-event tick in processing order; source time is Shanghai whole-second truncated and qualifies in the half-open window; this Q2 field may be present before the scheduled snapshot trigger; replay event-time order does not prove production processing order or historical available_at; zero means unavailable",
+        False,
+        ("09:24:00", "09:24:21"),
+        "LAST_PROCESSED_QUALIFYING_TICK",
+        "09:24:10",
+    ),
+    Q2FieldSpec(
+        "a25",
+        "auction_anchor_0925_price_milli",
+        "int",
+        "milli_price",
+        "matching-price candidate overwritten by each qualifying source-event tick in processing order; source time is Shanghai whole-second truncated and qualifies in the half-open window; this Q2 field may be present before the scheduled snapshot trigger; replay event-time order does not prove production processing order or historical available_at; zero means unavailable",
+        False,
+        ("09:25:00", "09:25:21"),
+        "LAST_PROCESSED_QUALIFYING_TICK",
+        "09:25:06",
+    ),
     Q2FieldSpec("spd1m", "speed_1m_bp", "int", "basis_point", "exact one-minute price change", False),
     Q2FieldSpec("amt2m", "amount_2m_yuan", "int", "yuan", "cumulative amount delta within two minutes", False),
     Q2FieldSpec("amt5m", "amount_5m_yuan", "int", "yuan", "cumulative amount delta within five minutes", False),
@@ -62,7 +148,7 @@ Q2_FIELD_CONTRACT: Tuple[Q2FieldSpec, ...] = (
 )
 
 Q2_OBSERVED_OPTIONAL_FIELDS: Tuple[str, ...] = (
-    "iv", "ia", "ln", "ls", "mx", "mn", "a20", "a24", "a25",
+    "iv", "ia", "ln", "ls", "mx", "mn", "a20", "a24", "a25", "b1a", "a1a",
 )
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -151,11 +237,25 @@ class Q2Quote:
     vector_3m_bp: Optional[int]
     vector_5m_bp: Optional[int]
     raw_fields: Mapping[str, Any]
+    auction_anchor_0920_price_milli: Optional[int] = None
+    auction_anchor_0924_price_milli: Optional[int] = None
+    auction_anchor_0925_price_milli: Optional[int] = None
     field_errors: Tuple[str, ...] = ()
+    auction_anchor_field_quality: Mapping[str, str] = field(default_factory=dict)
+    instant_volume_lots: Optional[int] = None
+    instant_amount_yuan: Optional[int] = None
+    large_net_yuan: Optional[int] = None
+    bid1_amount_yuan: Optional[int] = None
+    ask1_amount_yuan: Optional[int] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "raw_fields", deep_freeze(self.raw_fields))
         object.__setattr__(self, "field_errors", tuple(self.field_errors))
+        object.__setattr__(
+            self,
+            "auction_anchor_field_quality",
+            deep_freeze(self.auction_anchor_field_quality),
+        )
 
     def to_mapping(self) -> Dict[str, Any]:
         return {
@@ -166,6 +266,9 @@ class Q2Quote:
             "pre_close_milli": self.pre_close_milli,
             "amount_yuan": self.amount_yuan,
             "volume_lots": self.volume_lots,
+            "instant_volume_lots": self.instant_volume_lots,
+            "instant_amount_yuan": self.instant_amount_yuan,
+            "large_net_yuan": self.large_net_yuan,
             "source_record_time_ms": self.source_record_time_ms,
             "phase": self.phase,
             "limit_state": self.limit_state,
@@ -177,6 +280,10 @@ class Q2Quote:
             "speed_1m_bp": self.speed_1m_bp,
             "vector_3m_bp": self.vector_3m_bp,
             "vector_5m_bp": self.vector_5m_bp,
+            "auction_anchor_0920_price_milli": self.auction_anchor_0920_price_milli,
+            "auction_anchor_0924_price_milli": self.auction_anchor_0924_price_milli,
+            "auction_anchor_0925_price_milli": self.auction_anchor_0925_price_milli,
+            "auction_anchor_field_quality": self.auction_anchor_field_quality,
             "field_errors": self.field_errors,
         }
 
@@ -199,6 +306,30 @@ def normalize_q2(symbol: str, raw_hash: Mapping[Any, Any]) -> Q2Quote:
             errors.append(name)
         return value
 
+    def auction_anchor_price(name: str) -> Optional[int]:
+        value = int_field(name)
+        if value is None or value == 0:
+            # t1-v2 zero-initializes an uncaptured anchor; retain the raw wire
+            # value in raw_fields while representing the fact as unavailable.
+            return None
+        if value < 0:
+            errors.append(name + "_non_positive")
+            return None
+        return value
+
+    def auction_anchor_quality(name: str) -> str:
+        if name not in raw:
+            return "MISSING"
+        raw_value = raw[name]
+        if raw_value in (None, ""):
+            return "MISSING"
+        parsed = _to_int(raw_value)
+        if parsed is None or parsed < 0:
+            return "INVALID"
+        if parsed == 0:
+            return "MISSING"
+        return "PRESENT_VALUE"
+
     timestamp_raw = int_field("ts")
     timestamp_ms = _epoch_ms(timestamp_raw)
     if timestamp_raw is not None and timestamp_ms is None:
@@ -211,6 +342,11 @@ def normalize_q2(symbol: str, raw_hash: Mapping[Any, Any]) -> Q2Quote:
         pre_close_milli=int_field("pc"),
         amount_yuan=int_field("amt"),
         volume_lots=int_field("vol"),
+        instant_volume_lots=int_field("iv"),
+        instant_amount_yuan=int_field("ia"),
+        large_net_yuan=int_field("ln"),
+        bid1_amount_yuan=int_field("b1a"),
+        ask1_amount_yuan=int_field("a1a"),
         source_record_time_ms=timestamp_ms,
         phase=int_field("ph"),
         limit_state=int_field("ls"),
@@ -223,7 +359,13 @@ def normalize_q2(symbol: str, raw_hash: Mapping[Any, Any]) -> Q2Quote:
         vector_3m_bp=int_field("vec3m"),
         vector_5m_bp=int_field("vec5m"),
         raw_fields=raw,
+        auction_anchor_0920_price_milli=auction_anchor_price("a20"),
+        auction_anchor_0924_price_milli=auction_anchor_price("a24"),
+        auction_anchor_0925_price_milli=auction_anchor_price("a25"),
         field_errors=tuple(sorted(set(errors))),
+        auction_anchor_field_quality={
+            name: auction_anchor_quality(name) for name in ("a20", "a24", "a25")
+        },
     )
     return quote
 
@@ -308,12 +450,37 @@ class Q2ProjectionSnapshot:
     oldest_source_time_ms: Optional[int]
     newest_source_time_ms: Optional[int]
     content_hash: str
+    content_hash_override: Optional[str] = field(default=None, repr=False, compare=False)
+    out_of_scope_symbols: Tuple[str, ...] = ()
+    out_of_scope_event_hashes: Tuple[str, ...] = ()
+    out_of_scope_events: Tuple[Mapping[str, Any], ...] = ()
+    source_anomaly_hashes: Tuple[str, ...] = ()
+
+    __deep_frozen_contract__ = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "quotes", deep_freeze(self.quotes))
         object.__setattr__(self, "expected_symbols", tuple(self.expected_symbols))
         object.__setattr__(self, "missing_symbols", tuple(self.missing_symbols))
         object.__setattr__(self, "stale_symbols", tuple(self.stale_symbols))
+        object.__setattr__(self, "out_of_scope_symbols", tuple(sorted(set(self.out_of_scope_symbols))))
+        object.__setattr__(self, "out_of_scope_event_hashes", tuple(self.out_of_scope_event_hashes))
+        object.__setattr__(self, "out_of_scope_events", tuple(deep_freeze(item) for item in self.out_of_scope_events))
+        object.__setattr__(self, "source_anomaly_hashes", tuple(sorted(self.source_anomaly_hashes)))
+        if self.content_hash_override is not None:
+            object.__setattr__(self, "content_hash", self.content_hash_override)
+
+    @property
+    def evidence_hash(self) -> str:
+        """Hash the projection plus source anomalies without redefining its values."""
+
+        return evidence_hash({
+            "content_hash": self.content_hash,
+            "out_of_scope_symbols": self.out_of_scope_symbols,
+            "out_of_scope_event_hashes": self.out_of_scope_event_hashes,
+            "out_of_scope_events": self.out_of_scope_events,
+            "source_anomaly_hashes": self.source_anomaly_hashes,
+        })
 
 
 def build_q2_projection(
@@ -324,6 +491,7 @@ def build_q2_projection(
     *,
     freshness_policy: FreshnessPolicy = FreshnessPolicy(),
     source_id: str = "redis_q2_projection",
+    source_anomaly_hashes: Sequence[str] = (),
 ) -> Q2ProjectionSnapshot:
     """Build a projection from already-read hashes; no Redis access occurs."""
 
@@ -332,6 +500,7 @@ def build_q2_projection(
         raise ValueError("observed_at must be timezone-aware")
     observed_ms = int(observed_at.astimezone(timezone.utc).timestamp() * 1000)
     expected = tuple(sorted({normalize_symbol(item) for item in expected_symbols}))
+    source_anomalies = tuple(sorted(source_anomaly_hashes))
     quotes: Dict[str, Q2Quote] = {}
     missing = []
     stale = []
@@ -368,7 +537,7 @@ def build_q2_projection(
     if not expected:
         status = DataStatus.MISSING
         consistency = "EMPTY_UNIVERSE"
-    elif missing or has_non_stale_errors:
+    elif missing or has_non_stale_errors or source_anomalies:
         status = DataStatus.PARTIAL
         consistency = "BEST_EFFORT_PARTIAL"
     elif stale and len(stale) == len(quotes):
@@ -386,13 +555,14 @@ def build_q2_projection(
         for symbol in sorted(quotes)
     }
     content = {
+        "contract": Q2_PROJECTION_CONTRACT_VERSION,
         "trade_date": trade_date,
         "expected_symbols": expected,
         "missing_symbols": tuple(missing),
         "stale_symbols": tuple(sorted(stale)),
         "quotes": quote_payload,
     }
-    content_digest = semantic_hash(content, schema_version=1)
+    content_digest = semantic_hash(content, schema_version=2)
     provenance = Provenance(
         source_id=source_id,
         source_kind="redis_projection",
@@ -411,11 +581,11 @@ def build_q2_projection(
                 "observed_ms": observed_ms,
                 "content_hash": content_digest,
             },
-            schema_version=1,
+            schema_version=2,
         ),
         payload_kind=PayloadKind.L2_PROJECTION_SNAPSHOT,
         source_id=source_id,
-        schema_version=1,
+        schema_version=2,
         effective_time_ms=newest,
         observed_time_ms=observed_ms,
         generation=None,
@@ -436,7 +606,266 @@ def build_q2_projection(
         oldest_source_time_ms=oldest,
         newest_source_time_ms=newest,
         content_hash=content_digest,
+        source_anomaly_hashes=source_anomalies,
     )
+
+
+def _invalid_active_member_hash(value: Any) -> str:
+    """Return stable, non-reversible evidence for one malformed Redis member."""
+
+    if isinstance(value, bytes):
+        member = {"type": "bytes", "hex": value.hex()}
+    elif isinstance(value, str):
+        member = {"type": "str", "value": value}
+    else:
+        member = {
+            "type": "%s.%s" % (type(value).__module__, type(value).__qualname__),
+        }
+    return evidence_hash({"kind": "invalid_q2_active_member", "member": member})
+
+
+class IncrementalQ2Projection:
+    """Cache normalized Q2 quotes across adjacent replay frames.
+
+    Stock-tick frames usually update only a subset of the universe.  This
+    builder keeps the immutable snapshot contract, but normalizes only the
+    changed symbols and maintains a cheap quote-hash aggregate for FRAME
+    verification.  ``full_hash=True`` performs the original semantic hash and
+    is used for parity/final verification.
+    """
+
+    def __init__(
+        self,
+        trade_date: str,
+        expected_symbols: Sequence[Any],
+        *,
+        freshness_policy: FreshnessPolicy = FreshnessPolicy(),
+        source_id: str = "redis_q2_projection",
+    ) -> None:
+        self.trade_date = _strict_trade_date(trade_date)
+        self.expected_symbols = tuple(sorted({normalize_symbol(item) for item in expected_symbols}))
+        self.freshness_policy = freshness_policy
+        self.source_id = source_id
+        self._raw_hashes: Dict[str, Mapping[Any, Any]] = {}
+        self._quotes: Dict[str, Q2Quote] = {}
+        self._quote_hashes: Dict[str, str] = {}
+        self._missing_symbols = set(self.expected_symbols)
+        self._invalid_symbols: set[str] = set()
+        self._future_symbols: set[str] = set()
+        self._stale_symbols: set[str] = set()
+        self._source_times: Dict[str, int] = {}
+
+    def _refresh_symbol(self, symbol: str, raw: Mapping[Any, Any], observed_ms: int) -> None:
+        normalized = normalize_symbol(symbol)
+        quote = normalize_q2(normalized, raw)
+        static_errors = tuple(
+            error for error in quote.field_errors
+            if error not in {"stale", "future_ts", "trade_date"}
+        )
+        checked = replace(quote, field_errors=static_errors)
+        validation_errors = validate_q2(
+            checked,
+            observed_at_ms=observed_ms,
+            trade_date=self.trade_date,
+            freshness_policy=self.freshness_policy,
+        )
+        checked = replace(checked, field_errors=validation_errors) if validation_errors else checked
+        self._raw_hashes[normalized] = raw
+        self._quotes[normalized] = checked
+        self._quote_hashes[normalized] = semantic_hash(checked.to_mapping())
+        self._missing_symbols.discard(normalized)
+        if any(error != "stale" for error in validation_errors):
+            self._invalid_symbols.add(normalized)
+        else:
+            self._invalid_symbols.discard(normalized)
+        if "future_ts" in validation_errors:
+            self._future_symbols.add(normalized)
+        else:
+            self._future_symbols.discard(normalized)
+        if "stale" in validation_errors:
+            self._stale_symbols.add(normalized)
+        else:
+            self._stale_symbols.discard(normalized)
+        if checked.source_record_time_ms is not None:
+            self._source_times[normalized] = checked.source_record_time_ms
+        else:
+            self._source_times.pop(normalized, None)
+
+    def build(
+        self,
+        observed_at: datetime,
+        raw_hashes: Mapping[str, Mapping[Any, Any]],
+        *,
+        changed_symbols: Sequence[str] = (),
+        full_hash: bool = False,
+    ) -> Q2ProjectionSnapshot:
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise ValueError("observed_at must be timezone-aware")
+        observed_ms = int(observed_at.astimezone(timezone.utc).timestamp() * 1000)
+        expected_set = set(self.expected_symbols)
+        changed = set()
+        for item in changed_symbols:
+            symbol = normalize_symbol(item)
+            if symbol in expected_set:
+                changed.add(symbol)
+        if not self._quotes and raw_hashes:
+            changed.update(symbol for symbol in raw_hashes if normalize_symbol(symbol) in expected_set)
+        for symbol in changed:
+            normalized = normalize_symbol(symbol)
+            raw = raw_hashes.get(normalized)
+            if raw is None:
+                self._raw_hashes.pop(normalized, None)
+                self._quotes.pop(normalized, None)
+                self._quote_hashes.pop(normalized, None)
+                self._missing_symbols.add(normalized)
+                self._invalid_symbols.discard(normalized)
+                self._future_symbols.discard(normalized)
+                self._stale_symbols.discard(normalized)
+                self._source_times.pop(normalized, None)
+                continue
+            self._refresh_symbol(normalized, raw, observed_ms)
+
+        # With no stale-age policy, only changed symbols and previously future
+        # symbols can change validation state as the observation clock moves.
+        # A configured stale-age policy intentionally uses the conservative
+        # full validation path below.
+        fast_path = self.freshness_policy.stale_after_ms is None
+        if fast_path:
+            for symbol in tuple(self._future_symbols):
+                raw = self._raw_hashes.get(symbol)
+                if raw is not None:
+                    self._refresh_symbol(symbol, raw, observed_ms)
+            quotes = dict(self._quotes)
+            missing = tuple(sorted(self._missing_symbols))
+            stale = tuple(sorted(self._stale_symbols))
+            current_quote_hashes = dict(self._quote_hashes)
+            source_times = list(self._source_times.values())
+            has_non_stale_errors = bool(self._invalid_symbols)
+        else:
+            missing_list = []
+            stale_list = []
+            quotes = {}
+            current_quote_hashes = {}
+            for symbol in self.expected_symbols:
+                quote = self._quotes.get(symbol)
+                if quote is None:
+                    missing_list.append(symbol)
+                    continue
+                static_errors = tuple(
+                    error for error in quote.field_errors
+                    if error not in {"stale", "future_ts", "trade_date"}
+                )
+                checked = replace(quote, field_errors=static_errors)
+                validation_errors = validate_q2(
+                    checked,
+                    observed_at_ms=observed_ms,
+                    trade_date=self.trade_date,
+                    freshness_policy=self.freshness_policy,
+                )
+                if validation_errors:
+                    checked = replace(checked, field_errors=validation_errors)
+                if "stale" in validation_errors:
+                    stale_list.append(symbol)
+                quotes[symbol] = checked
+                current_quote_hashes[symbol] = semantic_hash(checked.to_mapping())
+            missing = tuple(missing_list)
+            stale = tuple(stale_list)
+            source_times = [
+                quote.source_record_time_ms
+                for quote in quotes.values()
+                if quote.source_record_time_ms is not None
+            ]
+            has_non_stale_errors = any(
+                any(error != "stale" for error in quote.field_errors)
+                for quote in quotes.values()
+            )
+        coverage = len(quotes) / float(len(self.expected_symbols)) if self.expected_symbols else 0.0
+        if not self.expected_symbols:
+            status = DataStatus.MISSING
+            consistency = "EMPTY_UNIVERSE"
+        elif missing or has_non_stale_errors:
+            status = DataStatus.PARTIAL
+            consistency = "BEST_EFFORT_PARTIAL"
+        elif stale and len(stale) == len(quotes):
+            status = DataStatus.STALE
+            consistency = "BEST_EFFORT_STALE"
+        elif stale:
+            status = DataStatus.PARTIAL
+            consistency = "BEST_EFFORT_MIXED_FRESHNESS"
+        else:
+            status = DataStatus.READY
+            consistency = "BEST_EFFORT"
+
+        quote_payload = {symbol: quotes[symbol].to_mapping() for symbol in sorted(quotes)}
+        if full_hash:
+            content_digest = semantic_hash({
+                "contract": Q2_PROJECTION_CONTRACT_VERSION,
+                "trade_date": self.trade_date,
+                "expected_symbols": self.expected_symbols,
+                "missing_symbols": tuple(missing),
+                "stale_symbols": tuple(sorted(stale)),
+                "quotes": quote_payload,
+            }, schema_version=2)
+        else:
+            content_digest = semantic_hash({
+                "contract": "Q2ProjectionIncrementalV2",
+                "projection_contract": Q2_PROJECTION_CONTRACT_VERSION,
+                "trade_date": self.trade_date,
+                "observed_ms": observed_ms,
+                "missing_symbols": tuple(missing),
+                "stale_symbols": tuple(sorted(stale)),
+                "quote_hashes": tuple(sorted(current_quote_hashes.items())),
+            }, schema_version=2)
+        provenance = Provenance(
+            source_id=self.source_id,
+            source_kind="redis_projection",
+            source_schema="Q2RedisHashV1",
+            source_trade_date=self.trade_date,
+            effective_at_ms=max(source_times) if source_times else None,
+            observed_at_ms=observed_ms,
+            notes=(consistency,),
+        )
+        envelope_payload = {
+            "contract": Q2_PROJECTION_CONTRACT_VERSION,
+            "trade_date": self.trade_date,
+            "expected_symbols": self.expected_symbols,
+            "missing_symbols": tuple(missing),
+            "stale_symbols": tuple(sorted(stale)),
+            "quotes": quote_payload,
+        }
+        envelope = MarketDataEnvelope(
+            envelope_id=semantic_hash({
+                "source_id": self.source_id,
+                "trade_date": self.trade_date,
+                "effective_ms": max(source_times) if source_times else None,
+                "observed_ms": observed_ms,
+                "content_hash": content_digest,
+            }, schema_version=2),
+            payload_kind=PayloadKind.L2_PROJECTION_SNAPSHOT,
+            source_id=self.source_id,
+            schema_version=2,
+            effective_time_ms=max(source_times) if source_times else None,
+            observed_time_ms=observed_ms,
+            generation=None,
+            generation_kind="OBSERVATION_COHORT",
+            payload=envelope_payload,
+            provenance=provenance,
+        )
+        return Q2ProjectionSnapshot(
+            trade_date=self.trade_date,
+            envelope=envelope,
+            quotes=quotes,
+            expected_symbols=self.expected_symbols,
+            missing_symbols=tuple(missing),
+            stale_symbols=tuple(sorted(stale)),
+            coverage=coverage,
+            status=status,
+            consistency_status=consistency,
+            oldest_source_time_ms=min(source_times) if source_times else None,
+            newest_source_time_ms=max(source_times) if source_times else None,
+            content_hash=content_digest,
+            content_hash_override=content_digest,
+        )
 
 
 class RedisQ2ProjectionAdapter:
@@ -487,7 +916,16 @@ class RedisQ2ProjectionAdapter:
         policy = freshness_policy or FreshnessPolicy(stale_after_ms=stale_after_ms)
 
         raw_symbols = self._read_active_symbols(trade_date)
-        expected = tuple(sorted({normalize_symbol(item) for item in raw_symbols}))
+        normalized_symbols = set()
+        source_anomaly_hashes = []
+        for item in raw_symbols:
+            try:
+                normalized_symbols.add(normalize_symbol(item))
+            except (TypeError, ValueError):
+                # An invalid set member must not discard valid symbols in the
+                # same read cohort. Keep only stable evidence, not raw input.
+                source_anomaly_hashes.append(_invalid_active_member_hash(item))
+        expected = tuple(sorted(normalized_symbols))
         raw_hashes = {}
         for symbol in expected:
             raw_hash = self._client.hgetall(self._q2_prefix + symbol)
@@ -501,6 +939,7 @@ class RedisQ2ProjectionAdapter:
             raw_hashes,
             freshness_policy=policy,
             source_id=self._source_id,
+            source_anomaly_hashes=source_anomaly_hashes,
         )
 
     def _read_active_symbols(self, trade_date: str) -> Sequence[Any]:

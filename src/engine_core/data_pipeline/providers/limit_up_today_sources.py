@@ -1,0 +1,229 @@
+"""Read-only Q2 input and strictly low-frequency WenCai confirmation for C582."""
+from __future__ import annotations
+
+import json
+import os
+import time
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any, Callable, Mapping
+from zoneinfo import ZoneInfo
+
+from .wencai_daily_adapter import DEFAULT_COOKIE_FILE
+
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+WENCAI_PAGE_SIZE = 100
+WENCAI_MIN_INTERVAL_SECONDS = 1800
+WENCAI_MAX_REQUESTS_PER_DAY = 1
+
+
+class SourceUnavailable(RuntimeError):
+    pass
+
+
+class WencaiThrottled(RuntimeError):
+    pass
+
+
+def read_q2_snapshot(trade_date: str, *, redis_url: str | None = None, client: Any = None) -> dict[str, Any]:
+    """Read exactly one active set and its Q2 hashes; this function has no Redis write/scan path."""
+    day = date.fromisoformat(trade_date).strftime("%Y%m%d")
+    owned = client is None
+    if client is None:
+        url = redis_url or os.environ.get("REDIS_URL")
+        if not url:
+            raise SourceUnavailable("redis_url_unavailable")
+        try:
+            import redis
+            client = redis.Redis.from_url(url, decode_responses=True, socket_timeout=5)
+        except Exception as exc:  # noqa: BLE001 - never include URL or credential text
+            raise SourceUnavailable("redis_client_unavailable:" + type(exc).__name__) from None
+    key = f"q2:active:{day}"
+    try:
+        if not client.exists(key):
+            raise SourceUnavailable("q2_active_set_missing")
+        members = sorted(str(item) for item in client.smembers(key))
+        if not members:
+            raise SourceUnavailable("q2_active_set_empty")
+        pipe = client.pipeline(transaction=False)
+        for symbol in members:
+            pipe.hgetall(f"q2:{symbol}")
+        fetched = pipe.execute()
+    except SourceUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001 - never include Redis URL/response payload
+        raise SourceUnavailable("q2_read_failed:" + type(exc).__name__) from None
+    finally:
+        if owned:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass
+    return {"trade_date": date.fromisoformat(trade_date).isoformat(), "active_symbols": members,
+            "hashes": {symbol: (fetched[index] if isinstance(fetched[index], Mapping) else {})
+                       for index, symbol in enumerate(members)}}
+
+
+def wencai_question(trade_date: str) -> str:
+    day = date.fromisoformat(trade_date).isoformat()
+    return f"{day}涨停;封单额;开板次数;首次涨停时间;最终涨停时间;去除st"
+
+
+def authorize_wencai_request(state: Any, trade_date: str, now: datetime, *,
+                             min_interval_seconds: int = WENCAI_MIN_INTERVAL_SECONDS,
+                             max_requests_per_day: int = WENCAI_MAX_REQUESTS_PER_DAY) -> dict[str, Any]:
+    """Claim the one per-date wencai request before the upstream call (failed requests count too).
+
+    The claim is a Redis ``SET NX`` on ``core:provider:wencai_today:<date>`` (TTL 3 days), so two processes cannot both
+    pass; an unreachable Redis raises ``StateUnavailable`` and no request is made (the throttle is never skipped)."""
+    if type(min_interval_seconds) is not int or min_interval_seconds < WENCAI_MIN_INTERVAL_SECONDS:
+        raise ValueError("wencai_min_interval_must_be_at_least_1800_seconds")
+    if type(max_requests_per_day) is not int or max_requests_per_day != WENCAI_MAX_REQUESTS_PER_DAY:
+        raise ValueError("wencai_max_requests_per_day_must_equal_one")
+    day = date.fromisoformat(trade_date).isoformat()
+    current = now.astimezone(SHANGHAI) if now.tzinfo else now.replace(tzinfo=SHANGHAI)
+    stamp = current.isoformat(timespec="seconds")
+    if not state.claim(f"core:provider:wencai_today:{day}", {"trade_date": day, "requests": [stamp]}, 3 * 86400):
+        raise WencaiThrottled("wencai_daily_request_limit_reached")
+    return {"trade_date": day, "request_count": 1, "last_request_at": stamp,
+            "min_interval_seconds": min_interval_seconds}
+
+
+def fetch_wencai_today(trade_date: str, *, cookie_file: str | os.PathLike[str] | None = DEFAULT_COOKIE_FILE,
+                       query_fn: Callable[..., Any] | None = None) -> dict[str, Any]:
+    """Fetch at most one 100-row page; no retry/cooldown loop is permitted for this daily confirmation."""
+    from .wencai_daily_adapter import _FORBIDDEN, _Query, _Run, _fetch_query, _read_cookie
+
+    if query_fn is None:
+        from pywencai.wencai import get_robot_data
+        query_fn = get_robot_data
+    question = wencai_question(trade_date)
+    run = _Run(query_fn=query_fn, context=None, page_size=WENCAI_PAGE_SIZE,
+               cookie=_read_cookie(cookie_file), cooldown_seconds=0, cooldown_factor=1,
+               cooldown_max_seconds=0, max_cooldowns=0, max_requests=1,
+               sleep_fn=lambda _seconds: None, clock_fn=time.monotonic,
+               wall_budget_seconds=None, checkpoint_path=None, trade_date=trade_date, question=question)
+    try:
+        result = _fetch_query(run, question, unit_prefix="today_pool", max_pages=1, first_unit=True)
+    except Exception as exc:  # noqa: BLE001 - redact cookie and avoid leaking provider body
+        text = str(exc)
+        if run.cookie:
+            text = text.replace(run.cookie, "<cookie>")
+        code = "WENCAI_BLOCKED" if _FORBIDDEN.search(text) else "WENCAI_REQUEST_FAILED"
+        raise SourceUnavailable(code + ":" + type(exc).__name__) from None
+    if not result.rows:
+        raise SourceUnavailable("wencai_response_empty")
+    return {"records": result.rows, "reported_total": result.total, "request_count": run.requests,
+            "complete": result.complete, "truncated": result.truncated or not result.complete,
+            "question": question}
+
+
+def publish_hot_snapshot(manifest: Mapping[str, Any], rows: list[dict[str, Any]], *, client: Any = None
+                         ) -> dict[str, Any]:
+    """Publish an immutable Core Redis view; never address legacy Q2 keys."""
+    from ..registry import get_dataset
+    from ..redis_day_view import hot_view_expire_at, _now_timestamp
+    from ..storage import canonical_json
+    from ..hot_plates_gaps import _parse_time
+
+    spec = get_dataset("limit_up_pool_today")
+    day = date.fromisoformat(str(manifest["trade_date"])).isoformat()
+    deadline = hot_view_expire_at(day)
+    ttl_seconds = max(0, deadline - int(_now_timestamp()))
+    def instant(value: Any) -> str:
+        return _parse_time(str(value), day).isoformat(timespec="seconds")
+
+    as_of = instant(manifest["as_of"])
+    version = str(manifest["version"])
+    namespace = f"core:cache:data:{spec.name}"
+    version_key = f"{namespace}:{day}:{version}"
+    date_key = f"{namespace}:{day}"
+    latest_key = f"{namespace}:latest"
+    payload = {**dict(manifest), "rows": [dict(row) for row in rows]}
+    for field in ("captured_at", "available_at", "fetched_at", "declared_available_at",
+                  "as_of", "source_asof", "committed_at"):
+        if payload.get(field) not in (None, "", "UNKNOWN"):
+            payload[field] = instant(payload[field])
+    if isinstance(payload.get("inputs"), Mapping):
+        payload["inputs"] = dict(payload["inputs"])
+        if payload["inputs"].get("sample_as_of"):
+            payload["inputs"]["sample_as_of"] = instant(payload["inputs"]["sample_as_of"])
+    for row in payload["rows"]:
+        for field in ("as_of", "source_ts"):
+            if row.get(field):
+                row[field] = instant(row[field])
+    payload["row_count"] = len(payload["rows"])
+    version_json = canonical_json(payload).decode("utf-8")
+    if len(version_json.encode("utf-8")) > spec.max_redis_payload_bytes:
+        raise ValueError("redis_payload_budget_exceeded")
+
+    owned = client is None
+    if client is None:
+        url = os.environ.get("CORE_REDIS_URL") or os.environ.get("REDIS_URL")
+        if not url:
+            raise SourceUnavailable("core_redis_url_unavailable")
+        try:
+            import redis
+            client = redis.Redis.from_url(url, decode_responses=True, socket_timeout=5)
+        except Exception as exc:  # noqa: BLE001 - do not include URL or credential text
+            raise SourceUnavailable("core_redis_client_unavailable:" + type(exc).__name__) from None
+    try:
+        def _json_at(key: str) -> dict[str, Any]:
+            raw = client.get(key)
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8", errors="replace")
+            try:
+                value = json.loads(raw) if raw is not None else {}
+            except (TypeError, ValueError):
+                value = {}
+            return value if isinstance(value, dict) else {}
+
+        def _newer(candidate: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
+            candidate_day = str(candidate.get("trade_date") or "")
+            current_day = str(current.get("trade_date") or "")
+            if candidate_day != current_day:
+                return candidate_day > current_day
+            candidate_time, current_time = candidate.get("as_of"), current.get("as_of")
+            if not candidate_time or not current_time:
+                return str(candidate_time or "") >= str(current_time or "")
+            return instant(candidate_time) >= instant(current_time)
+
+        date_pointer = _json_at(date_key)
+        if date_pointer and not _newer({"trade_date": day, "as_of": manifest["as_of"]}, date_pointer):
+            return {"status": "superseded", "key": date_key, "ttl_seconds": ttl_seconds}
+        date_json = canonical_json({"trade_date": day, "version": version,
+                                    "manifest": manifest.get("manifest_uri"), "as_of": as_of}).decode("utf-8")
+        plan = [(version_key, version_json), (date_key, date_json)]
+        if str(manifest.get("business_status")) == "FORMAL":
+            latest = _json_at(latest_key)
+            candidate = {"trade_date": day, "as_of": manifest["as_of"]}
+            if not latest or _newer(candidate, latest):
+                latest_json = canonical_json({"trade_date": day, "version": version,
+                                              "manifest": manifest.get("manifest_uri"),
+                                              "as_of": as_of}).decode("utf-8")
+                plan.append((latest_key, latest_json))
+        pipe_factory = getattr(client, "pipeline", None)
+        if callable(pipe_factory):
+            pipe = pipe_factory(transaction=True)
+            for key, value in plan:
+                pipe.set(key, value, exat=deadline)
+            pipe.execute()
+        else:
+            for key, value in plan:
+                client.set(key, value, exat=deadline)
+        from ..cold_archive import archive, flush, receipt_warning
+        try:
+            receipt = archive("limit_up_pool_today", day, version, version_json.encode("utf-8"), payload)
+            warning = receipt_warning(receipt, flush())
+        except Exception as exc:
+            warning = receipt_warning(exc, False)
+        return {"status": "published", "keys": [key for key, _ in plan],
+                "ttl_seconds": ttl_seconds, **({"cold_archive_warning": warning} if warning else {})}
+    except Exception as exc:  # noqa: BLE001 - callers keep artifact commit as the durable record
+        raise SourceUnavailable("core_redis_publish_failed:" + type(exc).__name__) from None
+    finally:
+        if owned:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass

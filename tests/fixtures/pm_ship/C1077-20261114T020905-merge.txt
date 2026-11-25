@@ -1,0 +1,6 @@
+SKIPPED [1] tests/test_c589_real_inputs.py:254: live contract test: run with --live
+SKIPPED [1] tests/test_real_fixtures.py:199: live contract test: run with --live
+FAILED tests/test_c589_real_inputs.py::test_wencai_raw_pages_replay_through_daily_kline_adapter
+FAILED tests/test_pm.py::test_staff_dispatch_real_history - AssertionError: a...
+2 failed, 190 passed, 3 skipped in 59.17s
+选中 14 个测试文件、共 195 个测试、耗时 59.17 秒; --deep=no; mode=depth1

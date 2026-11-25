@@ -1,0 +1,299 @@
+from __future__ import annotations
+
+import sys
+import json
+import subprocess
+import tempfile
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "examples"))
+
+import rehearse_event as rehearsal  # noqa: E402
+
+
+TZ = ZoneInfo("Asia/Shanghai")
+
+
+def real_schedule() -> dict:
+    return rehearsal.load_schedule(ROOT / "src/engine_core/guardian/schedule.json")
+
+
+def test_retime_uses_real_limit_pool_schedule_and_clears_phase_limit() -> None:
+    schedule = real_schedule()
+    now = datetime(2026, 10, 29, 8, 0, 7, tzinfo=TZ)
+
+    prepared, event_ids = rehearsal.prepare_schedule(schedule, "limit_pool_d1", [], "rh123abc", now, 3)
+
+    event = prepared["events"][0]
+    assert event["event_id"] == event_ids["limit_pool_d1"]
+    assert event["at"] == "08:03:07"
+    assert event["deadline"] == "09:03:07"
+    assert event["late_until"] == "09:03:07"
+    assert "phases" not in event
+    assert event["gate"] == "calendar_ready"
+
+
+def test_rehearsal_deadline_is_clamped_to_the_same_calendar_day() -> None:
+    prepared, event_ids = rehearsal.prepare_schedule(
+        real_schedule(), "static_data_refresh_0850", [], "rh123abc",
+        datetime(2026, 10, 29, 23, 8, 0, tzinfo=TZ), 1,
+    )
+
+    event = next(row for row in prepared["events"] if row["event_id"] == event_ids["static_data_refresh_0850"])
+    assert event["at"] == "23:09:00"
+    assert event["deadline"] == "23:59:59"
+    assert event["late_until"] == "23:59:59"
+
+
+def test_filter_preserves_and_remaps_real_dependency_edges() -> None:
+    schedule = real_schedule()
+
+    prepared, event_ids = rehearsal.prepare_schedule(
+        schedule, "limit_reasons_d1", ["limit_pool_d1"], "rh123abc",
+        datetime(2026, 10, 29, 8, 0, 0, tzinfo=TZ), 3,
+    )
+
+    assert {event["event_id"] for event in prepared["events"]} == {
+        event_ids["limit_reasons_d1"], event_ids["limit_pool_d1"]
+    }
+    target = next(event for event in prepared["events"] if event["event_id"] == event_ids["limit_reasons_d1"])
+    assert target["depends_on"] == [event_ids["limit_pool_d1"]]
+
+
+def test_selected_event_args_can_be_overridden_for_isolated_rehearsal() -> None:
+    schedule = real_schedule()
+    event_args = rehearsal.parse_event_args('{"backfill_depth":5}')
+
+    prepared, event_ids = rehearsal.prepare_schedule(
+        schedule, "limit_up_detail_d1", ["limit_pool_d1"], "rh123abc",
+        datetime(2026, 10, 29, 8, 0, 0, tzinfo=TZ), 3, event_args=event_args,
+    )
+
+    target = next(event for event in prepared["events"]
+                  if event["event_id"] == event_ids["limit_up_detail_d1"])
+    assert target["args"]["backfill_depth"] == 5
+    profile = prepared["profiles"]["limit_up_detail_d1"]
+    assert all(tier["args"]["backfill_depth"] == 5 for tier in profile["ladder"])
+
+
+def test_readonly_redis_proxy_handles_client_setinfo_locally() -> None:
+    proxy = rehearsal.ReadOnlyRedisProxy("redis://127.0.0.1:6380/0")
+    try:
+        assert proxy.execute_local([b"CLIENT", b"SETINFO", b"LIB-NAME", b"redis-py"]) == b"+OK\r\n"
+        assert proxy.execute_local([
+            b"CLIENT", b"MAINT_NOTIFICATIONS", b"ON", b"moving-endpoint-type", b"internal-ip",
+        ]) == b"+OK\r\n"
+        assert proxy.blocked_snapshot() == {}
+    finally:
+        proxy.close()
+
+
+
+def test_readonly_proxy_simulates_leases_without_upstream(monkeypatch) -> None:
+    import redis
+    from engine_core.data_pipeline.lease import RedisLease
+
+    received = []
+
+    class Upstream(rehearsal.socketserver.StreamRequestHandler):
+        def handle(self):
+            try:
+                while True:
+                    _, _, command = rehearsal._read_resp(self.rfile)
+                    received.append(command)
+                    self.wfile.write(b"$-1\r\n")
+                    self.wfile.flush()
+            except (EOFError, OSError):
+                pass
+
+    upstream = rehearsal.socketserver.ThreadingTCPServer(("127.0.0.1", 0), Upstream)
+    upstream.daemon_threads = True
+    thread = rehearsal.threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    proxy = rehearsal.ReadOnlyRedisProxy("redis://127.0.0.1:6380/0")
+    proxy._server.upstream_port = upstream.server_address[1]
+    clock = [100.0]
+    monkeypatch.setattr(rehearsal.time, "monotonic", lambda: clock[0])
+    client = redis.Redis.from_url(proxy.url, protocol=2)
+    key = "core:lease:fact:test"
+    try:
+        assert client.set(key, "owner", nx=True, px=1000)
+        assert client.set(key, "other", nx=True, px=1000) is None
+        other = RedisLease(client, key, owner="other", ttl_seconds=5)
+        other.held = True
+        other.release()
+        assert client.get(key) == b"owner"
+        owner = RedisLease(client, key, owner="owner", ttl_seconds=5)
+        owner.held = True
+        assert owner.renew()
+        owner.release()
+        assert client.set(key, "other", nx=True, px=1000)
+        clock[0] += 1.1
+        assert client.get(key) is None
+        assert client.set(key, "owner", nx=True, ex=5)
+        assert proxy.blocked_snapshot() == {}
+        assert received == []
+    finally:
+        client.close()
+        proxy.close()
+        upstream.shutdown()
+        upstream.server_close()
+        thread.join()
+
+
+def test_readonly_proxy_simulates_pool_view_set_exat(monkeypatch) -> None:
+    import redis
+    from types import SimpleNamespace
+    from engine_core.data_pipeline import limit_pool as core
+    from engine_core.data_pipeline import limit_pool_hot_view as hot
+
+    day = "2026-10-26"
+    pages = json.loads((ROOT / "tests/fixtures/limit_pool/kaipan_pool_20261026.json").read_text())["pages"]
+    part = core.build_kaipan(day, {int(k): v for k, v in pages.items()})
+    manifest = {**part.manifest, "version": "recorded-source", "available_at": "2026-10-27T01:00:00+00:00"}
+    value = json.dumps(hot.envelope(day, part.rows, manifest)).encode()
+    received = []
+
+    class Upstream(rehearsal.socketserver.StreamRequestHandler):
+        def handle(self):
+            try:
+                while True:
+                    _, _, command = rehearsal._read_resp(self.rfile)
+                    received.append(command)
+                    responses = {b"GET": b"$8\r\nupstream\r\n", b"TTL": b":77\r\n",
+                                 b"PTTL": b":77000\r\n", b"EXISTS": b":1\r\n"}
+                    self.wfile.write(responses.get(command[0].upper(), b"+OK\r\n"))
+                    self.wfile.flush()
+            except (EOFError, OSError):
+                pass
+
+    upstream = rehearsal.socketserver.ThreadingTCPServer(("127.0.0.1", 0), Upstream)
+    upstream.daemon_threads = True
+    thread = rehearsal.threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    proxy = rehearsal.ReadOnlyRedisProxy("redis://127.0.0.1:6380/0")
+    proxy._server.upstream_port = upstream.server_address[1]
+    clock = [1_800_000_000.0]
+    monkeypatch.setattr(rehearsal, "time", SimpleNamespace(time=lambda: clock[0]))
+    client = redis.Redis.from_url(proxy.url, protocol=2)
+    key = f"core:view:limit_up_pool:{day}"
+    try:
+        assert client.get(key) == b"upstream"
+        assert (client.ttl(key), client.pttl(key), client.exists(key)) == (77, 77000, 1)
+        assert client.set(key, value, exat=int(clock[0]) + 10)
+        assert client.get(key) == value
+        assert client.ttl(key) == 10
+        assert client.pttl(key) == 10000
+        assert client.exists(key) == 1
+        assert client.set(key, value + b" ", exat=int(clock[0]) + 20)
+        assert client.get(key) == value + b" "
+        assert client.ttl(key) == 20
+        for args in ((key, value), (key, value, "EX", 30), (key, value, "EXAT", 30, "NX"),
+                     (key, value, "EXAT", "invalid"), (key, value, "EXAT", 0),
+                     (key, value, "EXAT", "999999999999999999999999"),
+                     ("core:other:x", value, "EXAT", 30),
+                     ("core:view:limit_up_pool:2026-10-26:extra", value, "EXAT", 30)):
+            with pytest.raises(redis.ResponseError, match="READ_ONLY_REHEARSAL SET blocked"):
+                client.execute_command("SET", *args)
+        with pytest.raises(redis.ResponseError, match="READ_ONLY_REHEARSAL DEL blocked"):
+            client.delete(key)
+        assert proxy.blocked_snapshot() == {"SET": 8, "DEL": 1}
+        assert proxy.local_pool_view_sets == 2
+        clock[0] += 20
+        assert client.get(key) == b"upstream"
+        assert client.ttl(key) == 77
+        assert client.pttl(key) == 77000
+        assert client.exists(key) == 1
+        assert client.exists(key, "core:other:x") == 1
+        assert client.set(key, value, exat=int(clock[0]) - 1)
+        assert client.get(key) == b"upstream"
+        assert proxy.local_pool_view_sets == 3
+        assert all(command[0].upper() not in {b"SET", b"DEL"} for command in received)
+    finally:
+        client.close()
+        proxy.close()
+        upstream.shutdown()
+        upstream.server_close()
+        thread.join()
+
+
+def test_readonly_proxy_blocks_non_simulated_writes() -> None:
+    proxy = rehearsal.ReadOnlyRedisProxy("redis://127.0.0.1:6380/0")
+    try:
+        command = [b"SET", b"core:other:x", b"value"]
+        assert proxy.execute_local(command) is None
+        assert not rehearsal._redis_command_allowed(command)
+        proxy.record_blocked("SET")
+        assert proxy.blocked_snapshot() == {"SET": 1}
+    finally:
+        proxy.close()
+
+def test_state_root_length_limit() -> None:
+    rehearsal.validate_state_root_path(Path("/tmp/rh123abc/s"))
+
+    with pytest.raises(ValueError, match="state_root_path_too_long"):
+        rehearsal.validate_state_root_path(Path("/tmp/" + "x" * 40))
+
+
+def test_generated_alert_command_must_stay_dry_run() -> None:
+    with tempfile.TemporaryDirectory(prefix="c601-config-") as temporary:
+        config_path = Path(temporary) / "config.json"
+        subprocess.run(
+            [sys.executable, str(ROOT / "native/guardiand/scripts/make_config.py"),
+             str(ROOT / "src/engine_core/guardian/schedule.json"), str(config_path), str(ROOT), sys.executable],
+            check=True, capture_output=True, text=True,
+        )
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+
+    assert rehearsal.alert_is_dry_run(config)
+
+    config["handlers"]["alert"]["argv"][-1] = "--email-send"
+    assert not rehearsal.alert_is_dry_run(config)
+
+
+def test_core_data_staging_policy_copies_metadata_and_links_real_partitions() -> None:
+    data_root = rehearsal.LIVE_DATA_ROOT
+    catalog_path = data_root / "catalog.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    versions = catalog["datasets"]["limit_up_pool"]["dates"]
+    sample = next(item for entries in versions.values() for item in entries)
+    manifest_path = Path(sample["manifest"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    rows_path = Path(manifest["rows_uri"])
+    large_checkpoint = next((data_root / ".checkpoints").glob("plate_members-*.json"))
+
+    assert rehearsal.data_file_action("catalog.json", catalog_path.stat().st_size) == "copy"
+    assert rehearsal.data_file_action("daily_status.json", (data_root / "daily_status.json").stat().st_size) == "copy"
+    assert rehearsal.data_file_action(
+        str((manifest_path.parent / "manifest.json").relative_to(data_root)), manifest_path.stat().st_size
+    ) == "copy"
+    assert rehearsal.data_file_action(str(rows_path.relative_to(data_root)), rows_path.stat().st_size) == "link"
+    assert rehearsal.data_file_action(
+        str(large_checkpoint.relative_to(data_root)), large_checkpoint.stat().st_size
+    ) == "skip"
+    assert rehearsal.data_file_action("guardian.log", (data_root / "guardian.log").stat().st_size) == "skip"
+
+
+def test_refresh_output_uses_real_schedule_and_only_hides_staged_target_date() -> None:
+    schedule = real_schedule()
+    data_root = rehearsal.LIVE_DATA_ROOT
+    trade_dates = json.loads((data_root / "trade_dates.json").read_text(encoding="utf-8"))
+    catalog = json.loads((data_root / "catalog.json").read_text(encoding="utf-8"))
+    target_date = max(catalog["datasets"]["limit_up_pool"]["dates"])
+    event_date = min(day for day in trade_dates if day > target_date)
+
+    dataset, resolved_date = rehearsal.event_output_partition(
+        schedule, "limit_pool_d1", event_date, trade_dates,
+    )
+    staged_catalog, hidden_versions = rehearsal.hide_catalog_partition(catalog, dataset, resolved_date)
+
+    assert dataset == "limit_up_pool"
+    assert resolved_date == target_date
+    assert hidden_versions == len(catalog["datasets"][dataset]["dates"][target_date])
+    assert target_date not in staged_catalog["datasets"][dataset]["dates"]
+    assert target_date in catalog["datasets"][dataset]["dates"]

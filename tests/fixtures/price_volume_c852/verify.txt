@@ -1,0 +1,4 @@
+PASS daily and expected rows: 847
+PASS symbols with factor response: 8
+PASS 000815 products: 13.91999355 13.49000000
+PASS finite outputs and matching row keys

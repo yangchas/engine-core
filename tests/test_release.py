@@ -1,0 +1,509 @@
+# DATA: none - behaviour of the release tool on throw-away git repositories; the live checkout is never touched
+"""C693: a release is one evidence-gated, reversible step; the tool refuses whenever it could not be undone."""
+import json
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "examples"))
+
+import release  # noqa: E402
+
+NOW = datetime(2026, 11, 5, 23, 0, 0)
+
+
+def _git(repo, *args):
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def _commit(repo, files, message):
+    for name, text in files.items():
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", message)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+@pytest.fixture
+def repos(tmp_path, monkeypatch):
+    monkeypatch.setattr(release, "SMOKE_MODULES", ())
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    schedule = {"events": [{"event_id": "e_noon", "at": "12:00:00"}]}
+    base = _commit(origin, {"src/engine_core/guardian/schedule.json": json.dumps(schedule), "a.py": "1\n",
+                            "tests/test_a.py": "x\n", **{name: "# invariant\n" for name in release.GLOBAL_INVARIANT_TESTS},
+                            "examples/affected_tests.py": "print('python -m pytest -q tests/test_a.py')\n"}, "base")
+    live = tmp_path / "live"                                  # like production: a detached worktree of the same repository
+    _git(origin, "worktree", "add", "-q", "--detach", str(live), base)
+    head = _commit(origin, {"a.py": "2\n", "tests/test_a.py": "x\n"}, "Merge C900 (a python change)")
+    evidence = tmp_path / "evidence"
+    return origin, live, evidence, base, head
+
+
+def _plan(origin, live, evidence, ps=None, now=NOW, errors=None):
+    return release.build_plan(live, origin, "main", evidence, now, ps if ps is not None else [],
+                              errors_path=errors or evidence / "no-errors.jsonl")
+
+
+def _accept(evidence, commit, verdict="PASS"):
+    evidence.mkdir(parents=True, exist_ok=True)
+    (evidence / f"accept-{commit[:12]}.json").write_text(json.dumps({"commit": commit[:12], "verdict": verdict}))
+
+
+def test_changes_are_classified_by_what_they_need():
+    kinds = release.classify(["src/engine_core/a.py", "examples/b.py", "src/engine_core/guardian/schedule.json",
+                              "native/guardiand/runtime.go", "tests/t.py", "native/guardiand/testdata/schedule.json"])
+    assert kinds["python"] == ["src/engine_core/a.py", "examples/b.py"]
+    assert kinds["config"] == ["src/engine_core/guardian/schedule.json", "native/guardiand/testdata/schedule.json"]
+    assert kinds["go"] == ["native/guardiand/runtime.go"] and kinds["tests_docs"] == ["tests/t.py"]
+
+
+def test_the_plan_lists_what_is_merged_and_not_live_and_is_blocked_without_acceptance(repos):
+    origin, live, evidence, base, head = repos
+    plan = _plan(origin, live, evidence)
+    assert plan["merges"] == [f"{head[:7]} Merge C900 (a python change)"] and not plan["ready"]
+    assert plan["files"]["python"] == 1 and plan["blockers"] == [
+        "no PASS acceptance record for the candidate (run: release.py accept)"]
+
+
+def test_a_failed_acceptance_blocks(repos):
+    origin, live, evidence, base, head = repos
+    _accept(evidence, head, "FAIL")
+    assert not _plan(origin, live, evidence)["ready"]
+
+
+@pytest.mark.parametrize("what", ["dirty", "handler", "event_due"])
+def test_it_refuses_while_something_could_break_or_cannot_be_undone(repos, what):
+    origin, live, evidence, base, head = repos
+    _accept(evidence, head)
+    ps, now = [], NOW
+    if what == "dirty":
+        (live / "a.py").write_text("local edit\n")
+    elif what == "handler":
+        ps = [f"123 python {live}/examples/guardian_handler.py run --handler baostock_probe"]
+    else:
+        now = datetime(2026, 11, 5, 11, 59, 0)             # e_noon is due in 60 s
+    plan = _plan(origin, live, evidence, ps, now)
+    assert not plan["ready"] and len(plan["blockers"]) == 1
+
+
+def test_untracked_runtime_state_in_the_live_checkout_does_not_block(repos):
+    origin, live, evidence, base, head = repos
+    _accept(evidence, head)
+    (live / ".mail_state").mkdir()
+    (live / ".mail_state" / "x").write_text("state")
+    assert _plan(origin, live, evidence)["ready"]
+
+
+def test_only_handlers_of_the_live_checkout_count():
+    other = ["9 python /home/x/other/examples/guardian_handler.py run --handler a",
+             "8 python /live/examples/guardian_handler.py gate",
+             "7 python /live/examples/guardian_handler.py run --handler b"]
+    assert release.running_handlers(Path("/live"), other) == [other[2]]
+
+
+def _args(origin, live, evidence, **extra):
+    import argparse
+    values = dict(live=live, candidate="main", evidence_dir=evidence, go=True, authorized_by="部署", date="2026-11-05",
+                  work_dir=None, errors_file=evidence / "no-errors.jsonl")
+    values.update(extra)
+    return argparse.Namespace(**values)
+
+
+def test_apply_moves_the_live_checkout_records_it_and_rollback_undoes_it(repos, monkeypatch):
+    origin, live, evidence, base, head = repos
+    monkeypatch.setattr(release, "ROOT", origin)
+    monkeypatch.setattr(release, "running_handlers", lambda live, ps=None: [])
+    _accept(evidence, head)
+    assert release.cmd_apply(_args(origin, live, evidence)) == 0
+    assert _git(live, "rev-parse", "HEAD") == head
+    record = json.loads(next(evidence.glob("deploy-*.json")).read_text())
+    assert record["previous"] == base and record["deployed"] == head and record["authorized_by"] == "部署"
+    assert release.cmd_rollback(_args(origin, live, evidence)) == 0
+    assert _git(live, "rev-parse", "HEAD") == base
+
+
+def test_apply_and_rollback_need_the_go_word(repos):
+    origin, live, evidence, base, head = repos
+    for command in (release.cmd_apply, release.cmd_rollback):
+        with pytest.raises(SystemExit):
+            command(_args(origin, live, evidence, go=False))
+        with pytest.raises(SystemExit):
+            command(_args(origin, live, evidence, authorized_by=""))
+    assert _git(live, "rev-parse", "HEAD") == base
+
+
+def test_a_broken_import_smoke_restores_the_previous_commit(repos, monkeypatch):
+    origin, live, evidence, base, head = repos
+    monkeypatch.setattr(release, "ROOT", origin)
+    monkeypatch.setattr(release, "running_handlers", lambda live, ps=None: [])
+    monkeypatch.setattr(release, "SMOKE_MODULES", ("module_that_does_not_exist_c693",))
+    _accept(evidence, head)
+    with pytest.raises(SystemExit):
+        release.cmd_apply(_args(origin, live, evidence))
+    assert _git(live, "rev-parse", "HEAD") == base and not list(evidence.glob("deploy-*.json"))
+
+
+def test_judge_flags_answers_outside_the_contract_and_unclassified_ones():
+    outcomes = [
+        {"event": "a", "exit": 0, "problems": [], "reply": {"status": "ok", "error_code": ""}},
+        {"event": "b", "exit": 20, "problems": ["exit_20_requires_not_applicable_and_ALREADY_SATISFIED"],
+         "reply": {"status": "failed", "error_code": "X"}},
+        {"event": "c", "exit": 75, "problems": [], "reply": {"status": "failed", "error_code": "INTERNAL_ERROR"}},
+        {"event": "d", "exit": 75, "problems": [], "reply": {"status": "failed", "error_code": "REDIS_UNAVAILABLE"}},
+        {"event": "e", "exit": 1, "problems": [], "reply": None}]
+    summary, outside, unclassified = release.judge(outcomes, {"d": ["redis.get", "redis.get"]})
+    assert [row["event"] for row in outside] == ["b", "e"] and [row["event"] for row in unclassified] == ["c"]
+    assert summary[3]["gaps"] == ["redis.get"]
+
+
+# ---- the two-errors rule and the checked merge --------------------------------------------------------------------
+def _errors(path, count, reviewed=0):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [{"at": "2026-11-06T01:00:00", "kind": "k", "note": f"n{i}", "impact": "", "retro": "r1" if i < reviewed else None}
+            for i in range(count)]
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+
+def test_two_unreviewed_errors_block_the_release(repos):
+    origin, live, evidence, base, head = repos
+    _accept(evidence, head)
+    log = evidence / "errors.jsonl"
+    _errors(log, 1)
+    assert _plan(origin, live, evidence, errors=log)["ready"]
+    _errors(log, 2)
+    plan = _plan(origin, live, evidence, errors=log)
+    assert not plan["ready"] and "2 unreviewed errors" in plan["blockers"][0]
+    _errors(log, 2, reviewed=2)                                  # a retrospective was held: they no longer count
+    assert _plan(origin, live, evidence, errors=log)["ready"]
+
+
+def _errors_args(log, *rest, **extra):
+    import argparse
+    values = dict(rest=list(rest), errors_file=log, kind=None, note=None, impact="", retro=None)
+    values.update(extra)
+    return argparse.Namespace(**values)
+
+
+def test_errors_are_logged_counted_and_closed_by_a_retrospective(tmp_path, capsys):
+    log = tmp_path / "retros" / "errors.jsonl"
+    assert release.cmd_errors(_errors_args(log, "add", kind="process", note="first")) == 0
+    assert release.cmd_errors(_errors_args(log, "add", kind="evidence", note="second")) == 1       # review due now
+    assert "REVIEW DUE" in capsys.readouterr().out
+    assert release.cmd_errors(_errors_args(log, "close", retro="2026-11-06.md")) == 0
+    assert [e["retro"] for e in release.load_errors(log)] == ["2026-11-06.md", "2026-11-06.md"]
+    with pytest.raises(SystemExit):
+        release.cmd_errors(_errors_args(log, "add", kind="only-kind"))
+
+
+@pytest.fixture
+def mergeable(repos, monkeypatch, tmp_path):
+    origin, live, evidence, base, head = repos
+    _git(origin, "checkout", "-q", "-b", "feature", base)
+    _commit(origin, {"b.py": "3\n"}, "a change")
+    _git(origin, "checkout", "-q", "main")
+    cards = tmp_path / "cards"
+    cards.mkdir()
+    monkeypatch.setattr(release, "ROOT", origin)
+    for name in ("AUTHOR", "COMMITTER"):                          # the throw-away repository has no git identity
+        monkeypatch.setenv(f"GIT_{name}_NAME", "t")
+        monkeypatch.setenv(f"GIT_{name}_EMAIL", "t@t")
+    return origin, evidence, cards
+
+
+def _merge_args(origin, evidence, cards, **extra):
+    import argparse
+    values = dict(branch="feature", card="C900", message="a change", candidate="main", evidence_dir=evidence,
+                  cards_dir=cards, errors_file=evidence / "no-errors.jsonl")
+    values.update(extra)
+    return argparse.Namespace(**values)
+
+
+def _add_examples_code_change(origin, lines=6):
+    _git(origin, "checkout", "-q", "feature")
+    _commit(origin, {"examples/role_gate_sample.py": "".join(f"line{i}\n" for i in range(lines))}, "large inline change")
+    _git(origin, "checkout", "-q", "main")
+
+
+def test_merge_refuses_branch_at_head_without_commit(mergeable, monkeypatch, capsys):
+    origin, evidence, cards = mergeable
+    (cards / "C900.md").write_text("ID: C900\nROLE: builder\n")
+    before = _git(origin, "rev-parse", "HEAD")
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: pytest.fail("must not run tests"))
+    assert release.cmd_merge(_merge_args(origin, evidence, cards, branch="main")) == 1
+    assert "REFUSED: branch main has no new commits over HEAD" in capsys.readouterr().out
+    assert _git(origin, "rev-parse", "HEAD") == before
+
+
+def test_git_failure_reports_both_streams_and_return_code(repos):
+    origin = repos[0]
+    _git(origin, "config", "user.name", "t")
+    _git(origin, "config", "user.email", "t@t")
+    hook = origin / ".git/hooks/pre-commit"
+    hook.write_text("#!/bin/sh\necho hook-stdout\necho hook-stderr >&2\nexit 7\n")
+    hook.chmod(0o755)
+    (origin / "a.py").write_text("changed\n")
+    _git(origin, "add", "a.py")
+    with pytest.raises(SystemExit) as error:
+        release.git(origin, "commit", "-q", "-m", "test")
+    assert all(s in str(error.value) for s in ("hook-stdout", "hook-stderr", "exit 1"))
+
+
+def test_merge_selector_depth(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    (cards / "C900.md").write_text("ID: C900\n")
+    original = release.subprocess.run
+    selectors = []
+
+    def run(command, *args, **kwargs):
+        if any(str(part).endswith("affected_tests.py") for part in command):
+            selectors.append(command)
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(release.subprocess, "run", run)
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (1, []))
+    for deep in (False, True):
+        assert release.cmd_merge(_merge_args(origin, evidence, cards, deep=deep)) == 1
+    assert selectors[0][selectors[0].index("--depth") + 1] == "1"
+    assert "--depth" not in selectors[1]
+
+
+@pytest.mark.parametrize("deep,cap,mode", [(False, 1, "exact"), (False, 3, "depth1"), (True, 1, "deep")])
+def test_merge_selection_cap(mergeable, monkeypatch, capsys, deep, cap, mode):
+    origin, evidence, cards = mergeable
+    _commit(origin, {"tests/test_widget.py": "# matching\n", "tests/test_extra.py": "# selected\n"}, "existing tests")
+    _git(origin, "checkout", "-q", "-b", "cap-feature")
+    _commit(origin, {"src/engine_core/widget.py": "x = 1\n", "src/engine_core/absent.py": "x = 1\n",
+                     "tests/test_added.py": "# changed\n"}, "changes")
+    _git(origin, "checkout", "-q", "main")
+    (cards / "C900.md").write_text("ID: C900\nROLE: builder\n")
+    original = release.subprocess.run
+
+    def run(command, *args, **kwargs):
+        if any(str(part).endswith("affected_tests.py") for part in command):
+            return subprocess.CompletedProcess(command, 0, "python -m pytest -q tests/test_a.py tests/test_extra.py\n", "")
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(release.subprocess, "run", run)
+    commands = []
+    monkeypatch.setattr(release, "run_checked", lambda command, *a, **k: (commands.append(command) or 1, []))
+    assert release.cmd_merge(_merge_args(origin, evidence, cards, branch="cap-feature", deep=deep, max_tests_files=cap)) == 1
+    selected = {part for part in commands[0] if part.startswith("tests/")}
+    assert {"tests/test_added.py", *release.GLOBAL_INVARIANT_TESTS} <= selected
+    assert ("tests/test_widget.py" in selected) == (mode == "exact")
+    assert "tests/test_absent.py" not in selected
+    assert ("tests/test_a.py" in selected) == (mode != "exact")
+    assert ("tests/test_extra.py" in selected) == (mode != "exact")
+    output = capsys.readouterr().out
+    assert f"mode={mode}" in output
+    assert ("EXACT_SET (depth1 selected 2 > cap)" in output) == (mode == "exact")
+    assert f"mode={mode}" in next((evidence / "merge").glob("*-pytest.log")).read_text()
+
+
+def test_merge_includes_changed_tests_and_existing_invariants_once(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    _git(origin, "checkout", "-q", "feature")
+    _commit(origin, {"tests/test_added.py": "# added\n"}, "new test")
+    _git(origin, "checkout", "-q", "main")
+    (cards / "C900.md").write_text("ID: C900\n")
+    missing = "tests/test_missing_invariant.py"
+    monkeypatch.setattr(release, "GLOBAL_INVARIANT_TESTS", (*release.GLOBAL_INVARIANT_TESTS, missing, "tests/test_a.py"))
+    commands = []
+    monkeypatch.setattr(release, "run_checked", lambda command, *a, **k: (commands.append(command) or 1, []))
+    for deep in (False, True):
+        assert release.cmd_merge(_merge_args(origin, evidence, cards, deep=deep)) == 1
+    for command in commands:
+        assert command.count("tests/test_added.py") == 1
+        assert all(command.count(name) == 1 for name in release.GLOBAL_INVARIANT_TESTS if name != missing)
+        assert missing not in command
+
+
+def test_pytest_lock_waits_then_refuses(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("ENGINE_CORE_PYTEST_LOCK_HELD", raising=False)
+    path = tmp_path / "lock"
+    with release.pytest_lock(path):
+        with pytest.raises(TimeoutError, match="timed out"):
+            with release.pytest_lock(path, timeout=0.02):
+                pass
+    assert "waiting for another pytest run" in capsys.readouterr().out
+    with release.pytest_lock(path, timeout=0):
+        pass
+
+
+def test_pytest_lock_reenters_when_inherited(tmp_path, monkeypatch):
+    path = tmp_path / "lock"
+    monkeypatch.delenv("ENGINE_CORE_PYTEST_LOCK_HELD", raising=False)
+    with release.pytest_lock(path):
+        monkeypatch.setenv("ENGINE_CORE_PYTEST_LOCK_HELD", "1")
+        with release.pytest_lock(path, timeout=0):
+            pass
+
+
+def test_merge_passes_lock_marker_to_pytest(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    (cards / "C900.md").write_text("ID: C900\n")
+    environments = []
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (environments.append(k.get("env")) or 1, []))
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 1
+    assert environments == [{"ENGINE_CORE_PYTEST_LOCK_HELD": "1"}]
+
+
+def test_pytest_summary_counts_outcomes(tmp_path):
+    log = tmp_path / "pytest.log"
+    log.write_text("=== 12 passed, 2 skipped, 1 xfailed, 3 warnings in 4.25s ===\n")
+    assert release.pytest_summary(log, 3, True) == "选中 3 个测试文件、共 15 个测试、耗时 4.25 秒; --deep=yes; mode=deep"
+    log.write_text("interrupted\n")
+    assert "共 UNKNOWN 个测试" in release.pytest_summary(log, 3, False)
+
+
+def test_merge_runs_global_invariants_for_unrelated_changes(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    _git(origin, "checkout", "-q", "-b", "docs-only", _git(origin, "merge-base", "main", "feature"))
+    _commit(origin, {"README.md": "documentation\n"}, "docs")
+    _git(origin, "checkout", "-q", "main")
+    (cards / "C900.md").write_text("ID: C900\n")
+    commands = []
+    monkeypatch.setattr(release, "run_checked", lambda command, *a, **k: (commands.append(command) or 0, []))
+
+    assert release.cmd_merge(_merge_args(origin, evidence, cards, branch="docs-only")) == 0
+    assert any(command.count("tests/test_real_fixtures.py") == 1 for command in commands)
+    assert all(any(command.count(test) == 1 for command in commands) for test in release.GLOBAL_INVARIANT_TESTS)
+
+
+def test_merge_refuses_when_global_invariant_fails(mergeable, monkeypatch, capsys):
+    origin, evidence, cards = mergeable
+    (cards / "C900.md").write_text("ID: C900\n")
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (1, []))
+    before = _git(origin, "rev-parse", "HEAD")
+
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 1
+    assert "REFUSED:" in (output := capsys.readouterr().out)
+    assert "tests/test_real_fixtures.py" in output
+    assert _git(origin, "rev-parse", "HEAD") == before
+
+
+def test_merge_requires_builder_for_large_inline_implementation(mergeable, monkeypatch, capsys):
+    origin, evidence, cards = mergeable
+    _add_examples_code_change(origin)
+    (cards / "C900.md").write_text("ID: C900\nROLE: inline\n")
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (0, []))
+
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 1
+    output = capsys.readouterr().out
+    assert "ROLE: 'inline'" in output and "6" in output
+    assert "实现卡由 Codex 运行(ROLE: builder);大脑只改 ≤5 行,或在卡里写 INLINE_OK: <理由>" in output
+
+
+def test_merge_allows_inline_implementation_of_five_or_fewer_lines(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    _add_examples_code_change(origin, lines=5)
+    (cards / "C900.md").write_text("ID: C900\nROLE: inline\n")
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (0, []))
+
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 0
+
+
+def test_merge_allows_large_builder_implementation(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    _add_examples_code_change(origin)
+    (cards / "C900.md").write_text("ID: C900\nROLE: builder (Codex)\n")
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (0, []))
+
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 0
+
+
+def test_merge_allows_large_inline_implementation_with_inline_ok(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    _add_examples_code_change(origin)
+    (cards / "C900.md").write_text("ID: C900\nROLE: inline\nINLINE_OK: approved small exception\n")
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (0, []))
+
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 0
+
+
+def test_merge_needs_the_card_and_passing_tests_and_records_the_card_in_the_subject(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (0, []))
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 1                 # no card yet
+    (cards / "C900.md").write_text("ID: C900\n")
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 0
+    assert _git(origin, "log", "-1", "--format=%s").startswith("Merge C900 (a change)")
+
+
+def test_merge_refuses_on_a_failing_test_run_whatever_its_last_line_says(mergeable, monkeypatch, capsys):
+    origin, evidence, cards = mergeable
+    (cards / "C900.md").write_text("ID: C900\n")
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (1, ["FAILED tests/test_a.py::test_x"]))
+    before = _git(origin, "rev-parse", "HEAD")
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 1
+    assert "FAILED tests/test_a.py::test_x" in capsys.readouterr().out and _git(origin, "rev-parse", "HEAD") == before
+
+
+def test_merge_refuses_while_two_errors_are_unreviewed(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    (cards / "C900.md").write_text("ID: C900\n")
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (0, []))
+    log = evidence / "errors.jsonl"
+    _errors(log, 2)
+    assert release.cmd_merge(_merge_args(origin, evidence, cards, errors_file=log)) == 1
+
+
+def test_a_checked_run_reads_the_exit_code_and_keeps_the_whole_output(tmp_path):
+    code, failing = release.run_checked([sys.executable, "-c",
+                                         "print('FAILED t.py::x'); print('1 failed'); print('all done')"
+                                         "; raise SystemExit(1)"], tmp_path, tmp_path / "out.log")
+    assert code == 1 and failing == ["FAILED t.py::x"] and "all done" in (tmp_path / "out.log").read_text()
+
+
+def test_merge_tests_the_merged_tree_not_the_base_and_aborts_when_they_fail(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    (cards / "C900.md").write_text("ID: C900\n")
+    seen = {}
+
+    def fake_run(command, cwd, log, env=None):
+        seen["merge_in_progress"] = (origin / ".git" / "MERGE_HEAD").exists()
+        seen["has_branch_file"] = (origin / "b.py").exists()           # b.py exists only on the branch
+        return 1, ["FAILED tests/test_a.py::test_x"]
+
+    monkeypatch.setattr(release, "run_checked", fake_run)
+    before = _git(origin, "rev-parse", "HEAD")
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 1
+    assert seen == {"merge_in_progress": True, "has_branch_file": True}
+    assert _git(origin, "rev-parse", "HEAD") == before and not (origin / "b.py").exists()    # aborted: base untouched
+
+
+def test_a_checked_run_can_override_the_environment(tmp_path):
+    code, _ = release.run_checked([sys.executable, "-c", "import os, sys; sys.exit(0 if os.environ.get('X_C697') == '1' else 3)"],
+                                  tmp_path, tmp_path / "o.log", env={"X_C697": "1"})
+    assert code == 0
+
+
+def test_c1105_reexec_and_failure_diagnostics(tmp_path, monkeypatch, capsys):
+    target = '/home/exedev/services/engine-next/shared/venv/bin/python'
+    monkeypatch.setattr(release.sys, 'executable', '/usr/bin/python3')
+    monkeypatch.setattr(release.sys, 'argv', ['examples/release.py', 'plan'])
+    monkeypatch.delenv('RELEASE_NO_REEXEC', raising=False)
+    calls = []
+    def reexec(path, args):
+        calls.append((path, args))
+        raise RuntimeError('reexec')
+    monkeypatch.setattr(release.os, 'execv', reexec)
+    with pytest.raises(RuntimeError, match='reexec'):
+        release.main(['plan'])
+    assert calls == [(target, [target, 'examples/release.py', 'plan'])]
+    monkeypatch.setenv('RELEASE_NO_REEXEC', '1')
+    monkeypatch.setattr(release, 'cmd_plan', lambda args: 0)
+    assert release.main(['plan']) == 0
+    log = tmp_path / 'failure.log'
+    result, _ = release.run_checked([target, '-c', "import sys; print('E   first\\nE   second\\nE   third\\nE   fourth'); sys.exit(1)"], tmp_path, log)
+    output = capsys.readouterr().out
+    assert result == 1 and str(log) in output
+    assert all('E   ' + item in output for item in ('first', 'second', 'third'))
+    assert 'E   fourth' not in output

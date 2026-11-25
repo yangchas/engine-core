@@ -1,0 +1,42 @@
+{
+ "dataset": "plate_members",
+ "status": "DRAFT; C573 immutable dated membership snapshot; unregistered plate identities are retained and counted",
+ "primary_key": [
+  "plate_code",
+  "symbol"
+ ],
+ "symbol_column": "symbol",
+ "date_columns": [
+  "trade_date"
+ ],
+ "earliest_available_local": "15:00",
+ "coverage": {
+  "basis": "none"
+ },
+ "columns": {
+  "symbol": {
+   "type": "str",
+   "nullable": false
+  },
+  "trade_date": {
+   "type": "date",
+   "nullable": false
+  },
+  "plate_code": {
+   "type": "str",
+   "nullable": false
+  },
+  "plate_class": {
+   "type": "str",
+   "nullable": false
+  },
+  "plate_member_label": {
+   "type": "str",
+   "nullable": false
+  },
+  "date": {
+   "type": "date",
+   "nullable": false
+  }
+ }
+}

@@ -269,3 +269,47 @@ def test_empty_verified_snapshot_is_missing_not_ready():
 
     assert result.status is DataStatus.MISSING
     assert result.completeness == 0.0
+
+
+def test_unknown_units_mask_fields_and_keep_rank_and_change_pct_partial():
+    provider = RedisHotPlatesProvider(
+        lambda trade_date: _rows(),
+        observed_at_ms=lambda: 1789080000000,
+        metadata=lambda trade_date: _verified_metadata_without_units(),
+    )
+    result = HotPlatesFunction(provider, CALENDAR).execute(_context(), _request())
+
+    assert result.status is DataStatus.PARTIAL
+    assert result.completeness == pytest.approx(0.4)
+    first = result.data["rows"][0]
+    assert first["rank"] >= 1 and first["change_pct"] is not None
+    assert first["hot"] is None and first["net_inflow_yi"] is None and first["strength"] is None
+    assert "unit_unknown:hot" in result.missing_fields
+    assert result.data["by_plate"][first["plate_name"]]["hot"] is None
+
+
+def _verified_metadata_without_units():
+    meta = dict(_verified_metadata())
+    meta.pop("field_units")
+    return meta
+
+
+def test_observed_legacy_units_unmask_fields_and_guard_yuan_magnitudes():
+    from engine_core import LEGACY_KAIPAN_OBSERVED_FIELD_UNITS
+
+    rows = _rows()
+    out = normalize_hot_plates_rows(
+        rows, actual_trade_date="2026-09-10",
+        verified_field_units=LEGACY_KAIPAN_OBSERVED_FIELD_UNITS,
+    )
+    assert out["unit_uncertainties"] == ()
+    assert out["field_units"]["net_inflow_yi"] == "yi"
+    assert out["field_units"]["strength"] == "score"
+
+    big = [dict(row, net_inflow_yi=1.2e8) for row in rows]  # yuan under a yi name
+    out = normalize_hot_plates_rows(
+        big, actual_trade_date="2026-09-10",
+        verified_field_units=LEGACY_KAIPAN_OBSERVED_FIELD_UNITS,
+    )
+    assert out["field_units"]["net_inflow_yi"] == "UNKNOWN"
+    assert out["unit_uncertainties"] == ("net_inflow_yi",)

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone, tzinfo
 from typing import Any, Iterable, Mapping, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from .clock import VirtualClock
-from .contracts import EngineSignal, SignalKind, deep_freeze, semantic_hash
+from .contracts import DataStatus, EngineSignal, SignalKind, deep_freeze, evidence_hash, semantic_hash
 from .q2 import (
     FreshnessPolicy,
     Q2ProjectionSnapshot,
@@ -28,6 +28,10 @@ class Q2FrameV1:
     logical_ts_ms: int
     q2_updates: Tuple[Mapping[str, Any], ...]
     phase: Any = None
+    source_anomaly_hashes: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_anomaly_hashes", tuple(self.source_anomaly_hashes))
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "Q2FrameV1":
@@ -48,10 +52,20 @@ class Q2FrameV1:
         if not isinstance(updates, list):
             raise ValueError("Q2Frame q2_updates must be a list")
         normalized = []
+        anomaly_hashes = []
         for update in updates:
             if not isinstance(update, Mapping):
-                raise ValueError("Q2Frame update must be an object")
-            symbol = normalize_symbol(update.get("symbol", ""))
+                anomaly_hashes.append(
+                    _invalid_q2frame_update_hash(update, reason="UPDATE_NOT_OBJECT")
+                )
+                continue
+            try:
+                symbol = normalize_symbol(update.get("symbol", ""))
+            except (TypeError, ValueError):
+                anomaly_hashes.append(
+                    _invalid_q2frame_update_hash(update, reason="INVALID_SYMBOL")
+                )
+                continue
             values = {
                 str(key): value
                 for key, value in update.items()
@@ -64,7 +78,24 @@ class Q2FrameV1:
             logical_ts_ms=logical_ts_ms,
             q2_updates=tuple(normalized),
             phase=raw.get("phase"),
+            source_anomaly_hashes=tuple(anomaly_hashes),
         )
+
+
+def _invalid_q2frame_update_hash(update: Any, *, reason: str) -> str:
+    """Keep a stable fingerprint for one skipped row without retaining its payload."""
+
+    try:
+        row_hash = semantic_hash(update)
+    except (TypeError, ValueError):
+        row_hash = evidence_hash({
+            "type": "%s.%s" % (type(update).__module__, type(update).__qualname__),
+        })
+    return evidence_hash({
+        "kind": "invalid_q2frame_update",
+        "reason": reason,
+        "row_hash": row_hash,
+    })
 
 
 class Q2FrameReplaySource:
@@ -72,8 +103,12 @@ class Q2FrameReplaySource:
 
     The source keeps only the latest raw hash per symbol, matching the
     existing Q2 projection shape. It has no Redis/TD/network access and does
-    not infer Rabbit arrival order. ``VirtualClock`` advances to each frame's
-    logical time before normalization.  Signal construction is side-effect free
+    not infer Rabbit arrival order. Q2Frame timestamps are producer source
+    times, not a market-hours gate: any positive, monotonic timestamp is
+    accepted, including premarket and postmarket fixture times. Freshness and
+    historical ``available_at`` are separate consumer/evidence policies and
+    are not decided by this source. ``VirtualClock`` advances to each frame's
+    logical time before normalization. Signal construction is side-effect free
     for the shared clock; replay helpers advance the clock immediately before
     the Engine consumes a signal.
     """
@@ -91,12 +126,14 @@ class Q2FrameReplaySource:
         self._expected_symbols = tuple(
             sorted({normalize_symbol(value) for value in expected_symbols})
         )
-        if not self._expected_symbols:
-            raise ValueError("expected_symbols must not be empty")
+        # An empty universe is valid for preserving a genuine empty frame on
+        # the timeline. build_q2_projection marks it MISSING/EMPTY_UNIVERSE;
+        # it must never be interpreted as complete coverage or a zero quote.
         self._clock = clock
         self._freshness_policy = freshness_policy
         self._source_id = source_id
         self._raw_hashes: dict[str, dict[str, Any]] = {}
+        self._source_anomaly_hashes: list[str] = []
         self._last_seq_no = 0
         self._last_logical_ts_ms = 0
 
@@ -122,6 +159,7 @@ class Q2FrameReplaySource:
         target = datetime.fromtimestamp(frame.logical_ts_ms / 1000.0, tz=timezone.utc)
         if advance_clock:
             self._clock.advance_to(target)
+        self._source_anomaly_hashes.extend(frame.source_anomaly_hashes)
         for update in frame.q2_updates:
             symbol = str(update["symbol"])
             values = {
@@ -140,6 +178,7 @@ class Q2FrameReplaySource:
             self._raw_hashes,
             freshness_policy=self._freshness_policy,
             source_id=self._source_id,
+            source_anomaly_hashes=self._source_anomaly_hashes,
         )
 
     def apply(self, raw_frame: Mapping[str, Any] | Q2FrameV1) -> Q2ProjectionSnapshot:
@@ -176,18 +215,83 @@ def replay_q2frames(
     engine: Any,
     *,
     signal_prefix: str = "q2frame",
+    end_logical_time_ms: Optional[int] = None,
 ) -> None:
-    """Submit frame-derived updates to an existing Engine, in frame order."""
+    """Stream frame-derived updates into an existing Engine.
 
-    signals = [source.signal_for(frame, signal_prefix=signal_prefix) for frame in frames]
-    index = 0
-    while index < len(signals):
-        logical_time = signals[index].logical_time_ms
-        source.advance_before_consume(signals[index])
-        while index < len(signals) and signals[index].logical_time_ms == logical_time:
-            engine.submit(signals[index])
-            index += 1
-        engine.run_until_empty()
+    Frames whose logical timestamps truncate to the same whole second are
+    submitted as a group before the Engine drains that second, preserving the
+    same-time ordering contract after subsecond normalization. Only that
+    second's queued signals are retained by the Engine;
+    the replay helper does not materialize the complete Q2Frame stream. When
+    ``end_logical_time_ms`` is supplied, later input frames are excluded and
+    pending Engine signals are drained through that inclusive replay horizon.
+    This allows scheduled timers to run even when the final market frame is
+    earlier than the requested replay end. Replay logical time is truncated to
+    whole seconds; source timestamps retained in each Q2 update are unchanged.
+    The supplied VirtualClock should start at or before the first frame's
+    truncated logical time (normally at the replay-window start).
+    """
+
+    if end_logical_time_ms is not None and (
+        isinstance(end_logical_time_ms, bool)
+        or not isinstance(end_logical_time_ms, int)
+        or end_logical_time_ms <= 0
+    ):
+        raise ValueError("end_logical_time_ms must be a positive integer")
+    replay_end_ms = (
+        None
+        if end_logical_time_ms is None
+        else end_logical_time_ms - end_logical_time_ms % 1000
+    )
+
+    active_logical_time: Optional[int] = None
+    for raw_frame in frames:
+        # Parse one frame of lookahead so the prior same-time group can be
+        # drained before applying the next frame to Q2FrameReplaySource.
+        frame = (
+            raw_frame
+            if isinstance(raw_frame, Q2FrameV1)
+            else Q2FrameV1.from_mapping(raw_frame)
+        )
+        frame_logical_time = frame.logical_ts_ms - frame.logical_ts_ms % 1000
+        if (
+            replay_end_ms is not None
+            and frame_logical_time > replay_end_ms
+        ):
+            break
+        if (
+            active_logical_time is not None
+            and frame_logical_time != active_logical_time
+        ):
+            engine.run_through(
+                active_logical_time,
+                before_consume=source.advance_before_consume,
+            )
+            active_logical_time = None
+
+        source_signal = source.signal_for(frame, signal_prefix=signal_prefix)
+        signal = EngineSignal(
+            signal_id=source_signal.signal_id,
+            logical_time_ms=frame_logical_time,
+            signal_seq=source_signal.signal_seq,
+            signal_kind=source_signal.signal_kind,
+            payload=source_signal.payload,
+        )
+        if active_logical_time is None:
+            active_logical_time = signal.logical_time_ms
+        engine.submit(signal)
+
+    if active_logical_time is not None:
+        engine.run_through(
+            active_logical_time,
+            before_consume=source.advance_before_consume,
+        )
+    if replay_end_ms is not None:
+        engine.run_through(
+            replay_end_ms,
+            before_consume=source.advance_before_consume,
+        )
 
 
 def _td_timestamp_ms(value: Any, *, source_timezone: tzinfo) -> int:
@@ -299,25 +403,38 @@ class TDEventV1:
         )
 
     def to_q2_raw(self) -> Mapping[str, Any]:
-        """Map only verified shared fields; ``vol_units`` is not relabeled."""
+        """Pass through shared TD/Q2 values without applying unit conversion.
 
-        return {
+        A same-timestamp 2026-10-09 TD/Q2 capture comparison found ``vol`` and
+        ``vol_units`` numerically equal. The Q2 value is observed at a scale
+        consistent with board lots, while production C++ comments describe
+        ``vol_units`` as shares; upstream unit provenance therefore remains
+        UNKNOWN. Missing TD volume stays absent. ``iv``/``ia``/``ln`` are not
+        derived from a TD row because they represent t1-emitted latest-event
+        state, not a reconstructible window sum.
+        """
+
+        raw = {
             "px": self.price_milli,
             "pc": self.pre_close_milli,
             "amt": self.amount_yuan,
             "ts": self.event_time_ms,
         }
+        if self.volume_units is not None:
+            raw["vol"] = self.volume_units
+        return raw
 
 
 @dataclass(frozen=True)
 class TDEventSlice:
-    """A three-second transport batch that preserves every normalized tick."""
+    """A three-second event-time slice; not an original Rabbit delivery batch."""
 
     slice_no: int
     start_ms: int
     end_exclusive_ms: int
     events: Tuple[TDEventV1, ...]
     content_hash: str
+    out_of_scope_symbols: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.slice_no < 0:
@@ -325,6 +442,11 @@ class TDEventSlice:
         if self.start_ms >= self.end_exclusive_ms:
             raise ValueError("slice must use a positive half-open interval")
         object.__setattr__(self, "events", tuple(self.events))
+        out_of_scope = tuple(sorted(set(self.out_of_scope_symbols)))
+        event_symbols = {event.symbol for event in self.events}
+        if not set(out_of_scope).issubset(event_symbols):
+            raise ValueError("out_of_scope_symbols must be present in slice events")
+        object.__setattr__(self, "out_of_scope_symbols", out_of_scope)
         if any(
             event.event_time_ms < self.start_ms
             or event.event_time_ms >= self.end_exclusive_ms
@@ -398,11 +520,6 @@ class TDEventTimeReplaySource:
         )
         grouped: dict[int, list[TDEventV1]] = {}
         for event in events:
-            if (
-                self._expected_symbol_set
-                and event.symbol not in self._expected_symbol_set
-            ):
-                raise ValueError("TD tick symbol is outside expected_symbols")
             event_date = datetime.fromtimestamp(
                 event.event_time_ms / 1000.0,
                 tz=timezone.utc,
@@ -418,20 +535,25 @@ class TDEventTimeReplaySource:
             start_ms = self._slice_anchor_ms + slice_no * self._slice_ms
             end_ms = start_ms + self._slice_ms
             slice_events = tuple(grouped[slice_no])
+            out_of_scope = tuple(sorted(
+                {event.symbol for event in slice_events} - self._expected_symbol_set
+            )) if self._expected_symbol_set else ()
+            slice_content = {
+                "slice_no": slice_no,
+                "start_ms": start_ms,
+                "end_exclusive_ms": end_ms,
+                "events": [event.content_hash for event in slice_events],
+            }
+            if out_of_scope:
+                slice_content["out_of_scope_symbols"] = out_of_scope
             slices.append(
                 TDEventSlice(
                     slice_no=slice_no,
                     start_ms=start_ms,
                     end_exclusive_ms=end_ms,
                     events=slice_events,
-                    content_hash=semantic_hash(
-                        {
-                            "slice_no": slice_no,
-                            "start_ms": start_ms,
-                            "end_exclusive_ms": end_ms,
-                            "events": [event.content_hash for event in slice_events],
-                        }
-                    ),
+                    content_hash=semantic_hash(slice_content),
+                    out_of_scope_symbols=out_of_scope,
                 )
             )
         return tuple(slices)
@@ -459,6 +581,23 @@ class TDEventTimeReplaySource:
                     freshness_policy=self._freshness_policy,
                     source_id=self._source_id,
                 )
+                if event.symbol in event_slice.out_of_scope_symbols:
+                    status = (
+                        DataStatus.PARTIAL
+                        if projection.status == DataStatus.READY
+                        else projection.status
+                    )
+                    consistency = projection.consistency_status
+                    if "OUT_OF_SCOPE_SYMBOLS" not in consistency:
+                        consistency = f"{consistency}+OUT_OF_SCOPE_SYMBOLS"
+                    projection = replace(
+                        projection,
+                        status=status,
+                        consistency_status=consistency,
+                        out_of_scope_symbols=(event.symbol,),
+                        out_of_scope_event_hashes=(event.content_hash,),
+                        out_of_scope_events=(event.raw_fields,),
+                    )
                 signal_seq += 1
                 signals.append(
                     EngineSignal(

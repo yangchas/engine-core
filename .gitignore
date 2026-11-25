@@ -10,8 +10,11 @@ venv/
 dist/
 build/
 *.egg-info/
-docs/evidence/*
-!docs/evidence/.gitkeep
+# Raw evidence belongs under dated /home/exedev/validation directories.
+# Concise Markdown/JSON summaries may be versioned.
+docs/evidence/**/*.jsonl
+docs/evidence/**/*.csv
+docs/evidence/**/*.gz
 *.log
 *.sqlite
 *.sqlite-wal
@@ -21,3 +24,11 @@ local_config.toml
 tmp/
 *.tar
 .vertical_slice_trace.jsonl
+.claude/
+.mail_state/
+evidence/
+plate/data/image/
+plate/data/legacy/
+native/t1_v2/schema.pb.cc
+native/t1_v2/schema.pb.h
+native/t1_v2/build/

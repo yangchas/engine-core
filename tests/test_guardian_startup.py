@@ -1,0 +1,517 @@
+import json
+from datetime import datetime
+
+
+def _matrix(root, days):
+    from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
+
+    path = root / "trade_calendar" / "calendar.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [{"d": day, "t": int(trading), "src": "TEST", "u": "test"}
+            for day, trading in days]
+    path.write_text(json.dumps({"schema": "CoreTradeCalendarMatrixV1",
+                                "lit_from": rows[0]["d"], "lit_to": rows[-1]["d"],
+                                "days": rows}))
+    return TradeCalendarStore(root)
+
+
+def test_startup_event_ids_route_with_go_contract_shape(tmp_path, monkeypatch):
+    from examples import guardian_handler
+    from engine_core.guardian import startup
+
+    _matrix(tmp_path, [("2026-10-19", True), ("2026-10-20", True), ("2026-10-21", True)])
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(startup, "_health_probes", lambda *_: {"td": {"status": "ok"},
+                                                                  "redis": {"status": "ok"}})
+    for event_id in ("boot_trade_day", "boot_data_health", "boot_reconcile"):
+        code, payload = guardian_handler._run({"contract": 1, "event": event_id,
+            "trade_date": "2026-10-20", "phase": "PRE_MARKET",
+            "now": "2026-10-20T08:30:00+08:00"})
+        assert code == 0, (event_id, payload)
+        assert payload["contract"] == 1 and payload["status"] in {"ok", "degraded"}
+
+
+def test_trade_day_unknown_when_calendar_absent_or_uncovered(tmp_path):
+    from engine_core.guardian.startup import boot_trade_day
+
+    result = boot_trade_day("2026-10-20", tmp_path)
+    assert result["status"] == "failed" and result["error_code"] == "CALENDAR_UNKNOWN"
+    _matrix(tmp_path, [("2026-10-19", True)])
+    result = boot_trade_day("2026-10-20", tmp_path)
+    assert result["error_code"] == "CALENDAR_UNKNOWN"
+
+
+def test_non_trading_day_skips_freshness_overdue_and_dry_run_does_not_write(tmp_path, monkeypatch):
+    from engine_core.guardian.startup import boot_data_health
+
+    _matrix(tmp_path, [("2026-10-19", True), ("2026-10-20", False), ("2026-10-21", True)])
+    monkeypatch.setattr("engine_core.guardian.startup._health_probes",
+                        lambda *_: {"td": {"status": "ok"}, "redis": {"status": "ok"}})
+    result = boot_data_health("2026-10-20", "2026-10-19", tmp_path, dry_run=True)
+    assert result["status"] == "ok"
+    assert not (tmp_path / "guardian-native" / "health" / "2026-10-20.json").exists()
+
+
+def test_health_catalog_statuses_and_reconcile_owner_events(tmp_path, monkeypatch):
+    from engine_core.guardian.startup import boot_data_health, boot_reconcile
+
+    _matrix(tmp_path, [("2026-10-19", True), ("2026-10-20", True), ("2026-10-21", True)])
+    (tmp_path / "catalog.json").write_text(json.dumps({"datasets": {
+        "symbol_universe": {"dates": {"2026-10-20": [{"row_count": 1,
+            "available_at": "2026-10-20T08:00:00+08:00", "quality": {"status": "OK"}}]}},
+        "daily_kline": {"dates": {}}, "stock_static": {"dates": {}}
+    }}))
+    monkeypatch.setattr("engine_core.guardian.startup._health_probes",
+                        lambda *_: {"td": {"status": "failed"}, "redis": {"status": "ok"}})
+    health = boot_data_health("2026-10-20", "2026-10-19", tmp_path,
+                              now=datetime.fromisoformat("2026-10-20T20:00:00+08:00"), dry_run=True)
+    assert health["status"] == "degraded"
+    assert {item["status"] for item in health["detail"]["items"]} >= {"OK", "MISSING", "UNKNOWN"}
+    rec = boot_reconcile("2026-10-20", "POST_MARKET", health["detail"], tmp_path,
+                         now=datetime.fromisoformat("2026-10-20T20:00:00+08:00"))
+    assert rec["status"] == "degraded"
+    assert any(x.get("recommendation") == "NO_OWNER_EVENT" for x in rec["detail"]["gaps"])
+
+
+def test_boot_apply_plan_executes_jobs_defers_and_appends_gaps(tmp_path, monkeypatch):
+    from engine_core.guardian.startup import boot_apply_plan
+
+    registry = [
+        {"id": "light", "artifact": {"catalog_dataset": "light"},
+         "fetch_job": ["stub", "{date}", "{item}"]},
+        {"id": "heavy", "artifact": {"catalog_dataset": "heavy"},
+         "fetch_job": ["stub", "{date}", "{item}"]},
+        {"id": "capture", "artifact": {"catalog_dataset": "capture"}},
+    ]
+    plan = [
+        {"id": "light", "partition": "2026-10-20", "action": "FETCH_NOW", "lane": "parallel"},
+        {"id": "heavy", "partition": "2026-10-19", "action": "DEFER", "run_at": "MIDDAY_BREAK"},
+        {"id": "capture", "partition": "2026-10-20", "action": "GAP"},
+    ]
+    calls = []
+    monkeypatch.setattr("engine_core.guardian.startup.load_registry", lambda: registry)
+    monkeypatch.setattr("engine_core.guardian.startup._run_fetch_job",
+                        lambda item, day, timeout, _root: calls.append((item["id"], day)) or {"status": "ok"})
+    result = boot_apply_plan("2026-10-20", plan, tmp_path, now="2026-10-20T09:36:00+08:00", phase="OPEN")
+    assert calls == [("light", "2026-10-20")]
+    assert result["detail"]["deferred"] == [{"id": "heavy", "partition": "2026-10-19",
+                                                  "fetch_job": ["stub", "{date}", "{item}"],
+                                                  "run_in_phases": ["MIDDAY_BREAK"], "cost": "medium"}]
+    gap_path = tmp_path / "guardian-native" / "gaps" / "2026-10-20.json"
+    assert json.loads(gap_path.read_text())[0]["id"] == "capture"
+    boot_apply_plan("2026-10-20", [{"id": "capture", "partition": "2026-10-20",
+        "action": "GAP", "reason": "repeat"}], tmp_path,
+        now="2026-10-20T09:37:00+08:00", phase="OPEN")
+    gap_rows = json.loads(gap_path.read_text())
+    assert len(gap_rows) == 1 and gap_rows[0]["reason"] == "repeat"
+    assert gap_rows[0]["observed_at"] == "2026-10-20T09:37:00+08:00"
+    assert {x["id"]: x["action"] for x in result["detail"]["results"]} == {
+        "light": "FETCH_NOW", "heavy": "DEFER", "capture": "GAP"}
+
+
+def test_boot_apply_plan_isolates_failed_fetch_and_keeps_later_item_running(tmp_path, monkeypatch):
+    import sys
+    from engine_core.guardian import startup
+
+    registry = [
+        {"id": "broken", "fetch_job": {"argv": [sys.executable, "-c",
+            "import sys;sys.stderr.write('x'*450);sys.exit(3)"]}},
+        {"id": "good", "fetch_job": {"argv": [sys.executable, "-c",
+            "import json;print(json.dumps(dict(status='ok'))) "]}},
+    ]
+    monkeypatch.setattr(startup, "load_registry", lambda: registry)
+    result = startup.boot_apply_plan("2026-10-20", [
+        {"id": "broken", "partition": "2026-10-20", "action": "FETCH_NOW", "lane": "parallel"},
+        {"id": "good", "partition": "2026-10-20", "action": "FETCH_NOW", "lane": "parallel"},
+    ], tmp_path, now="2026-10-20T09:36:00+08:00", phase="OPEN")
+    rows = {row["id"]: row for row in result["detail"]["results"]}
+    assert result["status"] == "degraded" and result["retryable"] is True
+    assert rows["broken"]["status"] == "failed"
+    assert rows["broken"]["error_code"] == "FETCH_EXIT_3"
+    assert len(rows["broken"]["stderr"]) == 300
+    assert rows["broken"]["detail"]["item_id"] == "broken"
+    assert rows["broken"]["detail"]["error_code"] == "FETCH_EXIT_3"
+    assert rows["broken"]["detail"]["elapsed_ms"] == rows["broken"]["elapsed_ms"]
+    assert rows["good"]["status"] == "ok"
+
+
+def test_boot_apply_plan_queues_non_light_items_instead_of_running_them_inline(tmp_path, monkeypatch):
+    import sys
+    from engine_core.guardian import startup
+
+    marker = tmp_path / "ran"
+    job = {"argv": [sys.executable, "-c", f"open({str(marker)!r},'w').write('x');print('{{}}')"]}
+    registry = [{"id": "slow", "fetch_job": job}, {"id": "after_slow", "fetch_job": job,
+                                                  "late_policy": {"depends_on": ["slow"]}}]
+    monkeypatch.setattr(startup, "load_registry", lambda: registry)
+    result = startup.boot_apply_plan("2026-10-21", [
+        {"id": "slow", "partition": "2026-10-20", "action": "FETCH_NOW", "lane": "serial"},
+        {"id": "after_slow", "partition": "2026-10-20", "action": "FETCH_NOW", "lane": "parallel",
+         "depends_on": ["slow"]},
+    ], tmp_path, now="2026-10-21T14:30:00+08:00", phase="INTRADAY_PM")
+    rows = {row["id"]: row for row in result["detail"]["results"]}
+    assert not marker.exists()
+    assert rows["slow"]["status"] == "queued" and rows["after_slow"]["status"] == "queued"
+    assert [d["id"] for d in result["detail"]["deferred"]] == ["slow", "after_slow"]
+    assert all(d["partition"] == "2026-10-20" and d["run_in_phases"] == ["INTRADAY_PM"]
+               for d in result["detail"]["deferred"])
+    assert [d["depends_on"] for d in result["detail"]["deferred"]] == [[], ["slow"]]
+    assert [d["cost"] for d in result["detail"]["deferred"]] == ["medium", "medium"]
+    assert result["status"] == "ok"
+
+
+def test_historical_hot_plates_is_reconciled_separately_from_daily_capture():
+    from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
+    from engine_core.guardian.reconcile_plan import reconcile_plan
+    from engine_core.guardian.registry import load_registry
+    import pytest
+
+    items = load_registry()
+    catalog = {"datasets": {"hot_plates": {"dates": {"2026-10-21": [{"version": "today"}]}}}}
+    plan = reconcile_plan(datetime.fromisoformat("2026-10-21T12:30:00+08:00"), catalog,
+                          trade_date="2026-10-21", prev_trade_date="2026-10-20",
+                          phase="MIDDAY_BREAK", registry=items)
+    prior = [item for item in plan if item["id"] == "hot_plates_yesterday"]
+    # Redis-backed history is handled by the scheduled history capture, not catalog reconciliation.
+    assert prior == []
+    history = next(item for item in items if item["id"] == "hot_plates_yesterday")
+    assert history["artifact"]["redis_dataset"] == "hot_plates"
+    assert history["guardian_event"] == "hot_plates_history_0815"
+    assert history["late_policy"]["mode"] == "gap_only"
+
+    class Client:
+        def get_his_plates(self, *_args):
+            # Captured from real Kaipan: request 2026-10-20 returned Day=2026-10-21.
+            return {"Day": ["2026-10-21"], "Min": "0925", "Max": "1500",
+                    "List": [{"code": "801159"}]}
+
+    with pytest.raises(ValueError, match="kaipan_hot_plates_response_date_mismatch"):
+        KaipanProvider(Client()).hot_plates("2026-10-20")
+
+
+def test_fetch_item_dry_run_does_not_call_job(tmp_path, monkeypatch):
+    from engine_core.guardian.startup import fetch_item
+
+    monkeypatch.setattr("engine_core.guardian.startup.load_registry", lambda: [
+        {"id": "sample", "fetch_job": ["stub"]}])
+    monkeypatch.setattr("engine_core.guardian.startup._run_fetch_job",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("executed")))
+    result = fetch_item("sample", "2026-10-19", tmp_path, dry_run=True)
+    assert result["status"] == "ok" and result["detail"]["dry_run"] is True
+
+
+def test_real_degraded_daily_kline_upgrade_budget_exhausts_for_current_window(tmp_path):
+    import json
+    from pathlib import Path
+    from engine_core.guardian.startup import (_record_daily_kline_upgrade,
+                                              _record_daily_kline_upgrade_gap)
+    from engine_core.guardian.reconcile_plan import reconcile_plan
+
+    backup = Path("/home/exedev/core-data-backup-derived-20261021-234502")
+    catalog = json.loads((backup / "catalog.json").read_text(encoding="utf-8"))
+    day = "2026-10-21"
+    degraded = next(version for version in catalog["datasets"]["daily_kline"]["dates"][day]
+                    if version["version"] == "sha256-b9968b2b7331b1a4")
+    catalog["datasets"]["daily_kline"]["dates"][day] = [degraded]
+    (tmp_path / "catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
+    key = day
+    (tmp_path / "guardian-upgrade-attempts.json").write_text(
+        json.dumps({key: {"status": "queued", "attempts": 0}}), encoding="utf-8")
+
+    for expected, minute in zip((1, 2, 3), (0, 11, 22)):
+        state = _record_daily_kline_upgrade(
+            tmp_path, day, succeeded=True,
+            now=datetime.fromisoformat(f"{day}T18:{minute:02d}:00+08:00"),
+            phase="POST_MARKET")
+        assert state["attempts"] == expected
+    assert state["status"] == "GAP_WINDOW_EXHAUSTED"
+    assert state["reason"] == "upgrade_attempt_budget_exhausted"
+    _record_daily_kline_upgrade_gap(tmp_path, day, state)
+    gap = json.loads((tmp_path / "guardian-native" / "gaps" / f"{day}.json").read_text())
+    assert gap[0]["id"] == "daily_kline" and gap[0]["status"] == "GAP_WINDOW_EXHAUSTED"
+    assert gap[0]["next_retry_window"] == "2026-10-22:PRE_MARKET"
+    plan = reconcile_plan(datetime.fromisoformat("2026-10-21T18:30:00+08:00"), catalog,
+                          trade_date=day, prev_trade_date="2026-10-20", phase="POST_MARKET",
+                          upgrade_attempts=json.loads((tmp_path / "guardian-upgrade-attempts.json").read_text()))
+    assert "daily_kline" not in {row["id"] for row in plan}
+
+
+def test_boot_apply_plan_runs_stub_job_into_temporary_catalog(tmp_path, monkeypatch):
+    import os
+    import subprocess
+    import sys
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+
+    from engine_core.guardian import startup
+
+    stub = tmp_path / "stub_fetch.py"
+    stub.write_text(
+        "import json, os, sys\n"
+        "from engine_core.data_pipeline.storage import ArtifactCatalog\n"
+        "day, item = sys.argv[1:]\n"
+        "catalog = ArtifactCatalog(os.environ['CORE_DATA_ROOT'])\n"
+        "from datetime import datetime\n"
+        "declared = '2026-10-20T09:36:01+08:00'\n"
+        "manifest = catalog.commit(item, day, [{'trade_date': day, 'symbol': '000001'}],\n"
+        "    {'trade_date': day, 'available_at': declared}, source='stub',\n"
+        "    clock=lambda: datetime.fromisoformat(declared))\n"
+        "print(json.dumps({'version':manifest['version'],'row_count':manifest['row_count']}))\n",
+        encoding="utf-8")
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path / "catalog"))
+    source_root = str(__import__("pathlib").Path(__file__).resolve().parents[1] / "src")
+    monkeypatch.setenv("PYTHONPATH", source_root + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    registry = [{"id": "stub_dataset", "artifact": {"catalog_dataset": "stub_dataset"},
+                 "fetch_job": {"argv": [sys.executable, str(stub), "{date}", "{item}"],
+                               "timeout_seconds": 10}}]
+    monkeypatch.setattr(startup, "load_registry", lambda: registry)
+    result = startup.boot_apply_plan("2026-10-20", [{"id": "stub_dataset", "partition": "2026-10-20",
+        "action": "FETCH_NOW", "lane": "parallel"}], tmp_path / "catalog",
+        now="2026-10-20T09:36:00+08:00", phase="OPEN")
+    assert result["status"] == "ok"
+    manifest_path = ArtifactCatalog(tmp_path / "catalog").locate("stub_dataset", "2026-10-20")
+    assert manifest_path is not None
+    manifest = __import__("json").loads(manifest_path.read_text())
+    assert manifest["available_at"] == manifest["committed_at"]
+    assert manifest["declared_available_at"] == "2026-10-20T09:36:01+08:00"
+
+
+def test_boot_apply_plan_runs_dependency_layers_and_propagates_failure(tmp_path, monkeypatch):
+    from engine_core.guardian import startup
+
+    registry = [
+        {"id": "plate_members", "fetch_job": {"argv": ["stub"]}},
+        {"id": "stock_theme_assignment", "fetch_job": {"argv": ["stub"]}},
+    ]
+    monkeypatch.setattr(startup, "load_registry", lambda: registry)
+    calls = []
+
+    def run(item, _day, _timeout, _root):
+        calls.append(item["id"])
+        if item["id"] == "plate_members":
+            raise RuntimeError("upstream failed")
+        return {"status": "ok"}
+
+    monkeypatch.setattr(startup, "_run_fetch_job", run)
+    result = startup.boot_apply_plan("2026-10-20", [
+        {"id": "stock_theme_assignment", "partition": "2026-10-20", "action": "FETCH_NOW",
+         "lane": "parallel", "depends_on": ["plate_members"]},
+        {"id": "plate_members", "partition": "2026-10-20", "action": "FETCH_NOW",
+         "lane": "parallel", "depends_on": []},
+    ], tmp_path, now="2026-10-20T09:36:00+08:00", phase="OPEN")
+    rows = {row["id"]: row for row in result["detail"]["results"]}
+    assert calls == ["plate_members"]
+    assert rows["stock_theme_assignment"]["status"] == "DEPENDENCY_FAILED"
+    assert rows["stock_theme_assignment"]["retryable"] is True
+    calls.clear()
+    monkeypatch.setattr(startup, "_run_fetch_job",
+                        lambda item, _day, _timeout, _root: calls.append(item["id"]) or {"status": "ok"})
+    startup.boot_apply_plan("2026-10-20", [
+        {"id": "stock_theme_assignment", "partition": "2026-10-20", "action": "FETCH_NOW",
+         "lane": "parallel", "depends_on": ["plate_members"]},
+        {"id": "plate_members", "partition": "2026-10-20", "action": "FETCH_NOW",
+         "lane": "parallel", "depends_on": []},
+    ], tmp_path, now="2026-10-20T09:36:00+08:00", phase="OPEN")
+    assert calls == ["plate_members", "stock_theme_assignment"]
+
+
+def test_fetch_job_stdout_shape_and_exit_status_are_checked_before_catalog_postcondition(monkeypatch, tmp_path):
+    """Shape of the real reindex job output on 2026-10-21: {"cache_rows": 5218, "days_reindexed": 1, ...} (no status)."""
+    import sys
+    import pytest
+    from engine_core.guardian import startup
+
+    def item(code):
+        return {"id": "x", "fetch_job": {"argv": [sys.executable, "-c", code], "timeout_seconds": 20}}
+
+    # Use a real hot_rank manifest copied from Core storage as the catalog layout fixture.
+    import shutil
+    import json as json_module
+    source = __import__("pathlib").Path("/home/exedev/core-data/hot_rank/trade_date=2026-10-23/source=ths_hot_rank/sha256-d6510f9287781577/manifest.json")
+    manifest_dir = tmp_path / "hot_rank" / "trade_date=2026-10-23" / "source=ths_hot_rank" / "sha256-d6510f9287781577"
+    manifest_dir.mkdir(parents=True)
+    manifest = manifest_dir / "manifest.json"
+    shutil.copyfile(source, manifest)
+    loaded = json_module.loads(manifest.read_text())
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(json_module.dumps({"datasets": {"hot_rank": {"dates": {"2026-10-23": [{**loaded, "manifest": str(manifest)}]}}}}))
+    item = {"id": "hot_rank", "artifact": {"catalog_dataset": "hot_rank"}}
+
+    result = startup._run_fetch_job(item | {"fetch_job": {"argv": [sys.executable, "-c", "print('CAPTURED_AT x\\nROW_COUNT 100\\nVERSION x')"], "timeout_seconds": 20}}, "2026-10-23", 20)
+    assert result == {}
+    startup._verify_partition(item, "2026-10-23", tmp_path)
+    with pytest.raises(startup.FetchJobError):
+        startup._verify_partition(item, "2026-10-23", tmp_path / "empty")
+    with pytest.raises(startup.FetchJobError):
+        startup._run_fetch_job(item | {"fetch_job": {"argv": [sys.executable, "-c", "raise SystemExit(7)"], "timeout_seconds": 20}}, "2026-10-23", 20)
+    with pytest.raises(startup.FetchJobError):
+        startup._run_fetch_job(item | {"fetch_job": {"argv": [sys.executable, "-c", 'import json;print(json.dumps(dict(status="failed")))'], "timeout_seconds": 20}}, "2026-10-23", 20)
+
+
+
+def test_fetch_exit_10_degraded_artifact_requires_postcondition(monkeypatch, tmp_path):
+    import json
+    import sys
+    from engine_core.guardian import startup
+
+    payload = {"contract": 1, "status": "degraded", "retryable": False,
+               "error_code": "", "version": "v1", "row_count": 1416}
+    code = "import json; print(json.dumps({'status': 'PARTIAL'})); print(json.dumps(" + repr(payload) + ")); raise SystemExit(10)"
+    item = {"id": "x", "fetch_job": {"argv": [sys.executable, "-c", code], "timeout_seconds": 20}}
+    item["fetch_job"]["argv"][-1] = code.replace("{", "{{").replace("}", "}}")
+    assert startup._run_fetch_job(item, "2026-11-06", 20, tmp_path) == payload
+    monkeypatch.setattr(startup, "load_registry", lambda: [item])
+    checked = []
+    monkeypatch.setattr(startup, "_verify_partition", lambda *args: checked.append(args))
+    assert startup.fetch_item("x", "2026-11-06", tmp_path, dry_run=False)["status"] == "degraded"
+    assert len(checked) == 1
+
+
+def test_fetch_exit_10_requires_degraded_and_artifact(tmp_path):
+    import sys
+    import pytest
+    from engine_core.guardian import startup
+
+    for payload in ({"status": "ok", "version": "v1", "row_count": 1},
+                    {"status": "degraded", "version": None, "row_count": None}):
+        code = "import json; print(json.dumps(" + repr(payload) + ")); raise SystemExit(10)"
+        item = {"id": "x", "fetch_job": {"argv": [sys.executable, "-c", code], "timeout_seconds": 20}}
+        item["fetch_job"]["argv"][-1] = code.replace("{", "{{").replace("}", "}}")
+        with pytest.raises(startup.FetchJobError) as exc:
+            startup._run_fetch_job(item, "2026-11-06", 20, tmp_path)
+        assert exc.value.error_code == "FETCH_EXIT_10"
+
+def test_fetch_job_passes_schedule_no_progress_budget_to_daily_kline_command(monkeypatch, tmp_path):
+    import json
+    import sys
+
+    from engine_core.guardian import startup
+
+    captured = {}
+
+    class Completed:
+        returncode = 0
+        stdout = json.dumps({"version": "v1", "row_count": 1})
+        stderr = ""
+
+    def fake_run(command, **_kwargs):
+        captured["command"] = command
+        return Completed()
+
+    monkeypatch.setattr(startup.subprocess, "run", fake_run)
+    monkeypatch.setattr("engine_core.guardian.registry.catalog_partition_present", lambda *_args: True)
+    item = {"id": "daily_kline", "fetch_job": {
+        "argv": [sys.executable, "-m", "examples.run_data_jobs", "--job", "daily_kline",
+                 "--date", "{date}"], "timeout_seconds": 30}}
+
+    startup._run_fetch_job(item, "2026-10-26", 30, tmp_path,
+                           schedule_args={"baostock_no_progress_seconds": 47})
+
+    assert captured["command"][-2:] == ["--baostock-no-progress-seconds", "47"]
+
+
+def test_fetch_item_success_requires_the_partition_to_exist_in_the_catalog_afterwards(tmp_path):
+    """A job that exits 0 with an unfamiliar status (real ladder_daily prints PARTIAL_ST_FILTER_UNAVAILABLE) is judged by the catalog."""
+    import sys
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.guardian.startup import fetch_item
+    import engine_core.guardian.startup as startup
+
+    item = {"id": "ladder_daily", "artifact": {"catalog_dataset": "ladder_daily"},
+            "fetch_job": {"argv": [sys.executable, "-c", "import json;print(json.dumps(dict(status='PARTIAL_ST_FILTER_UNAVAILABLE',row_count=0)))"],
+                          "timeout_seconds": 20}}
+    original = startup.load_registry
+    startup.load_registry = lambda: [item]
+    try:
+        missing = fetch_item("ladder_daily", "2026-10-21", tmp_path, dry_run=False)
+        assert missing["status"] == "failed" and missing["error_code"] == "POSTCONDITION_FAILED"
+        ArtifactCatalog(tmp_path).commit("ladder_daily", "2026-10-21", [{"symbol": "000001"}],
+                                         {"available_at": "2026-10-21T15:05:00+08:00"}, source="test")
+        assert fetch_item("ladder_daily", "2026-10-21", tmp_path, dry_run=False)["status"] == "ok"
+    finally:
+        startup.load_registry = original
+
+
+def test_runtime_reconcile_enqueues_fetches_without_running_them_inline(tmp_path, monkeypatch):
+    from engine_core.guardian import startup
+
+    registry = [{"id": "light", "artifact": {"catalog_dataset": "light"},
+                 "fetch_job": ["stub", "{date}", "{item}"],
+                 "cost": {"class": "light"}, "late_policy": {"depends_on": []}}]
+    calls = []
+    monkeypatch.setattr(startup, "load_registry", lambda: registry)
+    monkeypatch.setattr(startup, "_run_fetch_job",
+                        lambda *args: calls.append(args) or {"status": "ok"})
+
+    result = startup.boot_apply_plan(
+        "2026-10-22", [{"id": "light", "partition": "2026-10-22", "action": "FETCH_NOW",
+                        "lane": "parallel"}], tmp_path,
+        now="2026-10-22T09:00:00+08:00", phase="PRE_MARKET", enqueue_only=True)
+
+    assert calls == []
+    assert result["detail"]["results"][0]["status"] == "queued"
+    assert result["detail"]["deferred"] == [{
+        "id": "light", "partition": "2026-10-22", "fetch_job": ["stub", "{date}", "{item}"],
+        "run_in_phases": ["PRE_MARKET"], "cost": "light", "depends_on": []}]
+
+
+def test_boot_apply_plan_skips_items_owned_by_open_event_window(tmp_path):
+    from engine_core.guardian.startup import boot_apply_plan
+
+    result = boot_apply_plan(
+        "2026-10-22",
+        [{"id": "symbol_universe", "partition": "2026-10-22", "action": "FETCH_NOW",
+          "cost": "medium"}],
+        tmp_path,
+        now="2026-10-22T08:30:00+08:00",
+        phase="PRE_MARKET",
+        dry_run=True,
+        enqueue_only=True,
+        active_events={"startup_0830": "2026-10-22"},
+    )
+
+    assert result["detail"]["results"] == []
+    assert result["detail"]["deferred"] == []
+
+    heavy = boot_apply_plan(
+        "2026-10-22",
+        [{"id": "daily_kline", "partition": "2026-10-22", "action": "FETCH_NOW",
+          "cost": "heavy"}],
+        tmp_path,
+        now="2026-10-22T10:00:00+08:00",
+        phase="INTRADAY_AM",
+        dry_run=False,
+        enqueue_only=True,
+    )
+    assert heavy["detail"]["deferred"][0]["run_in_phases"] == ["MIDDAY_BREAK"]
+
+
+def test_daily_kline_catalog_state_prefers_formal_td(monkeypatch):
+    from pathlib import Path
+    from engine_core.guardian import startup
+    from engine_core.guardian.reconcile_plan import daily_kline_catalog_state
+
+    day = "2026-11-12"
+    catalog = json.loads(Path("/home/exedev/core-data/catalog.json").read_text())
+    versions = catalog["datasets"]["daily_kline"]["dates"][day]
+    catalog["datasets"]["daily_kline"]["dates"][day] = [next(v for v in versions if v.get("source") == "wencai")]
+    monkeypatch.setenv("TD_CONFIG", "configured")
+    monkeypatch.setattr(startup, "_td_daily_kline_formal", lambda partition, result=None: partition == day, raising=False)
+    state = daily_kline_catalog_state(catalog, "daily_kline", day, datetime.fromisoformat("2026-11-24T21:00:00+08:00"))
+    assert state["needs_upgrade"] is False
+
+
+def test_daily_kline_upgrade_resolves_from_backfill_coverage(tmp_path, monkeypatch):
+    from pathlib import Path
+    from engine_core.guardian.startup import _record_daily_kline_upgrade
+
+    day = "2026-11-12"
+    catalog = json.loads(Path("/home/exedev/core-data/catalog.json").read_text())
+    versions = catalog["datasets"]["daily_kline"]["dates"][day]
+    catalog["datasets"]["daily_kline"]["dates"][day] = [next(v for v in versions if v.get("source") == "wencai")]
+    (tmp_path / "catalog.json").write_text(json.dumps(catalog))
+    monkeypatch.delenv("TD_CONFIG", raising=False)
+    result = {"detail": {"coverage": {day: 1.0}, "incomplete": []}}
+    state = _record_daily_kline_upgrade(tmp_path, day, succeeded=True, result=result,
+                                        now="2026-11-24T21:00:00+08:00", phase="POST_MARKET")
+    assert state["status"] == "resolved"
+    assert state["reason"] == "formal_version_available"

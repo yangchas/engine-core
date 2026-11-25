@@ -228,6 +228,30 @@ def test_market_cross_section_excludes_non_equity_symbols():
     assert snapshot.raw_market_cross_section["excluded_non_equity_count"] == 1
 
 
+def test_cross_date_quote_stays_observed_but_is_unknown_for_current_breadth():
+    redis = FakeRedis()
+    redis.hashes["q2:000001"]["ts"] = str(
+        local_time_ms("2026-09-03", "15:00:00")
+    )
+    observed_at = datetime(2026, 9, 4, 9, 20, tzinfo=timezone(timedelta(hours=8)))
+    projection = RedisQ2ProjectionAdapter(redis).read("2026-09-04", observed_at)
+    reducer = MarketStateReducer()
+    reducer.apply_snapshot(projection, logical_time_ms=projection.envelope.effective_time_ms)
+    snapshot = reducer.build_snapshot("AUCTION_0920")
+
+    assert projection.status.value == "PARTIAL"
+    assert "trade_date" in snapshot.symbol_states["000001"]["field_errors"]
+    assert snapshot.symbol_states["000001"]["price_milli"] == 1000
+    assert snapshot.raw_market_cross_section == {
+        "observed_symbol_count": 2,
+        "up_count": 0,
+        "down_count": 1,
+        "flat_count": 0,
+        "unknown_count": 1,
+        "excluded_non_equity_count": 0,
+    }
+
+
 def test_duplicate_signal_id_is_idempotent_and_conflicting_content_is_rejected():
     trade_date = "2026-09-04"
     observed_at = datetime(2026, 9, 4, 9, 20, tzinfo=timezone(timedelta(hours=8)))

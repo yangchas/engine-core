@@ -89,6 +89,7 @@ def normalize_previous_day_stats_rows(
     close_by_symbol = {}
     amount_by_symbol = {}
     volume_by_symbol = {}
+    volume_zero_withheld = []
     for index, row in enumerate(rows):
         if not isinstance(row, Mapping):
             raise TypeError("daily-kline row %d must be a mapping" % index)
@@ -102,13 +103,22 @@ def normalize_previous_day_stats_rows(
                 raise ValueError(
                     "daily-kline row %d has invalid %s" % (index, field)
                 )
-        close_by_symbol[symbol] = row["close"]
+        # TD stores close as float32 (11.73 reads back as 11.729999542...);
+        # prices have at most 3 decimals, so 4 places removes the artifact.
+        close_by_symbol[symbol] = (
+            round(row["close"], 4) if isinstance(row["close"], float) else row["close"]
+        )
         amount_by_symbol[symbol] = row["amount"]
         if "volume" in row and row["volume"] is not None:
             if not _finite_number(row["volume"]):
                 raise ValueError(
                     "daily-kline row %d has invalid volume" % index
                 )
+            if row["volume"] == 0 and row["amount"] > 0:
+                # Positive turnover with zero volume is impossible: the volume
+                # column is unpopulated.  Withhold it instead of reporting 0.
+                volume_zero_withheld.append(symbol)
+                continue
             volume_by_symbol[symbol] = row["volume"]
     return {
         "previous_trade_date": actual_trade_date,
@@ -116,6 +126,11 @@ def normalize_previous_day_stats_rows(
         "amount_by_symbol": dict(sorted(amount_by_symbol.items())),
         "volume_by_symbol": dict(sorted(volume_by_symbol.items())),
         "row_count": len(close_by_symbol),
+        **(
+            {"volume_zero_with_positive_amount_symbols": tuple(sorted(volume_zero_withheld))}
+            if volume_zero_withheld
+            else {}
+        ),
     }
 
 
@@ -124,9 +139,9 @@ def canonical_daily_kline_cache_payload_hash(
 ) -> str:
     """Hash the existing date-bucketed Redis kline view by symbol.
 
-    This small contract mirrors the legacy writer's metadata payload hash.
-    It intentionally hashes the persisted row fields exactly as read back;
-    source identity and temporal metadata live in the sidecar metadata key.
+    It hashes the supplied persisted-row projection exactly as read back;
+    source identity and temporal metadata are outside this payload hash. This
+    local hash contract does not by itself claim parity with any writer.
     """
 
     canonical = {
@@ -425,6 +440,25 @@ class TemporalDataGuard:
                     reasons.append("live_fetch_completion_unknown")
                 elif result.fetch_completed_at_ms > request.knowledge_as_of_ms:
                     reasons.append("live_fetch_completion_after_cutoff")
+            elif (
+                request.allow_unverified_previous_day_availability
+                and request.temporal_mode in {"HISTORICAL", "REPLAY"}
+                and (result.effective_at_ms is None or result.effective_at_ms <= request.effective_as_of_ms)
+                and TemporalDataGuard._is_strictly_previous_trade_date(
+                    result.actual_trade_date, request.trade_date
+                )
+            ):
+                marker = Provenance(
+                    result.actual_source or "unknown", "temporal_guard",
+                    "TemporalDataGuardV1", result.actual_trade_date,
+                    result.effective_at_ms, result.observed_at_ms, None,
+                    ("available_at_unknown_previous_day_data", "not_historical_availability_evidence"),
+                )
+                return replace(
+                    result,
+                    status=DataStatus.PARTIAL if result.status is DataStatus.READY else result.status,
+                    provenance=result.provenance if any(item.source_kind == marker.source_kind and item.notes == marker.notes for item in result.provenance) else result.provenance + (marker,),
+                )
             else:
                 reasons.append("available_at_unknown")
         elif result.available_at_ms > request.knowledge_as_of_ms:
@@ -470,6 +504,17 @@ class TemporalDataGuard:
             completeness=0.0,
             missing_fields=tuple(sorted(set(result.missing_fields + tuple(reasons)))),
         )
+
+    @staticmethod
+    def _is_strictly_previous_trade_date(
+        actual_trade_date: Optional[str], request_trade_date: str
+    ) -> bool:
+        if actual_trade_date is None:
+            return False
+        try:
+            return parse_trade_date(actual_trade_date) < parse_trade_date(request_trade_date)
+        except (TypeError, ValueError):
+            return False
 
 
 class PreviousDayStatsFunction:
@@ -637,6 +682,10 @@ class PreviousDayStatsFunction:
             if present_count == 0:
                 status = DataStatus.MISSING
             elif missing_symbols:
+                status = DataStatus.PARTIAL
+            elif result.status is DataStatus.PARTIAL:
+                # keep a PARTIAL set earlier (e.g. unverified previous-day
+                # availability); symbol coverage alone must not upgrade it
                 status = DataStatus.PARTIAL
             else:
                 status = DataStatus.READY

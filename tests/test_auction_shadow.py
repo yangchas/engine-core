@@ -230,6 +230,107 @@ def test_engine_boundary_adapter_composes_three_snapshots_without_new_formula():
     assert composed.as_trace()["decision_status"] == "FACT_ONLY"
 
 
+def test_engine_boundary_auction_price_uses_explicit_t1_anchor_fields_without_px_fallback():
+    from dataclasses import replace
+
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    start = _snapshot(fixture, "pre_auction_0915")
+    middle = _snapshot(fixture, "auction_0920")
+    end = _snapshot(fixture, "auction_0924")
+
+    def with_state(snapshot, *, latest_px, anchor_prices):
+        symbol = fixture["symbol"]
+        state = dict(snapshot.symbol_states[symbol])
+        state["price_milli"] = latest_px
+        state.update(anchor_prices)
+        return replace(
+            snapshot,
+            symbol_states={symbol: state},
+            content_hash=semantic_hash(
+                {
+                    "snapshot_id": snapshot.snapshot_id,
+                    "trigger_id": snapshot.trigger_id,
+                    "logical_time_ms": snapshot.logical_time_ms,
+                    "state": state,
+                }
+            ),
+        )
+
+    start = with_state(
+        start,
+        latest_px=20_000,
+        anchor_prices={
+            "auction_anchor_0920_price_milli": 10_000,
+            "auction_anchor_0924_price_milli": None,
+            "auction_anchor_0925_price_milli": None,
+        },
+    )
+    middle = with_state(
+        middle,
+        latest_px=19_000,
+        anchor_prices={
+            "auction_anchor_0920_price_milli": 10_000,
+            "auction_anchor_0924_price_milli": 11_000,
+            "auction_anchor_0925_price_milli": None,
+        },
+    )
+    end = with_state(
+        end,
+        latest_px=18_000,
+        anchor_prices={
+            "auction_anchor_0920_price_milli": 10_000,
+            "auction_anchor_0924_price_milli": 11_000,
+            "auction_anchor_0925_price_milli": 12_500,
+        },
+    )
+
+    result = build_auction_fact_shadow_from_snapshots(
+        start,
+        middle,
+        end,
+        scope_type="SYMBOL",
+        scope_id=fixture["symbol"],
+        previous_segment_id="anchor_0920_to_0924",
+        current_segment_id="anchor_0924_to_0925",
+        price_fields=(
+            "auction_anchor_0920_price_milli",
+            "auction_anchor_0924_price_milli",
+            "auction_anchor_0925_price_milli",
+        ),
+    )
+
+    assert result.metrics["price_delta_milli"] == 1_500
+    assert result.metrics["price_delta_milli"] != (
+        end.symbol_states[fixture["symbol"]]["price_milli"]
+        - middle.symbol_states[fixture["symbol"]]["price_milli"]
+    )
+
+    missing_anchor_end = with_state(
+        end,
+        latest_px=18_000,
+        anchor_prices={
+            "auction_anchor_0920_price_milli": 10_000,
+            "auction_anchor_0924_price_milli": 11_000,
+            "auction_anchor_0925_price_milli": None,
+        },
+    )
+    missing = build_auction_fact_shadow_from_snapshots(
+        start,
+        middle,
+        missing_anchor_end,
+        scope_type="SYMBOL",
+        scope_id=fixture["symbol"],
+        previous_segment_id="anchor_0920_to_0924",
+        current_segment_id="anchor_0924_to_0925",
+        price_fields=(
+            "auction_anchor_0920_price_milli",
+            "auction_anchor_0924_price_milli",
+            "auction_anchor_0925_price_milli",
+        ),
+    )
+    assert missing.metrics["price_delta_milli"] is None
+
+
 def test_engine_boundary_adapter_rejects_cross_session_or_non_monotonic_snapshots():
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
     start = _snapshot(fixture, "pre_auction_0915")

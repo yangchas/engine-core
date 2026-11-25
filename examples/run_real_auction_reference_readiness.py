@@ -230,6 +230,11 @@ def run_real_auction_reference_readiness(
         ),
         calendar,
     )
+    if knowledge_as_of_ms is None:
+        # Providers fetch lazily inside prepare_auction_references, so a cutoff
+        # at the observation instant would make every LIVE fetch look like it
+        # completed after the cutoff.  Default to a node time shortly ahead.
+        reference_cutoff_ms = max(reference_cutoff_ms, fetch_clock_ms()) + 10_000
     prepared = prepare_auction_references(
         trade_date=trade_date,
         knowledge_as_of_ms=reference_cutoff_ms,

@@ -1,0 +1,109 @@
+{
+ "dataset": "stock_static",
+ "status": "DRAFT; C573 immutable static snapshot; missing provider fields remain null and quality is PARTIAL",
+ "primary_key": [
+  "symbol"
+ ],
+ "symbol_column": "symbol",
+ "date_columns": [
+  "date"
+ ],
+ "earliest_available_local": null,
+ "coverage": {
+  "basis": "none",
+  "note": "Snapshot is cross-sourced from the latest available universe and current basic response; per-source dates are in manifest.source_dates. Same-day universe coverage is not asserted."
+ },
+ "columns": {
+  "symbol": {
+   "type": "str",
+   "nullable": false
+  },
+  "name": {
+   "type": "str",
+   "nullable": false
+  },
+  "industry": {
+   "type": "str",
+   "nullable": true,
+   "all_null_ok": true,
+   "all_null_reason": "Baostock stock_basic and symbol_universe do not provide industry; no configured fallback source."
+  },
+  "listing_date": {
+   "type": "date",
+   "nullable": true
+  },
+  "is_new_stock": {
+   "type": "bool",
+   "nullable": true,
+   "all_null_ok": true,
+   "all_null_reason": "No configured source provides an as-of new-stock classification."
+  },
+  "is_st": {
+   "type": "bool",
+   "nullable": true
+  },
+  "limit_width_pct": {
+   "type": "int",
+   "nullable": true,
+   "unit": "percent",
+   "enum": [
+    5,
+    10,
+    20,
+    30
+   ],
+   "all_null_ok": true,
+   "all_null_reason": "No current source provides limit-width policy as data; it is not inferred from code."
+  },
+  "float_cap_yuan": {
+   "type": "float",
+   "nullable": true,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true,
+   "all_null_ok": true,
+   "all_null_reason": "Baostock stock_basic and symbol_universe do not provide float market capitalization; no configured fallback source."
+  },
+  "total_cap_yuan": {
+   "type": "float",
+   "nullable": true,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true,
+   "all_null_ok": true,
+   "all_null_reason": "Baostock stock_basic and symbol_universe do not provide total market capitalization; no configured fallback source."
+  },
+  "cap_as_of": {
+   "type": "date",
+   "nullable": true,
+   "all_null_ok": true,
+   "all_null_reason": "No cap source is configured."
+  },
+  "pit_date": {
+   "type": "date",
+   "nullable": true,
+   "all_null_ok": true,
+   "all_null_reason": "Neither current source echoes a PIT date."
+  },
+  "source_quality": {
+   "type": "str",
+   "nullable": false
+  },
+  "available_at": {
+   "type": "str",
+   "nullable": false
+  },
+  "market_board": {
+   "type": "str",
+   "nullable": false
+  },
+  "exchange": {
+   "type": "str",
+   "nullable": false
+  },
+  "date": {
+   "type": "date",
+   "nullable": false
+  }
+ }
+}

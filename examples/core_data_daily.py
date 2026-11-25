@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""Run one Core data phase. Cron examples are printed, never installed."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import time
+from datetime import date
+from pathlib import Path
+
+from engine_core.data_pipeline.ops import run_daily_phase
+from engine_core.data_pipeline.job_contract import JobResult as ContractJobResult, emit as emit_job_result
+from engine_core.data_pipeline.jobs import JobRunner, RequestBudget
+from engine_core.data_pipeline.job_contract import contract_main, emit_failure, exception_code
+
+
+def _sample_probe(args, root: Path, adapters) -> int:
+    started = time.monotonic()
+    try:
+        fetch = adapters.get("daily_kline")
+        if fetch is None:
+            raise RuntimeError("daily_kline_adapter_unavailable")
+        payload = fetch(args.date)
+        payload = dict(payload) if isinstance(payload, dict) else {"rows": payload}
+        timing = payload.get("baostock_timing") if isinstance(payload.get("baostock_timing"), dict) else {}
+        timing_result = str(timing.get("result") or "ok")
+        failure_code = None
+        retryable = True
+        if timing_result in {"budget_exhausted", "timeout", "error"}:
+            failure_code = str(timing.get("error_code") or "BAOSTOCK_RETRYABLE_FAILURE")
+        else:
+            job = JobRunner(artifact_root=root,
+                            budget=RequestBudget(max_requests=args.max_requests,
+                                                 min_interval_seconds=0)).run(
+                "daily_kline", args.date, fetch=lambda _day: payload, dry_run=True)
+            coverage = job.manifest.get("quality", {}).get("coverage")
+            if coverage is None or coverage < 0.98:
+                failure_code = "BAOSTOCK_COVERAGE_LOW"
+            else:
+                return emit_job_result(ContractJobResult(
+                    contract=1, job="daily_kline", trade_date=args.date, status="degraded",
+                    tier=0, source="baostock", dataset="daily_kline", version=None,
+                    row_count=len(job.rows), coverage=coverage, error_code=None, retryable=False,
+                    attempts=1, elapsed_ms=round((time.monotonic() - started) * 1000, 3),
+                    detail={"business_status": "PROVISIONAL", "sample_scope": "symbols_file",
+                            "quality": job.manifest.get("quality"),
+                            "provider_attempts": job.manifest.get("provider_attempts", [])}))
+    except Exception as exc:
+        failure_code, retryable = exception_code(exc, "baostock")
+    return emit_job_result(ContractJobResult(
+        contract=1, job="daily_kline", trade_date=args.date, status="failed", tier=0,
+        source="baostock", dataset="daily_kline", version=None, row_count=None,
+        coverage=None, error_code=failure_code, retryable=retryable, attempts=1,
+        elapsed_ms=round((time.monotonic() - started) * 1000, 3),
+        detail={"sample_scope": "symbols_file"}))
+
+
+@contract_main("core_data_daily")
+def main(argv=None) -> int:
+    started = time.monotonic()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--phase", required=True, choices=["premarket", "intraday", "postmarket"])
+    parser.add_argument("--date", default=date.today().isoformat())
+    parser.add_argument("--write", action="store_true")
+    parser.add_argument("--skip-redis-publish", action="store_true",
+                        help="persist postmarket artifacts without publishing Redis cache views")
+    parser.add_argument("--td-write", action="store_true")
+    parser.add_argument("--adapter", help="module:function returning adapter mapping")
+    parser.add_argument("--max-requests", type=int, default=30)
+    parser.add_argument("--baostock-timeout-seconds", type=float, default=30.0)
+    parser.add_argument("--baostock-total-timeout-seconds", type=float,
+                        help="optional wall-clock budget for the daily_kline task")
+    parser.add_argument("--baostock-no-progress-seconds", type=float, default=300.0,
+                        help="fail retryably when Baostock produces no row/checkpoint progress")
+    parser.add_argument("--baostock-formal-coverage-threshold", type=float, default=None)
+    parser.add_argument("--baostock-source-empty-max", type=int, default=None)
+    parser.add_argument("--symbols-file", help="debug-only one-symbol-per-line Baostock cohort")
+    parser.add_argument("--artifact-root", help="artifact root (required with --symbols-file)")
+    parser.add_argument("--no-lock", action="store_true")
+    parser.add_argument("--no-daily-kline-fetch", action="store_true",
+                        help="postmarket only: never pull daily bars here (the TD fill owns that); wait for FORMAL")
+    args = parser.parse_args(argv)
+    artifact_root_explicit = args.artifact_root is not None
+    args.artifact_root = args.artifact_root or os.getenv("CORE_DATA_ROOT", "~/core-data")
+    if args.td_write and not args.write:
+        parser.error("--td-write requires --write")
+    if args.baostock_no_progress_seconds <= 0:
+        parser.error("--baostock-no-progress-seconds must be positive")
+    from engine_core.data_pipeline.registry.daily_kline import BAOSTOCK_COMPLETION_POLICY
+    baostock_policy = {
+        "formal_coverage_threshold": (BAOSTOCK_COMPLETION_POLICY["formal_coverage_threshold"]
+                                      if args.baostock_formal_coverage_threshold is None
+                                      else args.baostock_formal_coverage_threshold),
+        "source_empty_max": (BAOSTOCK_COMPLETION_POLICY["source_empty_max"]
+                             if args.baostock_source_empty_max is None
+                             else args.baostock_source_empty_max),
+    }
+    if args.symbols_file and args.phase != "postmarket":
+        parser.error("--symbols-file is only valid with --phase postmarket")
+    if args.symbols_file and (args.write or args.td_write):
+        parser.error("--symbols-file cannot publish to Redis or TD")
+    if args.skip_redis_publish and args.phase != "postmarket":
+        parser.error("--skip-redis-publish is only valid with --phase postmarket")
+    if args.write and not os.getenv("CORE_REDIS_URL") and not args.skip_redis_publish:
+        parser.error("--write requires CORE_REDIS_URL")
+    if args.symbols_file and not artifact_root_explicit:
+        parser.error("--symbols-file requires an explicit --artifact-root")
+    root = Path(args.artifact_root).expanduser()
+    from examples.run_data_jobs import _default_adapters, _require_sample_artifact_root
+    if args.symbols_file:
+        try:
+            root = Path(_require_sample_artifact_root(root))
+        except ValueError as exc:
+            parser.error(str(exc))
+    td_store = None
+    td_writer = None
+    if args.td_write:
+        from engine_core.data_pipeline.td_sink import DailyKlineTdSink, TaosStore
+        from engine_core.guardian.daily_kline_coverage import td_settings
+        settings = td_settings()
+        database = (settings or {}).get("database") or os.getenv("CORE_TD_DATABASE") or "core_data"
+        td_store = TaosStore(str(database))
+        td_writer = DailyKlineTdSink(td_store, root)
+    adapters = _default_adapters(str(root), os.getenv("ENGINE_LEGACY_ROOT", "/home/exedev/repos/stock-situation-runtime"),
+                                  args.max_requests, args.write,
+                                  baostock_timeout_seconds=args.baostock_timeout_seconds,
+                                  baostock_total_timeout_seconds=args.baostock_total_timeout_seconds,
+                                  baostock_no_progress_seconds=args.baostock_no_progress_seconds,
+                                  baostock_symbols_file=args.symbols_file,
+                                  td_progress_writer=td_writer)
+    adapters = dict(adapters)
+    if args.adapter:
+        if args.symbols_file:
+            parser.error("--symbols-file cannot be combined with --adapter")
+        module_name, sep, function = args.adapter.partition(":")
+        if not sep: parser.error("--adapter must be module:function")
+        adapters = getattr(__import__(module_name, fromlist=[function]), function)()
+    if args.symbols_file:
+        return _sample_probe(args, root, adapters)
+    redis = None
+    if args.write and os.getenv("CORE_REDIS_URL") and not args.skip_redis_publish:
+        import redis as redis_package
+        redis = redis_package.Redis.from_url(os.environ["CORE_REDIS_URL"], decode_responses=True)
+    from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
+    trade_dates = TradeCalendarStore(root).all_trading_dates() or None
+    if args.td_write and adapters.get("td_writer") is None:
+        adapters["td_writer"] = td_writer
+    try:
+        result = run_daily_phase(args.phase, args.date, root=root, adapters=adapters,
+            trading_dates=trade_dates, write=args.write, redis=redis,
+            td_adapter=adapters.get("td_writer"), td_write=args.td_write,
+            baostock_policy=baostock_policy, lock=not args.no_lock,
+            fetch_daily_kline=not args.no_daily_kline_fetch)
+    finally:
+        if td_store is not None:
+            td_store.close()
+    result["recommended_cron"] = [
+        "50 8 * * 1-5 core_data_daily.py --phase premarket --write",
+        "*/5 9-15 * * 1-5 core_data_daily.py --phase intraday --write",
+        "40 17 * * 1-5 core_data_daily.py --phase postmarket --write",
+        "30 18 * * 1-5 core_data_daily.py --phase postmarket --write",
+        "0 20 * * 1-5 core_data_daily.py --phase postmarket --write",
+    ]
+    if args.symbols_file:
+        result["sample_scope"] = "symbols_file"
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    if result.get("error_code") == "TIER_PARTIAL":
+        daily = next((item for item in result.get("jobs", []) if item.get("job") == "daily_kline"), {})
+        return emit_job_result(ContractJobResult(
+            contract=1, job="daily_kline", trade_date=args.date, status="failed", tier=0,
+            source="baostock", dataset="daily_kline", version=daily.get("version"),
+            row_count=daily.get("row_count"), coverage=daily.get("coverage"),
+            error_code="TIER_PARTIAL", retryable=True, attempts=1,
+            elapsed_ms=round((time.monotonic() - started) * 1000, 3),
+            detail={"business_status": daily.get("business_status"),
+                    "known_missing": daily.get("known_missing", {}),
+                    "alert_required": daily.get("alert_required")}))
+    if result.get("error_code") == "DAILY_KLINE_NOT_READY":
+        return emit_job_result(ContractJobResult(
+            contract=1, job="daily_kline", trade_date=args.date, status="failed", tier=0,
+            source="baostock", dataset="daily_kline", version=None, row_count=None, coverage=None,
+            error_code="DAILY_KLINE_NOT_READY", retryable=True, attempts=1,
+            elapsed_ms=round((time.monotonic() - started) * 1000, 3),
+            detail={"waiting_for": "FORMAL baostock daily_kline from the TD fill"}))
+    if result["status"] not in {"READY", "SKIPPED_NON_TRADING_DAY"}:
+        from engine_core.errors import lookup
+        declared = result.get("error_code")
+        code = declared if isinstance(declared, str) and lookup(declared) and not lookup(declared).get("reserved") \
+            else "DETERMINISTIC_FAILURE"
+        return emit_failure(code, job="core_data_daily", trade_date=args.date,
+                            detail={"phase": args.phase, "status": result["status"], "error_code": declared})
+    return 10 if args.symbols_file else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,613 @@
+from engine_core.auction_panorama import build_auction_panorama, normalize_hot_plates
+
+
+def test_panorama_primary_reason_is_computed_once_per_pool_symbol(monkeypatch):
+    import engine_core.auction_panorama as panorama_module
+
+    calls = 0
+    original = panorama_module._primary_reason
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(panorama_module, "_primary_reason", counted)
+    facts = _facts()
+    members = [
+        {"plate_id": f"P{index}", "plate_name": f"主题{index}", "symbol": "000001"}
+        for index in range(12)
+    ]
+    build_auction_panorama(facts, plate_members=members,
+        yesterday_pool=[{"symbol": "000001", "lb_days": 2, "primary_reason": "主题0"}],
+        previous_trade_date="2026-10-15")
+    assert calls == 1
+
+
+def test_hot_plate_rank_basis_ties_and_live_rejects_posthoc(monkeypatch):
+    rows = [{"code": "B", "strength": 10, "change_pct": 2.5},
+            {"code": "A", "strength": 10, "change_pct": -1.0},
+            {"code": "C", "strength": 8, "change_pct": 1.0}]
+    live = normalize_hot_plates(rows, fetched_at="2026-10-16T09:25:00+08:00",
+        available_at="2026-10-16T09:25:00+08:00",
+        asof="2026-10-16T09:26:00+08:00", trade_date="2026-10-16")
+    assert live["basis"] == "PIT_LIVE"
+    assert live["ranks"]["A"]["hot_rank"] == live["ranks"]["B"]["hot_rank"] == 1
+    assert live["coverage"] == "3/3"
+    posthoc = normalize_hot_plates(rows, fetched_at="2026-10-17T08:44:00+08:00",
+        available_at="2026-10-17T08:44:00+08:00",
+        asof="2026-10-16T09:26:00+08:00", trade_date="2026-10-16")
+    assert posthoc["basis"] == "UNKNOWN"
+    rejected = normalize_hot_plates(rows, fetched_at="2026-10-17T08:44:00+08:00",
+        available_at="2026-10-17T08:44:00+08:00",
+        asof="2026-10-16T09:26:00+08:00", trade_date="2026-10-16",
+        now="2026-10-16T10:00:00+08:00")
+    assert rejected["basis"] == "UNKNOWN" and rejected["ranks"] == {}
+    monkeypatch.setenv("POSTHOC_DEV", "1")
+    development = normalize_hot_plates(rows, fetched_at="2026-10-17T08:44:00+08:00",
+        available_at="2026-10-17T08:44:00+08:00",
+        asof="2026-10-16T09:26:00+08:00", trade_date="2026-10-16",
+        now="2026-10-18T10:00:00+08:00")
+    assert development["basis"] == "POSTHOC_DEV"
+    assert development["coverage"] == "3/3"
+
+
+def test_c286_posthoc_hot_rank_is_historical_only(monkeypatch):
+    rows = [{"code": "801027", "strength": 32}]
+    kwargs = dict(fetched_at="2026-10-17T20:00:00+08:00",
+        available_at="2026-10-17T20:00:00+08:00",
+        asof="2026-10-16T09:26:00+08:00", trade_date="2026-10-16",
+        now="2026-10-18T10:00:00+08:00")
+    monkeypatch.delenv("POSTHOC_DEV", raising=False)
+    without_switch = normalize_hot_plates(rows, **kwargs)
+    assert without_switch["basis"] == "UNKNOWN" and without_switch["ranks"] == {}
+
+    monkeypatch.setenv("POSTHOC_DEV", "1")
+    historical = normalize_hot_plates(rows, **kwargs)
+    assert historical["basis"] == "POSTHOC_DEV"
+    assert historical["ranks"]["801027"]["hot_rank"] == 1
+
+    live_kwargs = {**kwargs, "trade_date": "2026-10-18",
+        "fetched_at": "2026-10-18T09:27:00+08:00",
+        "available_at": "2026-10-18T09:27:00+08:00",
+        "asof": "2026-10-18T09:26:00+08:00"}
+    live = normalize_hot_plates(rows, **live_kwargs)
+    assert live["basis"] == "UNKNOWN" and live["ranks"] == {}
+
+
+def _facts():
+    rows = [
+        {"symbol": "000001", "name": "A", "auction_amount_yuan": 300, "amount_rank": 1,
+         "amount_top50": True, "price": 10, "pct_change": 2.0, "valid_price": True,
+         "official_limit_up_price": 10,
+         "seal": {"status": "VERIFIED_REPLAY", "seal_amount_yuan": 900, "seal_rank": 1}},
+        {"symbol": "000002", "name": "B", "auction_amount_yuan": 200, "amount_rank": 2,
+         "amount_top50": True, "price": 10, "pct_change": -1.0, "valid_price": True,
+         "official_limit_up_price": 11,
+         "seal": {"status": "UNKNOWN", "seal_amount_yuan": None, "seal_rank": None}},
+        {"symbol": "000003", "name": "C", "auction_amount_yuan": 100, "amount_rank": 3,
+         "amount_top50": True, "pct_change": None, "valid_price": False,
+         "seal": {"status": "VERIFIED_REPLAY", "seal_amount_yuan": 700, "seal_rank": 2}},
+    ]
+    return {"trade_date": "2026-10-16", "asof": "2026-10-16T09:26:00+08:00",
+            "seal_label": "回放·按事件时间", "summary": {"verified_seal_n": 2,
+            "limit_candidate_n": 3, "verified_seal_sum": 1600}, "rows": rows}
+
+
+def test_panorama_preserves_missing_values_and_global_ranks_across_plates():
+    result = build_auction_panorama(
+        _facts(),
+        plate_members=[{"plate_id": "P1", "plate_name": "主题一", "symbol": "000001"},
+                       {"plate_id": "P2", "plate_name": "主题二", "symbol": "000001"},
+                       {"plate_id": "P2", "plate_name": "主题二", "symbol": "000002"}],
+        yesterday_pool=[{"symbol": "000001", "name": "A", "lb_days": 2,
+                         "primary_reason": "池原因"}],
+        yesterday_reasons={"000001": ["历史原因", "静态原因"]},
+        streak_feedback={"000001": "PROMOTED"},
+        market_amount_history=[100, 200, 300],
+    )
+    assert result["schema"] == "auction_panorama_v1"
+    assert result["overview"]["valid_price_n"] == 2
+    assert result["overview"]["verified_seal_scope"] == "2/3"
+    assert result["overview"]["amount_multiple_64d"]["status"] == "PARTIAL"
+    assert result["plates"][0]["stocks"][0]["amount_rank"] == 1
+    copies = [stock for plate in result["plates"] for stock in plate["stocks"]
+              if stock["symbol"] == "000001"]
+    assert len(copies) == 2
+    assert {row["amount_rank"] for row in copies} == {1}
+    assert {row["seal_rank"] for row in copies} == {1}
+    assert result["yesterday_ladder"][0]["buckets"][0]["reason"] == "池原因"
+    assert result["yesterday_ladder"][0]["buckets"][0]["stocks"][0]["promotion_status"] == "PROVISIONAL"
+
+
+def test_c302_product_exposes_market_extremes_plate_dispersion_and_theme_relay():
+    facts = _facts()
+    facts["rows"][0].update(price=10, pct_change=4.0, valid_price=True)
+    facts["rows"][1].update(price=9, pct_change=-2.0, valid_price=True)
+    facts["rows"][2].update(price=8, pct_change=0.0, valid_price=True,
+                            seal={"status": "VERIFIED_REPLAY", "seal_amount_yuan": 1200,
+                                  "seal_rank": None})
+    members = [{"plate_id": "P", "plate_name": "题材甲", "symbol": row["symbol"]}
+               for row in facts["rows"]]
+    pool = [{"symbol": "000001", "lb_days": 2, "primary_reason": "题材甲"},
+            {"symbol": "000002", "lb_days": 1, "primary_reason": "题材甲"},
+            {"symbol": "000003", "lb_days": 1, "primary_reason": "题材甲"}]
+    result = build_auction_panorama(facts, plate_members=members, yesterday_pool=pool,
+        plate_classes={"P": "NICHE"})
+    plate = next(row for row in result["plates"] if row["plate_id"] == "P")
+    assert plate["distribution"] == {"ge_3_n": 1, "zero_to_3_n": 1, "lt_0_n": 1,
+                                     "valid_n": 3, "majority": "分散"}
+    assert plate["dispersion_p75_p25_pp"] == 3.0
+    assert plate["extreme_threshold_pp"] == 3.0
+    assert plate["extremes"]["strongest"]["symbol"] == "000001"
+    assert plate["yesterday_relay"]["n"] == 3
+    assert plate["yesterday_relay"]["open_counts"] == {"high": 1, "flat": 1, "low": 1}
+    assert result["overview"]["market_extremes"]["highest"]["symbol"] == "000001"
+    assert result["overview"]["market_extremes"]["verified_seal_max"]["symbol"] == "000003"
+    assert result["overview"]["yesterday_limit_down"]["status"] == "UNVERIFIED"
+
+
+def test_c302_relay_branches_singleton_merge_and_verified_yesterday_limit_down():
+    facts = _facts()
+    facts["rows"] = []
+    for index, (pct, amount) in enumerate(((1, 700), (1, 600), (2, 500),
+                                            (-2, 400), (-2, 300), (-2, 200), (0, 100)), 1):
+        facts["rows"].append({"symbol": f"{index:06d}", "name": f"股{index}",
+            "auction_amount_yuan": amount, "amount_rank": index, "price": 10 + index / 10,
+            "pct_change": pct, "valid_price": True, "official_limit_up_price": 20,
+            "official_limit_down_price": 1,
+            "seal": {"status": "UNKNOWN", "seal_amount_yuan": None, "seal_rank": None}})
+    facts["rows"][0]["official_limit_up_price"] = facts["rows"][0]["price"]
+    members = ([{"plate_id": "A", "plate_name": "题材A", "symbol": f"{i:06d}"} for i in (1, 2, 3)]
+        + [{"plate_id": "B", "plate_name": "题材B", "symbol": f"{i:06d}"} for i in (4, 5, 6)])
+    pool = ([{"symbol": f"{i:06d}", "primary_reason": "题材A", "lb_days": 2} for i in (1, 2, 3)]
+        + [{"symbol": f"{i:06d}", "primary_reason": "题材B", "lb_days": 1,
+            "is_limit_down": True} for i in (4, 5, 6)]
+        + [{"symbol": "000007", "primary_reason": "孤题材", "lb_days": 1}])
+    result = build_auction_panorama(facts, plate_members=members, yesterday_pool=pool,
+                                    plate_classes={"A": "NICHE", "B": "NICHE"})
+    reasons = {row["reason"]: row for row in result["overview"]["yesterday_reason_buckets"]}
+    assert reasons["题材A"]["willingness"] == "接力偏强"
+    assert reasons["题材B"]["willingness"] == "接力偏弱"
+    assert reasons["其他单只题材(1只)"]["count"] == 1
+    assert reasons["其他单只题材(1只)"]["willingness"] == "不适用·非共同题材"
+    assert "open_counts" not in reasons["其他单只题材(1只)"]
+    assert "extremes" not in reasons["其他单只题材(1只)"]
+    down = result["overview"]["yesterday_limit_down"]
+    assert down["status"] == "VERIFIED" and down["n"] == 3
+    assert down["open_counts"] == {"high": 0, "flat": 0, "low": 3}
+    plate_a = next(row for row in result["plates"] if row["plate_id"] == "A")
+    assert plate_a["extremes"]["strongest"] is None
+
+
+def test_c303_relay_uses_rate_and_median_and_handles_902_market_rate():
+    facts = _facts()
+    facts["rows"] = []
+    for index in range(1000):
+        pct = .5 if index < 905 else -1.0
+        if index < 3:
+            pct = 2.0
+        elif index < 6:
+            pct = -2.0
+        facts["rows"].append({"symbol": f"{index + 1:06d}", "name": "股",
+            "auction_amount_yuan": 10, "price": 10, "pct_change": pct,
+            "valid_price": True, "official_limit_up_price": 20,
+            "seal": {"status": "UNKNOWN"}})
+    members = [{"plate_id": "S", "plate_name": "强题材", "symbol": f"{index:06d}"}
+               for index in (1, 2, 3)]
+    members += [{"plate_id": "W", "plate_name": "弱题材", "symbol": f"{index:06d}"}
+                for index in (4, 5, 6)]
+    pool = ([{"symbol": f"{index:06d}", "primary_reason": "强题材"} for index in (1, 2, 3)]
+        + [{"symbol": f"{index:06d}", "primary_reason": "弱题材"} for index in (4, 5, 6)]
+        + [{"symbol": "000007", "primary_reason": "孤题材"}])
+    # Strong group has only a +9.8pp high-rate gap against a 90.2% market,
+    # below the impossible 105.2% absolute threshold implied by old logic.
+    result = build_auction_panorama(facts, plate_members=members, yesterday_pool=pool)
+    assert result["overview"]["up_ratio"]["ratio"] == .902
+    reasons = {row["reason"]: row for row in result["overview"]["yesterday_reason_buckets"]}
+    assert reasons["强题材"]["willingness"] == "接力偏强"
+    assert reasons["弱题材"]["willingness"] == "接力偏弱"
+    assert reasons["其他单只题材(1只)"]["willingness"] == "不适用·非共同题材"
+
+
+def test_panorama_c285_filters_broad_renames_median_and_corrects_ladder():
+    facts = _facts()
+    facts["rows"][0]["pct_change"] = 10.0
+    facts["rows"][1]["pct_change"] = 0.0
+    facts["rows"][2]["pct_change"] = -2.0
+    members = []
+    for index, row in enumerate(facts["rows"]):
+        members.append({"plate_id": "BROAD", "plate_name": "全行业", "symbol": row["symbol"]})
+        members.append({"plate_id": "NICHE", "plate_name": "小主题", "symbol": row["symbol"]})
+    # Sizes are taken from the plate dictionary membership, not observed price rows.
+    members.extend({"plate_id": "BROAD", "plate_name": "全行业", "symbol": f"{i:06d}"}
+                   for i in range(4, 304))
+    result = build_auction_panorama(
+        facts, plate_members=members,
+        yesterday_pool=[{"symbol": "000001", "lb_days": 3, "primary_reason": "主因"},
+                        {"symbol": "000002", "lb_days": 2, "primary_reason": "碎因一"},
+                        {"symbol": "000003", "lb_days": 2, "primary_reason": "碎因二"}],
+        market_amount_history={"values": [100, 200, 300], "status": "PARTIAL"},
+        plate_classes={"BROAD": "BROAD", "NICHE": "NICHE"})
+    assert all(row["plate_id"] != "BROAD" for row in result["plates"])
+    assert result["plates"] and result["plates"][0]["count"] == 3
+    assert result["plates"][0]["member_median_pct"] == 5.0
+    assert result["plates"][0]["equal_weight_pct"] == 5.0
+    assert result["overview"]["amount_multiple_64d"]["status"] == "PARTIAL"
+    assert result["yesterday_ladder"][0]["buckets"][0]["stocks"][0]["promotion_status"] == "PROVISIONAL"
+    lower = result["yesterday_ladder"][1]
+    assert len(lower["buckets"]) == 1 and lower["buckets"][0]["reason"] == "单只原因合集"
+    assert all("同身位最大分歧" not in stock["extremes"]
+               for bucket in lower["buckets"] for stock in bucket["stocks"])
+
+
+def test_c289_keeps_single_reasons_and_calculates_yesterday_pool_rollup():
+    facts = _facts()
+    facts["rows"][0].update({"auction_amount_yuan": 100, "pct_change": -3.0})
+    facts["rows"][1].update({"auction_amount_yuan": 300, "pct_change": 0.0})
+    facts["rows"][2].update({"auction_amount_yuan": 600, "pct_change": 2.0,
+                              "price": 10, "valid_price": True})
+    result = build_auction_panorama(
+        facts, plate_members=[],
+        yesterday_pool=[
+            {"symbol": "000001", "lb_days": 3, "primary_reason": "池原因一"},
+            {"symbol": "000002", "lb_days": 2},
+            {"symbol": "000003", "lb_days": 1},
+        ],
+        yesterday_reasons={"000002": ["历史原因二"]},
+        theme_assignments={"000003": {"primary_theme": {"name": "冰雪产业"}, "source": "STATIC"}},
+    )
+    level2 = next(layer for layer in result["yesterday_ladder"] if layer["yesterday_streak"] == 2)
+    assert len(level2["buckets"]) == 1
+    assert level2["buckets"][0]["reason"] == "单只原因合集"
+    stocks = {row["symbol"]: row for layer in result["yesterday_ladder"]
+              for bucket in layer["buckets"] for row in bucket["stocks"]}
+    assert stocks["000001"]["primary_reason"] == "池原因一"
+    assert stocks["000002"]["primary_reason"] == "历史原因二"
+    assert stocks["000003"]["primary_reason"] == "原因未核实"
+    assert stocks["000003"]["related_theme"] == "冰雪产业"
+    assert result["overview"]["yesterday_pool_auction_amount_yuan"] == 1000
+    assert result["overview"]["yesterday_pool_open_counts"] == {"high": 1, "flat": 1, "low": 1}
+    assert result["overview"]["multi_board_mean_auction_amount_yuan"] == 200
+    assert result["overview"]["first_board_mean_auction_amount_yuan"] == 600
+
+
+def test_promotion_requires_valid_positive_auction_price():
+    rows = [
+        {"symbol": "000001", "price": None, "valid_price": True, "pct_change": 10.0},
+        {"symbol": "000002", "price": 0, "valid_price": True, "pct_change": 10.0},
+        {"symbol": "000003", "price": 10, "valid_price": False, "pct_change": 10.0},
+        {"symbol": "000004", "price": 10, "valid_price": True, "pct_change": 9.5},
+        {"symbol": "000005", "price": 10, "valid_price": True, "pct_change": 9.4},
+    ]
+    rows[3]["official_limit_up_price"] = 10
+    rows[4]["official_limit_up_price"] = 10.01
+    facts = {**_facts(), "rows": rows}
+    result = build_auction_panorama(
+        facts, plate_members=[],
+        yesterday_pool=[{"symbol": row["symbol"], "lb_days": 2} for row in rows])
+    bucket = result["yesterday_ladder"][0]["buckets"][0]
+    states = {row["symbol"]: row["promotion_status"] for row in bucket["stocks"]}
+    assert states == {"000001": "UNVERIFIED", "000002": "UNVERIFIED",
+                      "000003": "UNVERIFIED", "000004": "PROVISIONAL",
+                      "000005": "NOT_PROMOTED"}
+    assert bucket["provisional_promotion_count"] == 1
+    assert bucket["unverified_promotion_count"] == 3
+    assert bucket["not_promoted_count"] == 1
+
+
+def test_official_limit_price_and_verified_seal_drive_promotion_consistently():
+    rows = [
+        {"symbol": "300001", "price": 10.83, "valid_price": True,
+         "pct_change": 8.3, "official_limit_up_price": 12.0,
+         "seal": {"status": "UNKNOWN"}},
+        {"symbol": "600001", "price": None, "valid_price": False,
+         "pct_change": 9.9, "official_limit_up_price": 11.0,
+         "seal": {"status": "VERIFIED_REPLAY", "seal_amount_yuan": 123}},
+        {"symbol": "600002", "price": 0, "valid_price": False,
+         "pct_change": 9.9, "official_limit_up_price": 11.0,
+         "seal": {"status": "VERIFIED_REPLAY", "seal_amount_yuan": 124}},
+        {"symbol": "000001", "price": 10.95, "valid_price": True,
+         "pct_change": 9.5, "official_limit_up_price": 11.0,
+         "limit_up_candidate": True, "seal": {"status": "UNKNOWN"}},
+        {"symbol": "000002", "price": 11.0, "valid_price": True,
+         "pct_change": 10.0, "official_limit_up_price": 11.0,
+         "seal": {"status": "VERIFIED_REPLAY", "seal_amount_yuan": 456}},
+    ]
+    result = build_auction_panorama(
+        {**_facts(), "rows": rows,
+         "summary": {"limit_candidate_n": 4},
+         "seal_label": "回放·按事件时间"},
+        plate_members=[],
+        yesterday_pool=[{"symbol": row["symbol"], "lb_days": 1} for row in rows],
+    )
+
+    bucket = result["yesterday_ladder"][0]["buckets"][0]
+    states = {row["symbol"]: row["promotion_status"] for row in bucket["stocks"]}
+    assert states == {"300001": "NOT_PROMOTED", "600001": "UNVERIFIED",
+                      "600002": "UNVERIFIED", "000001": "NOT_PROMOTED", "000002": "PROVISIONAL"}
+    assert bucket["provisional_promotion_count"] == 1
+    assert bucket["unverified_promotion_count"] == 2
+    assert bucket["not_promoted_count"] == 2
+    assert (bucket["provisional_promotion_count"] + bucket["unverified_promotion_count"] +
+            bucket["not_promoted_count"] == bucket["count"])
+    reason_bucket = next(item for item in result["overview"]["yesterday_reason_buckets"]
+                         if item["reason"] == bucket["reason"])
+    assert (reason_bucket["provisional_n"], reason_bucket["not_promoted_n"],
+            reason_bucket["unverified_n"]) == (1, 2, 2)
+    assert reason_bucket["count"] == (reason_bucket["provisional_n"] +
+            reason_bucket["not_promoted_n"] + reason_bucket["unverified_n"])
+    assert reason_bucket["valid_n"] == 3
+    assert reason_bucket["valid_price_n"] == 3
+    assert reason_bucket["missing_price_n"] == 2
+    assert bucket["verified_seal_amount_yuan"] == 703
+    assert result["overview"]["verified_seal_scope"] == "3/4"
+    assert result["overview"]["verified_seal_sum_yuan"] == 703
+
+
+def test_all_yesterday_highboards_are_retained():
+    rows = [{"symbol": f"00000{i}", "price": 10, "valid_price": True,
+             "pct_change": float(i), "auction_amount_yuan": i * 1000}
+            for i in range(1, 9)]
+    result = build_auction_panorama(
+        {**_facts(), "rows": rows}, plate_members=[],
+        yesterday_pool=[{"symbol": row["symbol"], "lb_days": 2} for row in rows])
+    boards = result["overview"]["yesterday_pool_high_boards"]
+    assert len(boards) == 8
+
+
+def test_yesterday_reason_uses_only_reason_rows_from_previous_session():
+    facts = {**_facts(), "rows": [
+        {"symbol": "000001", "price": 10, "valid_price": True,
+         "pct_change": 1.0, "official_limit_up_price": 11},
+    ]}
+    result = build_auction_panorama(
+        facts, plate_members=[], yesterday_pool=[{"symbol": "000001", "lb_days": 2}],
+        yesterday_reasons={"000001": [
+            {"event_date": "2026-10-14", "reason": "旧原因排序靠前"},
+            {"event_date": "2026-10-15", "reason": "昨日具体原因"},
+        ]},
+        previous_trade_date="2026-10-15",
+    )
+    stock = result["yesterday_ladder"][0]["buckets"][0]["stocks"][0]
+    assert stock["primary_reason"] == "昨日具体原因"
+    missing_date = build_auction_panorama(
+        facts, plate_members=[], yesterday_pool=[{"symbol": "000001", "lb_days": 2}],
+        yesterday_reasons={"000001": [{"event_date": "2026-10-14", "reason": "旧原因"}]},
+    )
+    missing_stock = missing_date["yesterday_ladder"][0]["buckets"][0]["stocks"][0]
+    assert missing_stock["primary_reason"] == "原因未核实"
+
+
+def test_panorama_caps_amount_history_to_latest_64_days():
+    result = build_auction_panorama(_facts(), plate_members=[], yesterday_pool=[],
+                                    market_amount_history=list(range(1, 66)))
+    assert result["overview"]["amount_multiple_64d"]["sample_n"] == 64
+    assert result["overview"]["amount_multiple_64d"]["status"] == "READY"
+
+
+def test_panorama_lists_all_36_yesterday_limit_stocks_and_empty_reason_bucket():
+    pool = [{"symbol": f"{i:06d}", "name": f"S{i}", "lb_days": 1} for i in range(1, 37)]
+    result = build_auction_panorama(_facts(), plate_members=[], yesterday_pool=pool,
+                                    market_amount_history=[])
+    assert sum(len(bucket["stocks"]) for layer in result["yesterday_ladder"]
+               for bucket in layer["buckets"]) == 36
+    assert result["yesterday_ladder"][0]["buckets"][0]["reason"] == "原因未核实"
+    assert result["overview"]["yesterday_limit_high_open"]["numerator"] == 1
+    assert result["overview"]["yesterday_limit_high_open"]["denominator"] == 2
+    assert result["overview"]["yesterday_limit_high_open"]["pool_n"] == 36
+
+
+def test_panorama_uses_fixed_reason_precedence_and_handles_no_members_or_prices():
+    result = build_auction_panorama(
+        _facts(), plate_members=[],
+        yesterday_pool=[{"symbol": "000001", "lb_days": 1, "static_reason": "静态"}],
+        yesterday_reasons={"000001": ["旧因一", "旧因二"]},
+        market_amount_history=[100],
+    )
+    stock = result["yesterday_ladder"][0]["buckets"][0]["stocks"][0]
+    assert result["plates"] == []
+    assert stock["primary_reason"] == "旧因一"
+    assert result["overview"]["up_ratio"]["denominator"] == 2
+    assert result["overview"]["market_median_pct"] == 0.5
+    assert result["extremes"]["largest_gap_down"] == {"symbol": "000002", "pct_change": -1.0}
+
+
+def test_pool_label_is_association_not_limit_up_cause():
+    result = build_auction_panorama(
+        _facts(), plate_members=[],
+        yesterday_pool=[{"symbol": "000001", "lb_days": 1}],
+        theme_assignments={"000001": {"source": "POOL_LABEL",
+                                      "primary_theme": {"name": "昨日池标签"}}},
+    )
+    stock = result["yesterday_ladder"][0]["buckets"][0]["stocks"][0]
+    assert stock["primary_reason"] == "原因未核实"
+    assert stock["related_theme"] == "昨日池标签"
+
+
+def test_c290_forces_high_and_verified_seal_themes_and_orders_member_rows():
+    rows = []
+    for index in range(1, 9):
+        symbol = f"0000{index:02d}"
+        rows.append({"symbol": symbol, "name": f"股{index}",
+                     "auction_amount_yuan": 1000 - index * 10,
+                     "amount_rank": index, "amount_top50": True,
+                     "price": 10, "pct_change": float(index), "valid_price": True,
+                     "official_limit_up_price": 11,
+                     "seal": ({"status": "VERIFIED_REPLAY", "seal_amount_yuan": 9_000_000,
+                               "seal_rank": 1} if index == 2 else
+                              {"status": "UNKNOWN", "seal_amount_yuan": None, "seal_rank": None})})
+    rows.append({"symbol": "000009", "name": "股9", "auction_amount_yuan": 910,
+                 "amount_rank": 9, "amount_top50": True, "price": 10,
+                 "pct_change": 9.0, "valid_price": True, "official_limit_up_price": 11,
+                 "seal": {"status": "VERIFIED_REPLAY", "seal_amount_yuan": 8_000_000,
+                          "seal_rank": 3}})
+    members = []
+    for code, name, symbols in (
+        ("PSTR", "规模强板", [f"0000{i:02d}" for i in range(1, 7)]),
+        ("PHIGH", "AI应用", ["000001", "000007"]),
+        ("PSEAL", "封单关联", ["000002", "000008"]),
+    ):
+        members.extend({"plate_id": code, "plate_name": name, "symbol": symbol}
+                       for symbol in symbols)
+    product = build_auction_panorama(
+        {**_facts(), "rows": rows}, plate_members=members,
+        yesterday_pool=[{"symbol": "000001", "lb_days": 2, "pool_reason": "算力租赁"}],
+        theme_assignments={"000001": {"primary_theme": {"id": "PHIGH", "name": "AI应用"}},
+                           "000002": {"primary_theme": {"id": "PSEAL", "name": "封单关联"}},
+                           "000009": {"primary_theme": {"id": "PSEAL", "name": "封单关联"}}},
+        plate_classes={"PHIGH": "BROAD"},
+    )
+
+    plates = {row["plate_id"]: row for row in product["plates"]}
+    assert {"PHIGH", "PSEAL"} <= set(plates)
+    assert "高标" in plates["PHIGH"]["selection_reasons"]
+    assert "关联" in plates["PHIGH"]["selection_reasons"]
+    assert "封单" in plates["PSEAL"]["selection_reasons"]
+    unlisted_seal = next(row for row in plates["PSEAL"]["stocks"] if row["symbol"] == "000009")
+    assert unlisted_seal["membership_status"] == "THEME_ASSOCIATION_ONLY"
+    assert plates["PHIGH"]["count"] == 2
+    assert plates["PHIGH"]["valid_price_count"] == 2
+    assert plates["PHIGH"]["valid_amount_count"] == 2
+    assert plates["PHIGH"]["up_label"] == "上涨 2/2"
+    assert [row["symbol"] for row in plates["PSTR"]["stocks"]] == ["000001", "000002", "000003", "000006"]
+    assert len({row["symbol"] for row in plates["PHIGH"]["stocks"]}) == len(plates["PHIGH"]["stocks"])
+    duplicated = [stock for plate in product["plates"] for stock in plate["stocks"]
+                  if stock["symbol"] == "000002"]
+    assert len(duplicated) >= 2
+    assert {(row["amount_rank"], row["seal_rank"]) for row in duplicated} == {(2, 1)}
+
+
+def test_stock_name_map_fills_names_missing_from_auction_facts():
+    facts = _facts()
+    facts["rows"][0]["name"] = None
+    result = build_auction_panorama(
+        facts, plate_members=[{"plate_id": "P1", "plate_name": "主题一", "symbol": "000001"}],
+        yesterday_pool=[{"symbol": "000001", "lb_days": 1}],
+        name_map={"000001": "映射名称"},
+    )
+    assert result["plates"][0]["stocks"][0]["name"] == "映射名称"
+    assert result["yesterday_ladder"][0]["buckets"][0]["stocks"][0]["name"] == "映射名称"
+
+
+def test_c918_reason_bucket_quality_from_recorded_auction():
+    import gzip
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).parent / 'fixtures' / 'real'
+    with gzip.open(root / 'c662' / 'td_auction_snapshot_v2_20261103.json.gz', 'rt') as stream:
+        capture = json.load(stream)
+    with (root / 'wencai_limit_up_pool_2026-10-23_0539.json').open() as stream:
+        pool_capture = json.load(stream)
+    symbols = ('000559', '002026', '000156')
+    raw = {row[7]: row for row in capture['rows'] if row[7] in symbols}
+    rows = [{'symbol': symbol, 'price': raw[symbol][1] / 1000,
+             'pct_change': raw[symbol][2] / 100, 'valid_price': True,
+             'auction_amount_yuan': raw[symbol][3]} for symbol in symbols]
+    pool = [{'symbol': row['code'], 'primary_reason': row['涨停原因类别[20261023]'].split('+')[0]}
+            for row in pool_capture['rows'] if row['code'] in symbols]
+
+    def buckets():
+        result = build_auction_panorama({'trade_date': '2026-11-03', 'asof': '2026-11-03T09:26:00+08:00', 'rows': rows},
+                                        plate_members=[], yesterday_pool=pool)
+        return {bucket['reason']: bucket for bucket in result['overview']['yesterday_reason_buckets']}, result
+
+    rows[0]['pct_change'] = None
+    missing, _ = buckets()
+    assert missing['机器人']['valid_n'] == missing['机器人']['count'] - 1
+    rows[0]['pct_change'] = raw[symbols[0]][2] / 100
+
+    all_valid, _ = buckets()
+    assert all_valid['机器人']['quality'] == 'OK'
+    assert all_valid['机器人']['missing_price_n'] == all_valid['机器人']['missing_amount_n'] == 0
+    single = all_valid['其他单只题材(1只)']
+    assert (single['valid_price_n'], single['valid_amount_n'], single['quality']) == (1, 1, 'OK')
+
+    rows[0]['pct_change'] = None
+    rows[0]['auction_amount_yuan'] = None
+    missing, result = buckets()
+    bucket = missing['机器人']
+    assert bucket['valid_n'] == bucket['valid_price_n'] == bucket['count'] - 1
+    assert sum(bucket['open_counts'].values()) == bucket['valid_n']
+    assert bucket['missing_price_n'] == bucket['missing_amount_n'] == 1
+    assert bucket['valid_amount_n'] == bucket['count'] - 1
+    assert bucket['quality'] == 'PARTIAL'
+    assert bucket['auction_amount_yuan'] == rows[1]['auction_amount_yuan']
+    assert bucket['market_amount_share'] == rows[1]['auction_amount_yuan'] / result['overview']['auction_amount_yuan']
+
+
+def _recorded_quality_facts():
+    import gzip
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).parent / 'fixtures' / 'real' / 'c662' / 'td_auction_snapshot_v2_20261103.json.gz'
+    with gzip.open(path, 'rt') as stream:
+        capture = json.load(stream)
+    symbols = ('000559', '002026', '000156')
+    raw = {row[7]: row for row in capture['rows'] if row[7] in symbols}
+    rows = [{'symbol': symbol, 'price': raw[symbol][1] / 1000,
+             'pct_change': raw[symbol][2] / 100, 'valid_price': True,
+             'auction_amount_yuan': raw[symbol][3]} for symbol in symbols]
+    return {'trade_date': '2026-11-03', 'asof': '2026-11-03T09:26:00+08:00', 'rows': rows}
+
+
+def test_input_quality_missing_recorded_rows():
+    facts = _recorded_quality_facts()
+    assert facts['rows'][0]['auction_amount_yuan'] > 0
+    for row in facts['rows'][:2]:
+        row.update(price=None, pct_change=None, valid_price=False)
+    facts['rows'][1]['auction_amount_yuan'] = None
+    quality = build_auction_panorama(facts, plate_members=[], yesterday_pool=[])['overview']['input_quality']
+    assert quality == {'universe_n': 3, 'valid_price_n': 1, 'missing_price_n': 2,
+        'missing_price_ratio': 2 / 3, 'missing_pct_n': 2, 'missing_pct_ratio': 2 / 3,
+        'missing_amount_n': 1, 'missing_price_with_amount_n': 1,
+        'reason_codes': ['ANCHOR_0925_MISSING_UPSTREAM', 'ZERO_OR_NO_AUCTION_AMOUNT'],
+        'status': 'PARTIAL'}
+
+
+def test_input_quality_complete_recorded_rows():
+    facts = _recorded_quality_facts()
+    quality = build_auction_panorama(facts, plate_members=[], yesterday_pool=[])['overview']['input_quality']
+    assert quality == {'universe_n': 3, 'valid_price_n': 3, 'missing_price_n': 0,
+        'missing_price_ratio': 0, 'missing_pct_n': 0, 'missing_pct_ratio': 0,
+        'missing_amount_n': 0, 'missing_price_with_amount_n': 0,
+        'reason_codes': [], 'status': 'OK'}
+
+
+def test_input_quality_empty_universe():
+    facts = _recorded_quality_facts()
+    facts['rows'] = []
+    quality = build_auction_panorama(facts, plate_members=[], yesterday_pool=[])['overview']['input_quality']
+    assert quality == {'universe_n': 0, 'valid_price_n': 0, 'missing_price_n': 0,
+        'missing_price_ratio': None, 'missing_pct_n': 0, 'missing_pct_ratio': None,
+        'missing_amount_n': 0, 'missing_price_with_amount_n': 0,
+        'reason_codes': [], 'status': 'OK'}
+
+
+def test_c1256_real_market_mean_and_streak_price_validity():
+    import gzip
+    import hashlib
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).parent / 'fixtures/real/c1256/auction.json.gz'
+    provenance = json.loads((path.parent.parent / "PROVENANCE.json").read_text())["_c1256"]["auction"]
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == provenance["fixture_sha256"]
+    assert hashlib.sha256(gzip.decompress(path.read_bytes())).hexdigest() == provenance["source_sha256"]
+    with gzip.open(path, 'rt') as stream:
+        capture = json.load(stream)
+    rows = [{'symbol': symbol, 'price': row['price_milli'] / 1000,
+             'pre_close_price': row['pre_close_milli'] / 1000,
+             'pct_change': row['change_bp'] / 100,
+             'valid_price': row['price_milli'] > 0}
+            for symbol, row in capture.items()
+            if row.get('price_milli') and row.get('pre_close_milli') and row.get('change_bp') is not None]
+    pool = json.loads((path.parent.parent / 'c1254/pool.json').read_text())
+    result = build_auction_panorama({'trade_date': '2026-11-16', 'asof': '2026-11-16T09:26:00+08:00', 'rows': rows},
+                                    plate_members=[], yesterday_pool=pool)
+    assert round(result['overview']['market_mean_pct'], 5) == -0.47981
+    stocks = [stock for layer in result['yesterday_ladder'] for bucket in layer['buckets'] for stock in bucket['stocks']]
+    assert next(stock for stock in stocks if stock['symbol'] == '605255')['valid_price'] is False
+    assert next(stock for stock in stocks if stock['symbol'] == '001358')['valid_price'] is True

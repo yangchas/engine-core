@@ -1,0 +1,185 @@
+# DATA: spec (commands observed in the 2026-11-07 PM session)
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+from examples.pm_guard import decide
+
+ROOT = Path(__file__).resolve().parents[1]
+SAMPLES = json.loads((ROOT / 'tests/fixtures/pm_guard_samples.json').read_text())
+
+
+def cases(kind):
+    tool = 'Bash' if kind.startswith('bash') else 'Write'
+    key = 'command' if tool == 'Bash' else 'file_path'
+    return [(tool, {key: value}) for value in SAMPLES[kind]]
+
+
+def test_allow_samples():
+    for tool, data in cases('bash_allow') + cases('file_allow'):
+        assert decide(tool, data, False)[0], data
+
+
+def test_deny_samples():
+    for tool, data in cases('bash_deny') + cases('file_deny'):
+        allowed, reason = decide(tool, data, False)
+        assert not allowed and reason, data
+
+
+def test_sed_and_assignment_boundaries():
+    for command in ('sed -n 1p x', "sed -n '1,$p' x", "sed -n '/word/p' x",
+                    'X=1; date +%H:%M:%S',
+                    'python3 /home/exedev/repos/engine_core/examples/pm.py wait --ledger-event x'):
+        assert decide('Bash', {'command': command}, False)[0], command
+    for command in ("sed -n '1p;1w /tmp/x' x", "sed -n '1e touch /tmp/x' x",
+                    'sed -n 1p --in-place x', 'TD_CONFIG=x; date', 'REDIS_URL=x; date',
+                    'PY=x; $PY examples/run_function.py', 'X=1 > /tmp/x'):
+        allowed, reason = decide('Bash', {'command': command}, False)
+        assert not allowed and reason, command
+
+
+def test_permit():
+    for tool, data in cases('bash_deny') + cases('file_deny'):
+        assert decide(tool, data, True)[0]
+        assert not decide(tool, data, False)[0]
+
+
+def test_main(tmp_path):
+    env = dict(os.environ, PM_GUARD_LOG=str(tmp_path / 'guard.log'),
+               PM_GUARD_PERMIT=str(tmp_path / 'missing'))
+    for kind, expected in [('bash_deny', 2), ('bash_allow', 0)]:
+        tool, data = cases(kind)[0]
+        result = subprocess.run([sys.executable, str(ROOT / 'examples/pm_guard.py')],
+                                input=json.dumps({'tool_name': tool, 'tool_input': data}),
+                                text=True, capture_output=True, env=env)
+        assert result.returncode == expected
+        if expected == 2:
+            assert 'pm' in result.stderr
+    lines = (tmp_path / 'guard.log').read_text().splitlines()
+    assert len(lines) == 1 and '\tDENY\t' in lines[0]
+
+
+def test_real_denied_november():
+    samples = SAMPLES['real_denied_2026_11']
+    for sample in samples['real_should_allow']:
+        if sample['feature'] in ('loop', 'subst', 'sed'):
+            command = sample['command']
+            assert decide('Bash', {'command': command}, False)[0], command
+    for command in samples['real_should_deny']:
+        assert not decide('Bash', {'command': command}, False)[0], command
+
+
+def test_wait_until_validation(capsys, monkeypatch):
+    import pytest
+    from examples import pm
+    with pytest.raises(SystemExit):
+        pm.main(['wait-until', '25:99'])
+    with pytest.raises(SystemExit):
+        pm.main(['wait-until', 'invalid'])
+    assert 'HH:MM' in capsys.readouterr().err
+    from datetime import datetime
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 13, 10, 0, tzinfo=tz)
+    monkeypatch.setattr(pm, 'datetime', FixedDateTime)
+    with pytest.raises(SystemExit):
+        pm.main(['wait-until', '11:01'])
+    assert '60' in capsys.readouterr().err
+
+
+def test_sed_multiple_prints():
+    samples = SAMPLES['real_denied_2026_11']['real_should_allow']
+    command = next(c["command"] for c in samples if "955,1046p;1106,1130p" in c["command"])
+    assert decide('Bash', {'command': command}, False)[0]
+    for command in ("sed -n '1p;1w /tmp/x' x", "sed -n '1p;1e id' x", 'sed -i 1p x'):
+        assert not decide('Bash', {'command': command}, False)[0]
+
+
+def test_loop_and_substitution_boundaries():
+    allowed = ("for i in a b; do echo $i; done",
+               "for i in a\ndo\nfor j in b; do echo $j; done\ndone",
+               "echo $(date +%H:%M)", "echo `date +%T`")
+    denied = ("for i in 1; do rm x; done", "for i in $(ls); do echo $i; done",
+              "while true; do echo; done", "until true; do echo; done",
+              "echo $(rm x)", "echo `rm x`", "$(echo ls) /tmp",
+              "echo $(echo $(echo x))", "for i in a; do echo x > /etc/y; done",
+              'for i in a; do python3 -c "print(1)"; done',
+              "find . $(echo -delete)", "echo x > $(echo /dev/null)")
+    for command in allowed:
+        assert decide('Bash', {'command': command}, False)[0], command
+    for command in denied:
+        assert not decide('Bash', {'command': command}, False)[0], command
+
+
+def test_c1046_real_samples():
+    samples = SAMPLES['real_denied_2026_11']['real_should_allow']
+    commands = [s['command'] for s in samples if s['feature'] == 'tool']
+    assert len(commands) == 4
+    for command in commands:
+        assert decide('Bash', {'command': command}, False)[0], command
+
+
+def test_c1046_dangerous_controls():
+    controls = {
+        'ps': ['ps aux', 'ps -ef', 'ps eww', 'ps -eo pid,args', 'ps -eo pid,cmd', 'ps -p 1 -o command', 'ps'],
+        'pgrep': ['pgrep -a x', 'pgrep -l x', 'pgrep -f x'],
+        'read_sensitive_path': ['cat secrets/x', 'cat /proc/*/environ', 'cat /proc/1/environ', 'cat /proc/self/cmdline', 'cat /home/exedev/core-data/secrets/wencai.cookie', 'head ~/.ssh/id_rsa', 'grep x /etc/shadow', 'jq . ~/core-data/secrets/x', 'sha256sum /home/exedev/core-data/secrets/wencai.cookie'],
+        'jq': ['jq -f x.jq y.json', "jq 'include \"x\";' x.json"],
+        'awk': ["awk '{print \"-f\"}' x", "awk 'BEGIN{system(\"rm x\")}' f", "awk '{print > \"/tmp/x\"}' f"],
+        'printf': ['printf -v x y'], 'which': ['which -a'],
+        'checksum': ['sha256sum -c SHA256SUMS'], 'hostname': ['hostname -F x'],
+    }
+    for category, commands in controls.items():
+        for command in commands:
+            allowed, reason = decide('Bash', {'command': command}, False)
+            assert not allowed and reason.startswith(category + ':'), (command, reason)
+
+
+def test_c1046_allowed_tool_boundaries():
+    commands = ['ps -p 1,2 -o pid,rss,comm', 'ps -o pid,etime -p 1', 'ps -eo pid,rss --sort=-rss | head -3', 'pgrep -x codex', 'pgrep -c -x codex', 'pgrep codex', 'free -m', 'which python3', 'sha256sum file', 'md5sum file', 'df -h', 'du -h .', 'nproc', 'uname -a', 'uptime', 'hostname', 'whoami', 'id', 'basename /tmp/x', 'dirname /tmp/x', 'realpath /tmp/x', 'readlink /tmp/x', 'paste x y', "printf '%s' x", "jq '.foo' x.json", "awk '{print $1}' x"]
+    for command in commands:
+        assert decide('Bash', {'command': command}, False)[0], command
+
+
+def test_c1049_dangerous_commands(monkeypatch):
+    commands = {
+        "jq -n 'env'": 'jq: unsafe program',
+        "jq -n '$ENV'": 'jq: unsafe program',
+        "jq -n 'input_filename'": 'jq: unsafe program',
+        'cat ~/core-data/sec*/w*': 'read_sensitive_path',
+        'cat ~/core-data/sec?ets/*': 'read_sensitive_path',
+        'head -c 10 ~/core-data/secrets/*': 'read_sensitive_path',
+        'echo $REDIS_URL': 'read_secret_env',
+        'echo "${TD_CONFIG}"': 'read_secret_env',
+        "printf '%s' $ANTHROPIC_API_KEY": 'read_secret_env',
+        'cat $HOME/.ssh/id_rsa': 'read_sensitive_path',
+    }
+    failures = []
+    for command, expected in commands.items():
+        allowed, reason = decide('Bash', {'command': command}, False)
+        if allowed or expected not in reason:
+            failures.append((command, allowed, reason))
+    assert not failures, failures
+    for program in ('$__prog_args', '$__loc__', 'halt_error', 'debug', 'stderr',
+                    'input', 'inputs', 'getpath(["ENV"])', '@sh', 'include "x"', 'import "x" as x'):
+        assert decide('Bash', {'command': "jq -n '" + program + "'"}, False) == (False, 'jq: unsafe program')
+    for name in ('MY_TOKEN', 'MY_SECRET', 'PASSWORD', 'PASSWD', 'APIKEY', 'API_KEY',
+                 'COOKIE', 'OPENAI_X', 'AWS_X', 'GITHUB_X', 'GH_X'):
+        assert decide('Bash', {'command': 'echo $' + name}, False) == (False, 'read_secret_env')
+    monkeypatch.setattr('examples.pm_guard.glob.iglob', lambda path: iter('/safe/' + str(i) for i in range(501)))
+    assert not decide('Bash', {'command': 'cat /safe/*'}, False)[0]
+
+
+def test_c1049_safe_commands():
+    commands = ['ls ~/fw/cards/C10*', 'cat ~/fw/evidence/C1049/*.out',
+                "jq -r '.a' x.json", 'jq -c . x.json', 'echo $HOME',
+                'echo $CLAUDE_JOB_DIR', 'for f in a b; do echo $f; done',
+                'env -u TD_CONFIG -u REDIS_URL python3 -m pytest -q x',
+                "jq --arg a b '.x'", "jq -r '.[] | .x'"]
+    failures = [(command, decide('Bash', {'command': command}, False))
+                for command in commands
+                if not decide('Bash', {'command': command}, False)[0]]
+    assert not failures, failures

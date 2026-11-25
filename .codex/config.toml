@@ -1,0 +1,40 @@
+# Project-local Codex configuration for engine_core.
+# ECC is installed as the native `ecc@ecc` plugin; this file intentionally
+# contains no MCP, notification, provider, profile, or credential settings.
+
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+web_search = "cached"
+
+[features]
+multi_agent = true
+
+[sandbox_workspace_write]
+# Network access stays disabled by default. A future replay task must request
+# any narrowly scoped network access explicitly and separately.
+network_access = false
+writable_roots = ["/home/exedev/validation"]
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 4
+
+[agents.planner]
+description = "Read-only planner that shapes one bounded, evidence-producing work item."
+config_file = "agents/planner.toml"
+
+[agents.replay-investigator]
+description = "Bounded replay investigator for read-only historical evidence and determinism checks."
+config_file = "agents/replay-investigator.toml"
+
+[agents.implementer]
+description = "Small-scope implementer for explicitly authorized adapters, fixtures, and tests."
+config_file = "agents/implementer.toml"
+
+[agents.tester]
+description = "Verification agent for tests, compile checks, replay determinism, and regression evidence."
+config_file = "agents/tester.toml"
+
+[agents.auditor]
+description = "Read-only safety and semantic auditor for diffs, provenance, and merge gates."
+config_file = "agents/auditor.toml"

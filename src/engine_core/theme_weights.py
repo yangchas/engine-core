@@ -1,8 +1,9 @@
-"""Pure extraction of the legacy snapshot-to-theme weight contract.
+"""Pure data shaping for snapshot-to-theme candidate contributions.
 
-The deployed ``engine_next`` auction consumer derives at most two theme
-contributions from a stock snapshot.  This module keeps that data-shaping
-behavior separate from theme aggregation and strategy labels:
+This module keeps candidate shaping separate from theme aggregation and
+strategy labels. Bounded comparisons to legacy behavior are recorded in
+``docs/evidence/legacy_theme_weights_wheel_20260918.md``; this module is not a
+production runtime dependency:
 
 * the first token of ``plate`` is the primary candidate;
 * ``real_plate_names`` contributes additional candidates in order;

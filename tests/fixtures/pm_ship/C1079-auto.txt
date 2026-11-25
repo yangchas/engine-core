@@ -1,0 +1,10 @@
+# AUTO C1079 2026-11-14 02:17:36
+verdict: 
+police: changed files: 0 validation files written (check they are NEW dirs only): /home/exedev/validation/operator-runs/taos-log  POLICE OK 
+HEAD: 5bd9314 C1079: stabilize staff dispatch history test
+ examples/pm.py                                     |  4 +++-
+ tests/fixtures/pm_staff/git_log_PROVENANCE.json    |  8 +++++++
+ tests/fixtures/pm_staff/git_log_c1058_to_c1061.txt |  4 ++++
+ tests/test_pm.py                                   | 25 ++++++++++++++++++++++
+ 4 files changed, 40 insertions(+), 1 deletion(-)
+AUTO-RESULT: GREEN → /home/exedev/fw/evidence/C1079/AUTO.md

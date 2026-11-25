@@ -1,0 +1,14 @@
+{
+  "source": "baostock.query_all_stock",
+  "query": {
+    "day": "2026-10-16"
+  },
+  "fields": [
+    "code",
+    "tradeStatus",
+    "code_name"
+  ],
+  "retrieved_at": "2026-10-19T23:30:45.471624+08:00",
+  "sha256": "04417f4c0a8c686deabda79ab5dffa5b4abed5d2b805f78f84ca86bf35759281",
+  "rows": 6000
+}

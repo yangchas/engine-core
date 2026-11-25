@@ -1,5 +1,15 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-24 TD/Rabbit 同形 3 秒回放与竞价盘口计划入口
+
+- 后续“单片 TD → Rabbit 同形输入 → t1-v2 Q2 → 09:25:06 冻结”的**阶段实施计划**以 `docs/work/plans/TD_RABBIT_GLOBAL_3S_REPLAY.md` 为唯一细化入口；本文件下方历史阶段记录继续保留，不表示新计划已执行。该计划根据 2026-09-18/09-23 真实 TD 只读核对，增加五档形态打擂、单边涨跌停例外、空窗时钟与隔离 Redis 边界，并将 t1-v2 源冻结目标修订为 09:25:06 时钟触发而非等待全市场到齐；旧宽限文字是历史方案，尚未改变生产部署。每阶段审计对齐后才决定下一阶段。TASK-008 和 M3-1 当前状态不因新增计划自动改变。
+
+### 2026-09-25 回放开发可用性对齐
+
+- 回放目标是足以反映实盘计算路径并支持功能演化，不要求先取得完美的历史 Redis/`available_at` 镜像。真实 TD 经 t1-v2 生成 Q2、写入隔离 Redis/Q2Frame，再由 Core 消费的可重复链路，可用于其输入字段、单位、来源版本和时间语义已有证据覆盖的功能开发与差异分析；未验证字段不能据此宣称 parity/策略正确，`MISSING`、`STALE`、`PARTIAL` 继续作为数据质量事实保留。
+- 历史 `available_at`、Rabbit delivery/arrival 和墙钟冻结证据只限制对具体实时可见性和 NORMAL/上线等价性的结论，不作为一般 replay-led 开发的总门禁。
+- 当前已有 2026-09-24 真实 TD→t1-v2→隔离 Redis→Core 09:32 回放和重复运行证据，故 `REPLAY_FOR_DEVELOPMENT=USABLE_WITH_LIMITS`；`TASK-008/NORMAL_OPENING_ACCEPTANCE` 仍为 `PARTIAL/UNPROVEN`。细则见 `docs/work/plans/TASK-008-opening-validation.md`、`docs/work/plans/TD_RABBIT_GLOBAL_3S_REPLAY.md` 和 `docs/work/handoffs/TASK-008-REPLAY-DEV-USABILITY-ALIGNMENT-20260925.md`。
+
 ### 2026-09-19 时间准入合同修正（数据就绪优先）
 
 - `09:25:00` 仍是业务锚点，`09:25:06` 只表示最早进行 0925 最终状态检查的
@@ -755,3 +765,11 @@ python examples/run_real_f10_inventory.py --csv C:\data\f10.csv --provenance C:\
 - 随后执行控制面全量 trusted-invariant 检查：10 个 M2 task 均 `ok=true`、`violations=[]`；并行触发两个 scheduler projection 时一个实例被 `SCHEDULER_ALREADY_RUNNING` 拒绝，单写者 OS lock 仍生效。writer task 的下一动作仍是“使用新 run identity 的 Cobra read-only shadow”，但当前 release 未部署 candidate，不能生成伪造 shadow evidence。
 - M2 热板缓存已补一条 Cobra 只读证据：`cache:hot_plates:2026-09-10` 为 hash，`HLEN/HSCAN=50`，50 行 JSON、日期全匹配、source=`kaipan`，canonical payload SHA-256 为 `b9f84a419a3d97acc36b3ea0907bfff66bcccfbb80ba980d85f0dffcc58352bc`；meta 为 `postmarket/today_mode=true`，更新时间 `2026-09-10 17:40:06`。结构与日期 PASS，但 meta 仍缺 `schema_version/available_at_ms/field_units`，故 hot-plates core acceptance 继续 BLOCKED，详见 `docs/evidence/m2_hot_plates_real_20260911.md`。
 - hot-plates core runner 已在 Cobra formal runtime 的共享 venv 中执行：validation 副本只读读取真实 hash，core 输出 `UNAVAILABLE`、`actual_trade_date=2026-09-10`、`available_at_ms=null`、`missing_fields=["available_at_unknown"]`，content hash `31d3ea73c4fb22c4ff671fb4a08302c478dc98d4dd40713ebbfb89ed26459137`；runner artifact `/home/exedev/validation/cc-m2-hot-plates-20260911/hot-plates-result.json` SHA-256 为 `121d5e98d58036856ff05aafd06764207d4d04ec4fdca64f2825c1374fd4b336`。这闭环了真实 consumer fail-closed 行为，但不构成 acceptance；只同步 validation 目录，未改 Cobra current/release 或 Redis。
+
+### 2026-09-20 鲁棒全市场横截面回放与竞价恢复合同
+
+- Core 的盘中回放合同为单交易日、单 `DeterministicEngine`、3 秒半开时间切片的全市场横截面；固定 `09:15:00–09:40:00` 产生 500 个 frame，frame 结束边界作为 `logical_ts_ms`。空 frame 保留为事实，不跳过时间线；事件只按 `event_time_ms → symbol → content_hash` 排序，`source_sequence_status`、Rabbit arrival order 和历史 `available_at` 均保持 `UNKNOWN`。
+- `MarketFrameV1`、`FrameManifestV1`、`CrossSectionStateV1` 和 `CrossSectionReplaySource` 只接受已读取的行，不连接 Redis/TD/Rabbit。每个 frame 仅提交一个 `MARKET_UPDATE`，状态保留所有已知 symbol 的观测，但 coverage/completeness 使用当前 frame 的有效观测分母；不建立每个 symbol 的完整 Engine session。
+- `AuctionTimingPolicyV1` 采用自适应宽限：0920 从 `09:20:03`、0924 从 `09:24:10` 可观察；0925 在 `09:25:06` 首检、`09:25:10` 优先定稿、`09:25:30` 软截止。软截止不是停机点，迟到输入生成新 `AuctionAnchorRevisionV3`，旧 revision 保留且相同锚点值/质量 hash 幂等。V3 分别记录 source-row coverage 与锚点字段 coverage：存在 symbol 行不等于 `a20/a24/a25` 锚点可用；普通 Q2 行情字段变化只推进 observation evidence，不制造竞价锚点 revision；Q2 字段合同明确锚点价格为零时 unavailable。0920/0924 缺失只降低可选事实质量；只有 0925 部分/缺失才生成恢复计划，任何部分质量都不停止后续 Engine 时间线。
+- 0920/0924 对 0925 是可选事实，缺失只令相邻 delta 为 `UNKNOWN`；0925 可独立分析。缺少 0925 时先输出 `PARTIAL/FACT_ONLY` 和 `RecoveryPlanV1`，恢复由 engine-next 既有 `IntradayDataHub` owner 异步完成；Core 不调用 Wencai、不写生产 Redis、不把 `PARTIAL` 提升为 `READY`。`RecoveryResultV1` 要求显式 source/observed_at/content hash，`available_at` 未知时不得进入历史 cutoff replay。恢复只填充缺失 symbol/field，不覆盖原始 0925；owner 返回的稀疏 cohort 可由 Core 使用该 plan 的已观察 primary cohort 补齐，并记录 anomaly。
+- 统计事实始终输出 `expected_count`、`observed_count`、`missing_count`、coverage 和字段有效分母；`Missing != Zero`，TopN 保持 `TOP_N` 语义，不宣称全市场覆盖。M3-1 生产门禁仍为 `M3_1_NORMAL=BLOCKED`、`TD_WRITE_HEALTH=UNPROVEN`，本合同不放宽生产健康条件。

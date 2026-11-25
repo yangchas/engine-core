@@ -1,0 +1,36 @@
+{
+  "schema": "Q2FrameSourceTimeLineageGoldenV1",
+  "trade_date": "2026-09-29",
+  "source": {
+    "kind": "captured_real_t1_v2_q2frame_update",
+    "q2frame_path": "/home/exedev/validation/task008-opening-q2frame-20260929-20260930T004859+0800/deployed_release_q2frame_to_0932.jsonl",
+    "q2frame_sha256": "5a2afae406e5a66ea63bb04c10e071de308dbb4bd608e8d4d7a774ea6e9f6bb9",
+    "line_no": 604,
+    "original_seq_no": 604,
+    "source_binary_sha256": "363685f830c62aa3a2a8321eb93f91c5c7babccbd74c5e67b1e5b4c2dad1ab56",
+    "frame_logical_ts_ms": 1790645400000,
+    "q2_update_sha256": "1023aa5e50b4c3f488ab035b614d05c1c2c6d4b5fc6ca63f68e289a8053f8721",
+    "adapter_test_note": "The captured update is unchanged. The one-frame test assigns seq_no=1 because Q2FrameReplaySource validates a session-local sequence beginning at one; original_seq_no records the source frame identity."
+  },
+  "q2_update": {
+    "symbol": "000016",
+    "px": 2460,
+    "pc": 2460,
+    "amt": 0,
+    "vol": 0,
+    "iv": 0,
+    "ia": 0,
+    "ln": 0,
+    "ts": 1790644500000,
+    "ph": 2,
+    "ls": 0,
+    "mx": 2460,
+    "mn": 2460,
+    "spd1m": 0,
+    "amt2m": 0,
+    "amt5m": 0,
+    "vec3m": 0,
+    "vec5m": 0,
+    "mk": "sz"
+  }
+}

@@ -1,9 +1,10 @@
 """Deterministic minute-window metrics for normalized market observations.
 
-This module is a small, stateful wheel extracted from the legacy
-``TickWindowTracker`` behavior.  It deliberately requires an epoch source
-timestamp and an explicit integer unit contract; it never falls back to the
-machine clock, strips qualified symbols, or applies strategy thresholds.
+This is an independent, stateful Core wheel for minute-window metrics. It
+deliberately requires an epoch source timestamp and an explicit integer unit
+contract; it never falls back to the machine clock, strips qualified symbols,
+or applies strategy thresholds. Any legacy comparison is limited to the
+specific dated evidence that records it.
 """
 
 from __future__ import annotations
@@ -60,8 +61,8 @@ class MinuteObservation:
     ``amount_yuan`` belongs to the latest source-time observation in the
     minute. ``reference_amount_yuan`` is the greatest cumulative amount seen
     in that minute and is used only when a later minute looks back.  This
-    mirrors the production minute-ring contract without pretending a counter
-    decrease never happened on the latest observation.
+    preserves the distinction between the latest source-time amount and the
+    greatest cumulative amount observed in the minute.
     """
 
     trade_date: str

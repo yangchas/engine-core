@@ -1,0 +1,632 @@
+import json
+from pathlib import Path
+
+def _seed_c325(root):
+    fixture = Path(__file__).parent / "fixtures" / "trade_calendar"
+    payload = json.loads((fixture / "baostock-2026-01-01_2026-12-31.json").read_bytes())
+    dates = [row["calendar_date"] for row in payload["rows"] if row["is_trading_day"] == "1"]
+    raw = {path.name: path.read_bytes() for path in fixture.glob("*.json")}
+    from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
+    TradeCalendarStore(root).publish_confirmed(dates, source="C325 BaoStock+SZSE",
+        fetched_at="2026-10-20T00:00:00+00:00", coverage_start="2026-01-01",
+        coverage_end="2026-12-31", raw_responses=raw)
+
+from engine_core.prep_trade_day import build_prep_report, previous_trade_date
+from examples.core_guardian import HANDLER_IMPLEMENTATIONS
+from examples.run_data_jobs import _plate_codes
+from engine_core.data_pipeline.storage import ArtifactCatalog
+
+
+# DATA: spec (prep report shape per prep_trade_day / core_guardian._prep_failure)
+def test_prep_configured_step_error_degrades(tmp_path, monkeypatch):
+    from datetime import datetime
+    from types import SimpleNamespace
+    from examples import core_guardian
+
+    report = {"status": "PARTIAL", "errors": ["plate_amount_baseline:TD_RESOURCE_EXHAUSTED"],
+              "error_steps": [{"step": "plate_amount_baseline", "code": "TD_RESOURCE_EXHAUSTED"}],
+              "steps": [{"step": "plate_amount_baseline", "status": "MISSING"}],
+              "warnings": ["baseline unavailable"]}
+    monkeypatch.setattr(core_guardian.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=json.dumps(report), stderr=""))
+    handler = core_guardian._command_handler("premarket_data", SimpleNamespace(write=True), tmp_path)
+    event = SimpleNamespace(data_date_offset=0, timeout_seconds=10,
+                            args={"prep_degradable_steps": ["plate_amount_baseline"]})
+    result = handler(event, datetime.fromisoformat("2026-10-19T08:50:00+08:00"), {}, False)
+    assert result.startswith("DEGRADED:prep_degraded_steps:plate_amount_baseline=TD_RESOURCE_EXHAUSTED")
+    assert "baseline unavailable" in result
+    report["errors"] = []
+    report["error_steps"] = []
+    assert handler(event, datetime.fromisoformat("2026-10-19T08:50:00+08:00"), {}, False).startswith(
+        "DEGRADED:prep_degraded_steps:plate_amount_baseline=?")
+
+
+# DATA: spec (prep report shape per prep_trade_day / core_guardian._prep_failure)
+def test_prep_unconfigured_and_blocking_errors_still_fail(tmp_path, monkeypatch):
+    from datetime import datetime
+    from types import SimpleNamespace
+    import pytest
+    from examples import core_guardian
+
+    report = {"status": "PARTIAL", "errors": ["plate_amount_baseline:TD_RESOURCE_EXHAUSTED"],
+              "error_steps": [{"step": "plate_amount_baseline", "code": "TD_RESOURCE_EXHAUSTED"}],
+              "steps": [{"step": "plate_amount_baseline", "status": "MISSING"}]}
+    monkeypatch.setattr(core_guardian.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=json.dumps(report), stderr=""))
+    handler = core_guardian._command_handler("premarket_data", SimpleNamespace(write=True), tmp_path)
+    event = SimpleNamespace(data_date_offset=0, timeout_seconds=10, args={})
+    now = datetime.fromisoformat("2026-10-19T08:50:00+08:00")
+    with pytest.raises(Exception, match="plate_amount_baseline"):
+        handler(event, now, {}, False)
+    event.args = {"prep_degradable_steps": "plate_amount_baseline"}
+    with pytest.raises(Exception, match="plate_amount_baseline"):
+        handler(event, now, {}, False)
+    report["errors"].append("theme_snapshot:COMMAND_FAILED")
+    report["error_steps"].append({"step": "theme_snapshot", "code": "COMMAND_FAILED"})
+    event.args = {"prep_degradable_steps": ["plate_amount_baseline"]}
+    with pytest.raises(Exception) as exc:
+        handler(event, now, {}, False)
+    assert "theme_snapshot" in str(exc.value)
+    assert "plate_amount_baseline" not in str(exc.value)
+    report.pop("error_steps")
+    report["error_codes"] = ["TD_RESOURCE_EXHAUSTED", "COMMAND_FAILED"]
+    with pytest.raises(Exception) as exc:
+        handler(event, now, {}, False)
+    assert "theme_snapshot=COMMAND_FAILED" in str(exc.value)
+    assert "plate_amount_baseline" not in str(exc.value)
+
+
+def test_all_guardian_handlers_have_explicit_core_mapping_or_not_implemented():
+    expected = {
+        "night_report", "premarket_data", "kaipan_fetch", "auction_watch",
+        "kaipan_hot_capture", "snapshot_check", "auction_report", "open_report",
+        "intraday_data", "postmarket_data", "baostock_probe", "close_capture", "close_report",
+        "calendar_refresh", "daily_kline_backfill",
+    }
+    assert set(HANDLER_IMPLEMENTATIONS) == expected
+    assert all(value and value != "" for value in HANDLER_IMPLEMENTATIONS.values())
+    assert "NOT_IMPLEMENTED" in HANDLER_IMPLEMENTATIONS.values()
+    assert HANDLER_IMPLEMENTATIONS["premarket_data"] == "examples/prep_trade_day.py:premarket_and_auction_baseline"
+
+
+def test_previous_trade_date_uses_calendar_and_never_guesses_from_supplied_dates(tmp_path):
+    _seed_c325(tmp_path)
+    assert previous_trade_date(tmp_path, "2026-10-19") == "2026-10-16"
+    (tmp_path / "trade_dates.json").unlink()
+    assert previous_trade_date(tmp_path, "2027-01-04", known_trade_dates=["2026-10-15", "2026-10-16"]) is None
+
+
+def test_dry_run_reports_missing_without_mutating_artifact_root(tmp_path):
+    report = build_prep_report(tmp_path, "2026-10-19", write=False)
+    assert report["mode"] == "DRY_RUN"
+    assert next(item for item in report["steps"] if item["step"] == "hot_rank")["status"] == "UNKNOWN"
+    assert {item["status"] for item in report["steps"] if item["step"] != "hot_rank"} <= {
+        "READY", "PARTIAL", "MISSING", "SKIPPED_REASON"
+    }
+    assert not (tmp_path / "catalog.json").exists()
+    assert all(item["elapsed_ms"] >= 0 for item in report["steps"])
+
+
+def test_kaipan_adapter_reads_plate_registry_from_core_catalog(tmp_path):
+    catalog = ArtifactCatalog(tmp_path)
+    catalog.commit("plate_registry", "2026-10-16",
+                   [{"plate_code": "880001"}, {"plate_code": "880002"}],
+                   {"trade_date": "2026-10-16", "row_count": 2}, source="fixture")
+    assert _plate_codes(str(tmp_path), "2026-10-19") == ["880001", "880002"]
+
+
+def test_prep_baseline_target_is_report_day(tmp_path, monkeypatch):
+    import engine_core.prep_trade_day as prep
+
+    _seed_c325(tmp_path)
+    calls = []
+    def fake_run(_repo, script, args):
+        calls.append((script, list(args)))
+        return 1, "fixture_missing"
+    monkeypatch.setattr(prep, "_run", fake_run)
+    report = prep.build_prep_report(tmp_path, "2026-10-19", write=True,
+                                    asof="2026-10-19T08:00:00+08:00")
+    baseline_calls = [(script, args) for script, args in calls if script == "build_auction_baseline.py"]
+    universe_calls = [(script, args) for script, args in calls if script == "run_data_jobs.py"
+                      and args[:2] == ["--job", "symbol_universe"]]
+    assert len(universe_calls) == 1
+    assert "--execute" in universe_calls[0][1]
+    assert len(baseline_calls) == 1
+    assert baseline_calls[0][1][baseline_calls[0][1].index("--date") + 1] == "2026-10-19"
+    baseline_step = next(step for step in report["steps"] if step["step"] == "auction_baseline")
+    assert baseline_step["trade_date"] == "2026-10-19"
+
+
+def test_prep_baseline_satisfied_contract_and_failure_boundary(tmp_path, monkeypatch):
+    import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline import limit_pool_hot_view
+
+    matrix = json.loads((Path(prep.__file__).parent / "guardian/contract_matrix.json").read_text())
+    rows = {row["id"]: row for row in matrix["rows"]}
+    monkeypatch.delenv("CORE_REDIS_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setattr(prep, "previous_trade_date", lambda *a: "2026-11-23")
+    monkeypatch.setattr(prep, "_manifest", lambda *a, **k: {"version": "existing"})
+    monkeypatch.setattr(prep, "_plate_members_snapshot", lambda **k: {"version": "existing"})
+    monkeypatch.setattr(prep, "_read_hot_plates", lambda *a, **k: ([], {}))
+    monkeypatch.setattr(limit_pool_hot_view, "read", lambda *a: ([], {"storage_source": "redis", "status": "READY"}))
+    def ready(name, dataset, day, *a, **k):
+        return {"step": name, "dataset": dataset, "trade_date": day, "status": "READY", "version": "existing"}
+    monkeypatch.setattr(prep, "_step", ready)
+    monkeypatch.setattr(prep, "_latest_step", ready)
+    monkeypatch.setattr(prep, "_prepare_theme_snapshot_cache", lambda *a, **k: True)
+    for row_id, failed in (("satisfied_20", False), ("noop_20_without_code", True),
+                           ("stock_cap_fetch_retryable_75", True)):
+        row = rows[row_id]
+        def run(_repo, script, _args):
+            return (row["exit"], json.dumps(row["reply"])) if script == "build_plate_amount_baseline.py" else (0, "")
+        monkeypatch.setattr(prep, "_run", run)
+        report = prep.build_prep_report(tmp_path, "2026-11-24", write=True,
+                                        asof="2026-11-24T08:30:00+08:00")
+        assert bool(report["errors"]) is failed
+        assert bool(report["error_steps"]) is failed
+        if failed:
+            assert report["errors"][0].startswith("plate_amount_baseline:COMMAND_FAILED:")
+            assert report["error_steps"][0]["step"] == "plate_amount_baseline"
+
+
+def test_prep_does_not_mark_future_artifact_ready(tmp_path):
+    _seed_c325(tmp_path)
+    catalog = ArtifactCatalog(tmp_path)
+    catalog.commit("daily_kline", "2026-10-16", [{"symbol": "600001"}], {
+        "trade_date": "2026-10-16", "row_count": 1,
+        "available_at": "2026-10-20T00:00:00+08:00",
+    }, source="fixture")
+    report = build_prep_report(tmp_path, "2026-10-19", write=False,
+                               asof="2026-10-19T08:00:00+08:00")
+    step = next(step for step in report["steps"] if step["step"] == "previous_daily_kline")
+    assert step["status"] == "MISSING"
+    assert step["reason"] == "ARTIFACT_NOT_PIT_READY"
+
+    catalog.commit("auction_baseline", "2026-10-19", [{"row_kind": "market_baseline"}], {
+        "schema": "auction_baseline_v3", "trade_date": "2026-10-19", "window_days": 64,
+        "available_at": "2026-10-20T00:00:00+08:00",
+    }, source="fixture")
+    from engine_core.auction_baseline import _existing
+    assert _existing(catalog, "2026-10-19", asof="2026-10-19T08:00:00+08:00") is None
+
+
+def test_premarket_command_preserves_explicit_asof(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from engine_core.guardian.commands import build_handler_command
+    event = SimpleNamespace(args={}, asof="2026-10-19T08:00:00+08:00", event_id="startup_0830")
+    command = build_handler_command("premarket_data", event, SimpleNamespace(write=False),
+                                    tmp_path, "2026-10-19", "python", tmp_path)
+    assert command[command.index("--asof") + 1] == event.asof
+    from examples import core_guardian, guardian_handler
+    captured = []
+    def fake_command_handler(name, opts, root):
+        def run(event, now, context, degraded):
+            captured.append(build_handler_command(name, event, opts, root, "2026-10-19", "python", tmp_path))
+            return "ok"
+        return run
+    monkeypatch.setattr(core_guardian, "_command_handler", fake_command_handler)
+    monkeypatch.setenv("GUARDIAN_DRY_RUN", "1")
+    request = {"event": "startup_0830", "trade_date": "2026-10-19", "asof": event.asof}
+    assert guardian_handler._run_event(request)[0] == 0
+    assert captured[-1][captured[-1].index("--asof") + 1] == event.asof
+    request.pop("asof")
+    assert guardian_handler._run_event(request)[0] == 0
+    assert "--asof" not in captured[-1]
+    event.asof = None
+    assert "--asof" not in build_handler_command("premarket_data", event, SimpleNamespace(write=False),
+                                                  tmp_path, "2026-10-19", "python", tmp_path)
+
+
+def test_prep_timings_and_progress_with_stubbed_jobs(tmp_path, monkeypatch):
+    import engine_core.prep_trade_day as prep
+    import redis
+    _seed_c325(tmp_path)
+    snapshots = []
+    class Client:
+        def set(self, key, value, ex):
+            snapshots.append((key, json.loads(value), ex))
+    monkeypatch.setenv("CORE_REDIS_URL", "redis://stub")
+    monkeypatch.setattr(redis.Redis, "from_url", lambda *a, **k: Client())
+    monkeypatch.setattr(prep, "_run", lambda *a: (0, '{"reused": false}'))
+    monkeypatch.setattr(prep, "_prepare_theme_snapshot_cache", lambda *a, **k: True)
+    report = prep.build_prep_report(tmp_path, "2026-10-19", write=True,
+                                    asof="2026-10-19T08:00:00+08:00", event_id="startup_0830")
+    records = {item["step"]: item for item in report["step_timings"]}
+    assert {item["step"] for item in report["steps"]} <= records.keys()
+    assert all({"step", "dataset", "trade_date", "status", "check_ms", "filled", "fill_script", "fill_exit", "fill_ms"} <= item.keys() for item in records.values())
+    baseline = records["auction_baseline"]
+    assert (baseline["filled"], baseline["fill_script"], baseline["fill_exit"], baseline["reused_prior_version"]) == (True, "build_auction_baseline.py", 0, False)
+    assert any(p["phase"] == "filling" and p["current_step"] == "auction_baseline" for _, p, _ in snapshots)
+    assert snapshots[-1][1]["step_timings"] == report["step_timings"]
+    assert all(k == report["report_key"] and ttl == 14 * 86400 for k, _, ttl in snapshots)
+
+
+def test_prep_redis_failure_does_not_change_result(tmp_path, monkeypatch):
+    import redis
+    class Broken:
+        def set(self, *args, **kwargs):
+            raise OSError("unavailable")
+    monkeypatch.delenv("CORE_REDIS_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    expected = build_prep_report(tmp_path, "2026-10-19", asof="2026-10-19T08:00:00+08:00")
+    monkeypatch.setenv("CORE_REDIS_URL", "redis://stub")
+    monkeypatch.setattr(redis.Redis, "from_url", lambda *a, **k: Broken())
+    actual = build_prep_report(tmp_path, "2026-10-19", asof="2026-10-19T08:00:00+08:00")
+    for key in ("status", "steps", "errors", "warnings"):
+        if key == "steps":
+            assert [{k: v for k, v in row.items() if k != "elapsed_ms"} for row in actual[key]] == [{k: v for k, v in row.items() if k != "elapsed_ms"} for row in expected[key]]
+        else:
+            assert actual[key] == expected[key]
+
+
+def test_prep_plate_members_rechecks_activated_snapshot(tmp_path, monkeypatch):
+    import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+
+    _seed_c325(tmp_path)
+    snapshot = json.loads((Path(__file__).parent / 'fixtures/real/td/outputs/reference_snapshot_plate_members_latest.json').read_text())['value']
+    state = {'snapshot': None}
+    monkeypatch.setattr(ReferenceSnapshotStore, 'read_latest', lambda self, dataset: state['snapshot'])
+    monkeypatch.setattr(ReferenceSnapshotStore, 'close', lambda self: None)
+    def run(repo, script, args):
+        if script == 'run_data_jobs.py' and args[args.index('--job') + 1] == 'plate_members':
+            state['snapshot'] = snapshot
+        return 0, '{}'
+    monkeypatch.setattr(prep, '_run', run)
+    monkeypatch.setattr(prep, '_prepare_theme_snapshot_cache', lambda *a, **k: True)
+    report = prep.build_prep_report(tmp_path, '2026-11-04', write=True,
+                                    asof='2026-11-04T08:00:00+08:00')
+    member = next(item for item in report['steps'] if item['step'] == 'plate_members')
+    assert member['status'] == 'READY'
+    assert member['version'] == snapshot['version']
+    # Exercise the guardian's critical-missing check with the actual revised step.
+    from datetime import datetime
+    from types import SimpleNamespace
+    from examples import core_guardian
+    isolated = {**report, 'steps': [member], 'errors': [], 'error_steps': []}
+    monkeypatch.setattr(core_guardian.subprocess, 'run', lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=json.dumps(isolated), stderr=''))
+    handler = core_guardian._command_handler('premarket_data', SimpleNamespace(write=True), tmp_path)
+    event = SimpleNamespace(data_date_offset=0, timeout_seconds=10, args={})
+    assert 'PREP_CRITICAL_MISSING' not in handler(
+        event, datetime.fromisoformat('2026-11-04T08:00:00+08:00'), {}, False)
+
+
+def test_prep_plate_members_missing_and_pit(tmp_path, monkeypatch):
+    import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+
+    snapshot = json.loads((Path(__file__).parent / 'fixtures/real/td/outputs/reference_snapshot_plate_members_latest.json').read_text())['value']
+    state = {'snapshot': None}
+    monkeypatch.setattr(ReferenceSnapshotStore, 'read_latest', lambda self, dataset: state['snapshot'])
+    monkeypatch.setattr(ReferenceSnapshotStore, 'close', lambda self: None)
+    def check(asof):
+        return prep._step('plate_members', 'plate_members', '2026-11-03', ArtifactCatalog(tmp_path), asof=asof)
+    assert check('2026-11-04T08:00:00+08:00')['status'] == 'MISSING'
+    state['snapshot'] = snapshot
+    assert check('2026-11-04T00:00:00+08:00')['status'] == 'MISSING'
+    assert check('2026-11-04T08:00:00+08:00')['status'] == 'READY'
+    state['snapshot'] = {**snapshot, 'quality': {'status': 'FAILED'}}
+    assert check('2026-11-04T08:00:00+08:00')['status'] == 'MISSING'
+
+
+def test_prep_theme_uses_existing_active_members_without_refetch(tmp_path, monkeypatch):
+    import gzip
+    import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+    from conftest import use_declared_time_as_test_commit_clock
+
+    _seed_c325(tmp_path)
+    fixture = Path(__file__).parent / 'fixtures/real'
+    snapshot = json.loads((fixture / 'td/outputs/reference_snapshot_plate_members_latest.json').read_text())['value']
+    # The TD recording omits rows; replay separately captured real rows to exercise theme consumption.
+    with gzip.open(fixture / 'core_artifacts/c594/plate_members/2026-10-28/current/rows.jsonl.gz', 'rt') as f:
+        snapshot = {**snapshot, 'rows': [json.loads(next(f)), json.loads(next(f))]}
+    monkeypatch.setattr(ReferenceSnapshotStore, 'read_latest', lambda self, dataset: snapshot)
+    monkeypatch.setattr(ReferenceSnapshotStore, 'close', lambda self: None)
+    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path))
+    day, asof = '2026-11-03', '2026-11-04T08:30:00+08:00'
+    def commit(dataset, rows):
+        catalog.commit(dataset, day, rows, {'trade_date': day, 'available_at': asof}, source='fixture')
+    pool = [json.loads(line) for line in (Path(__file__).parent / 'fixtures/real_limit_up_pool_sample.jsonl').read_text().splitlines()[:2]]
+    with gzip.open(fixture / 'core_artifacts/c594/plate_registry/2026-10-13/current/rows.jsonl.gz', 'rt') as f:
+        registry = [json.loads(line) for line in f]
+    reasons = json.loads((fixture / 'kaipan_ban_reasons_2026-10-29_003021_st200_0538.json').read_text())['List']
+    from engine_core.data_pipeline import limit_pool_hot_view as hot
+    from test_limit_pool_hot_view import RedisSpy
+    real_catalog = ArtifactCatalog(Path.home() / 'core-data')
+    real_path = real_catalog.locate('limit_up_pool', day)
+    real_manifest = json.loads(real_path.read_text())
+    redis = RedisSpy()
+    redis.writes[f'core:view:limit_up_pool:{day}'] = json.dumps(
+        hot.envelope(day, real_catalog.read_rows(real_path), real_manifest))
+    monkeypatch.setattr(hot, '_client', lambda: redis)
+    commit('plate_registry', registry)
+    commit('limit_reasons', reasons)
+    jobs = []
+    def run(repo, script, args):
+        if script == 'run_data_jobs.py':
+            jobs.append(args[args.index('--job') + 1])
+        return 0, '{}'
+    monkeypatch.setattr(prep, '_run', run)
+    report = prep.build_prep_report(tmp_path, '2026-11-04', write=True, asof=asof,
+                                    theme_wait_seconds=0.001, theme_poll_seconds=0.001, sleep=lambda _: None)
+    member = next(item for item in report['steps'] if item['step'] == 'plate_members')
+    assert member['status'] == 'READY'
+    assert 'plate_members' not in jobs
+    assert member['version'] == snapshot['version']
+    assert member['available_at'] == snapshot['available_at']
+    assert member['refetched'] is False
+    assert not any('plate_members:' in warning for warning in report['warnings'])
+    node_entry = ArtifactCatalog(tmp_path).read()['datasets']['node__theme_snapshot']['dates']['2026-11-04'][-1]
+    node = json.loads(Path(node_entry['manifest']).read_text())
+    assert node['inputs']['plate_members'] == snapshot['version'] + ':2'
+    from datetime import datetime
+    from types import SimpleNamespace
+    from examples import core_guardian
+    isolated = {**report, 'steps': [member], 'errors': [], 'error_steps': [], 'warnings': [], 'status': 'READY'}
+    monkeypatch.setattr(core_guardian.subprocess, 'run', lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=json.dumps(isolated), stderr=''))
+    handler = core_guardian._command_handler('premarket_data', SimpleNamespace(write=True), tmp_path)
+    reply = handler(SimpleNamespace(data_date_offset=0, timeout_seconds=10, args={}),
+                    datetime.fromisoformat(asof), {}, False)
+    assert json.loads(reply.removeprefix('prep_summary:'))['plate_members'] == {
+        'version': snapshot['version'], 'available_at': snapshot['available_at'], 'refetched': False}
+
+
+def test_prep_successful_members_fill_uses_completion_cutoff(tmp_path, monkeypatch):
+    from datetime import datetime
+    import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+
+    _seed_c325(tmp_path)
+    recorded = json.loads((Path(__file__).parent / 'fixtures/real/td/outputs/reference_snapshot_plate_members_latest.json').read_text())['value']
+    snapshot = {**recorded, 'available_at': '2026-11-04T08:31:39+08:00'}
+    state = {'snapshot': None}
+    class CompletionClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls.fromisoformat('2026-11-04T08:33:35+08:00')
+    monkeypatch.setattr(prep, 'datetime', CompletionClock)
+    monkeypatch.setattr(ReferenceSnapshotStore, 'read_latest', lambda self, dataset: state['snapshot'])
+    monkeypatch.setattr(ReferenceSnapshotStore, 'close', lambda self: None)
+    def run(repo, script, args):
+        if script == 'run_data_jobs.py' and args[args.index('--job') + 1] == 'plate_members':
+            state['snapshot'] = snapshot
+        return 0, '{}'
+    monkeypatch.setattr(prep, '_run', run)
+    monkeypatch.setattr(prep, '_prepare_theme_snapshot_cache', lambda *a, **k: True)
+    report = prep.build_prep_report(tmp_path, '2026-11-04', write=True, asof='2026-11-04T08:30:00+08:00')
+    member = next(item for item in report['steps'] if item['step'] == 'plate_members')
+    assert member['status'] == 'READY'
+    assert member['version'] == snapshot['version']
+    assert member['available_at'] == snapshot['available_at']
+    assert member['refetched'] is True
+    state['snapshot'] = snapshot
+    replay = prep.build_prep_report(tmp_path, '2026-11-04', write=False, asof='2026-11-04T08:30:00+08:00')
+    member = next(item for item in replay['steps'] if item['step'] == 'plate_members')
+    assert member['status'] == 'MISSING'
+    assert member['refetched'] is False
+    state['snapshot'] = None
+    def failed_run(repo, script, args):
+        if script == 'run_data_jobs.py' and args[args.index('--job') + 1] == 'plate_members':
+            state['snapshot'] = snapshot
+            return 1, '{}'
+        return 0, '{}'
+    monkeypatch.setattr(prep, '_run', failed_run)
+    failed = prep.build_prep_report(tmp_path, '2026-11-04', write=True, asof='2026-11-04T08:30:00+08:00')
+    member = next(item for item in failed['steps'] if item['step'] == 'plate_members')
+    assert member['status'] == 'MISSING'
+    assert member['refetched'] is True
+
+
+def test_prep_previous_hot_rank_uses_real_snapshot_and_continues_on_failure(tmp_path, monkeypatch):
+    import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline import cold_archive, hot_rank_view
+    from engine_core.data_pipeline.providers.ths_hot_rank import ThsHotRankProvider
+    from engine_core.storage.two_layer import TwoLayerStore
+    import engine_core.storage.two_layer as two_layer
+
+    _seed_c325(tmp_path)
+    fixture = Path(__file__).parent / 'fixtures/real/ths_hot_rank_2026-10-23_1441.json'
+    provenance = json.loads((fixture.parent / 'PROVENANCE.json').read_text())[fixture.name]
+    import hashlib
+    assert hashlib.sha256(fixture.read_bytes()).hexdigest() == provenance['sha256']
+    rows = ThsHotRankProvider.normalize(json.loads(fixture.read_text()))
+    class Memory:
+        def __init__(self): self.values = {}
+        def get(self, key): return self.values.get(key)
+        def set(self, key, value, **kwargs): self.values[key] = value; return True
+    class Cold:
+        def latest_version(self, dataset, day): return None
+    memory = Memory()
+    monkeypatch.setattr(cold_archive, 'archive', lambda *args: True)
+    monkeypatch.setattr(hot_rank_view, 'hot_view_expire_at', lambda day: 2000000000)
+    hot_rank_view.publish(memory, '2026-10-16', rows,
+                          {'version': 'fixture', 'available_at': '2026-10-16T14:41:00+08:00'})
+    raw = memory.values.pop('core:view:hot_rank:2026-10-16')
+    calls = []
+    monkeypatch.setattr(prep, '_run', lambda repo, script, args: (calls.append((script, list(args))) or
+                        ((1, '') if script == 'capture_wencai_hot_rank.py' else (0, ''))))
+    monkeypatch.setattr(prep, '_prepare_theme_snapshot_cache', lambda *args, **kwargs: True)
+    monkeypatch.delenv('CORE_REDIS_URL', raising=False)
+    monkeypatch.delenv('REDIS_URL', raising=False)
+    class ArchivedCold:
+        def latest_version(self, dataset, day): return 'fixture'
+    class UnavailableCold:
+        def latest_version(self, dataset, day): raise RuntimeError('unavailable')
+    monkeypatch.setattr(cold_archive, 'read_envelope', lambda *args, **kwargs: raw)
+    for state in ('missing', 'present', 'restored', 'unknown', 'corrupt'):
+        calls.clear()
+        memory.values.clear()
+        if state == 'present': memory.values['core:view:hot_rank:2026-10-16'] = raw
+        if state == 'corrupt': memory.values['core:view:hot_rank:2026-10-16'] = '{}'
+        cold = ArchivedCold() if state == 'restored' else UnavailableCold() if state == 'unknown' else Cold()
+        monkeypatch.setattr(two_layer, 'TwoLayerStore', lambda client: TwoLayerStore(memory, cold_store=cold))
+        report = prep.build_prep_report(tmp_path, '2026-10-19', write=True,
+                                        asof='2026-10-19T08:00:00+08:00')
+        captures = [args for script, args in calls if script == 'capture_wencai_hot_rank.py']
+        assert captures == ([['--trade-date', '2026-10-16', '--execute', '--artifact-root', str(tmp_path)]] if state == 'missing' else [])
+        assert any(script == 'build_auction_baseline.py' for script, _ in calls)
+        timing = next(x for x in report['step_timings'] if x['step'] == 'hot_rank_prev')
+        if state == 'missing':
+            assert 'hot_rank_prev:COMMAND_FAILED' in report['errors']
+            assert {'step': 'hot_rank_prev', 'code': None} in report['error_steps']
+            assert timing['fill_exit'] == 1 and timing['fill_script'] == 'capture_wencai_hot_rank.py'
+        if state in ('unknown', 'corrupt'):
+            assert timing['status'] == state.upper() and timing['reason']
+
+
+def test_successful_fill_rechecks_real_c1275_artifact_at_completion(tmp_path, monkeypatch):
+    import engine_core.prep_trade_day as prep
+
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.delenv("CORE_REDIS_URL", raising=False)
+    _seed_c325(tmp_path)
+    fixtures = Path(__file__).parent / "fixtures/real"
+    manifest_path = fixtures / "core_artifacts/c1279/limit_reasons_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    observed = json.loads((fixtures / "c1279/limit_reasons_prep.json").read_text())
+    day, asof = observed["trade_date"], "2026-11-16T08:30:00+08:00"
+    entry = {"version": manifest["version"], "manifest": str(manifest_path)}
+    (tmp_path / "catalog.json").write_text(json.dumps({"datasets": {
+        "limit_reasons": {"dates": {day: [entry]}}}}))
+    catalog = ArtifactCatalog(tmp_path)
+    assert observed["status"] == "MISSING" and observed["fill_exit"] == 0
+    assert prep._step("limit_reasons", "limit_reasons", day, catalog, asof=asof)["status"] == "MISSING"
+    completion = prep._post_fill_cutoff(asof, succeeded=True)
+    assert prep._manifest(catalog, "limit_reasons", day, asof=completion)["version"] == manifest["version"]
+    assert prep._manifest(catalog, "limit_reasons", "2026-11-16", asof=completion) is None
+    wrong_index = {"datasets": {"limit_reasons": {"dates": {"2026-11-16": [entry]}}}}
+    (tmp_path / "catalog.json").write_text(json.dumps(wrong_index))
+    assert prep._manifest(catalog, "limit_reasons", "2026-11-16", asof=completion) is None
+    wrong_index["datasets"]["limit_reasons"]["dates"] = {day: [{**entry, "version": "invalid"}]}
+    (tmp_path / "catalog.json").write_text(json.dumps(wrong_index))
+    assert prep._manifest(catalog, "limit_reasons", day, asof=completion) is None
+    (tmp_path / "catalog.json").write_text(json.dumps({"datasets": {
+        "limit_reasons": {"dates": {day: [entry]}}}}))
+    monkeypatch.setattr(prep, "_prepare_theme_snapshot_cache", lambda *a, **k: True)
+    monkeypatch.setattr(prep, "_plate_members_snapshot", lambda **k: None)
+    for exit_code in (0, 1):
+        monkeypatch.setattr(prep, "_run", lambda _repo, script, args: (exit_code if args[:2] == ["--job", "limit_reasons"] else 1, ""))
+        report = prep.build_prep_report(tmp_path, "2026-11-16", write=True, asof=asof)
+        step = next(s for s in report["steps"] if s["step"] == "limit_reasons")
+        assert step["status"] == ("READY" if exit_code == 0 else "MISSING")
+
+
+def test_hot_plates_redis_then_cold_archive_real_snapshot(tmp_path, monkeypatch):
+    from datetime import datetime
+    from types import SimpleNamespace
+    import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline import cold_archive, hot_plates_gaps
+    from examples import core_guardian
+
+    snapshot = json.loads((Path(__file__).parent / 'fixtures/real/c1324/hot_plates.json').read_bytes())
+    day, asof = '2026-11-16', '2026-11-17T08:31:59+08:00'
+    catalog = ArtifactCatalog(tmp_path)
+    state = {'redis': [snapshot], 'td': True, 'calls': 0}
+    monkeypatch.setattr(hot_plates_gaps, '_snapshot_manifests', lambda root, date: state['redis'])
+    class Store:
+        def latest_version(self, dataset, date):
+            state['calls'] += 1
+            return snapshot['version'] if state['td'] else None
+        def close(self):
+            pass
+    monkeypatch.setattr(cold_archive, 'TdStore', Store)
+    monkeypatch.setattr(cold_archive, 'read_envelope', lambda *a, **k: json.dumps(snapshot).encode())
+    def check():
+        step = prep._step('hot_plates', 'hot_plates', day, catalog, asof=asof)
+        report = {'status': 'PARTIAL', 'steps': [step], 'errors': [], 'error_steps': []}
+        monkeypatch.setattr(core_guardian.subprocess, 'run', lambda *a, **k: SimpleNamespace(
+            returncode=0, stdout=json.dumps(report), stderr=''))
+        handler = core_guardian._command_handler('premarket_data', SimpleNamespace(write=True), tmp_path)
+        event = SimpleNamespace(data_date_offset=0, timeout_seconds=10, args={})
+        try:
+            result = handler(event, datetime.fromisoformat(asof), {}, False)
+        except core_guardian.CoreError as exc:
+            result = str(exc)
+        return step, result
+    step, result = check()
+    assert step['status'] == 'READY' and step['version'] == snapshot['version']
+    assert 'PREP_CRITICAL_MISSING:hot_plates' not in result
+    assert state['calls'] == 0
+    rows, manifest = prep._read_hot_plates(catalog, day, asof=asof)
+    assert len(rows) == 243 and manifest['version'] == snapshot['version']
+    state['redis'] = []
+    step, result = check()
+    assert step['status'] == 'READY' and 'PREP_CRITICAL_MISSING:hot_plates' not in result
+    assert prep._read_hot_plates(catalog, day, asof=asof)[1]['version'] == snapshot['version']
+    state['td'] = False
+    step, result = check()
+    assert step['status'] == 'MISSING' and 'PREP_CRITICAL_MISSING:hot_plates' in result
+    assert prep._read_hot_plates(catalog, day, asof=asof) is None
+
+
+def test_daily_kline_td_authority_without_catalog(tmp_path, monkeypatch):
+    import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline import td_sink
+
+    monkeypatch.setenv('TD_CONFIG', 'configured')
+    monkeypatch.delenv('REDIS_URL', raising=False)
+    monkeypatch.delenv('CORE_REDIS_URL', raising=False)
+    counts = {'value': 5224}
+    class Store:
+        def __init__(self, database):
+            assert database == 'core_data'
+        def day_counts(self, days):
+            return {days[0]: counts['value']}
+        def close(self):
+            pass
+    monkeypatch.setattr(td_sink, 'TaosStore', Store)
+    catalog = ArtifactCatalog(tmp_path)
+    day, asof = '2026-11-03', '2026-11-04T08:30:00+08:00'
+    step = prep._step('previous_daily_kline', 'daily_kline', day, catalog, asof=asof)
+    assert step['status'] == 'READY' and step['storage_source'] == 'tdengine'
+    counts['value'] = 4499
+    assert prep._step('previous_daily_kline', 'daily_kline', day, catalog, asof=asof)['status'] == 'MISSING'
+    counts['value'] = 5224
+    assert prep._step('previous_daily_kline', 'daily_kline', day, catalog, asof=day + 'T10:00:00+08:00')['status'] == 'MISSING'
+    _seed_c325(tmp_path)
+    calls = []
+    monkeypatch.setattr(prep, '_run', lambda repo, script, args: (calls.append((script, args)) or (1, '')))
+    monkeypatch.setattr(prep, '_prepare_theme_snapshot_cache', lambda *a, **kw: True)
+    monkeypatch.setattr(prep, '_plate_members_snapshot', lambda **kw: None)
+    prep.build_prep_report(tmp_path, '2026-11-04', write=True, asof=asof)
+    assert not any(script == 'run_data_jobs.py' and args[:2] == ['--job', 'daily_kline'] for script, args in calls)
+
+
+def test_theme_registry_redis_without_catalog_entry(tmp_path, monkeypatch):
+    import gzip
+    import redis
+    import engine_core.prep_trade_day as prep
+    from engine_core.data_pipeline import plate_stock_index, limit_pool_hot_view
+    from conftest import use_declared_time_as_test_commit_clock
+
+    _seed_c325(tmp_path)
+    fixture = Path(__file__).parent / 'fixtures/real'
+    with gzip.open(fixture / 'core_artifacts/c594/plate_registry/2026-10-13/current/rows.jsonl.gz', 'rt') as f:
+        registry = [json.loads(line) for line in f]
+    reasons = json.loads((fixture / 'kaipan_ban_reasons_2026-10-29_003021_st200_0538.json').read_text())['List']
+    pool = [json.loads(line) for line in (Path(__file__).parent / 'fixtures/real_limit_up_pool_sample.jsonl').read_text().splitlines()[:2]]
+    day, asof = '2026-11-03', '2026-11-04T08:30:00+08:00'
+    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path))
+    catalog.commit('limit_reasons', day, reasons, {'trade_date': day, 'available_at': asof}, source='fixture')
+    monkeypatch.setenv('CORE_REDIS_URL', 'redis://example')
+    client = object()
+    monkeypatch.setattr(redis.Redis, 'from_url', lambda *a, **kw: client)
+    calls = []
+    def read_reference(client_arg, dataset, requested_day, cutoff):
+        calls.append((client_arg, dataset, requested_day, cutoff))
+        return {'rows': [{**row, 'available_at': asof} for row in registry], 'version': 'recorded-registry'} if requested_day == day else None
+    monkeypatch.setattr(plate_stock_index, 'read_reference_view', read_reference)
+    monkeypatch.setattr(limit_pool_hot_view, 'read', lambda *a: (pool, {'status': 'READY', 'version': 'recorded-pool'}))
+    monkeypatch.setattr(prep, '_read_hot_plates', lambda *a, **kw: None)
+    monkeypatch.setattr(prep, '_plate_members_snapshot', lambda **kw: None)
+    diag = []
+    assert prep._prepare_theme_snapshot_cache(catalog, '2026-11-04', day, asof, diagnostics=diag)
+    assert [call[2] for call in calls] == ['2026-11-04', day]
+    assert not any(item.startswith('plate_registry:') for item in diag)
+    node_entry = catalog.read()['datasets']['node__theme_snapshot']['dates']['2026-11-04'][-1]
+    node = json.loads(Path(node_entry['manifest']).read_text())
+    assert node['inputs']['plate_registry'] == f'recorded-registry:{len(registry)}'

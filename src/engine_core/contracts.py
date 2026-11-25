@@ -69,6 +69,8 @@ def deep_freeze(value: T) -> T:
 
     if value is None or isinstance(value, (str, bool, int, float, bytes, datetime, Enum)):
         return value
+    if getattr(value, "__deep_frozen_contract__", False):
+        return value
     if isinstance(value, (set, frozenset)):
         raise TypeError("unordered sets are not allowed in frozen data")
     if isinstance(value, Mapping):
@@ -349,6 +351,7 @@ class DataRequest:
     # Historical/replay remains the fail-closed default. LIVE is an explicit
     # mode for facts obtained at the live adapter boundary.
     temporal_mode: str = "HISTORICAL"
+    allow_unverified_previous_day_availability: bool = False
 
     def __post_init__(self) -> None:
         """Freeze caller-provided request sequences at the contract boundary.

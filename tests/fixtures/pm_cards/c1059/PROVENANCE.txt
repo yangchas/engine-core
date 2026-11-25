@@ -1,0 +1,2 @@
+7f8543afc98f2e719a2607913ff6ea5a64e7bf9c900719c97aeca8c01ff3f378  /home/exedev/fw/cards/C1039.md
+54a65bb854ca2fd6b2105f01b03c0843b410b04839e0db8476ee6aa42bd760be  /home/exedev/fw/reports/C1055.md

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
 
@@ -7,13 +8,18 @@ import pytest
 from engine_core.contracts import DataStatus, PayloadKind
 from engine_core.q2 import (
     FreshnessPolicy,
+    IncrementalQ2Projection,
     Q2_FIELD_CONTRACT,
+    Q2_PROJECTION_CONTRACT_VERSION,
+    Q2Quote,
     RedisQ2ProjectionAdapter,
+    build_q2_projection,
     classify_equity,
     normalize_q2,
     normalize_symbol,
     validate_q2,
 )
+from engine_core.state import MarketStateReducer
 
 
 class FakeRedis:
@@ -36,6 +42,12 @@ def test_q2_contract_keeps_verified_legacy_units_explicit():
     assert specs["amt"].unit == "yuan"
     assert specs["amt"].semantic == "cumulative trading amount"
     assert specs["vol"].unit == "lots"
+    assert specs["iv"].canonical_name == "instant_volume_lots"
+    assert specs["iv"].unit == "lots"
+    assert specs["ia"].canonical_name == "instant_amount_yuan"
+    assert specs["ia"].unit == "yuan"
+    assert specs["ln"].canonical_name == "large_net_yuan"
+    assert specs["ln"].unit == "yuan"
     assert specs["am"].canonical_name == "auction_amount_yuan"
     assert specs["am"].semantic == "current auction matched amount"
     assert specs["br"].unit == "yuan"
@@ -46,6 +58,51 @@ def test_q2_contract_keeps_verified_legacy_units_explicit():
     assert specs["amt5m"].canonical_name == "amount_5m_yuan"
     assert specs["vec3m"].canonical_name == "vector_3m_bp"
     assert specs["vec5m"].canonical_name == "vector_5m_bp"
+    assert specs["a20"].canonical_name == "auction_anchor_0920_price_milli"
+    assert specs["a24"].canonical_name == "auction_anchor_0924_price_milli"
+    assert specs["a25"].canonical_name == "auction_anchor_0925_price_milli"
+    for name, event_window, trigger_not_before in (
+        ("a20", ("09:20:00", "09:20:21"), "09:20:03"),
+        ("a24", ("09:24:00", "09:24:21"), "09:24:10"),
+        ("a25", ("09:25:00", "09:25:21"), "09:25:06"),
+    ):
+        assert specs[name].source_event_time_window == event_window
+        assert specs[name].candidate_update_order == "LAST_PROCESSED_QUALIFYING_TICK"
+        assert specs[name].snapshot_trigger_not_before == trigger_not_before
+        assert "may be present before the scheduled snapshot trigger" in specs[name].semantic
+        assert "does not prove production processing order" in specs[name].semantic
+
+
+def test_q2_auction_rest_amount_contract_matches_t1_level_and_unit_formula():
+    specs = {spec.raw_name: spec for spec in Q2_FIELD_CONTRACT}
+
+    assert "auction-only" in specs["br"].semantic
+    assert "level-1 bid/reference price" in specs["br"].semantic
+    assert "level-2 unmatched bid volume in board lots" in specs["br"].semantic
+    assert "(price_milli * lots * 100) // 1000" in specs["br"].semantic
+    assert "not level-2 price times level-2 volume" in specs["br"].semantic
+
+    assert "auction-only" in specs["ar"].semantic
+    assert "level-1 ask/reference price" in specs["ar"].semantic
+    assert "level-2 unmatched ask volume in board lots" in specs["ar"].semantic
+    assert "(price_milli * lots * 100) // 1000" in specs["ar"].semantic
+    assert "not level-2 price times level-2 volume" in specs["ar"].semantic
+
+
+def test_q2_projection_contract_v3_carries_anchor_quality_without_relabeling_source():
+    projection = build_q2_projection(
+        "2026-09-04",
+        datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc),
+        ("000001",),
+        {"000001": {"px": "12345", "a25": "0", "ts": "1788484800000"}},
+    )
+
+    assert projection.envelope.schema_version == 2
+    assert projection.envelope.payload["contract"] == Q2_PROJECTION_CONTRACT_VERSION
+    assert projection.envelope.provenance.source_schema == "Q2RedisHashV1"
+    assert projection.quotes["000001"].to_mapping()["auction_anchor_field_quality"][
+        "a25"
+    ] == "MISSING"
 
 
 def test_q2_adapter_preserves_verified_rolling_metrics():
@@ -70,6 +127,342 @@ def test_q2_adapter_preserves_verified_rolling_metrics():
     assert quote.vector_5m_bp == -120
     assert quote.to_mapping()["amount_5m_yuan"] == 28_000_000
     assert quote.to_mapping()["vector_5m_bp"] == -120
+
+
+def test_q2_adapter_exposes_t1_instant_delta_fields_as_typed_facts():
+    quote = normalize_q2(
+        "000001",
+        {
+            "iv": "7400",
+            "ia": "2843696",
+            "ln": "-2843696",
+        },
+    )
+
+    assert quote.instant_volume_lots == 7400
+    assert quote.instant_amount_yuan == 2_843_696
+    assert quote.large_net_yuan == -2_843_696
+    assert quote.to_mapping()["instant_volume_lots"] == 7400
+    assert quote.to_mapping()["instant_amount_yuan"] == 2_843_696
+    assert quote.to_mapping()["large_net_yuan"] == -2_843_696
+
+
+def test_q2_instant_delta_fields_keep_missing_zero_and_invalid_distinct():
+    missing = normalize_q2("000001", {})
+    zero = normalize_q2("000001", {"iv": "0", "ia": "0", "ln": "0"})
+    invalid = normalize_q2("000001", {"iv": "bad", "ia": "bad", "ln": "bad"})
+
+    assert (
+        missing.instant_volume_lots,
+        missing.instant_amount_yuan,
+        missing.large_net_yuan,
+    ) == (None, None, None)
+    assert (zero.instant_volume_lots, zero.instant_amount_yuan, zero.large_net_yuan) == (0, 0, 0)
+    assert (
+        invalid.instant_volume_lots,
+        invalid.instant_amount_yuan,
+        invalid.large_net_yuan,
+    ) == (None, None, None)
+    assert invalid.field_errors == ("ia", "iv", "ln")
+
+
+def test_q2quote_preserves_pre_v3_positional_anchor_arguments():
+    quote = Q2Quote(
+        "000001",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        {},
+        11350,
+        11400,
+        11500,
+    )
+
+    assert quote.auction_anchor_0920_price_milli == 11350
+    assert quote.auction_anchor_0924_price_milli == 11400
+    assert quote.auction_anchor_0925_price_milli == 11500
+    assert quote.instant_volume_lots is None
+    assert quote.instant_amount_yuan is None
+    assert quote.large_net_yuan is None
+
+
+def test_real_q2frame_t1_delta_fields_survive_q2_projection_hash():
+    fixture = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures/q2/q2frame_opening_consumer_real_20260929.json"
+        ).read_text(encoding="utf-8")
+    )
+    raw = fixture["q2_update"]
+    source = fixture["source"]
+    canonical_row = json.dumps(
+        raw, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+    assert hashlib.sha256(canonical_row).hexdigest() == source[
+        "q2_update_sha256"
+    ]
+    raw_hash = {key: value for key, value in raw.items() if key != "symbol"}
+    observed_at = datetime.fromtimestamp(
+        source["logical_ts_ms"] / 1000.0,
+        timezone.utc,
+    )
+    projection = build_q2_projection(
+        fixture["trade_date"],
+        observed_at,
+        (raw["symbol"],),
+        {raw["symbol"]: raw_hash},
+    )
+    quote = projection.quotes[raw["symbol"]]
+
+    assert projection.status.value == "READY"
+    assert (
+        quote.instant_volume_lots
+        == fixture["engine_next_q2_view"]["instant_volume"]
+    )
+    assert (
+        quote.instant_amount_yuan
+        == fixture["engine_next_q2_view"]["instant_amount_yuan"]
+    )
+    assert quote.large_net_yuan == fixture["engine_next_q2_view"]["large_net_yuan"]
+    assert quote.speed_1m_bp / 10000.0 == fixture["engine_next_q2_view"]["speed_1m"]
+    assert quote.amount_2m_yuan == fixture["engine_next_q2_view"]["amount_2m"]
+    assert quote.phase == fixture["engine_next_q2_view"]["phase"]
+    # Core preserves the raw Q2 auction state. engine-next exposes a separate
+    # phase-gated consumer field and an always-available q2_* field.
+    assert quote.auction_amount_yuan == raw["am"]
+    assert fixture["engine_next_q2_view"]["auction_amount_yuan"] == 0.0
+    assert fixture["engine_next_q2_view"]["q2_auction_amount_yuan"] == raw["am"]
+
+    changed_projection = build_q2_projection(
+        fixture["trade_date"],
+        observed_at,
+        (raw["symbol"],),
+        {raw["symbol"]: {**raw_hash, "ln": raw_hash["ln"] + 1}},
+    )
+    assert changed_projection.content_hash != projection.content_hash
+
+
+def test_real_later_q2_a25_row_does_not_claim_the_original_freeze_cohort():
+    fixture = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures/q2/q2frame_opening_consumer_real_20260929.json"
+        ).read_text(encoding="utf-8")
+    )
+    raw = fixture["q2_update"]
+    source = fixture["source"]
+    a25_spec = next(spec for spec in Q2_FIELD_CONTRACT if spec.raw_name == "a25")
+    first_observable_ms = int(
+        datetime(2026, 9, 29, 1, 25, 6, tzinfo=timezone.utc).timestamp() * 1000
+    )
+
+    assert source["logical_ts_ms"] > first_observable_ms
+    assert raw["a25"] > 0
+    assert a25_spec.source_event_time_window == ("09:25:00", "09:25:21")
+    assert a25_spec.snapshot_trigger_not_before == "09:25:06"
+    assert a25_spec.candidate_update_order == "LAST_PROCESSED_QUALIFYING_TICK"
+    assert "may be present before the scheduled snapshot trigger" in a25_spec.semantic
+
+
+def test_real_q2frame_delta_fields_reach_engine_snapshot_and_hash():
+    fixture = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures/q2/q2frame_opening_consumer_real_20260929.json"
+        ).read_text(encoding="utf-8")
+    )
+    raw = fixture["q2_update"]
+    source = fixture["source"]
+    observed_at = datetime.fromtimestamp(
+        source["logical_ts_ms"] / 1000.0,
+        timezone.utc,
+    )
+    raw_hash = {key: value for key, value in raw.items() if key != "symbol"}
+
+    def engine_snapshot(q2_hash):
+        projection = build_q2_projection(
+            fixture["trade_date"],
+            observed_at,
+            (raw["symbol"],),
+            {raw["symbol"]: q2_hash},
+        )
+        reducer = MarketStateReducer()
+        reducer.apply_snapshot(
+            projection,
+            logical_time_ms=source["logical_ts_ms"],
+            session_id="TASK-008-Q2FRAME",
+            phase="REPLAY",
+        )
+        return reducer.build_snapshot("real-q2frame-delta-check")
+
+    snapshot = engine_snapshot(raw_hash)
+    changed_snapshot = engine_snapshot({**raw_hash, "ln": raw_hash["ln"] + 1})
+    symbol_state = snapshot.symbol_states[raw["symbol"]]
+
+    assert (
+        symbol_state["instant_volume_lots"]
+        == fixture["engine_next_q2_view"]["instant_volume"]
+    )
+    assert (
+        symbol_state["instant_amount_yuan"]
+        == fixture["engine_next_q2_view"]["instant_amount_yuan"]
+    )
+    assert symbol_state["large_net_yuan"] == fixture["engine_next_q2_view"][
+        "large_net_yuan"
+    ]
+    assert changed_snapshot.content_hash != snapshot.content_hash
+
+
+def test_q2_adapter_preserves_t1_v2_auction_anchor_prices_and_zero_as_unavailable():
+    quote = normalize_q2(
+        "000001",
+        {
+            "px": "12345",
+            "a20": "12000",
+            "a24": "12100",
+            "a25": "0",
+        },
+    )
+
+    assert quote.price_milli == 12345
+    assert quote.auction_anchor_0920_price_milli == 12000
+    assert quote.auction_anchor_0924_price_milli == 12100
+    assert quote.auction_anchor_0925_price_milli is None
+    assert quote.raw_fields["a25"] == "0"
+    assert quote.to_mapping()["auction_anchor_0920_price_milli"] == 12000
+    assert quote.to_mapping()["auction_anchor_0924_price_milli"] == 12100
+    assert quote.to_mapping()["auction_anchor_0925_price_milli"] is None
+    assert quote.to_mapping()["auction_anchor_field_quality"] == {
+        "a20": "PRESENT_VALUE",
+        "a24": "PRESENT_VALUE",
+        "a25": "MISSING",
+    }
+
+
+def test_real_q2frame_missing_0925_price_keeps_independent_auction_fields():
+    fixture = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures/q2/q2frame_null_a25_live_rows_20260930.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert fixture["q2frame_sha256"] == (
+        "10264d0a6b6251e0c757f2113fd41e8e9e0669fade4ba05a145b78340a886ec0"
+    )
+    assert fixture["trade_date"] == "2026-09-30"
+    source = fixture["source_provenance"]
+    assert source["jsonl_line_number"] == 598
+    assert source["logical_ts_ms"] == 1790731497000
+    assert source["seq_no"] == 598
+    for raw in fixture["q2_updates"]:
+        symbol = raw["symbol"]
+        canonical_row = json.dumps(
+            raw, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        assert hashlib.sha256(canonical_row).hexdigest() == source[
+            "canonical_update_sha256_by_symbol"
+        ][symbol]
+        quote = normalize_q2(
+            symbol,
+            {key: value for key, value in raw.items() if key != "symbol"},
+        )
+
+        assert raw["a25"] == 0
+        assert quote.auction_anchor_0925_price_milli is None
+        assert quote.auction_anchor_field_quality["a25"] == "MISSING"
+        assert quote.price_milli == raw["px"] > 0
+        assert quote.auction_amount_yuan == raw["am"] > 0
+        assert quote.auction_bid_amount_yuan == raw["br"]
+        assert quote.auction_ask_amount_yuan == raw["ar"]
+        assert quote.source_record_time_ms == raw["ts"]
+
+
+def test_real_0925_limit_states_preserve_producer_state_not_fixed_ten_percent_rule():
+    fixture = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures/q2/q2frame_0925_real_limit_states_20260930.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert fixture["source"] == "real_t1_v2_q2frame_event_time_replay"
+    assert fixture["trade_date"] == "2026-09-30"
+    assert fixture["q2frame_sha256"] == (
+        "10264d0a6b6251e0c757f2113fd41e8e9e0669fade4ba05a145b78340a886ec0"
+    )
+    limit_states = {}
+    change_by_symbol = {}
+    for record in fixture["records"]:
+        raw = record["q2_update"]
+        canonical_row = json.dumps(
+            raw, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        assert hashlib.sha256(canonical_row).hexdigest() == record[
+            "canonical_update_sha256"
+        ]
+
+        quote = normalize_q2(
+            raw["symbol"], {key: value for key, value in raw.items() if key != "symbol"}
+        )
+        assert quote.limit_state == raw["ls"]
+        assert quote.auction_anchor_0925_price_milli == raw["a25"]
+
+        numerator = (raw["a25"] - raw["pc"]) * 10_000
+        change_bp = (abs(numerator) // raw["pc"]) * (1 if numerator >= 0 else -1)
+        assert change_bp == record["producer_change_bp"]
+        limit_states[raw["symbol"]] = quote.limit_state
+        change_by_symbol[raw["symbol"]] = change_bp
+
+    assert len(fixture["records"]) == 14
+    assert sum(state == 1 for state in limit_states.values()) == 10
+    assert sum(state == -1 for state in limit_states.values()) == 4
+    # Real producer classifications include limit-up below +10% and limit-down
+    # above -10%; a fixed percentage threshold would misclassify these rows.
+    assert limit_states["600241"] == 1 and change_by_symbol["600241"] == 995
+    assert limit_states["002285"] == -1 and change_by_symbol["002285"] == -996
+
+
+def test_q2_anchor_field_quality_distinguishes_absent_invalid_and_present():
+    quote = normalize_q2(
+        "000001",
+        {"a20": "12000", "a24": "bad", "a25": "-1"},
+    )
+
+    assert quote.to_mapping()["auction_anchor_field_quality"] == {
+        "a20": "PRESENT_VALUE",
+        "a24": "INVALID",
+        "a25": "INVALID",
+    }
+    absent = normalize_q2("000001", {"px": "12345"})
+    assert absent.to_mapping()["auction_anchor_field_quality"] == {
+        "a20": "MISSING",
+        "a24": "MISSING",
+        "a25": "MISSING",
+    }
+
+
+def test_q2_adapter_rejects_negative_auction_anchor_price_without_coercing_it():
+    quote = normalize_q2("000001", {"a24": "-1"})
+
+    assert quote.auction_anchor_0924_price_milli is None
+    assert quote.raw_fields["a24"] == "-1"
+    assert "a24_non_positive" in quote.field_errors
 
 
 def test_validate_q2_exposes_stale_and_future_issues_directly():
@@ -174,6 +567,55 @@ def test_q2_adapter_rejects_invalid_symbol_and_naive_observation():
         )
 
 
+def test_q2_adapter_isolates_invalid_active_member_and_keeps_valid_quotes():
+    observed = datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc)
+    hashes = {
+        "q2:000001": {
+            b"px": b"1000",
+            b"pc": b"990",
+            b"amt": b"10",
+            b"ts": b"1788484799000",
+        }
+    }
+    mixed = RedisQ2ProjectionAdapter(
+        FakeRedis({"q2:active:20260904": {b"000001", b"not-a-symbol"}}, hashes)
+    ).read("2026-09-04", observed)
+    clean = RedisQ2ProjectionAdapter(
+        FakeRedis({"q2:active:20260904": {b"000001"}}, hashes)
+    ).read("2026-09-04", observed)
+
+    assert mixed.quotes["000001"].price_milli == 1000
+    assert mixed.expected_symbols == ("000001",)
+    assert mixed.missing_symbols == ()
+    assert mixed.coverage == 1.0
+    assert mixed.status is DataStatus.PARTIAL
+    assert len(mixed.source_anomaly_hashes) == 1
+    assert mixed.content_hash == clean.content_hash
+    assert mixed.evidence_hash != clean.evidence_hash
+
+
+def test_q2_adapter_invalid_member_diagnostics_are_order_independent():
+    observed = datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc)
+    members = [b"000001", b"bad-a", b"bad-b"]
+    hashes = {
+        "q2:000001": {
+            b"px": b"1000",
+            b"pc": b"990",
+            b"amt": b"10",
+            b"ts": b"1788484799000",
+        }
+    }
+    first = RedisQ2ProjectionAdapter(
+        FakeRedis({"q2:active:20260904": members}, hashes)
+    ).read("2026-09-04", observed)
+    second = RedisQ2ProjectionAdapter(
+        FakeRedis({"q2:active:20260904": list(reversed(members))}, hashes)
+    ).read("2026-09-04", observed)
+
+    assert first.source_anomaly_hashes == second.source_anomaly_hashes
+    assert first.evidence_hash == second.evidence_hash
+
+
 @pytest.mark.parametrize("trade_date", ["2026-9-4", "2026-09-4", "bad"])
 def test_q2_projection_rejects_non_strict_trade_date_before_classifying_data(trade_date):
     redis = FakeRedis({"q2:active:" + trade_date: set()}, {})
@@ -243,6 +685,45 @@ def test_q2_adapter_does_not_mark_missing_amount_ready():
     )
     assert result.status is DataStatus.PARTIAL
     assert "amt" in result.quotes["000001"].field_errors
+
+
+def test_incremental_q2_full_hash_matches_full_rebuild_across_updates():
+    expected = ("000001", "000002")
+    first = {
+        "000001": {"px": "1000", "pc": "990", "amt": "1", "ts": "1788484799000"},
+        "000002": {"px": "2000", "pc": "1990", "amt": "2", "ts": "1788484799000"},
+    }
+    second = dict(first)
+    second["000001"] = {**first["000001"], "px": "1010", "ts": "1788484800000"}
+    observed = datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc)
+    incremental = IncrementalQ2Projection("2026-09-04", expected)
+    incremental.build(observed, first, changed_symbols=expected, full_hash=True)
+    actual = incremental.build(observed, second, changed_symbols=("000001",), full_hash=True)
+    expected_projection = build_q2_projection("2026-09-04", observed, expected, second)
+    assert actual.content_hash == expected_projection.content_hash
+    assert actual.missing_symbols == expected_projection.missing_symbols
+    assert actual.stale_symbols == expected_projection.stale_symbols
+    assert actual.quotes["000001"].to_mapping() == expected_projection.quotes["000001"].to_mapping()
+
+
+def test_incremental_q2_full_parity_preserves_missing_and_stale_semantics():
+    expected = ("000001", "000002")
+    raw = {
+        "000001": {"px": "1000", "pc": "990", "amt": "1", "ts": "1788484799000"},
+    }
+    policy = FreshnessPolicy(stale_after_ms=1_000)
+    first_observed = datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc)
+    later_observed = first_observed + timedelta(seconds=2)
+    incremental = IncrementalQ2Projection("2026-09-04", expected, freshness_policy=policy)
+    incremental.build(first_observed, raw, changed_symbols=("000001",), full_hash=True)
+    actual = incremental.build(later_observed, raw, changed_symbols=(), full_hash=True)
+    expected_projection = build_q2_projection(
+        "2026-09-04", later_observed, expected, raw, freshness_policy=policy
+    )
+    assert actual.content_hash == expected_projection.content_hash
+    assert actual.missing_symbols == ("000002",)
+    assert actual.stale_symbols == expected_projection.stale_symbols
+    assert actual.quotes["000001"].to_mapping() == expected_projection.quotes["000001"].to_mapping()
 
 
 def test_q2_contract_keeps_unknown_fields_for_evidence_but_not_business_mapping():
@@ -329,3 +810,17 @@ def test_real_legacy_context_amount_mapping_keeps_q2_amount_semantics_and_source
             assert quote.auction_amount_yuan == row["legacy_context_auction_amount"]
         else:
             assert quote.auction_amount_yuan != row["legacy_context_auction_amount"]
+
+
+def test_realtime_book_amounts_from_c1574_ticks():
+    ticks = json.loads(Path('/home/exedev/fw/evidence/C1574/real_ticks.json').read_text())
+    specs = {spec.raw_name: spec for spec in Q2_FIELD_CONTRACT}
+    for key, canonical in [('b1a', 'bid1_amount_yuan'), ('a1a', 'ask1_amount_yuan')]:
+        assert (specs[key].canonical_name, specs[key].value_type, specs[key].unit, specs[key].required) == (canonical, 'int', 'yuan', False)
+    for record, expected in zip(ticks, [(641160600, 0), (14688, 372324)]):
+        row = record['rows'][0]
+        bid, ask = row[6] * row[8] // 10, row[7] * row[9] // 10
+        quote = normalize_q2(row[1], {'b1a': str(bid), 'a1a': str(ask)})
+        assert (quote.bid1_amount_yuan, quote.ask1_amount_yuan) == expected
+    old = normalize_q2('603960', {})
+    assert (old.bid1_amount_yuan, old.ask1_amount_yuan) == (None, None)

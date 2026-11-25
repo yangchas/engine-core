@@ -1,0 +1,45 @@
+{
+ "note": "All files are recorded REAL upstream responses (C580, 2026-10-28). No hand-written rows.",
+ "files": {
+  "kaipan_pool_20261023.json": {
+   "source": "pykaipan getHisBans(date, ban=level, size=2000) through KaipanProvider.limit_up_pool",
+   "date": "2026-10-23",
+   "captured": "2026-10-28T10:10:34+0800"
+  },
+  "wencai_pool_20261023.json": {
+   "source": "pywencai get_robot_data query '2026-10-23涨停;连板天数;去除st' page 1 perpage 100 (cookie never stored; url_params/payload dropped)",
+   "date": "2026-10-23",
+   "captured": "2026-10-28T10:01:12+0800"
+  },
+  "td_bars_20261023.json": {
+   "source": "TD market_data1.daily_kline read-only + symbol_universe names",
+   "date": "2026-10-23",
+   "captured": "2026-10-28T10:12:40+0800"
+  },
+  "kaipan_pool_20261026.json": {
+   "source": "pykaipan getHisBans(date, ban=level, size=2000) through KaipanProvider.limit_up_pool",
+   "date": "2026-10-26",
+   "captured": "2026-10-28T10:11:25+0800"
+  },
+  "wencai_pool_20261026.json": {
+   "source": "pywencai get_robot_data query '2026-10-26涨停;连板天数;去除st' page 1 perpage 100 (cookie never stored; url_params/payload dropped)",
+   "date": "2026-10-26",
+   "captured": "2026-10-28T10:00:54+0800"
+  },
+  "td_bars_20261026.json": {
+   "source": "TD market_data1.daily_kline read-only + symbol_universe names",
+   "date": "2026-10-26",
+   "captured": "2026-10-28T10:12:41+0800"
+  },
+  "his_bans_not_ready_20261028.json": {
+   "source": "pykaipan getHisBans(date=2026-10-28, ban=1) at 2026-10-28 ~10:00 CST (day not published yet)",
+   "date": "2026-10-28",
+   "captured": "2026-10-28T10:00"
+  },
+  "his_bans_20261027_l1_l2.json": {
+   "source": "pykaipan getHisBans(date=2026-10-27, ban=1|2, size=2000) raw",
+   "date": "2026-10-27",
+   "captured": "2026-10-28T09:57:48+0800"
+  }
+ }
+}

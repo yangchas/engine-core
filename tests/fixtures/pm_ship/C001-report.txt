@@ -1,0 +1,28 @@
+VERDICT: DONE
+
+FACTS:
+
+1. HEAD `e55d231910503b726b07f04b228dc19c051ccfc9`; branch `codex/feature-session-engine-integration`. `git status --short` shows two modified tracked files and three untracked files. `git diff --stat` covers tracked changes only: **2 files, 69 insertions, 54 deletions**. The untracked files are not included in that stat.
+
+2. `src/engine_core/auction_session.py` exists and is untracked; `examples/audit_task008_redis_projection_auction_session.py` exists and is untracked. The audit calls `observe_late_start` at lines 171–178 and compares direct facts with oracle facts at lines 204–224. **It does not compare** `revision.available_anchor_symbols` or `revision.missing_anchor_symbols`: neither name occurs in the audit or session source.
+
+3. No matching `run_task008_q2frame_auction_engine_shadow.py` process appeared in `ps`; duration and input/output paths: **UNKNOWN** because no such running process was found.
+
+4. Most recently modified validation directories, newest first:
+   - `q2-native-20261012.haSrQt`
+   - `q2-stream-20261012.VweXnN`
+   - `task008-redis-auction-session-20261012T162517+0800`
+   - `task008-arrival-lag-sensitivity-20261012T150426+0800`
+   - `task008-late-start-anchor-observation-20261012T142736+0800`
+   - `task008-late-start-anchor-observation-20261012T142513+0800`
+
+5. Last `CURRENT_TASK.md` section: `## 36. 2026-10-12 — source-density audit and TD replay fidelity metadata` (line 1738). `docs/work/TASK_QUEUE.md` TASK-008 state: `PARTIAL_EVIDENCE` (line 9).
+
+EVIDENCE:
+
+- `git rev-parse HEAD; git branch --show-current; git status --short; git diff --stat`
+- `ps -eo pid,etimes,args | rg '[r]un_task008_q2frame_auction_engine_shadow.py'` — no matching output.
+- `find /home/exedev/validation -mindepth 1 -maxdepth 1 -type d -printf '%T@ %f\n' | sort -nr | head -6`
+- `rg -n ...` source checks; relevant audit locations: lines 171–178 and 204–224.
+
+OPEN: None.

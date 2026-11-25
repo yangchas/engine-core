@@ -174,6 +174,8 @@ M3_1_NORMAL=BLOCKED
 6. 再做 Gate B 和第一条 Auction Shadow 规则。
 ```
 
+当前 `TD_WRITE_HEALTH=UNPROVEN`，因此先执行 `TASK-001` 真实历史 replay audit。`TASK-001` 只验证回放能力，不替代 `M3-1`；后续仍需独立完成 `M3-1`。
+
 继续延期：
 
 ```text

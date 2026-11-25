@@ -1,0 +1,170 @@
+{
+ "dataset": "daily_kline",
+ "status": "BASELINE",
+ "note": "Canonical layout (C579) = compatible superset of all real partitions and consumers: price/amount yuan, pct_chg PERCENT float (as every live partition), turnover_pct percent (nullable), volume shares, suspended bool|null. Rows of the degraded merge (q2_final+wencai) carry field_sources and no code/tier; q2_final has no open.",
+ "primary_key": [
+  "symbol"
+ ],
+ "symbol_column": "symbol",
+ "date_columns": [],
+ "row_order": "primary_key",
+ "earliest_available_local": "15:00",
+ "allowed_providers": [
+  "baostock",
+  "wencai",
+  "q2_final"
+ ],
+ "coverage": {
+  "basis": "universe_active",
+  "universe_dataset": "symbol_universe"
+ },
+ "primary_provider": "baostock",
+ "columns": {
+  "symbol": {
+   "type": "str",
+   "nullable": false
+  },
+  "date": {
+   "type": "date",
+   "nullable": false
+  },
+  "code": {
+   "type": "str",
+   "nullable": true,
+   "optional": true
+  },
+  "open": {
+   "type": "float",
+   "nullable": true,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "high": {
+   "type": "float",
+   "nullable": true,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "low": {
+   "type": "float",
+   "nullable": true,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "close": {
+   "type": "float",
+   "nullable": true,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "pre_close": {
+   "type": "float",
+   "nullable": true,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "pct_chg": {
+   "type": "float",
+   "nullable": true,
+   "unit": "percent",
+   "min": -100,
+   "max": 2000
+  },
+  "turnover_pct": {
+   "type": "float",
+   "nullable": true,
+   "unit": "percent",
+   "min": 0
+  },
+  "amount_yuan": {
+   "type": "float",
+   "nullable": true,
+   "unit": "yuan",
+   "min": 0
+  },
+  "volume": {
+   "type": "float",
+   "nullable": true,
+   "unit": "shares",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "suspended": {
+   "type": "bool",
+   "nullable": true
+  },
+  "source_trade_status": {
+   "type": "str",
+   "nullable": true,
+   "optional": true,
+   "all_null_ok": true
+  },
+  "source": {
+   "type": "str",
+   "nullable": false
+  },
+  "degraded": {
+   "type": "bool",
+   "nullable": false
+  },
+  "tier": {
+   "type": "int",
+   "nullable": true,
+   "optional": true
+  },
+  "field_sources": {
+   "type": "dict",
+   "nullable": true,
+   "optional": true
+  }
+ },
+ "provider_overrides": {
+  "q2_final": {
+   "columns": {
+    "open": {
+     "all_null_ok": true,
+     "zero_suspicious": false
+    },
+    "turnover_pct": {
+     "all_null_ok": true,
+     "optional": true,
+     "unit": null
+    },
+    "suspended": {
+     "all_null_ok": true,
+     "optional": true,
+     "unit": null
+    },
+    "source_trade_status": {
+     "all_null_ok": true,
+     "optional": true,
+     "unit": null
+    }
+   }
+  },
+  "wencai": {
+   "columns": {
+    "turnover_pct": {
+     "all_null_ok": true,
+     "optional": true,
+     "unit": null
+    },
+    "suspended": {
+     "all_null_ok": true,
+     "optional": true,
+     "unit": null
+    },
+    "source_trade_status": {
+     "all_null_ok": true,
+     "optional": true,
+     "unit": null
+    }
+   }
+  }
+ }
+}

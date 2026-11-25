@@ -1,0 +1,26 @@
+STAFF: builder-1
+ID: C1072
+STATUS: DONE(已合并975e98b;wait-card记录缓存占比;depth1 模式 test_c589 单跑过联跑败待查;11-14)
+LANE: A
+ROLE: builder
+EXECUTOR: codex
+MODEL: gpt-6.1-terra
+EFFORT: medium
+COMMIT: yes
+TITLE: pm wait-card 记录缓存占比与未缓存 token(读 rollout)
+CONTEXT: fw/context/C1072.md(先读)
+SERVES: 用户2026-11-14 防止每次全部历史请求;C1071 实测 usage.tsv=未缓存+输出
+PLAN: P0 固定职员制(会话预算)
+APPROVAL: 用户2026-11-14 继续推进;审核审批自行决定
+SCOPE_WRITE: /home/exedev/repos/engine_core-wt-C1072/examples/pm.py, /home/exedev/repos/engine_core-wt-C1072/tests/test_pm.py, /home/exedev/repos/engine_core-wt-C1072/tests/fixtures/pm_tokens, /home/exedev/fw/reports/C1072.md, /home/exedev/fw/evidence/C1072
+REAL_DATA: C1071 证据 fw/evidence/C1071/rollout_stats.txt 里的真实数值(30 次调用 input 1399645 cached 1356544 output 9889);真实 rollout 文件的 token_count 事件摘录
+ORACLE: 对该真实 rollout 摘录:SUM_INPUT 1399645、SUM_CACHED 1356544、缓存占比 0.969206、未缓存+输出=52990
+ACCEPT_BY: fail-first-real-fixture
+TEST_BUDGET: 新增测试 ≤3 个;必须包含危险对照;验收清单: tests/test_pm.py tests/test_real_fixtures.py tests/test_trade_day_context.py tests/test_registry_storage.py tests/test_guardian_contract_static.py tests/test_dataset_registry.py tests/test_baseline_window_declaration.py
+STUBS_ALLOWED: 无需新增 kind,不使用采集工具;夹具为真实 rollout 文件的 token_count 行摘录并附 PROVENANCE(约束库 td_stops_0945 告警是关键词误报)
+AUTHORIZATION: 可读工作树全部源码与测试。python 用 /home/exedev/services/engine-next/shared/venv/bin/python。环境或执行错误允许修复并重跑。不联网,不读 cookie,不发信,不 push,不合并,不部署,不写 Redis/TD,不改 fw 下任何文件(只写自己的 reports 与 evidence)。 遇到规格内部矛盾时,选与真实历史失败原因一致的那一种并在报告 OPEN 写明,不要停下来等 PM。不在 shell 里打印环境变量或完整进程命令行。
+GOAL: 先读 CONTEXT 文件。
+新增 pm 函数 rollout_usage(session_id):从 ~/.codex/sessions 找该会话 rollout,累加 last_token_usage 得 input/cached/output/调用数/压缩事件数;pm wait-card 完成后把 {cached_ratio, uncached_in, out, calls} 写入花名册该卡记录并在输出显示一行;pm roster 增加缓存占比列;pm pilot 的续用/新会话对比改用 uncached_in+out 口径并显示缓存占比。夹具=C1071 实测所用真实 rollout 的 token_count 行摘录(≤40 行,附 PROVENANCE,不含对话正文),测试 ≤2 个。
+NOT_DO: 不手写假样本;不 push、不合并、不部署;不顺手重构。
+REPORT: fw/reports/C1072.md。首行 VERDICT: DONE/BLOCKED/PARTIAL;之后 FACTS/CHANGES/EVIDENCE/OPEN。并在报告末尾写 HANDOFF 小节(3–5 行:做了什么、做的决定、踩的坑、下一步建议)
+ACCEPT: 指定验收命令 exit=0;fail-first 证据完整;git status 干净且提交以 C1072: 开头。

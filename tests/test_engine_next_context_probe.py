@@ -4,6 +4,8 @@ import pytest
 
 from examples.run_engine_next_context_probe import (
     GuardRedis,
+    _configure_read_only_context_builder,
+    _eligible_auction_projection_tags,
     _parse_now,
     _phase_for_request,
     _opening_behavior_rows,
@@ -255,14 +257,131 @@ def test_guard_redis_rejects_unclassified_pipeline_method():
         guarded.pipeline().custom_mutation()
 
 
+def test_read_only_context_builder_disables_refresh_and_recovery_and_reads_0925_only():
+    from types import SimpleNamespace
+
+    class FakeHub:
+        def __init__(self):
+            self.snapshot_calls = []
+
+        def load_auction_snapshots(self, trade_date, *, tags):
+            self.snapshot_calls.append((trade_date, tags))
+            return SimpleNamespace(
+                rows=(
+                    {"symbol": "000001", "tag": "0924", "source": "redis_0924"},
+                    {"symbol": "000001", "tag": "0925", "source": "redis_0925"},
+                    {"symbol": "000002", "tag": "0925", "source": "redis_0925"},
+                )
+            )
+
+        def fetch_hot_rank(self, *args, **kwargs):  # pragma: no cover - must be blocked
+            raise AssertionError("external hot-rank refresh must not run")
+
+        def recover_auction_anchor(self, *args, **kwargs):  # pragma: no cover - must be blocked
+            raise AssertionError("auction recovery must not run")
+
+    hub = FakeHub()
+    builder = SimpleNamespace(
+        hub=hub,
+        _ensure_hot_rank_cache=lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("original hot-rank hook must be replaced")
+        ),
+        _load_auction_rows=lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("original recovery path must be replaced")
+        ),
+        _write_cached_session_facts=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("session-fact cache write must be replaced")
+        ),
+        _load_fallback_stock_names=lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("F10 fallback must be replaced")
+        ),
+        _sector_flow_tracker=SimpleNamespace(
+            update_and_evaluate=lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("sector-flow update must be replaced")
+            )
+        ),
+    )
+
+    profile, blocked_external_calls = _configure_read_only_context_builder(builder, hub)
+    builder._ensure_hot_rank_cache("2026-09-29", object(), now=None)
+    before_anchor_rows = builder._load_auction_rows(
+        SimpleNamespace(
+            trade_date="2026-09-29",
+            now=_parse_now("2026-09-29T09:20:02.999", timezone_name="Asia/Shanghai"),
+        ),
+        ("000001",),
+    )
+    assert before_anchor_rows == []
+    assert hub.snapshot_calls == []
+    rows = builder._load_auction_rows(
+        SimpleNamespace(
+            trade_date="2026-09-29",
+            now=_parse_now("2026-09-29T09:31:00", timezone_name="Asia/Shanghai"),
+        ),
+        ("000001",),
+    )
+    builder._write_cached_session_facts()
+    assert builder._load_fallback_stock_names(("000001",)) == {}
+    assert builder._sector_flow_tracker.update_and_evaluate() == {}
+    with pytest.raises(RuntimeError, match="hot_rank_refresh"):
+        hub.fetch_hot_rank("2026-09-29", object())
+    with pytest.raises(RuntimeError, match="auction_anchor_recovery"):
+        hub.recover_auction_anchor("2026-09-29", object())
+
+    assert rows == [{"symbol": "000001", "tag": "0925", "source": "redis_0925"}]
+    assert hub.snapshot_calls == [("2026-09-29", ("0920", "0924", "0925"))]
+    assert profile["hot_rank_refresh"] == "DISABLED"
+    assert profile["auction_recovery"] == "DISABLED"
+    assert profile["auction_input"] == "REDIS_LATEST_TIME_ELIGIBLE_TOP_AMOUNT_TOP_N_ONLY"
+    assert profile["auction_timing"] == "WHOLE_SECOND_0920_09:20:03_0924_09:24:10_0925_09:25:06"
+    assert blocked_external_calls == ["hot_rank_refresh", "auction_anchor_recovery"]
+
+
 @pytest.mark.parametrize(
-    ("raw", "expected"),
-    ((0.0997, 0.0997), (9.97, 0.0997), (997, 0.0997), (-9.97, -0.0997)),
+    ("now", "expected"),
+    (
+        ("2026-09-29T09:20:02.999", ()),
+        ("2026-09-29T09:20:03.000", ("0920",)),
+        ("2026-09-29T09:24:09.999", ("0920",)),
+        ("2026-09-29T09:24:10.000", ("0920", "0924")),
+        ("2026-09-29T09:25:05.999", ("0920", "0924")),
+        ("2026-09-29T09:25:06.000", ("0920", "0924", "0925")),
+        ("2026-09-29T09:25:06.197", ("0920", "0924", "0925")),
+    ),
 )
-def test_auction_ratio_wheel_preserves_legacy_formula_for_valid_values(raw, expected):
-    assert normalize_auction_change_ratio(raw) == pytest.approx(expected)
+def test_auction_projection_visibility_uses_whole_second_cutoffs(now, expected):
+    parsed = _parse_now(now, timezone_name="Asia/Shanghai")
+    assert _eligible_auction_projection_tags(parsed) == expected
 
 
-@pytest.mark.parametrize("raw", (None, "", "bad", True, float("nan"), float("inf")))
-def test_auction_ratio_wheel_keeps_missing_or_invalid_as_unknown(raw):
-    assert normalize_auction_change_ratio(raw) is None
+def test_auction_projection_visibility_is_empty_without_known_observation_time():
+    assert _eligible_auction_projection_tags(None) == ()
+
+
+def test_read_only_auction_projection_does_not_fallback_per_symbol_to_older_topn():
+    from types import SimpleNamespace
+
+    class FakeHub:
+        def load_auction_snapshots(self, trade_date, *, tags):
+            assert trade_date == "2026-09-29"
+            assert tags == ("0920", "0924", "0925")
+            return SimpleNamespace(
+                rows=(
+                    {"symbol": "000001", "tag": "0924", "source": "redis_0924"},
+                    {"symbol": "000002", "tag": "0925", "source": "redis_0925"},
+                )
+            )
+
+    hub = FakeHub()
+    builder = SimpleNamespace(hub=hub, _sector_flow_tracker=SimpleNamespace())
+    _configure_read_only_context_builder(builder, hub)
+
+    rows = builder._load_auction_rows(
+        SimpleNamespace(
+            trade_date="2026-09-29",
+            now=_parse_now("2026-09-29T09:31:00", timezone_name="Asia/Shanghai"),
+        ),
+        ("000001",),
+    )
+
+    assert rows == []

@@ -177,6 +177,8 @@ def build_segment_frame(
     coverage_status: str = "UNKNOWN",
     observed_start_time_ms: Optional[int] = None,
     observed_end_time_ms: Optional[int] = None,
+    start_price_field: str = "price_milli",
+    end_price_field: str = "price_milli",
 ) -> SegmentFrame:
     """Build facts for one symbol segment without strategy interpretation.
 
@@ -245,8 +247,10 @@ def build_segment_frame(
             observed_end_time_ms=observed_end_time_ms,
         )
 
-    price_start = _as_int(start_values.get("price_milli"))
-    price_end = _as_int(end_values.get("price_milli"))
+    if not start_price_field or not end_price_field:
+        raise ValueError("price source fields must be non-empty")
+    price_start = _as_int(start_values.get(start_price_field))
+    price_end = _as_int(end_values.get(end_price_field))
     if price_start is None or price_end is None:
         price_status = FactStatus.MISSING
         return_bp = None
@@ -256,6 +260,14 @@ def build_segment_frame(
     else:
         price_status = FactStatus.READY
         return_bp = trunc_div((price_end - price_start) * 10_000, price_start)
+    price_lineage = {
+        "start_price_milli": (start_ref,),
+        "end_price_milli": (end_ref,),
+    }
+    if start_price_field != "price_milli":
+        price_lineage["source_start_" + start_price_field] = (start_ref,)
+    if end_price_field != "price_milli":
+        price_lineage["source_end_" + end_price_field] = (end_ref,)
     price = PriceFacts(
         price_status,
         price_start,
@@ -263,7 +275,7 @@ def build_segment_frame(
         None,
         None,
         return_bp,
-        {"start_price_milli": (start_ref,), "end_price_milli": (end_ref,)},
+        price_lineage,
     )
 
     # Auction segments use the matched auction amount, not the intraday

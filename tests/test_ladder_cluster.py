@@ -1,0 +1,176 @@
+from engine_core.ladder_cluster import build_ladder_clusters, select_plate_strength, build_plate_strength_from_stocks
+
+
+def test_ladder_clusters_group_by_eligible_theme_and_use_price_proxy_labels():
+    highboards = [
+        {"symbol": "000001", "name": "甲股", "streak": 4, "0925": 10.0, "match_amount_yuan": 20,
+         "close": 11.0, "pre_close": 10.0},
+        {"symbol": "000002", "name": "乙股", "streak": 2, "0925": -6.0, "match_amount_yuan": 30},
+        {"symbol": "000003", "name": "丙股", "streak": 2, "0925": 1.0, "match_amount_yuan": 50},
+    ]
+    a_to_b = [{"a_symbol": "000001", "plate": "芯片"},
+              {"a_symbol": "000002", "plate": "芯片"},
+              {"a_symbol": "000003", "plate": "未知板"}]
+    plates = {"芯片": {"class": "THEME", "size": 60},
+              "未知板": {"class": "EVENT", "size": 90}}
+
+    result = build_ladder_clusters(highboards, a_to_b, plates, stage="auction")
+
+    assert [row["name"] for row in result["clusters"]] == ["芯片", "无题材"]
+    chip = result["clusters"][0]
+    assert chip["judgement"] == "分化"
+    assert "甲股 昨4板→+10.0%[封停价代理]" in chip["leaders"]
+    assert "乙股 昨2板→-6.0%[大低开]" in chip["leaders"]
+    assert result["first_board_summary"] == "昨首板0只"
+
+
+def test_ladder_seal_proxy_requires_exact_price_and_known_price_inputs():
+    from engine_core.ladder_cluster import _price_label
+
+    assert _price_label(9.9, "000001", 11.0, 10.0) == "封停价代理"
+    assert _price_label(10.0, "000001", 10.99, 10.0) == "高开"
+    assert _price_label(10.0, "000001", None, 10.0) == "高开"
+    assert _price_label(20.0, "300001", 12.0, 10.0, unlimited=True) == "高开"
+
+
+def test_ladder_cluster_keeps_missing_amount_unknown():
+    result = build_ladder_clusters(
+        [{"symbol": "000001", "name": "甲", "streak": 2, "0925": 1}],
+        [{"a_symbol": "000001", "plate": "芯片"}],
+        {"芯片": {"class": "THEME", "size": 50}}, stage="auction")
+
+    assert result["clusters"][0]["amount_yuan"] is None
+
+
+def test_empty_highboards_and_first_board_counts_are_explicit():
+    result = build_ladder_clusters(
+        [], [], {}, stage="auction",
+        first_board_rows=[{"symbol": "1", "name": "首板甲", "0925": 0.5}])
+
+    assert result["clusters"] == []
+    assert result["empty_message"] == "无昨高标簇"
+    assert result["first_board_summary"].startswith("昨首板竞价高1/低0/平0；昨首板竞价最强：")
+
+    partial = build_ladder_clusters(
+        [], [], {}, stage="auction",
+        first_board_rows=[{"symbol": "1", "name": "首板甲", "0925": 0.5},
+                          {"symbol": "2", "name": "首板乙"}])
+    assert partial["first_board_summary"].startswith("昨首板竞价高1/低0/平0 缺1只；昨首板竞价最强：")
+
+    assert build_ladder_clusters(
+        [{"symbol": "000001", "name": "甲", "streak": 2, "0925": 1},
+         {"symbol": "000002", "name": "乙", "streak": 2, "0925": 2},
+         {"symbol": "000003", "name": "丙", "streak": 2, "0925": 3}], [], {}, stage="auction"
+    )["clusters"][0]["judgement"] == "承接强"
+    assert build_ladder_clusters(
+        [{"symbol": "000001", "name": "甲", "streak": 2, "0925": -1},
+         {"symbol": "000002", "name": "乙", "streak": 2, "0925": -2},
+         {"symbol": "000003", "name": "丙", "streak": 2, "0925": -3}], [], {}, stage="auction"
+    )["clusters"][0]["judgement"] == "弱"
+
+
+def test_plate_strength_uses_p80_absolute_delta_and_omits_zero_changes():
+    current = [
+        {"name": f"板{i}", "market_share_bp": now, "equal_weight_pct": pct,
+         "amount_yuan": (i + 1) * 100, "top_stock_name": f"股{i}", "top_stock_pct": pct}
+        for i, (now, pct) in enumerate([(110, 1), (120, 2), (130, 3), (140, 4), (150, 5), (160, 6)])
+    ]
+    previous = [{"name": f"板{i}", "market_share_bp": before}
+                for i, before in enumerate([100, 115, 125, 135, 145, 160])]
+
+    result = select_plate_strength(current, previous, eligible_names={f"板{i}" for i in range(6)})
+
+    assert result["threshold_bp"] == 10
+    assert all(row["delta_bp"] != 0 for row in result["up"] + result["down"])
+    assert len(result["up"]) <= 5 and len(result["down"]) <= 5
+    assert result["missing"] is False
+
+
+def test_plate_strength_marks_missing_comparison_and_filters_noneligible_plates():
+    result = select_plate_strength(
+        [{"name": "芯片", "market_share_bp": 9000}], [], eligible_names={"芯片"})
+
+    assert result["missing"] is True
+    assert result["up"] == [] and result["down"] == []
+    assert result["message"] == "0924份额缺失，变化暂不可判"
+
+
+def test_plate_strength_aggregates_full_universe_stock_slices_not_top_twenty():
+    meta = {"冰雪产业": {"class": "THEME", "size": 8},
+            "中报增长": {"class": "THEME", "size": 8, "generic": True}}
+    stocks = []
+    for i in range(8):
+        stocks.append({"symbol": f"00000{i+1}", "name": f"股{i+1}", "plates": ["冰雪产业", "中报增长"],
+                       "p0924_amount_yuan": 100, "p0925_amount_yuan": 300 if i == 0 else 100,
+                       "p0925_pct": float(i), "p0924_pct": -1})
+    for i in range(8):
+        stocks.append({"symbol": f"00001{i+1}", "name": f"其他{i+1}", "plates": [],
+                       "p0924_amount_yuan": 100, "p0925_amount_yuan": 50,
+                       "p0925_pct": 1.0, "p0924_pct": 0.0})
+    result = build_plate_strength_from_stocks(stocks, meta)
+    assert result["missing"] is False
+    assert result["eligible_count"] == 1
+    assert result["up"][0]["name"] == "冰雪产业"
+    assert result["up"][0]["top_stock_name"] == "股1"
+    assert result["up"][0]["equal_weight_pct"] == 3.5
+    assert result["up"][0]["share_bp"] == 10000 * 1000 / 1400
+
+
+def test_first_board_summary_adds_three_strongest_yesterday_firsts():
+    result = build_ladder_clusters([], [], {}, stage="auction", first_board_rows=[
+        {"symbol": "000001", "name": "甲", "theme": "冰雪产业", "0925": 3.0},
+        {"symbol": "000002", "name": "乙", "theme": "冰雪产业", "0925": 8.0},
+        {"symbol": "000003", "name": "丙", "theme": "芯片", "0925": 5.0},
+        {"symbol": "000004", "name": "丁", "theme": "芯片", "0925": 1.0},
+    ])
+    assert "昨首板竞价最强：乙 +8.0% 冰雪产业、丙 +5.0% 芯片、甲 +3.0% 冰雪产业" in result["first_board_summary"]
+
+
+def test_open_first_board_summary_separates_auction_and_0945_counts():
+    result = build_ladder_clusters([], [], {}, stage="open", first_board_rows=[
+        {"symbol": "000001", "name": "甲", "0925": 2.0, "0945": -1.0},
+        {"symbol": "000002", "name": "乙", "0925": -1.0, "0945": 3.0},
+        {"symbol": "000003", "name": "丙", "0925": 0.0, "0945": 0.0},
+    ])
+    assert "竞价高1/低1/平1→0945高1/低1/平1" in result["first_board_summary"]
+    assert "昨首板0945最强：乙 +3.0%" in result["first_board_summary"]
+
+
+def test_plate_strength_uses_only_present_amounts_and_matched_comparison_universe():
+    meta = {"主题": {"class": "THEME", "size": 8}}
+    stocks = []
+    for i in range(12):
+        row = {"symbol": f"00000{i+1}", "plates": ["主题"] if i < 8 else [],
+               "p0924_amount_yuan": 100,
+               "p0925_amount_yuan": 100,
+               "p0925_pct": 1.0}
+        if i == 0:
+            row["p0925_amount_yuan"] = None
+        if i == 1:
+            row["p0924_amount_yuan"] = None
+        stocks.append(row)
+
+    result = build_plate_strength_from_stocks(stocks, meta)
+
+    assert result["missing"] is False
+    assert result["up"] == [] and result["down"] == []
+    # Current share uses all rows with a current amount; delta uses only the
+    # six themed and four unthemed rows with amounts at both cutoffs.
+    row = result["rows"][0]
+    assert row["share_bp"] == 10000 * 700 / 1100
+    assert row["previous_share_bp"] == 6000
+    assert row["comparable_share_bp"] == 6000
+    assert row["comparison_coverage"] == 0.75
+
+
+def test_plate_strength_market_totals_ignore_missing_current_amounts():
+    meta = {"主题": {"class": "THEME", "size": 8}}
+    stocks = [{"symbol": f"00000{i+1}", "plates": ["主题"] if i < 8 else [],
+               "p0925_amount_yuan": 100 if i < 8 else None,
+               "p0924_amount_yuan": 100 if i < 8 else None,
+               "p0925_pct": 0.0} for i in range(8)]
+
+    result = build_plate_strength_from_stocks(stocks, meta)
+
+    assert result["rows"][0]["share_bp"] == 10000
+    assert result["rows"][0]["member_coverage"] == 1.0

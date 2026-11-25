@@ -1,0 +1,739 @@
+#!/usr/bin/env python3
+"""Python adapter for the guardian-native line-oriented handler contract."""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
+
+from engine_core.guardian.memory_gate import admit
+
+
+def _json(value):
+    print(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+
+def _event_from_request(request):
+    from engine_core.guardian.scheduler import default_events
+
+    raw = request.get("event")
+    if isinstance(raw, dict):
+        raw = raw.get("id") or raw.get("event_id")
+    by_id = {item.event_id: item for item in default_events()}
+    return by_id.get(str(raw)), str(raw)
+
+
+@contextlib.contextmanager
+def _premarket_prep_lock(request):
+    """Yield True when this process holds the same-date prep lock, False when another prep process really runs.
+
+    The old check treated any unfinished owner event (even one waiting between retries) as "running", so the 09:00
+    safety-net attempt reported success without doing anything while the owner was timing out (2026-11-02). A kernel
+    flock is released when the holder exits, so only a live prep process counts.
+    """
+    from engine_core.data_pipeline.ops import FileLock
+    root = Path(os.environ.get("CORE_DATA_ROOT", "~/core-data")).expanduser()
+    lock = FileLock(root / ".locks" / "premarket-prep.lock")
+    try:
+        lock.acquire()
+    except RuntimeError:
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        lock.release()
+
+
+# Scheduled jobs that borrow the boot_data_health handler name (so the Go binary's handler list need not change) are
+# told apart by ONE args field. Interim (design 25 P4 removes the borrowing); tests tie every route to a scheduled event.
+BORROWED_JOBS = (("checks", "engine_core.guardian.preopen_check", "run"),
+                 ("chain", "engine_core.guardian.chain_sweep", "run"),
+                 ("td_check", "engine_core.guardian.td_resource_check", "run"))
+
+
+def _borrowed_job(handler, args):
+    if handler != "boot_data_health":
+        return None
+    for field, module_name, function in BORROWED_JOBS:
+        if args.get(field):
+            return module_name, function
+    return None
+
+
+def _send_load_defer_alert(request, result, dry_run):
+    detail = result.get("detail") if isinstance(result, dict) else None
+    pending = detail.get("load_defer_alert") if isinstance(detail, dict) else None
+    if not isinstance(pending, dict):
+        return
+    alert = _send_alert({"event": pending.get("event", "daily_kline_load_deferred"),
+                         "trade_date": request.get("trade_date"), "now": request.get("now"),
+                         "reason": pending.get("reason", "daily_kline_deferred_by_load"),
+                         "error": (f"partition={pending.get('partition')} "
+                                   f"windows={pending.get('consecutive_windows')} "
+                                   f"next_window={pending.get('next_window')} "
+                                   f"load5={pending.get('load5')} "
+                                   f"threshold={pending.get('load_threshold')}"),
+                         }, dry_run)
+    pending["delivery"] = alert
+
+
+def _send_td_coverage_alert(request, result, dry_run):
+    detail = result.get("detail") if isinstance(result, dict) else None
+    pending = detail.get("td_coverage_alert") if isinstance(detail, dict) else None
+    if not isinstance(pending, dict):
+        return
+    pending["delivery"] = _send_alert({"event": pending.get("event", "daily_kline_td_unreadable"),
+                                       "trade_date": request.get("trade_date"), "now": request.get("now"),
+                                       "reason": pending.get("reason", "daily_kline_td_selfcheck_unknown"),
+                                       "error": pending.get("error")}, dry_run)
+
+
+def _failure_classes(request):
+    args = request.get("args") if isinstance(request.get("args"), dict) else {}
+    configured = args.get("failure_classes")
+    if isinstance(configured, dict):
+        return configured
+    return {
+        "retryable": {"exit_codes": [30, 75], "exception_types": ["TimeoutError", "TimeoutExpired", "ConnectionError"]},
+        "deterministic": {
+            "exit_codes": [2, 40, 64],
+            "exception_types": ["AssertionError", "AttributeError", "IndexError", "KeyError", "NameError",
+                                "SyntaxError", "TypeError", "ValueError", "JSONDecodeError", "ContractError"],
+        },
+        # A failure that carries no code, no known exit status and no known exception type has not been classified by
+        # anyone: it is retried (the ladder bounds it) and flagged, never silently made final.
+        "default": "retryable",
+    }
+
+
+def _classification(request, *, error=None, result=None):
+    """(category, basis): what the failure is and what said so. basis is code / exit / type / default - never text."""
+    classes = _failure_classes(request)
+    codes: list[str] = []
+    exit_codes: set[int] = set()
+    exception_types: set[str] = set()
+    if error is not None:
+        exception_types.update(cls.__name__ for cls in type(error).__mro__)
+        if getattr(error, "error_code", None):
+            codes.append(str(error.error_code))
+        for attribute in ("returncode", "exit_code"):
+            value = getattr(error, attribute, None)
+            if isinstance(value, int) and not isinstance(value, bool):
+                exit_codes.add(value)
+    if isinstance(result, dict):
+        if result.get("error_code"):
+            codes.append(str(result["error_code"]))
+        details = result.get("detail")
+        if isinstance(details, dict) and details.get("error_code"):
+            codes.append(str(details["error_code"]))
+    # An explicit, registered error code says it directly (design/33).
+    from engine_core.errors import is_retryable
+    for code in codes:
+        known = is_retryable(code.upper())
+        if known is not None:
+            return ("retryable" if known else "deterministic"), "code"
+    for category in ("deterministic", "retryable"):
+        rules = classes.get(category)
+        if not isinstance(rules, dict):
+            continue
+        if ({value.upper() for value in codes} & {str(value).upper() for value in rules.get("error_codes", [])}):
+            return category, "code"
+        if exit_codes & {int(value) for value in rules.get("exit_codes", [])}:
+            return category, "exit"
+        if exception_types & {str(value) for value in rules.get("exception_types", [])}:
+            return category, "type"
+    default = classes.get("default", "retryable")
+    return (default if default in {"deterministic", "retryable"} else "retryable"), "default"
+
+
+def _classify_failure(request, *, error=None, result=None):
+    return _classification(request, error=error, result=result)[0]
+
+
+def _failure_response(request, *, error=None, result=None):
+    category, basis = _classification(request, error=error, result=result)
+    payload = dict(result) if isinstance(result, dict) else {
+        "contract": 1, "status": "failed", "artifacts": [],
+        "detail": str(error) if error is not None else "command_failed",
+    }
+    payload["contract"] = 1
+    payload["status"] = "failed"
+    code = getattr(error, "error_code", None) if error is not None else None
+    if not code and isinstance(result, dict):
+        code = result.get("error_code")
+        details = result.get("detail")
+        if not code and isinstance(details, dict):
+            code = details.get("error_code")
+    from engine_core.errors import lookup
+    known = lookup(str(code or "").upper())
+    if category == "deterministic":
+        payload["error_code"] = str(code) if known and not known.get("reserved") else "DETERMINISTIC_FAILURE"
+        payload["retryable"] = False
+        if basis == "default":
+            payload["unclassified"] = True
+        return 40, payload
+    # a retryable failure keeps the code its producer gave; without a registered one it is INTERNAL_ERROR, flagged
+    if known and not known.get("reserved"):
+        payload["error_code"] = str(code)
+    elif basis == "default":
+        payload["error_code"] = "INTERNAL_ERROR"
+        payload["unclassified"] = True
+    else:
+        payload["error_code"] = str(code) if code else "RETRYABLE_FAILURE"
+    payload["retryable"] = True
+    return 75, payload
+
+
+
+def _run_daily_kline_fill(request, root, target: str, args) -> tuple[int, dict]:
+    """Run the TD-driven per-symbol fill (C630). BUSY means another trigger point holds the lease: skip, no retry."""
+    from engine_core.data_pipeline.daily_kline_fill import run_daily_kline_fill_from_root
+    try:
+        result = run_daily_kline_fill_from_root(root, target, args=args)
+    except Exception as exc:
+        if getattr(exc, "error_code", None) == "BAOSTOCK_GAP_UNRESOLVED":
+            # progress is already in TD; an incomplete day is a resumable state, never a final failure
+            return 75, {"contract": 1, "status": "failed", "error_code": "TIER_PARTIAL",
+                        "retryable": True, "artifacts": [],
+                        "detail": {**getattr(exc, "daily_kline_detail", {}), "message": str(exc)[:300],
+                                   "raw_error_code": "BAOSTOCK_GAP_UNRESOLVED"}}
+        code, reply = _failure_response(request, error=exc)
+        detail = getattr(exc, "daily_kline_detail", None)
+        if isinstance(detail, dict):
+            reply["detail"] = {**detail, "message": str(exc)[:300]}
+        return code, reply
+    if result.get("status") == "BUSY":
+        return 20, {"contract": 1, "status": "not_applicable", "error_code": "ALREADY_SATISFIED", "retryable": False,
+                    "artifacts": [], "detail": result}
+    return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
+               "artifacts": [], "detail": result}
+
+
+def _has_baostock_daily_kline(root, day: str, minimum_coverage: float = 0.90) -> bool:
+    """The gap-only path repairs a nearly complete Baostock partition. With no Baostock partition, or one far below
+    ``minimum_coverage`` (a first pull cut short by its time budget, e.g. 2026-10-29: 3382/5217 = 0.648), fall through to
+    the full close pull, which resumes from its checkpoints. (2026-10-29: every Baostock event carried the gap policy, so
+    no event ever fetched the day, then none continued a partial first pull.) A full-coverage version with no missing
+    symbols but incomplete metadata also falls through to refresh the partition."""
+    try:
+        import json
+        from engine_core.data_pipeline.storage import ArtifactCatalog
+        catalog = ArtifactCatalog(root)
+        manifest_path = catalog.locate("daily_kline", day)
+        if manifest_path is None:
+            return False
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if str(manifest.get("provider") or "").lower() != "baostock":
+            return False
+        quality = manifest.get("quality") or {}
+        coverage = quality.get("coverage")
+        expected = quality.get("expected_count") or manifest.get("expected_count")
+        rows = manifest.get("row_count")
+        if coverage is None:
+            coverage = (float(rows) / float(expected)) if expected and rows is not None else None
+        if coverage is None or float(coverage) < float(minimum_coverage):
+            return False
+        missing = quality.get("missing")
+        if type(missing) is int:
+            return missing > 0
+        return bool(expected and rows is not None and int(rows) < int(expected))
+    except Exception:
+        return False
+
+
+def _formal_baostock_daily_kline(root, day: str) -> dict | None:
+    """Return today's fully evidenced Baostock version, if another event already completed it."""
+    try:
+        import json
+        from engine_core.data_pipeline.storage import ArtifactCatalog
+
+        catalog = ArtifactCatalog(root)
+        manifest_path = catalog.locate("daily_kline", day)
+        if manifest_path is None:
+            return None
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        quality = manifest.get("quality") if isinstance(manifest.get("quality"), dict) else {}
+        source_dates = manifest.get("source_dates") if isinstance(manifest.get("source_dates"), dict) else {}
+        fields = ("open", "high", "low", "close", "pre_close", "pct_chg", "volume", "amount_yuan")
+        completeness = manifest.get("field_completeness")
+        if (manifest.get("provider") != "baostock" or manifest.get("business_status") != "FORMAL" or
+                quality.get("coverage", 0) < 0.995 or manifest.get("source_asof") != day or
+                manifest.get("source_dates_consistent") is not True or
+                manifest.get("source_date_values") != [day] or
+                any(source_dates.get(field) != day for field in fields) or
+                not isinstance(completeness, dict) or
+                any(str(completeness.get(field, "")).upper() not in {"COMPLETE", "SUSPENDED_ONLY"}
+                    for field in fields)):
+            return None
+        return manifest
+    except (OSError, ValueError, TypeError):
+        return None
+
+def _run(request):
+    if not request.get("dry_run") and os.environ.get("GUARDIAN_DRY_RUN") != "1":
+        allowed, info = admit(request)
+        if not allowed:
+            return 75, {"contract": 1, "status": "failed", "retryable": True,
+                        "error_code": "TD_RESOURCE_EXHAUSTED", "artifacts": [],
+                        "detail": {"reason": "LOW_MEMORY", **info}}
+    base, _event_id = _event_from_request(request)
+    if str(request.get("handler") or (base.handler if base else "")) != "premarket_data":
+        return _run_event(request)
+    with _premarket_prep_lock(request) as holder:
+        if not holder:
+            return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False, "artifacts": [],
+                       "detail": "same_date_premarket_prep_process_running"}
+        return _run_event(request)
+
+
+def _run_event(request):
+    from examples.core_guardian import _command_handler
+
+    base, event_id = _event_from_request(request)
+    configured_handler = str(request.get("handler") or (base.handler if base else ""))
+    if configured_handler in {"boot_trade_day", "boot_data_health", "boot_reconcile", "boot_apply_plan", "fetch_item"}:
+        from engine_core.guardian.startup import boot_apply_plan, boot_data_health, boot_reconcile, boot_trade_day, fetch_item
+        trade_date = request.get("trade_date")
+        if not trade_date:
+            return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                        "retryable": False, "detail": "trade_date_required"}
+        root = Path(os.environ.get("CORE_DATA_ROOT", "~/core-data")).expanduser()
+        dry = os.environ.get("GUARDIAN_DRY_RUN") == "1"
+        now = request.get("now")
+        args = request.get("args") if isinstance(request.get("args"), dict) else {}
+        reconcile_options = {
+            "reconcile_max_load5": args.get("reconcile_max_load5", "cpus"),
+            "daily_kline_load_defer_window_limit": args.get("daily_kline_load_defer_window_limit", 3),
+        }
+        if configured_handler == "boot_trade_day":
+            result = boot_trade_day(str(trade_date), root)
+        elif _borrowed_job(configured_handler, args):
+            import importlib
+            module_name, function = _borrowed_job(configured_handler, args)
+            job = getattr(importlib.import_module(module_name), function)
+            return job({**request, "args": args, "trade_date": str(trade_date)}, root, dry_run=dry)
+        elif configured_handler == "boot_data_health":
+            result = boot_data_health(str(trade_date), request.get("prev_trade_date"), root,
+                                      now=now, dry_run=dry)
+        elif configured_handler == "boot_reconcile":
+            result = boot_reconcile(str(trade_date), str(request.get("phase") or ""),
+                                    request.get("health"), root, now=now, **reconcile_options)
+            _send_load_defer_alert(request, result, dry)
+            _send_td_coverage_alert(request, result, dry)
+        elif configured_handler == "boot_apply_plan":
+            reconciled = boot_reconcile(str(trade_date), str(request.get("phase") or ""),
+                                        request.get("health"), root, now=now, **reconcile_options)
+            runtime_reconcile = str(request.get("event") or "").startswith("runtime_reconcile_")
+            plan = reconciled["detail"].get("plan", [])
+            only = args.get("only_items")      # acceptance runs (C577): restrict a real reconcile pass to named items
+            if isinstance(only, list) and only:
+                plan = [row for row in plan if row.get("id") in only]
+            result = boot_apply_plan(str(trade_date), plan, root,
+                                     now=now, phase=str(request.get("phase") or ""), dry_run=dry,
+                                     enqueue_only=runtime_reconcile,
+                                     active_events=request.get("active_events"),
+                                     schedule_args=args)
+            if reconciled["detail"].get("load_defer_alert"):
+                result.setdefault("detail", {})["load_defer_alert"] = reconciled["detail"]["load_defer_alert"]
+            if reconciled["detail"].get("td_coverage_alert"):
+                result.setdefault("detail", {})["td_coverage_alert"] = reconciled["detail"]["td_coverage_alert"]
+            _send_load_defer_alert(request, result, dry)
+            _send_td_coverage_alert(request, result, dry)
+        else:
+            result = fetch_item(str(request.get("item_id") or args.get("item_id") or ""), str(request.get("data_date") or trade_date),
+                                root, dry_run=dry, now=now,
+                                phase=str(request.get("phase") or "") or None,
+                                schedule_args=args)
+            upgrade = result.get("detail", {}).get("upgrade")
+            if upgrade and upgrade.get("escalated_now"):
+                result["detail"]["alert"] = _send_alert({
+                    "event": "daily_kline_upgrade", "trade_date": str(trade_date),
+                    "now": now, "reason": "GAP_ESCALATED"}, dry)
+        if result["status"] == "failed":
+            return _failure_response(request, result=result)
+        return 0, result
+    if not configured_handler:
+        return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                    "retryable": False, "detail": "unknown_event:" + event_id}
+    if base is not None and request.get("handler") and base.handler != configured_handler:
+        return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                    "retryable": False, "detail": "handler_event_mismatch:" + event_id}
+    name = configured_handler
+    trade_date = request.get("trade_date")
+    if not trade_date:
+        return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                    "retryable": False, "detail": "trade_date_required"}
+    root = Path(os.environ.get("CORE_DATA_ROOT", "~/core-data")).expanduser()
+    dry = os.environ.get("GUARDIAN_DRY_RUN") == "1"
+    target_day = str(request.get("data_date") or trade_date)
+    opts = SimpleNamespace(write=not dry, td_write=False, simulate_clock=dry,
+                           email_self=not dry and os.environ.get("GUARDIAN_EMAIL_SELF", "1") == "1",
+                           run=not dry)
+    asof = str(request.get("asof") or f"{trade_date}T{getattr(base, 'start', '00:00:00')}+08:00")
+    if name == "auction_report" and asof[11:19] > "09:26:00":
+        asof = asof[:11] + "09:26:00" + asof[19:]  # panorama rejects an as-of after 09:26:00; the 09:26:30 start only delays the run
+    start = datetime.fromisoformat(asof).strftime("%H:%M:%S")
+    scheduled_args = getattr(base, "args", None)
+    request_args = request.get("args")
+    args = dict(scheduled_args) if isinstance(scheduled_args, dict) else {}
+    if isinstance(request_args, dict):
+        args.update(request_args)
+    deadline_at = str(request.get("deadline_at") or "")
+    deadline = (deadline_at[11:19] if len(deadline_at) >= 19 and deadline_at[10] == "T"
+                else getattr(base, "deadline", None))
+    if name == "daily_kline_backfill":
+        from engine_core.prep_trade_day import previous_trade_date
+        target = target_day
+        if args.get("target") == "prev_trade_day":
+            target = previous_trade_date(root, str(trade_date)) or ""
+        if not target:
+            return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                        "retryable": False, "detail": "backfill_target_unavailable"}
+        return _run_daily_kline_fill(request, root, target, args)
+    if name == "baostock_probe" and not dry:
+        # One path for every Baostock trigger point: the per-symbol fill reads TD, so a complete day costs nothing.
+        return _run_daily_kline_fill(request, root, target_day, args)
+    event = SimpleNamespace(event_id=event_id, asof=request.get("asof"), handler=name, gate=getattr(base, "gate", "always"), start=start,
+                            deadline=deadline,
+                            args=args, timeout_seconds=int(request.get("timeout_seconds") or getattr(base, "timeout_seconds", 300)),
+                            data_date_offset=getattr(base, "data_date_offset", 0))
+    now = datetime.fromisoformat(asof)
+    if name == "intraday_data" and args.get("dataset") == "limit_up_pool_today":
+        from engine_core.guardian.limit_up_today import run as run_limit_up_today
+        today_request = {**request, "data_date": target_day, "args": args}
+        if request.get("asof") or request.get("now"):
+            today_request["as_of"] = request.get("asof") or request.get("now")
+        return run_limit_up_today(today_request, root, dry_run=dry)
+    if name == "postmarket_data" and (args.get("dataset") == "chip_peak"
+                                       or event_id in ("chip_peak_postclose", "chip_peak_0145")
+                                       or event_id.startswith(("chip_peak_postclose_rh", "chip_peak_0145_rh"))):
+        from engine_core.data_pipeline.chip_peak import run as run_chip_peak
+        if not request.get("data_date"):
+            return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                        "retryable": False, "detail": "chip_peak_target_unavailable"}
+        from engine_core.data_pipeline.td_sink import TdUnavailable
+        from engine_core.data_pipeline.auction_amount_facts import _registered_failure
+        try:
+            return run_chip_peak({"trade_date": target_day, "args": {"mode": "incremental"}}, root, dry_run=dry)
+        except TdUnavailable as exc:
+            return _registered_failure(exc.error_code, {"message": str(exc)})
+    if name == "postmarket_data" and (args.get("dataset") == "dde_derived"
+                                       or event_id == "dde_derived_0445"
+                                       or event_id.startswith("dde_derived_0445_rh")):
+        from engine_core.data_pipeline.dde_derived import run as run_dde_derived
+        if not request.get("data_date"):
+            return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                        "retryable": False, "detail": "dde_derived_target_unavailable"}
+        from engine_core.data_pipeline.td_sink import TdUnavailable
+        from engine_core.data_pipeline.auction_amount_facts import _registered_failure
+        try:
+            return run_dde_derived({"trade_date": target_day}, root, dry_run=dry)
+        except TdUnavailable as exc:
+            return _registered_failure(exc.error_code, {"message": str(exc)})
+    if name == "postmarket_data" and (args.get("dataset") == "price_volume"
+                                       or event_id in ("price_volume_postclose", "price_volume_0130")
+                                       or event_id.startswith(("price_volume_postclose_rh", "price_volume_0130_rh"))):
+        from engine_core.data_pipeline.price_volume import run as run_price_volume
+        if not request.get("data_date"):
+            return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                        "retryable": False, "detail": "price_volume_target_unavailable"}
+        return run_price_volume({"trade_date": target_day, "args": {"mode": "incremental"}}, root, dry_run=dry)
+    if name == "postmarket_data" and (args.get("dataset") == "adjust_factor"
+                                       or event_id in ("adjust_factor_postclose", "adjust_factor_0115")
+                                       or event_id.startswith(("adjust_factor_postclose_rh", "adjust_factor_0115_rh"))):
+        from engine_core.data_pipeline.adjust_factor import run as run_adjust_factor
+        if not request.get("data_date"):
+            return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                        "retryable": False, "detail": "adjust_factor_target_unavailable"}
+        return run_adjust_factor({"trade_date": target_day, "args": {"mode": "incremental"}}, root, dry_run=dry)
+    if name == "postmarket_data" and args.get("dataset") == "stock_listing":
+        if dry:
+            return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
+                       "artifacts": [], "detail": "stock_listing dry run"}
+        if not request.get("data_date"):
+            return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                        "retryable": False, "detail": "stock_listing_target_unavailable"}
+        result = subprocess.run([sys.executable, str(ROOT / "examples" / "build_stock_listing.py"),
+                                 "--date", target_day], capture_output=True, text=True, check=False)
+        try:
+            reply = json.loads(result.stdout.strip().splitlines()[-1])
+            if not isinstance(reply, dict):
+                raise ValueError("reply is not an object")
+        except (IndexError, ValueError):
+            return _failure_response(request, error=ValueError("invalid stock listing job reply"))
+        return result.returncode, reply
+    if name == "intraday_data" and args.get("dataset") == "stock_cap":
+        if dry or request.get("dry_run"):
+            return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
+                       "artifacts": [], "detail": "stock_cap dry run"}
+        from engine_core.data_pipeline.auction_redis_view import redis_client
+        from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+        from engine_core.data_pipeline.stock_cap import fetch_stock_caps, publish_stock_caps
+        try:
+            with ReferenceSnapshotStore() as snapshots:
+                snapshot = snapshots.read_latest("stock_static")
+            universe = {str(row.get("symbol") or "").zfill(6) for row in (snapshot or {}).get("rows", [])
+                        if row.get("symbol")}
+            result = fetch_stock_caps(target_day, universe=universe)
+            if result.get("error") or not result.get("rows"):
+                if result.get("retryable") is False:
+                    return 40, {"contract": 1, "status": "failed", "error_code": "FETCH_FAILED",
+                                "retryable": False, "artifacts": [], "detail": result.get("error")}
+                return 75, {"contract": 1, "status": "failed", "error_code": "FETCH_FAILED",
+                            "retryable": True, "artifacts": [], "detail": result.get("error")}
+            publish_stock_caps(target_day, redis_client(), result)
+            return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
+                       "artifacts": [], "detail": {"version": result["meta"]["version"]}}
+        except Exception as exc:
+            return 75, {"contract": 1, "status": "failed", "error_code": "FETCH_FAILED",
+                        "retryable": True, "artifacts": [], "detail": str(exc)}
+    if name == "intraday_data" and args.get("dataset") == "plate_stock_index":
+        if dry:
+            return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
+                       "artifacts": [], "detail": "plate_stock_index dry run"}
+        from engine_core.data_pipeline.auction_redis_view import redis_client
+        from engine_core.data_pipeline.plate_stock_index import run as run_plate_stock_index
+        from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotError
+        from engine_core.storage.two_layer import TwoLayerStore
+        try:
+            client = redis_client()
+            result = run_plate_stock_index(str(trade_date), f"{trade_date}T09:05:00+08:00",
+                                           redis_client=client, store=TwoLayerStore(client))
+            if result.status != "published":
+                return _failure_response(request, error=ConnectionError(result.reason or result.status))
+            return 0, {"contract": 1, "status": "ok" if result.archive_status == "ARCHIVED" else "degraded",
+                       "error_code": "", "retryable": False, "artifacts": [],
+                       "detail": {"version": result.version, "archive_status": result.archive_status,
+                                  "reason": result.reason}}
+        except ReferenceSnapshotError as exc:
+            if str(exc) == "TD_CONFIG_required":
+                return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                            "retryable": False, "artifacts": [], "detail": str(exc)}
+            return _failure_response(request, error=ConnectionError(str(exc)))
+        except ValueError as exc:
+            if str(exc) in {"plate_members_unavailable", "plate_members_not_visible"}:
+                return _failure_response(request, error=ConnectionError(str(exc)))
+            return _failure_response(request, error=exc)
+        except Exception as exc:
+            return _failure_response(request, error=exc)
+    if name == "intraday_data" and args.get("dataset") == "auction_seal_facts":
+        if dry:
+            return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
+                       "artifacts": [], "detail": "auction_seal_facts dry run"}
+        from engine_core.data_pipeline.auction_redis_view import redis_client
+        from engine_core.data_pipeline.auction_seal_facts import run as run_auction_seal_facts
+        from engine_core.storage.two_layer import TwoLayerStore
+        try:
+            client = redis_client()
+            result = run_auction_seal_facts(str(trade_date), redis_client=client, store=TwoLayerStore(client))
+            if result.status != "published":
+                return _failure_response(request, error=ConnectionError(result.reason or result.status))
+            degraded = result.archive_status != "ARCHIVED"
+            return 0, {"contract": 1, "status": "degraded" if degraded else "ok",
+                       "error_code": "", "retryable": False, "artifacts": [],
+                       "detail": {"version": result.version, "archive_status": result.archive_status,
+                                  "reason": result.reason, "unknown_listing": result.metadata.get("unknown_listing", []),
+                                  "unknown_prices": result.metadata.get("unknown_prices", [])}}
+        except Exception as exc:
+            return _failure_response(request, error=exc)
+    if name == "postmarket_data" and args.get("dataset") == "auction_amount_facts":
+        from engine_core.data_pipeline.auction_amount_facts import run as run_auction_amount_facts
+        end_date = (date.fromisoformat(str(trade_date)) - timedelta(days=1)).isoformat()
+        return run_auction_amount_facts({"end_date": end_date, "window": args["window"],
+                                         "max_days": args["max_days"]}, root, dry_run=dry)
+    if name == "daily_kline_close":
+        from engine_core.guardian.daily_kline_close import run_close_tier
+        return run_close_tier(request, root, dry_run=dry)
+    if name == "postmarket_data" and (args.get("dataset") == "daily_dde"
+                                       or event_id == "daily_dde_0200"
+                                       or event_id.startswith("daily_dde_0200_rh")):
+        from engine_core.guardian.daily_dde_sync import run as run_daily_dde_sync
+        return run_daily_dde_sync(request, root, dry_run=dry)
+    if name == "kaipan_fetch" and args.get("dataset") == "limit_up_pool":
+        # C580: D-1 limit-up pool ladder rung (kaipan / wencai / td per schedule.json); other kaipan_fetch events
+        # (kaipan_refresh_0850: reasons, hot plates, members) keep the command path below.
+        from engine_core.guardian.limit_pool_d1 import run_pool_tier
+        return run_pool_tier({**request, "data_date": target_day}, root, dry_run=dry)
+    if name == "kaipan_fetch" and args.get("dataset") == "limit_up_detail":
+        # C611: date-evidenced raw Kaipan detail -> Core TD and best-effort Redis hot views; no catalog partition.
+        from engine_core.guardian.limit_up_detail_d1 import run as run_limit_up_detail
+        return run_limit_up_detail({**request, "data_date": target_day}, root, dry_run=dry)
+    checkpoint_reply = None
+    if name == "intraday_data" and args.get("checkpoint") is not None:
+        # C587: the time-critical part is the Redis q2 checkpoint (source order / tolerance in schedule.json). It runs
+        # first; the legacy hot_plates refresh below is independent of ticks and may never fail the event, because a
+        # retry could no longer reproduce the checkpoint window.
+        from engine_core.guardian.intraday_checkpoint_run import run_checkpoint
+        code, checkpoint_reply = run_checkpoint({**request, "start": start, "data_date": target_day}, root, dry_run=dry)
+        if code not in (0, 10):
+            return code, checkpoint_reply
+    if name == "close_capture":
+        return 0, {"contract": 1, "status": "not_applicable", "error_code": "",
+                   "retryable": False, "artifacts": [], "detail": "close_capture_not_implemented"}
+    try:
+        result = _command_handler(name, opts, root)(event, now, {},
+                                                    bool(request.get("degrade_requested")))
+        if not dry:
+            from engine_core.guardian.commands import validate_handler_postcondition
+            postcondition_args = {**args, "event_id": event.event_id}
+            ok, reason = validate_handler_postcondition(
+                name, target_day, root, args.get("datasets"), postcondition_args)
+            if not ok:
+                return _failure_response(request, result={
+                    "contract": 1, "status": "failed", "error_code": "POSTCONDITION_FAILED",
+                    "retryable": False, "artifacts": [], "detail": reason})
+        degraded = isinstance(result, str) and result.startswith("DEGRADED:")
+        if checkpoint_reply is not None:
+            degraded = degraded or checkpoint_reply["status"] == "degraded"
+            result = {"checkpoint": checkpoint_reply["detail"], "hot_plates": str(result)[-300:]}
+        return 0, {"contract": 1, "status": "degraded" if degraded else "ok",
+                   "error_code": "", "retryable": False, "artifacts": [], "detail": result}
+    except Exception as exc:
+        if checkpoint_reply is not None:
+            return 0, {"contract": 1, "status": "degraded", "error_code": "", "retryable": False, "artifacts": [],
+                       "detail": {"checkpoint": checkpoint_reply["detail"],
+                                  "hot_plates_error": f"{type(exc).__name__}:{str(exc)[:200]}"}}
+        return _failure_response(request, error=exc)
+
+
+def _gate(name, request=None):
+    from engine_core.guardian.gates import default_gates
+    from engine_core.guardian.scheduler import default_events
+
+    request = request or {}
+    name = name or (request.get("gate") or {}).get("ref") or ""
+
+    if name in {"always", "calendar_ready"}:
+        _json({"status": "ready", "reason": name})
+        return 0
+    fn = default_gates().get(name)
+    event = next((item for item in default_events() if item.event_id == request.get("event")), None) \
+        or next((item for item in default_events() if item.gate == name), None)
+    if fn is None or event is None:
+        _json({"status": "not_ready", "reason": "unknown_gate"})
+        return 64
+    asof = str(request.get("asof") or "")
+    if len(asof) >= 19 and asof[10] == "T":
+        # C587: the runtime's own start time and args are authoritative (same values as schedule.json in production);
+        # this lets a shifted-trigger acceptance run gate on its real cut-off instead of the repository's.
+        import dataclasses
+        sent = request.get("args") if isinstance(request.get("args"), dict) and request.get("args") else None
+        due = str(request.get("deadline_at") or "")
+        deadline = due[11:19] if len(due) >= 19 and due[10] == "T" else max(asof[11:19], event.deadline)
+        event = dataclasses.replace(event, start=asof[11:19], deadline=deadline,
+                                    args=sent if sent is not None else event.args)
+    try:
+        now = datetime.fromisoformat(request.get("now")) if request.get("now") else None
+        if now is not None and now.tzinfo is None:
+            from zoneinfo import ZoneInfo
+            now = now.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+    except (TypeError, ValueError):
+        now = None
+    now = now or datetime.now().astimezone()
+    try:
+        result = fn(event, now, {})
+        payload = dict(result) if isinstance(result, dict) else {
+            "status": "ready" if bool(result) else "not_ready",
+            "reason": "gate_satisfied" if bool(result) else "gate_condition_false"}
+        ready = payload.get("status") == "ready"
+        _json(payload)
+        return 0 if ready else 75
+    except Exception as exc:
+        _json({"status": "not_ready", "reason": f"{type(exc).__name__}:{exc}"})
+        return 75
+
+
+def _send_alert(request, dry_run):
+    from engine_core.report_mailer import build_alert_message, load_smtp_config, send_message
+
+    inner = request.get("request") if isinstance(request.get("request"), dict) else request
+    reason = str(request.get("reason") or inner.get("reason") or "unspecified")
+    try:
+        now_day = datetime.fromisoformat(request.get("now")).date().isoformat() if request.get("now") else None
+    except (TypeError, ValueError):
+        now_day = None
+    day = inner.get("date") or request.get("trade_date") or now_day or datetime.now().date().isoformat()
+    listed = inner.get("instances") or inner.get("events")
+    if listed:
+        events = [{"event": str(x), "reason": reason} for x in listed]
+    else:
+        events = [{"event": inner.get("event", "unknown"), "reason": reason,
+                   "error": inner.get("error")}] if inner is not request or "event" in inner else [request]
+    grouped = {}
+    for item in events:
+        key = (str(item.get("event", "unknown")), str(item.get("reason", "unspecified")))
+        grouped[key] = grouped.get(key, 0) + 1
+    lines = [f"{event}: {reason} ({count})" for (event, reason), count in sorted(grouped.items())]
+    if reason == "TIER_FALLBACK" and inner.get("error"):
+        # failed tier(s) -> succeeded tier, e.g. "wencai:DETERMINISTIC_FAILURE -> q2_final"
+        lines = [f"{line} {inner['error']}" for line in lines]
+    from_addr = "reports@localhost"
+    config = None
+    if not dry_run:
+        config = load_smtp_config()
+        from_addr = config.from_addr
+    message = build_alert_message(day, "guardian", RuntimeError("\n".join(lines)),
+                                  "412826313@qq.com", from_addr)
+    message.set_content("Guardian 告警汇总\n" + "\n".join(lines))
+    receipt = send_message(config, message, dry_run=dry_run,
+                           allow_recipients=["412826313@qq.com"])
+    return {"status": receipt.status, "to": "412826313@qq.com", "events": len(events),
+            "subject": message["Subject"], "body": "Guardian 告警汇总\n" + "\n".join(lines)}
+
+
+def _alert(request, dry_run):
+    _json(_send_alert(request, dry_run))
+    return 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command", required=True)
+    run = sub.add_parser("run")
+    run.add_argument("--handler", default="")
+    gate = sub.add_parser("gate")
+    gate.add_argument("name", nargs="?", default="")
+    alert = sub.add_parser("alert")
+    alert.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        request = json.load(sys.stdin) if args.command in {"run", "alert", "gate"} else {}
+        if args.command == "run":
+            if args.handler:
+                request["handler"] = args.handler
+            code, result = _run(request)
+            from engine_core.guardian.contract import check_reply
+            violations = check_reply(code, result)
+            if violations:
+                # Observe first: guardiand would read this pair as a generic retryable failure or not at all.
+                result = {**result, "contract_violations": violations}
+                print("CONTRACT_VIOLATION exit=%s %s" % (code, ",".join(violations)), file=sys.stderr)
+            _json(result)
+            return code
+        if args.command == "gate":
+            return _gate(args.name, request)
+        return _alert(request, args.dry_run)
+    except Exception as exc:
+        if args.command == "run":
+            _json({"contract": 1, "status": "failed", "error_code": "INTERNAL_ERROR",
+                   "retryable": True, "artifacts": [], "detail": str(exc)})
+            return 1
+        _json({"status": "not_ready" if args.command == "gate" else "failed",
+               "reason": f"{type(exc).__name__}:{exc}"})
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

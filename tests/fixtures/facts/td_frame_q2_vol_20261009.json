@@ -1,0 +1,20 @@
+{
+  "note": "Real 2026-10-09 09:39:24 TD frame rows beside the live Q2 hash read at 09:42 (sealed capture); 002709/002712 show Q2 iv/ia non-zero while TD inst_* is 0",
+  "evidence": {
+    "q2_capture_path": "/home/exedev/validation/open-live-followup-20261009T094227+0800/probe_claude_live_capture.json",
+    "q2_capture_sha256": "7806d6d1dfd26daa4807ae0512708b21b37bf6c6d351104be364a70fd8d02003",
+    "td_comparison_path": "/home/exedev/validation/task009-e-session-prefix-parity-20261011/run_final_v2/field_comparison.json",
+    "td_comparison_sha256": "725791d7509da2adc20ba7c2684a34ac53c9508276247a93703ff0c1658a94fb",
+    "scope": "frozen source-time comparison; not Rabbit arrival, historical available_at, or NORMAL equivalence"
+  },
+  "rows": [
+    {"symbol": "000001", "td": {"ts": "2026-10-09 09:39:24", "px_milli": 11720, "pc_milli": 11780, "amt_yuan": 166575392, "vol_units": 141009, "inst_vol": 0, "inst_amt_yuan": 0}, "q2": {"px": 11720, "pc": 11780, "amt": 166575392, "vol": 141009, "ts": 1791509964000, "iv": 0, "ia": 0}},
+    {"symbol": "000002", "td": {"ts": "2026-10-09 09:39:24", "px_milli": 3950, "pc_milli": 4060, "amt_yuan": 533021408, "vol_units": 1318176, "inst_vol": 0, "inst_amt_yuan": 0}, "q2": {"px": 3950, "pc": 4060, "amt": 533021408, "vol": 1318176, "ts": 1791509964000, "iv": 0, "ia": 0}},
+    {"symbol": "000006", "td": {"ts": "2026-10-09 09:39:24", "px_milli": 7370, "pc_milli": 7500, "amt_yuan": 61071000, "vol_units": 81476, "inst_vol": 0, "inst_amt_yuan": 0}, "q2": {"px": 7370, "pc": 7500, "amt": 61071000, "vol": 81476, "ts": 1791509964000, "iv": 0, "ia": 0}},
+    {"symbol": "000008", "td": {"ts": "2026-10-09 09:39:24", "px_milli": 2380, "pc_milli": 2390, "amt_yuan": 7461200, "vol_units": 31304, "inst_vol": 0, "inst_amt_yuan": 0}, "q2": {"px": 2380, "pc": 2390, "amt": 7461200, "vol": 31304, "ts": 1791509964000, "iv": 0, "ia": 0}},
+    {"symbol": "000009", "td": {"ts": "2026-10-09 09:39:24", "px_milli": 6990, "pc_milli": 6940, "amt_yuan": 14204700, "vol_units": 20384, "inst_vol": 0, "inst_amt_yuan": 0}, "q2": {"px": 6990, "pc": 6940, "amt": 14204700, "vol": 20384, "ts": 1791509964000, "iv": 0, "ia": 0}},
+    {"symbol": "000010", "td": {"ts": "2026-10-09 09:39:24", "px_milli": 1400, "pc_milli": 1410, "amt_yuan": 2040700, "vol_units": 14516, "inst_vol": 0, "inst_amt_yuan": 0}, "q2": {"px": 1400, "pc": 1410, "amt": 2040700, "vol": 14516, "ts": 1791509964000, "iv": 0, "ia": 0}},
+    {"symbol": "002709", "td": {"ts": "2026-10-09 09:39:24", "px_milli": 33890, "pc_milli": 32690, "amt_yuan": 842018496, "vol_units": 253028, "inst_vol": 0, "inst_amt_yuan": 0}, "q2": {"px": 33890, "pc": 32690, "amt": 842018496, "vol": 253028, "ts": 1791509964000, "iv": 1234, "ia": 4180928}},
+    {"symbol": "002712", "td": {"ts": "2026-10-09 09:39:24", "px_milli": 4820, "pc_milli": 4900, "amt_yuan": 6010400, "vol_units": 12352, "inst_vol": 0, "inst_amt_yuan": 0}, "q2": {"px": 4820, "pc": 4900, "amt": 6010400, "vol": 12352, "ts": 1791509964000, "iv": 12, "ia": 5800}}
+  ]
+}

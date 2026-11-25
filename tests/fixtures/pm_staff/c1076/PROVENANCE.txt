@@ -1,0 +1,5 @@
+Captured: 2026-11-14T02:00:07.274815+08:00
+Sources: /home/exedev/fw/staff/roster.json and /home/exedev/fw/staff/auditor-1/MEMORY.md
+Transformation: auditor-1 name field only; first three original memory lines.
+SHA256 /home/exedev/fw/staff/roster.json: 378d6f766d5870f5c32f0940f940f3cec6b52bd4d9c04d1a356a4c7ce6249ac5
+SHA256 /home/exedev/fw/staff/auditor-1/MEMORY.md: 81b0ab3493ca73d2f0206d444010f5a7a65d3cb35843ff48f6e4a7de700fa9dd

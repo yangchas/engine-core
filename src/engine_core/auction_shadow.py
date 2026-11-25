@@ -213,6 +213,7 @@ def build_auction_fact_shadow_from_snapshots(
     previous_observed_end_time_ms: Optional[int] = None,
     current_observed_start_time_ms: Optional[int] = None,
     current_observed_end_time_ms: Optional[int] = None,
+    price_fields: Optional[Tuple[str, str, str]] = None,
 ) -> AuctionFactShadow:
     """Compose the fact-only shadow from three Engine snapshots.
 
@@ -242,6 +243,18 @@ def build_auction_fact_shadow_from_snapshots(
     ):
         raise ValueError("auction shadow snapshot times must be strictly increasing")
 
+    selected_price_fields = (
+        ("price_milli", "price_milli", "price_milli")
+        if price_fields is None
+        else price_fields
+    )
+    if (
+        not isinstance(selected_price_fields, tuple)
+        or len(selected_price_fields) != 3
+        or any(not isinstance(item, str) or not item for item in selected_price_fields)
+    ):
+        raise ValueError("price_fields must be a tuple of three non-empty field names")
+
     previous = build_segment_frame(
         previous_segment_id,
         start_snapshot,
@@ -253,6 +266,8 @@ def build_auction_fact_shadow_from_snapshots(
         coverage_status=previous_coverage_status,
         observed_start_time_ms=previous_observed_start_time_ms,
         observed_end_time_ms=previous_observed_end_time_ms,
+        start_price_field=selected_price_fields[0],
+        end_price_field=selected_price_fields[1],
     )
     current = build_segment_frame(
         current_segment_id,
@@ -265,6 +280,8 @@ def build_auction_fact_shadow_from_snapshots(
         coverage_status=current_coverage_status,
         observed_start_time_ms=current_observed_start_time_ms,
         observed_end_time_ms=current_observed_end_time_ms,
+        start_price_field=selected_price_fields[1],
+        end_price_field=selected_price_fields[2],
     )
     return build_auction_fact_shadow(previous, current)
 

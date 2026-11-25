@@ -1,0 +1,4599 @@
+{
+  "schema_version": 3,
+  "revision": 8,
+  "timezone": "Asia/Shanghai",
+  "global": {
+    "heavy_max_load5": 3.0,
+    "heavy_load_defer_max_polls": 6,
+    "heavy_cutoffs": {
+      "PRE_MARKET": "09:10:00"
+    },
+    "phases": [
+      {
+        "name": "NIGHT",
+        "start": "00:00",
+        "end": "08:00"
+      },
+      {
+        "name": "PRE_MARKET",
+        "start": "08:00",
+        "end": "09:15"
+      },
+      {
+        "name": "AUCTION",
+        "start": "09:15",
+        "end": "09:25"
+      },
+      {
+        "name": "AUCTION_END",
+        "start": "09:25",
+        "end": "09:30"
+      },
+      {
+        "name": "OPEN",
+        "start": "09:30",
+        "end": "09:45"
+      },
+      {
+        "name": "INTRADAY_AM",
+        "start": "09:45",
+        "end": "11:30"
+      },
+      {
+        "name": "MIDDAY_BREAK",
+        "start": "11:30",
+        "end": "13:00"
+      },
+      {
+        "name": "PM_OPEN",
+        "start": "13:00",
+        "end": "13:15"
+      },
+      {
+        "name": "INTRADAY_PM",
+        "start": "13:15",
+        "end": "14:57"
+      },
+      {
+        "name": "CLOSE_AUCTION",
+        "start": "14:57",
+        "end": "15:00"
+      },
+      {
+        "name": "CLOSE",
+        "start": "15:00",
+        "end": "15:30"
+      },
+      {
+        "name": "POST_MARKET",
+        "start": "15:30",
+        "end": "24:00"
+      }
+    ]
+  },
+  "profiles": {
+    "policy_01": {
+      "catchup": "skip",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 2,
+          "backoff": "1s*2",
+          "backoff_cap": "5m",
+          "timeout": "1000s",
+          "budget_enabled": false
+        }
+      ]
+    },
+    "policy_02": {
+      "catchup": "skip",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 2,
+          "backoff": "1s*2",
+          "backoff_cap": "5m",
+          "timeout": "60s",
+          "budget_enabled": false
+        }
+      ]
+    },
+    "policy_03": {
+      "catchup": "skip",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 2,
+          "backoff": "1s*2",
+          "backoff_cap": "5m",
+          "timeout": "20s",
+          "budget_enabled": false
+        }
+      ]
+    },
+    "policy_04": {
+      "catchup": "skip",
+      "retry_backoff": "5m",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 3,
+          "backoff": "5m*2",
+          "backoff_cap": "5m",
+          "timeout": "20m",
+          "budget_enabled": false
+        }
+      ]
+    },
+    "policy_05": {
+      "catchup": "run_in_window",
+      "retry_backoff": "60s",
+      "retry_until_late": true,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 3,
+          "backoff": "60s*2",
+          "backoff_cap": "10m",
+          "timeout": "300s",
+          "budget_enabled": false,
+          "until": "late_until"
+        }
+      ]
+    },
+    "policy_06": {
+      "catchup": "run_in_window",
+      "retry_backoff": "60s",
+      "retry_until_late": true,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 3,
+          "backoff": "60s*2",
+          "backoff_cap": "10m",
+          "timeout": "901s",
+          "budget_enabled": false,
+          "until": "late_until"
+        }
+      ]
+    },
+    "policy_07": {
+      "catchup": "run_in_window",
+      "retry_backoff": "60s",
+      "retry_until_late": true,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 3,
+          "backoff": "60s*2",
+          "backoff_cap": "10m",
+          "timeout": "879s",
+          "budget_enabled": false,
+          "until": "late_until"
+        }
+      ]
+    },
+    "policy_08": {
+      "catchup": "run_in_window",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 3,
+          "backoff": "1s*2",
+          "backoff_cap": "5m",
+          "timeout": "300s",
+          "budget_enabled": false
+        }
+      ]
+    },
+    "policy_09": {
+      "catchup": "run_in_window",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 1,
+          "backoff": "1s*2",
+          "backoff_cap": "5m",
+          "timeout": "120s",
+          "budget_enabled": false
+        }
+      ]
+    },
+    "policy_10": {
+      "catchup": "run_in_window",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 1,
+          "backoff": "1s*2",
+          "backoff_cap": "5m",
+          "timeout": "300s",
+          "budget_enabled": false
+        }
+      ]
+    },
+    "policy_11": {
+      "catchup": "run_in_window",
+      "retry_backoff": "5m",
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 32,
+          "backoff": "30m*1",
+          "backoff_cap": "30m",
+          "timeout": "130m",
+          "budget_enabled": false,
+          "until": "late_until"
+        }
+      ]
+    },
+    "kline": {
+      "catchup": "run_in_window",
+      "ladder": [
+        {
+          "name": "primary",
+          "attempts": 3,
+          "backoff": "1m*2",
+          "timeout": "5m"
+        }
+      ]
+    },
+    "daily_kline_close": {
+      "catchup": "run_in_window",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "wencai",
+          "args": {
+            "providers": "wencai",
+            "wencai_cookie_file": "~/core-data/secrets/wencai.cookie",
+            "wencai_cooldown_seconds": 60,
+            "wencai_cooldown_max_seconds": 300,
+            "wencai_max_cooldowns": 3,
+            "wencai_max_total_requests": 150,
+            "wencai_segments": "on",
+            "wencai_segment_edges_yi": "0,15,25,35,50,80,150,500,none",
+            "wencai_segment_max_rows": 1500,
+            "wencai_coverage_threshold": 0.95
+          },
+          "attempts": 2,
+          "backoff": "60s*1",
+          "timeout": "25m",
+          "budget_enabled": false,
+          "on_timeout": "advance",
+          "alert_on_fallback": true
+        },
+        {
+          "name": "q2_final",
+          "args": {
+            "providers": "q2_final"
+          },
+          "attempts": 2,
+          "backoff": "30s*1",
+          "timeout": "3m",
+          "budget_enabled": false,
+          "on_timeout": "advance",
+          "alert_on_fallback": true
+        }
+      ]
+    },
+    "limit_pool_d1": {
+      "catchup": "run_in_window",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "kaipan",
+          "args": {
+            "dataset": "limit_up_pool",
+            "source": "kaipan",
+            "chain": "kaipan_getHisBans,wencai,td_derived",
+            "retry_until": "08:50:00",
+            "kaipan_min_interval_seconds": 10,
+            "kaipan_max_requests": 30
+          },
+          "attempts": 34,
+          "backoff": "15m*1",
+          "timeout": "5m",
+          "budget_enabled": false,
+          "on_timeout": "advance",
+          "alert_on_fallback": true
+        },
+        {
+          "name": "wencai",
+          "args": {
+            "dataset": "limit_up_pool",
+            "source": "wencai",
+            "chain": "kaipan_getHisBans,wencai,td_derived",
+            "wencai_cookie_file": "~/core-data/secrets/wencai.cookie",
+            "wencai_cooldown_seconds": 60,
+            "wencai_cooldown_max_seconds": 300,
+            "wencai_max_cooldowns": 2,
+            "wencai_max_total_requests": 3
+          },
+          "attempts": 2,
+          "backoff": "30m*1",
+          "timeout": "10m",
+          "budget_enabled": false,
+          "on_timeout": "advance",
+          "alert_on_fallback": true
+        },
+        {
+          "name": "td_derived",
+          "args": {
+            "dataset": "limit_up_pool",
+            "source": "td",
+            "chain": "kaipan_getHisBans,wencai,td_derived",
+            "td_lookback_calendar_days": 40
+          },
+          "attempts": 2,
+          "backoff": "5m*1",
+          "timeout": "5m",
+          "budget_enabled": false,
+          "on_timeout": "advance",
+          "alert_on_fallback": true
+        }
+      ]
+    },
+    "limit_reasons_d1": {
+      "catchup": "run_in_window",
+      "retry_backoff": "5m",
+      "retry_until_late": true,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 3,
+          "backoff": "5m*2",
+          "backoff_cap": "5m",
+          "timeout": "5m",
+          "budget_enabled": false,
+          "until": "late_until"
+        }
+      ]
+    },
+    "hot_plates_history": {
+      "catchup": "run_in_window",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "hot_history",
+          "attempts": 1,
+          "timeout": "300s",
+          "budget_enabled": false
+        }
+      ]
+    },
+    "hot_plates_short": {
+      "catchup": "run_in_window",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "hot_capture",
+          "attempts": 2,
+          "backoff": "2s*1",
+          "backoff_cap": "2s",
+          "timeout": "10s",
+          "budget_enabled": false
+        }
+      ]
+    },
+    "hot_plates_standard": {
+      "catchup": "run_in_window",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "hot_capture",
+          "attempts": 3,
+          "backoff": "4s*2",
+          "backoff_cap": "4s",
+          "timeout": "12s",
+          "budget_enabled": false
+        }
+      ]
+    },
+    "hot_plates_wide": {
+      "catchup": "run_in_window",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "hot_capture",
+          "attempts": 4,
+          "backoff": "5s*3",
+          "backoff_cap": "5s",
+          "timeout": "12s",
+          "budget_enabled": false
+        }
+      ]
+    },
+    "hot_plates_reconcile": {
+      "catchup": "run_in_window",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "gap_reconcile",
+          "attempts": 1,
+          "timeout": "10s",
+          "budget_enabled": false
+        }
+      ]
+    },
+    "daily_dde": {
+      "catchup": "run_in_window",
+      "retry_backoff": "5m",
+      "retry_until_late": true,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "kaipan",
+          "attempts": 5,
+          "backoff": "5m*2",
+          "backoff_cap": "30m",
+          "timeout": "2h10m",
+          "budget_enabled": false,
+          "on_timeout": "retry",
+          "until": "late_until"
+        }
+      ]
+    },
+    "limit_up_detail_d1": {
+      "catchup": "run_in_window",
+      "retry_backoff": "5m",
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "ladder": [
+        {
+          "name": "kaipan",
+          "args": {
+            "dataset": "limit_up_detail",
+            "source": "kaipan",
+            "backfill_depth": 20,
+            "degrade": "无降级链，等待重试到 08:50 前"
+          },
+          "attempts": 100,
+          "backoff": "5m*1",
+          "backoff_cap": "5m",
+          "timeout": "5m",
+          "budget_enabled": false,
+          "on_timeout": "retry",
+          "alert_on_fallback": false,
+          "until": "late_until"
+        }
+      ]
+    },
+    "kline_backfill": {
+      "catchup": "run_in_window",
+      "ladder": [
+        {
+          "name": "primary",
+          "attempts": 6,
+          "backoff": "5m*2",
+          "backoff_cap": "30m",
+          "timeout": "12h",
+          "budget_enabled": false
+        }
+      ]
+    },
+    "preopen_check": {
+      "catchup": "run_in_window",
+      "retry_backoff": "10m",
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 3,
+          "backoff": "10m*1",
+          "backoff_cap": "10m",
+          "timeout": "25m",
+          "budget_enabled": false,
+          "until": "late_until"
+        }
+      ]
+    },
+    "chain_sweep": {
+      "catchup": "run_in_window",
+      "retry_backoff": "10m",
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 3,
+          "backoff": "10m*1",
+          "backoff_cap": "10m",
+          "timeout": "25m",
+          "budget_enabled": false,
+          "until": "late_until"
+        }
+      ]
+    },
+    "policy_12": {
+      "catchup": "run_in_window",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 1,
+          "backoff": "",
+          "backoff_cap": "5m",
+          "timeout": "540s",
+          "budget_enabled": false
+        }
+      ]
+    },
+    "policy_13": {
+      "catchup": "run_in_window",
+      "retry_backoff": "10m",
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 3,
+          "backoff": "10m*2",
+          "backoff_cap": "20m",
+          "timeout": "3600s",
+          "budget_enabled": false,
+          "until": "late_until"
+        }
+      ]
+    }
+  },
+  "events": [
+    {
+      "event_id": "boot_apply_plan",
+      "handler": "boot_apply_plan",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "startup",
+      "available_after": null,
+      "deadline": "",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "always",
+      "depends_on": [],
+      "after": [
+        "boot_reconcile"
+      ],
+      "order": 40,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_01",
+      "args": {
+        "reconcile_max_load5": "cpus",
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
+      }
+    },
+    {
+      "event_id": "boot_data_health",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "startup",
+      "available_after": null,
+      "deadline": "",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "always",
+      "depends_on": [],
+      "after": [
+        "boot_trade_day"
+      ],
+      "order": 20,
+      "cost": null,
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": null,
+      "profile": "policy_02"
+    },
+    {
+      "event_id": "boot_reconcile",
+      "handler": "boot_reconcile",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "startup",
+      "available_after": null,
+      "deadline": "",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "always",
+      "depends_on": [],
+      "after": [
+        "boot_data_health"
+      ],
+      "order": 30,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_02",
+      "args": {
+        "reconcile_max_load5": "cpus",
+        "daily_kline_load_defer_window_limit": 3
+      }
+    },
+    {
+      "event_id": "boot_trade_day",
+      "handler": "boot_trade_day",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "startup",
+      "available_after": null,
+      "deadline": "",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": 10,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_03"
+    },
+    {
+      "event_id": "fetch_item",
+      "handler": "fetch_item",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "startup",
+      "available_after": null,
+      "deadline": "",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "always",
+      "depends_on": [],
+      "after": [
+        "boot_apply_plan"
+      ],
+      "order": 50,
+      "cost": "heavy",
+      "phases": [
+        "NIGHT",
+        "PRE_MARKET",
+        "MIDDAY_BREAK",
+        "CLOSE",
+        "POST_MARKET"
+      ],
+      "on_phase_mismatch": null,
+      "profile": "policy_04",
+      "args": {
+        "failure_classes": {
+          "retryable": {
+            "exit_codes": [
+              30,
+              75
+            ],
+            "exception_types": [
+              "TimeoutError",
+              "TimeoutExpired",
+              "ConnectionError"
+            ],
+            "error_codes": [
+              "STALL_NO_PROGRESS",
+              "BAOSTOCK_TIMEOUT",
+              "BAOSTOCK_CONNECTION_ERROR",
+              "BAOSTOCK_LOGIN_FAILED",
+              "BAOSTOCK_LOGIN_ERROR",
+              "BAOSTOCK_RATE_LIMITED",
+              "BAOSTOCK_RECEIVE_EXCEPTION",
+              "FETCH_TIMEOUT",
+              "RATE_LIMITED"
+            ]
+          },
+          "deterministic": {
+            "exit_codes": [
+              2,
+              40,
+              64
+            ],
+            "exception_types": [
+              "AssertionError",
+              "AttributeError",
+              "IndexError",
+              "KeyError",
+              "NameError",
+              "SyntaxError",
+              "TypeError",
+              "ValueError",
+              "JSONDecodeError",
+              "ContractError"
+            ],
+            "error_codes": [
+              "COMMAND_ARGUMENT_ERROR",
+              "CONFIG_ERROR",
+              "CONTRACT_ERROR",
+              "CONTRACT_INVALID",
+              "CONTRACT_VIOLATION",
+              "POSTCONDITION_FAILED"
+            ]
+          },
+          "default": "retryable"
+        },
+        "baostock_no_progress_seconds": 300
+      }
+    },
+    {
+      "event_id": "calendar_refresh_0005",
+      "handler": "calendar_refresh",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "00:05:00",
+      "available_after": null,
+      "deadline": "00:30:00",
+      "data_date_offset": 0,
+      "on_start": "reconcile",
+      "on_deadline": "missed",
+      "late_until": "15:00:00",
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_05",
+      "args": {
+        "refresh": "force"
+      }
+    },
+    {
+      "event_id": "night_recap",
+      "handler": "night_report",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "01:00:00",
+      "available_after": null,
+      "deadline": "08:29:59",
+      "data_date_offset": 0,
+      "on_start": "reconcile",
+      "on_deadline": "missed",
+      "late_until": "23:59:00",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "heavy",
+      "phases": [
+        "NIGHT",
+        "PRE_MARKET",
+        "MIDDAY_BREAK",
+        "CLOSE",
+        "POST_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "policy_05"
+    },
+    {
+      "event_id": "auction_amount_facts_0530",
+      "handler": "postmarket_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "05:30:00",
+      "available_after": null,
+      "deadline": "07:30:00",
+      "data_date_offset": 0,
+      "on_deadline": "missed",
+      "late_until": "07:30:00",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "heavy",
+      "phases": [
+        "NIGHT"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "policy_13",
+      "args": {
+        "dataset": "auction_amount_facts",
+        "window": 64,
+        "max_days": 64
+      }
+    },
+    {
+      "event_id": "calendar_refresh_0800",
+      "handler": "calendar_refresh",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "08:00:00",
+      "available_after": null,
+      "deadline": "08:15:00",
+      "data_date_offset": 0,
+      "on_start": "reconcile",
+      "on_deadline": "missed",
+      "late_until": "15:00:00",
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_05"
+    },
+    {
+      "event_id": "startup_0830",
+      "handler": "premarket_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "08:30:00",
+      "available_after": null,
+      "deadline": "08:45:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": "09:10:00",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "medium",
+      "phases": [
+        "NIGHT",
+        "PRE_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "policy_06",
+      "args": {
+        "prep_degradable_steps": [
+          "plate_amount_baseline"
+        ],
+        "theme_deps": {
+          "wait_seconds": 180,
+          "poll_seconds": 30,
+          "on_missing": "degrade"
+        },
+        "failure_classes": {
+          "retryable": {
+            "exit_codes": [
+              30,
+              75
+            ],
+            "exception_types": [
+              "TimeoutError",
+              "TimeoutExpired",
+              "ConnectionError"
+            ],
+            "error_codes": [
+              "STALL_NO_PROGRESS",
+              "BAOSTOCK_TIMEOUT",
+              "BAOSTOCK_CONNECTION_ERROR",
+              "BAOSTOCK_LOGIN_FAILED",
+              "BAOSTOCK_LOGIN_ERROR",
+              "BAOSTOCK_RATE_LIMITED",
+              "BAOSTOCK_RECEIVE_EXCEPTION",
+              "FETCH_TIMEOUT",
+              "RATE_LIMITED",
+              "TIER_PARTIAL",
+              "BAOSTOCK_LOCAL_GAP_WAIT"
+            ]
+          },
+          "deterministic": {
+            "exit_codes": [
+              2,
+              40,
+              64
+            ],
+            "exception_types": [
+              "AssertionError",
+              "AttributeError",
+              "IndexError",
+              "KeyError",
+              "NameError",
+              "SyntaxError",
+              "TypeError",
+              "ValueError",
+              "JSONDecodeError",
+              "ContractError"
+            ],
+            "error_codes": [
+              "COMMAND_ARGUMENT_ERROR",
+              "CONFIG_ERROR",
+              "CONTRACT_ERROR",
+              "CONTRACT_INVALID",
+              "CONTRACT_VIOLATION",
+              "POSTCONDITION_FAILED"
+            ]
+          },
+          "default": "retryable"
+        }
+      }
+    },
+    {
+      "event_id": "limit_pool_d1",
+      "handler": "kaipan_fetch",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "00:40:00",
+      "available_after": "00:30:00",
+      "deadline": "15:00:00",
+      "data_date_offset": -1,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": "15:00:00",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "limit_pool_d1",
+      "catchup_mode": "run_in_window"
+    },
+    {
+      "event_id": "d1_refs_0045",
+      "handler": "kaipan_fetch",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "00:45:00",
+      "available_after": "00:30:00",
+      "deadline": "08:25:00",
+      "data_date_offset": -1,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": "15:00:00",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_07",
+      "args": {
+        "datasets": [
+          "plate_members",
+          "hot_plates"
+        ]
+      }
+    },
+    {
+      "event_id": "limit_reasons_d1",
+      "handler": "kaipan_fetch",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "00:45:00",
+      "available_after": "00:30:00",
+      "deadline": "08:50:00",
+      "data_date_offset": -1,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": "08:50:00",
+      "gate": "calendar_ready",
+      "depends_on": [
+        "limit_pool_d1"
+      ],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "limit_reasons_d1",
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 300,
+      "retry_until_late": true,
+      "silent_until_last": false,
+      "args": {
+        "datasets": [
+          "limit_reasons"
+        ]
+      }
+    },
+    {
+      "event_id": "hot_plates_history_0815",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "08:15:00",
+      "available_after": null,
+      "deadline": "08:30:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": "08:30:00",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": [
+        "NIGHT",
+        "PRE_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "hot_plates_history",
+      "args": {
+        "hot_plates_history_days": 3,
+        "datasets": [
+          "hot_plates_history",
+          "hot_plates_history_days=3"
+        ]
+      }
+    },
+    {
+      "event_id": "plate_amount_baseline_0815",
+      "handler": "fetch_item",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "08:15:00",
+      "available_after": null,
+      "deadline": "08:25:00",
+      "data_date_offset": 0,
+      "on_deadline": "degrade",
+      "late_until": "08:25:00",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "medium",
+      "phases": [
+        "NIGHT",
+        "PRE_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "policy_12",
+      "args": {
+        "item_id": "plate_amount_baseline"
+      }
+    },
+    {
+      "event_id": "preopen_check_0835",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "08:35:00",
+      "available_after": "08:35:00",
+      "deadline": "08:44:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": "09:05:00",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "medium",
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "preopen_check",
+      "catchup_mode": "run_in_window",
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "args": {
+        "checks": {
+          "limit_up_pool": {
+            "statuses": [
+              "FORMAL",
+              "READY"
+            ],
+            "min_rows": 1
+          },
+          "hot_plates": {
+            "statuses": [
+              "READY",
+              "FORMAL",
+              "PROVISIONAL"
+            ],
+            "min_rows": 1,
+            "captured_after": "08:15:00"
+          },
+          "plate_reference": {
+            "auto_heal": true,
+            "min_coverage": 0.95,
+            "min_rows": 1000
+          },
+          "daily_kline": {
+            "coverage_threshold": 0.995,
+            "total_timeout_seconds": 1200
+          }
+        },
+        "history_min_trading_days": 10,
+        "fill_max_consecutive_failures": 5,
+        "fill_max_failure_ratio": 0.2,
+        "fill_min_failure_samples": 20,
+        "fill_max_consecutive_empty": 30,
+        "lease_ttl_seconds": 300,
+        "baostock_no_progress_seconds": 120
+      }
+    },
+    {
+      "event_id": "chain_sweep_1830",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "18:30:00",
+      "available_after": "18:30:00",
+      "deadline": "18:39:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": "19:20:00",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "medium",
+      "phases": [
+        "POST_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "chain_sweep",
+      "catchup_mode": "run_in_window",
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "args": {
+        "chain": {
+          "name": "daily_kline",
+          "budget_seconds": 1200,
+          "lease_ttl_seconds": 300
+        }
+      }
+    },
+    {
+      "event_id": "chain_sweep_2030",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "20:30:00",
+      "available_after": "20:30:00",
+      "deadline": "20:39:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": "21:00:00",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "medium",
+      "phases": [
+        "POST_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "chain_sweep",
+      "catchup_mode": "run_in_window",
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "args": {
+        "chain": {
+          "name": "daily_kline",
+          "budget_seconds": 1200,
+          "lease_ttl_seconds": 300
+        }
+      }
+    },
+    {
+      "event_id": "chain_sweep_0130",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "01:30:00",
+      "available_after": "01:30:00",
+      "deadline": "01:39:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": "02:30:00",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "medium",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "chain_sweep",
+      "catchup_mode": "run_in_window",
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "args": {
+        "chain": {
+          "name": "daily_kline",
+          "budget_seconds": 1200,
+          "lease_ttl_seconds": 300
+        }
+      }
+    },
+    {
+      "event_id": "chain_sweep_0820",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "08:20:00",
+      "available_after": "08:20:00",
+      "deadline": "08:29:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": "08:34:00",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "medium",
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "chain_sweep",
+      "catchup_mode": "run_in_window",
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "args": {
+        "chain": {
+          "name": "daily_kline",
+          "budget_seconds": 600,
+          "lease_ttl_seconds": 300
+        }
+      }
+    },
+    {
+      "event_id": "kaipan_refresh_0850",
+      "handler": "kaipan_fetch",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "08:50:00",
+      "available_after": "00:00:00",
+      "deadline": "09:05:00",
+      "data_date_offset": -1,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": "15:00:00",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_07"
+    },
+    {
+      "event_id": "premarket_slice_0850",
+      "handler": "premarket_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "08:50:00",
+      "available_after": null,
+      "deadline": "09:10:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": "09:10:00",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "medium",
+      "phases": [
+        "NIGHT",
+        "PRE_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "policy_06",
+      "args": {
+        "prep_degradable_steps": [
+          "plate_amount_baseline"
+        ],
+        "theme_deps": {
+          "wait_seconds": 180,
+          "poll_seconds": 30,
+          "on_missing": "degrade"
+        },
+        "failure_classes": {
+          "retryable": {
+            "exit_codes": [
+              30,
+              75
+            ],
+            "exception_types": [
+              "TimeoutError",
+              "TimeoutExpired",
+              "ConnectionError"
+            ],
+            "error_codes": [
+              "STALL_NO_PROGRESS",
+              "BAOSTOCK_TIMEOUT",
+              "BAOSTOCK_CONNECTION_ERROR",
+              "BAOSTOCK_LOGIN_FAILED",
+              "BAOSTOCK_LOGIN_ERROR",
+              "BAOSTOCK_RATE_LIMITED",
+              "BAOSTOCK_RECEIVE_EXCEPTION",
+              "FETCH_TIMEOUT",
+              "RATE_LIMITED",
+              "TIER_PARTIAL",
+              "BAOSTOCK_LOCAL_GAP_WAIT"
+            ]
+          },
+          "deterministic": {
+            "exit_codes": [
+              2,
+              40,
+              64
+            ],
+            "exception_types": [
+              "AssertionError",
+              "AttributeError",
+              "IndexError",
+              "KeyError",
+              "NameError",
+              "SyntaxError",
+              "TypeError",
+              "ValueError",
+              "JSONDecodeError",
+              "ContractError"
+            ],
+            "error_codes": [
+              "COMMAND_ARGUMENT_ERROR",
+              "CONFIG_ERROR",
+              "CONTRACT_ERROR",
+              "CONTRACT_INVALID",
+              "CONTRACT_VIOLATION",
+              "POSTCONDITION_FAILED"
+            ]
+          },
+          "default": "retryable"
+        }
+      }
+    },
+    {
+      "event_id": "static_data_refresh_0850",
+      "handler": "premarket_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "08:50:00",
+      "available_after": null,
+      "deadline": "09:10:00",
+      "data_date_offset": 0,
+      "on_start": "reconcile",
+      "on_deadline": "missed",
+      "late_until": "15:00:00",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": [
+        "NIGHT",
+        "PRE_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "policy_06",
+      "args": {
+        "static_data_refresh": {
+          "datasets": [
+            "plate_registry",
+            "plate_members",
+            "stock_static"
+          ],
+          "trigger_time": "08:50",
+          "weekly_days": 7,
+          "max_age_days": 8,
+          "kaipan_max_requests": 400,
+          "fallbacks": [],
+          "registry_source": null,
+          "registry_source_complete": false
+        }
+      }
+    },
+    {
+      "event_id": "startup_0900",
+      "handler": "premarket_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:00:00",
+      "available_after": null,
+      "deadline": "09:10:00",
+      "data_date_offset": 0,
+      "on_start": "reconcile",
+      "on_deadline": "missed",
+      "late_until": "09:10:00",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "medium",
+      "phases": [
+        "NIGHT",
+        "PRE_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "policy_06",
+      "args": {
+        "prep_degradable_steps": [
+          "plate_amount_baseline"
+        ],
+        "theme_deps": {
+          "wait_seconds": 180,
+          "poll_seconds": 30,
+          "on_missing": "degrade"
+        },
+        "failure_classes": {
+          "retryable": {
+            "exit_codes": [
+              30,
+              75
+            ],
+            "exception_types": [
+              "TimeoutError",
+              "TimeoutExpired",
+              "ConnectionError"
+            ],
+            "error_codes": [
+              "STALL_NO_PROGRESS",
+              "BAOSTOCK_TIMEOUT",
+              "BAOSTOCK_CONNECTION_ERROR",
+              "BAOSTOCK_LOGIN_FAILED",
+              "BAOSTOCK_LOGIN_ERROR",
+              "BAOSTOCK_RATE_LIMITED",
+              "BAOSTOCK_RECEIVE_EXCEPTION",
+              "FETCH_TIMEOUT",
+              "RATE_LIMITED",
+              "TIER_PARTIAL",
+              "BAOSTOCK_LOCAL_GAP_WAIT"
+            ]
+          },
+          "deterministic": {
+            "exit_codes": [
+              2,
+              40,
+              64
+            ],
+            "exception_types": [
+              "AssertionError",
+              "AttributeError",
+              "IndexError",
+              "KeyError",
+              "NameError",
+              "SyntaxError",
+              "TypeError",
+              "ValueError",
+              "JSONDecodeError",
+              "ContractError"
+            ],
+            "error_codes": [
+              "COMMAND_ARGUMENT_ERROR",
+              "CONFIG_ERROR",
+              "CONTRACT_ERROR",
+              "CONTRACT_INVALID",
+              "CONTRACT_VIOLATION",
+              "POSTCONDITION_FAILED"
+            ]
+          },
+          "default": "retryable"
+        }
+      }
+    },
+    {
+      "event_id": "plate_stock_index_0905",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:05:00",
+      "available_after": null,
+      "deadline": "09:20:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "degrade",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 300,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": null,
+      "args": {
+        "dataset": "plate_stock_index"
+      }
+    },
+    {
+      "event_id": "auction_watch_0915",
+      "handler": "auction_watch",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:15:00",
+      "available_after": null,
+      "deadline": "09:20:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_08"
+    },
+    {
+      "event_id": "kaipan_hot_091610",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:16:10",
+      "available_after": null,
+      "deadline": "09:17:30",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "hot_plates_wide",
+      "args": {
+        "max_pages": 5,
+        "datasets": [
+          "hot_plates",
+          "kaipan_hot_091610"
+        ]
+      }
+    },
+    {
+      "event_id": "limit_up_today_091600",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:16:00",
+      "available_after": null,
+      "deadline": "09:18:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 30,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": "1s",
+      "args": {
+        "dataset": "limit_up_pool_today",
+        "tier": "redis",
+        "failure_fallback": "none"
+      }
+    },
+    {
+      "event_id": "auction_0920_check",
+      "handler": "snapshot_check",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:20:03",
+      "available_after": null,
+      "deadline": "09:23:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "degrade",
+      "late_until": null,
+      "gate": "snapshot_0920_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 1,
+      "timeout_seconds": 300,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": null
+    },
+    {
+      "event_id": "kaipan_hot_092110",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:21:10",
+      "available_after": null,
+      "deadline": "09:23:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "hot_plates_wide",
+      "args": {
+        "max_pages": 5,
+        "datasets": [
+          "hot_plates",
+          "kaipan_hot_092110"
+        ]
+      }
+    },
+    {
+      "event_id": "limit_up_today_092100",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:21:00",
+      "available_after": null,
+      "deadline": "09:23:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 30,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": "1s",
+      "args": {
+        "dataset": "limit_up_pool_today",
+        "tier": "redis",
+        "failure_fallback": "none"
+      }
+    },
+    {
+      "event_id": "auction_0924_check",
+      "handler": "snapshot_check",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:24:10",
+      "available_after": null,
+      "deadline": "09:24:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "degrade",
+      "late_until": null,
+      "gate": "snapshot_0924_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 1,
+      "timeout_seconds": 300,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": null
+    },
+    {
+      "event_id": "auction_0925_check",
+      "handler": "snapshot_check",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:25:10",
+      "available_after": null,
+      "deadline": "09:29:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "degrade",
+      "late_until": null,
+      "gate": "snapshot_0925_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 1,
+      "timeout_seconds": 300,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": null
+    },
+    {
+      "event_id": "auction_facts_0925",
+      "handler": "auction_report",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:25:10",
+      "available_after": null,
+      "deadline": "09:29:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "degrade",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 300,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": null,
+      "args": {
+        "asof": "09:26:00"
+      }
+    },
+    {
+      "event_id": "auction_seal_facts_0926",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:26:05",
+      "available_after": null,
+      "deadline": "09:29:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "degrade",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 300,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": null,
+      "args": {
+        "dataset": "auction_seal_facts"
+      }
+    },
+    {
+      "event_id": "auction_report_0926",
+      "handler": "auction_report",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:26:30",
+      "available_after": null,
+      "deadline": "09:29:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "degrade",
+      "late_until": null,
+      "gate": "auction_coverage",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 300,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": null,
+      "args": {
+        "asof": "09:26:00"
+      }
+    },
+    {
+      "event_id": "kaipan_hot_092520",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:25:20",
+      "available_after": null,
+      "deadline": "09:25:50",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "hot_plates_short",
+      "args": {
+        "max_pages": 5,
+        "datasets": [
+          "hot_plates",
+          "kaipan_hot_092520"
+        ]
+      }
+    },
+    {
+      "event_id": "limit_up_today_092630",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:26:30",
+      "available_after": null,
+      "deadline": "09:28:30",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 30,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": "1s",
+      "args": {
+        "dataset": "limit_up_pool_today",
+        "tier": "redis",
+        "failure_fallback": "none"
+      }
+    },
+    {
+      "event_id": "kaipan_hot_092830",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:28:30",
+      "available_after": null,
+      "deadline": "09:30:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "hot_plates_wide",
+      "args": {
+        "max_pages": 5,
+        "datasets": [
+          "hot_plates",
+          "kaipan_hot_092830"
+        ]
+      }
+    },
+    {
+      "event_id": "limit_up_today_092830",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:28:30",
+      "available_after": null,
+      "deadline": "09:30:30",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 30,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": "1s",
+      "args": {
+        "dataset": "limit_up_pool_today",
+        "tier": "redis",
+        "failure_fallback": "none"
+      }
+    },
+    {
+      "event_id": "kaipan_hot_093220",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:32:20",
+      "available_after": null,
+      "deadline": "09:33:30",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "hot_plates_standard",
+      "args": {
+        "max_pages": 5,
+        "datasets": [
+          "hot_plates",
+          "kaipan_hot_093220"
+        ]
+      }
+    },
+    {
+      "event_id": "limit_up_today_093100",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:31:00",
+      "available_after": null,
+      "deadline": "09:33:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 30,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": "1s",
+      "args": {
+        "dataset": "limit_up_pool_today",
+        "tier": "redis",
+        "failure_fallback": "none"
+      }
+    },
+    {
+      "event_id": "open_report_0932",
+      "handler": "open_report",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:32:10",
+      "available_after": null,
+      "deadline": "09:35:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "degrade",
+      "late_until": null,
+      "gate": "checkpoint_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 300,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": null
+    },
+    {
+      "event_id": "kaipan_hot_093520",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:35:20",
+      "available_after": null,
+      "deadline": "09:36:30",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "hot_plates_standard",
+      "args": {
+        "max_pages": 5,
+        "datasets": [
+          "hot_plates",
+          "kaipan_hot_093520"
+        ]
+      }
+    },
+    {
+      "event_id": "limit_up_today_093300",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:33:00",
+      "available_after": null,
+      "deadline": "09:35:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 30,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": "1s",
+      "args": {
+        "dataset": "limit_up_pool_today",
+        "tier": "redis",
+        "failure_fallback": "none"
+      }
+    },
+    {
+      "event_id": "intraday_33",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:33:05",
+      "available_after": null,
+      "deadline": "09:36:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "checkpoint_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_10",
+      "args": {
+        "checkpoint": {
+          "sources": [
+            "redis_q2",
+            "td"
+          ],
+          "tolerance_seconds": 60,
+          "min_symbols": 4000,
+          "td_until": "09:45:59",
+          "redis_timeout_seconds": 5
+        }
+      }
+    },
+    {
+      "event_id": "open_report_0935",
+      "handler": "open_report",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:35:10",
+      "available_after": null,
+      "deadline": "09:38:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "degrade",
+      "late_until": null,
+      "gate": "checkpoint_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 300,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": null
+    },
+    {
+      "event_id": "intraday_36",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:36:05",
+      "available_after": null,
+      "deadline": "09:39:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "checkpoint_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_10",
+      "args": {
+        "checkpoint": {
+          "sources": [
+            "redis_q2",
+            "td"
+          ],
+          "tolerance_seconds": 60,
+          "min_symbols": 4000,
+          "td_until": "09:45:59",
+          "redis_timeout_seconds": 5
+        }
+      }
+    },
+    {
+      "event_id": "intraday_39",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:39:05",
+      "available_after": null,
+      "deadline": "09:42:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "checkpoint_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_10",
+      "args": {
+        "checkpoint": {
+          "sources": [
+            "redis_q2",
+            "td"
+          ],
+          "tolerance_seconds": 60,
+          "min_symbols": 4000,
+          "td_until": "09:45:59",
+          "redis_timeout_seconds": 5
+        }
+      }
+    },
+    {
+      "event_id": "open_report_0940",
+      "handler": "open_report",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:40:10",
+      "available_after": null,
+      "deadline": "09:44:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "degrade",
+      "late_until": null,
+      "gate": "checkpoint_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 300,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": null
+    },
+    {
+      "event_id": "kaipan_hot_094020",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:40:20",
+      "available_after": null,
+      "deadline": "09:41:30",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "hot_plates_standard",
+      "args": {
+        "max_pages": 5,
+        "datasets": [
+          "hot_plates",
+          "kaipan_hot_094020"
+        ]
+      }
+    },
+    {
+      "event_id": "kaipan_hot_094520",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:45:20",
+      "available_after": null,
+      "deadline": "09:46:30",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "hot_plates_standard",
+      "args": {
+        "max_pages": 5,
+        "datasets": [
+          "hot_plates",
+          "kaipan_hot_094520"
+        ]
+      }
+    },
+    {
+      "event_id": "limit_up_today_094000",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:40:00",
+      "available_after": null,
+      "deadline": "09:42:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 30,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": "1s",
+      "args": {
+        "dataset": "limit_up_pool_today",
+        "tier": "redis",
+        "failure_fallback": "none"
+      }
+    },
+    {
+      "event_id": "intraday_42",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:42:05",
+      "available_after": null,
+      "deadline": "09:45:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "checkpoint_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_10",
+      "args": {
+        "checkpoint": {
+          "sources": [
+            "redis_q2",
+            "td"
+          ],
+          "tolerance_seconds": 60,
+          "min_symbols": 4000,
+          "td_until": "09:45:59",
+          "redis_timeout_seconds": 5
+        }
+      }
+    },
+    {
+      "event_id": "intraday_45",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:45:05",
+      "available_after": null,
+      "deadline": "09:48:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "checkpoint_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_10",
+      "args": {
+        "checkpoint": {
+          "sources": [
+            "redis_q2",
+            "td"
+          ],
+          "tolerance_seconds": 60,
+          "min_symbols": 4000,
+          "td_until": "09:45:59",
+          "redis_timeout_seconds": 5
+        }
+      }
+    },
+    {
+      "event_id": "open_report_0945",
+      "handler": "open_report",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:45:30",
+      "available_after": null,
+      "deadline": "09:49:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "degrade",
+      "late_until": null,
+      "gate": "checkpoint_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 300,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": null
+    },
+    {
+      "event_id": "kaipan_hot_101000",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "10:10:00",
+      "available_after": null,
+      "deadline": "10:12:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "hot_plates_wide",
+      "args": {
+        "max_pages": 5,
+        "datasets": [
+          "hot_plates",
+          "kaipan_hot_101000"
+        ]
+      }
+    },
+    {
+      "event_id": "limit_up_today_101000",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "10:10:00",
+      "available_after": null,
+      "deadline": "10:12:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 30,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": "1s",
+      "args": {
+        "dataset": "limit_up_pool_today",
+        "tier": "redis",
+        "failure_fallback": "none"
+      }
+    },
+    {
+      "event_id": "kaipan_hot_102000",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "10:20:00",
+      "available_after": null,
+      "deadline": "10:22:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "hot_plates_wide",
+      "args": {
+        "max_pages": 5,
+        "datasets": [
+          "hot_plates",
+          "kaipan_hot_102000"
+        ]
+      }
+    },
+    {
+      "event_id": "limit_up_today_102000",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "10:20:00",
+      "available_after": null,
+      "deadline": "10:22:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 30,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": "1s",
+      "args": {
+        "dataset": "limit_up_pool_today",
+        "tier": "redis",
+        "failure_fallback": "none"
+      }
+    },
+    {
+      "event_id": "kaipan_hot_103000",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "10:30:00",
+      "available_after": null,
+      "deadline": "10:32:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "hot_plates_wide",
+      "args": {
+        "max_pages": 5,
+        "datasets": [
+          "hot_plates",
+          "kaipan_hot_103000"
+        ]
+      }
+    },
+    {
+      "event_id": "limit_up_today_103000",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "10:30:00",
+      "available_after": null,
+      "deadline": "10:32:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 30,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": "1s",
+      "args": {
+        "dataset": "limit_up_pool_today",
+        "tier": "redis",
+        "failure_fallback": "none"
+      }
+    },
+    {
+      "event_id": "kaipan_hot_104500",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "10:45:00",
+      "available_after": null,
+      "deadline": "10:47:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "hot_plates_wide",
+      "args": {
+        "max_pages": 5,
+        "datasets": [
+          "hot_plates",
+          "kaipan_hot_104500"
+        ]
+      }
+    },
+    {
+      "event_id": "limit_up_today_104500",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "10:45:00",
+      "available_after": null,
+      "deadline": "10:47:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 30,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": "1s",
+      "args": {
+        "dataset": "limit_up_pool_today",
+        "tier": "redis",
+        "failure_fallback": "none"
+      }
+    },
+    {
+      "event_id": "kaipan_hot_110000",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "11:00:00",
+      "available_after": null,
+      "deadline": "11:02:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "hot_plates_wide",
+      "args": {
+        "max_pages": 5,
+        "datasets": [
+          "hot_plates",
+          "kaipan_hot_110000"
+        ]
+      }
+    },
+    {
+      "event_id": "limit_up_today_110000",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "11:00:00",
+      "available_after": null,
+      "deadline": "11:02:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 30,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": "1s",
+      "args": {
+        "dataset": "limit_up_pool_today",
+        "tier": "redis",
+        "failure_fallback": "none"
+      }
+    },
+    {
+      "event_id": "kaipan_hot_112500",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "11:25:00",
+      "available_after": null,
+      "deadline": "11:27:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "hot_plates_wide",
+      "args": {
+        "max_pages": 5,
+        "datasets": [
+          "hot_plates",
+          "kaipan_hot_112500"
+        ]
+      }
+    },
+    {
+      "event_id": "limit_up_today_112500",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "11:25:00",
+      "available_after": null,
+      "deadline": "11:27:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 30,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": "1s",
+      "args": {
+        "dataset": "limit_up_pool_today",
+        "tier": "redis",
+        "failure_fallback": "none"
+      }
+    },
+    {
+      "event_id": "kaipan_hot_133000",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "13:30:00",
+      "available_after": null,
+      "deadline": "13:32:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "hot_plates_wide",
+      "args": {
+        "max_pages": 5,
+        "datasets": [
+          "hot_plates",
+          "kaipan_hot_133000"
+        ]
+      }
+    },
+    {
+      "event_id": "limit_up_today_133000",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "13:30:00",
+      "available_after": null,
+      "deadline": "13:32:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 30,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": "1s",
+      "args": {
+        "dataset": "limit_up_pool_today",
+        "tier": "redis",
+        "failure_fallback": "none"
+      }
+    },
+    {
+      "event_id": "limit_up_today_140000",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "14:00:00",
+      "available_after": null,
+      "deadline": "14:02:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 30,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": "1s",
+      "args": {
+        "dataset": "limit_up_pool_today",
+        "tier": "redis",
+        "failure_fallback": "none"
+      }
+    },
+    {
+      "event_id": "kaipan_hot_143000",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "14:30:00",
+      "available_after": null,
+      "deadline": "14:32:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "hot_plates_wide",
+      "args": {
+        "max_pages": 5,
+        "datasets": [
+          "hot_plates",
+          "kaipan_hot_143000"
+        ]
+      }
+    },
+    {
+      "event_id": "limit_up_today_143000",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "14:30:00",
+      "available_after": null,
+      "deadline": "14:32:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 30,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": "1s",
+      "args": {
+        "dataset": "limit_up_pool_today",
+        "tier": "redis",
+        "failure_fallback": "none"
+      }
+    },
+    {
+      "event_id": "kaipan_hot_145000",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "14:50:00",
+      "available_after": null,
+      "deadline": "14:52:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "hot_plates_wide",
+      "args": {
+        "max_pages": 5,
+        "datasets": [
+          "hot_plates",
+          "kaipan_hot_145000"
+        ]
+      }
+    },
+    {
+      "event_id": "limit_up_today_145000",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "14:50:00",
+      "available_after": null,
+      "deadline": "14:52:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 30,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": "1s",
+      "args": {
+        "dataset": "limit_up_pool_today",
+        "tier": "redis",
+        "failure_fallback": "none"
+      }
+    },
+    {
+      "event_id": "close_mark_1505",
+      "handler": "close_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "15:05:00",
+      "available_after": null,
+      "deadline": "15:20:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_08"
+    },
+    {
+      "event_id": "daily_kline_close_1505",
+      "handler": "daily_kline_close",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "15:05:00",
+      "available_after": "15:05:00",
+      "deadline": "17:00:00",
+      "data_date_offset": 0,
+      "on_deadline": "missed",
+      "late_until": "17:00:00",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "cost": "heavy",
+      "phases": [
+        "CLOSE",
+        "POST_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "daily_kline_close",
+      "catchup_mode": "run_in_window"
+    },
+    {
+      "event_id": "daily_dde_0200",
+      "handler": "postmarket_data",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "02:00:00",
+      "deadline": "06:30:00",
+      "data_date_offset": 0,
+      "on_deadline": "missed",
+      "late_until": "06:30:00",
+      "depends_on": [],
+      "after": [],
+      "cost": "heavy",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "daily_dde",
+      "catchup_mode": "run_in_window",
+      "args": {
+        "dataset": "daily_dde",
+        "max_workers": 1,
+        "attempts": 3,
+        "history_trading_days": 250,
+        "write_redis": true,
+        "target": "prev_trade_day"
+      }
+    },
+    {
+      "event_id": "kaipan_hot_151000",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "15:10:00",
+      "available_after": null,
+      "deadline": "15:12:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "hot_plates_wide",
+      "args": {
+        "max_pages": 5,
+        "datasets": [
+          "hot_plates",
+          "kaipan_hot_151000"
+        ]
+      }
+    },
+    {
+      "event_id": "hot_plates_gap_reconcile_151500",
+      "handler": "kaipan_hot_capture",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "15:15:00",
+      "available_after": null,
+      "deadline": "15:16:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "hot_plates_reconcile",
+      "args": {
+        "reconcile_only": true,
+        "datasets": [
+          "hot_plates_gaps"
+        ]
+      }
+    },
+    {
+      "event_id": "limit_up_today_150500",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "15:05:00",
+      "available_after": null,
+      "deadline": "15:07:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 30,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": "1s",
+      "args": {
+        "dataset": "limit_up_pool_today",
+        "tier": "redis",
+        "failure_fallback": "none"
+      }
+    },
+    {
+      "event_id": "limit_up_today_close_confirm_152000",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "15:20:00",
+      "available_after": null,
+      "deadline": "15:25:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 1,
+      "timeout_seconds": 300,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": null,
+      "args": {
+        "dataset": "limit_up_pool_today",
+        "tier": "close_confirm",
+        "failure_fallback": "wencai",
+        "wencai_confirmation": true,
+        "wencai_min_interval_seconds": 1800,
+        "wencai_max_requests_per_day": 1
+      }
+    },
+    {
+      "event_id": "baostock_probe_1730",
+      "handler": "baostock_probe",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "17:40:00",
+      "available_after": "17:40:00",
+      "deadline": "17:49:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": "23:30:00",
+      "late_until_date_offset_days": 1,
+      "late_until_date_offset_error_codes": [
+        "BAOSTOCK_LOCAL_GAP_WAIT"
+      ],
+      "late_until_clock_by_error_code": {
+        "BAOSTOCK_LOCAL_GAP_WAIT": "08:00:00"
+      },
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "heavy",
+      "phases": [
+        "NIGHT",
+        "PRE_MARKET",
+        "MIDDAY_BREAK",
+        "CLOSE",
+        "POST_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "policy_11",
+      "catchup_mode": "run_in_window",
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "args": {
+        "dataset": "daily_kline",
+        "failure_classes": {
+          "retryable": {
+            "exit_codes": [
+              30,
+              75
+            ],
+            "exception_types": [
+              "TimeoutError",
+              "TimeoutExpired",
+              "ConnectionError"
+            ],
+            "error_codes": [
+              "STALL_NO_PROGRESS",
+              "BAOSTOCK_TIMEOUT",
+              "BAOSTOCK_CONNECTION_ERROR",
+              "BAOSTOCK_LOGIN_FAILED",
+              "BAOSTOCK_LOGIN_ERROR",
+              "BAOSTOCK_RATE_LIMITED",
+              "BAOSTOCK_RECEIVE_EXCEPTION",
+              "FETCH_TIMEOUT",
+              "RATE_LIMITED",
+              "TIER_PARTIAL",
+              "BAOSTOCK_LOCAL_GAP_WAIT"
+            ]
+          },
+          "deterministic": {
+            "exit_codes": [
+              2,
+              40,
+              64
+            ],
+            "exception_types": [
+              "AssertionError",
+              "AttributeError",
+              "IndexError",
+              "KeyError",
+              "NameError",
+              "SyntaxError",
+              "TypeError",
+              "ValueError",
+              "JSONDecodeError",
+              "ContractError"
+            ],
+            "error_codes": [
+              "COMMAND_ARGUMENT_ERROR",
+              "CONFIG_ERROR",
+              "CONTRACT_ERROR",
+              "CONTRACT_INVALID",
+              "CONTRACT_VIOLATION",
+              "POSTCONDITION_FAILED"
+            ]
+          },
+          "default": "retryable"
+        },
+        "baostock_no_progress_seconds": 300,
+        "daily_kline_policy": {
+          "formal_coverage_threshold": 0.995,
+          "source_empty_max": 20
+        },
+        "budget_ratio": 1.0,
+        "history_min_trading_days": 10,
+        "fill_max_consecutive_failures": 5,
+        "fill_max_failure_ratio": 0.2,
+        "fill_min_failure_samples": 20,
+        "fill_max_consecutive_empty": 30,
+        "lease_ttl_seconds": 300,
+        "total_timeout_seconds": 7000
+      }
+    },
+    {
+      "event_id": "baostock_retry_1740",
+      "handler": "baostock_probe",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "17:50:00",
+      "available_after": "17:40:00",
+      "deadline": "18:29:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": "23:30:00",
+      "late_until_date_offset_days": 1,
+      "late_until_date_offset_error_codes": [
+        "BAOSTOCK_LOCAL_GAP_WAIT"
+      ],
+      "late_until_clock_by_error_code": {
+        "BAOSTOCK_LOCAL_GAP_WAIT": "08:00:00"
+      },
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "heavy",
+      "phases": [
+        "NIGHT",
+        "PRE_MARKET",
+        "MIDDAY_BREAK",
+        "CLOSE",
+        "POST_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "policy_11",
+      "catchup_mode": "run_in_window",
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "args": {
+        "dataset": "daily_kline",
+        "failure_classes": {
+          "retryable": {
+            "exit_codes": [
+              30,
+              75
+            ],
+            "exception_types": [
+              "TimeoutError",
+              "TimeoutExpired",
+              "ConnectionError"
+            ],
+            "error_codes": [
+              "STALL_NO_PROGRESS",
+              "BAOSTOCK_TIMEOUT",
+              "BAOSTOCK_CONNECTION_ERROR",
+              "BAOSTOCK_LOGIN_FAILED",
+              "BAOSTOCK_LOGIN_ERROR",
+              "BAOSTOCK_RATE_LIMITED",
+              "BAOSTOCK_RECEIVE_EXCEPTION",
+              "FETCH_TIMEOUT",
+              "RATE_LIMITED",
+              "TIER_PARTIAL",
+              "BAOSTOCK_LOCAL_GAP_WAIT"
+            ]
+          },
+          "deterministic": {
+            "exit_codes": [
+              2,
+              40,
+              64
+            ],
+            "exception_types": [
+              "AssertionError",
+              "AttributeError",
+              "IndexError",
+              "KeyError",
+              "NameError",
+              "SyntaxError",
+              "TypeError",
+              "ValueError",
+              "JSONDecodeError",
+              "ContractError"
+            ],
+            "error_codes": [
+              "COMMAND_ARGUMENT_ERROR",
+              "CONFIG_ERROR",
+              "CONTRACT_ERROR",
+              "CONTRACT_INVALID",
+              "CONTRACT_VIOLATION",
+              "POSTCONDITION_FAILED"
+            ]
+          },
+          "default": "retryable"
+        },
+        "baostock_no_progress_seconds": 300,
+        "daily_kline_policy": {
+          "formal_coverage_threshold": 0.995,
+          "source_empty_max": 20
+        },
+        "budget_ratio": 1.0,
+        "history_min_trading_days": 10,
+        "fill_max_consecutive_failures": 5,
+        "fill_max_failure_ratio": 0.2,
+        "fill_min_failure_samples": 20,
+        "fill_max_consecutive_empty": 30,
+        "lease_ttl_seconds": 300,
+        "total_timeout_seconds": 7000
+      }
+    },
+    {
+      "event_id": "close_recap",
+      "handler": "close_report",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "17:40:00",
+      "available_after": null,
+      "deadline": "20:30:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "daily_kline_ready",
+      "depends_on": [
+        "baostock_probe_1730"
+      ],
+      "accept_degraded_dependencies": [
+        "baostock_probe_1730"
+      ],
+      "after": [],
+      "order": null,
+      "cost": "heavy",
+      "phases": [
+        "NIGHT",
+        "PRE_MARKET",
+        "MIDDAY_BREAK",
+        "CLOSE",
+        "POST_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "policy_08"
+    },
+    {
+      "event_id": "postmarket_publish",
+      "handler": "postmarket_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "17:40:00",
+      "available_after": null,
+      "deadline": "20:30:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": "23:30:00",
+      "gate": "daily_kline_ready",
+      "depends_on": [
+        "baostock_probe_1730"
+      ],
+      "accept_degraded_dependencies": [
+        "baostock_probe_1730"
+      ],
+      "after": [],
+      "order": null,
+      "cost": "heavy",
+      "phases": [
+        "NIGHT",
+        "PRE_MARKET",
+        "MIDDAY_BREAK",
+        "CLOSE",
+        "POST_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "policy_05",
+      "args": {
+        "baostock_no_progress_seconds": 120,
+        "daily_kline_policy": {
+          "formal_coverage_threshold": 0.995,
+          "source_empty_max": 20
+        }
+      }
+    },
+    {
+      "event_id": "baostock_retry_1830",
+      "handler": "baostock_probe",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "18:30:00",
+      "available_after": "17:30:00",
+      "deadline": "19:59:59",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": "23:30:00",
+      "late_until_date_offset_days": 1,
+      "late_until_date_offset_error_codes": [
+        "BAOSTOCK_LOCAL_GAP_WAIT"
+      ],
+      "late_until_clock_by_error_code": {
+        "BAOSTOCK_LOCAL_GAP_WAIT": "08:00:00"
+      },
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "heavy",
+      "phases": [
+        "NIGHT",
+        "PRE_MARKET",
+        "MIDDAY_BREAK",
+        "CLOSE",
+        "POST_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "policy_11",
+      "catchup_mode": "run_in_window",
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "args": {
+        "dataset": "daily_kline",
+        "failure_classes": {
+          "retryable": {
+            "exit_codes": [
+              30,
+              75
+            ],
+            "exception_types": [
+              "TimeoutError",
+              "TimeoutExpired",
+              "ConnectionError"
+            ],
+            "error_codes": [
+              "STALL_NO_PROGRESS",
+              "BAOSTOCK_TIMEOUT",
+              "BAOSTOCK_CONNECTION_ERROR",
+              "BAOSTOCK_LOGIN_FAILED",
+              "BAOSTOCK_LOGIN_ERROR",
+              "BAOSTOCK_RATE_LIMITED",
+              "BAOSTOCK_RECEIVE_EXCEPTION",
+              "FETCH_TIMEOUT",
+              "RATE_LIMITED",
+              "TIER_PARTIAL",
+              "BAOSTOCK_LOCAL_GAP_WAIT"
+            ]
+          },
+          "deterministic": {
+            "exit_codes": [
+              2,
+              40,
+              64
+            ],
+            "exception_types": [
+              "AssertionError",
+              "AttributeError",
+              "IndexError",
+              "KeyError",
+              "NameError",
+              "SyntaxError",
+              "TypeError",
+              "ValueError",
+              "JSONDecodeError",
+              "ContractError"
+            ],
+            "error_codes": [
+              "COMMAND_ARGUMENT_ERROR",
+              "CONFIG_ERROR",
+              "CONTRACT_ERROR",
+              "CONTRACT_INVALID",
+              "CONTRACT_VIOLATION",
+              "POSTCONDITION_FAILED"
+            ]
+          },
+          "default": "retryable"
+        },
+        "baostock_no_progress_seconds": 300,
+        "daily_kline_policy": {
+          "formal_coverage_threshold": 0.995,
+          "source_empty_max": 20
+        },
+        "budget_ratio": 1.0,
+        "history_min_trading_days": 10,
+        "fill_max_consecutive_failures": 5,
+        "fill_max_failure_ratio": 0.2,
+        "fill_min_failure_samples": 20,
+        "fill_max_consecutive_empty": 30,
+        "lease_ttl_seconds": 300,
+        "total_timeout_seconds": 7000
+      }
+    },
+    {
+      "event_id": "baostock_retry_2000",
+      "handler": "baostock_probe",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "20:00:00",
+      "available_after": "17:30:00",
+      "deadline": "20:30:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": "23:30:00",
+      "late_until_date_offset_days": 1,
+      "late_until_date_offset_error_codes": [
+        "BAOSTOCK_LOCAL_GAP_WAIT"
+      ],
+      "late_until_clock_by_error_code": {
+        "BAOSTOCK_LOCAL_GAP_WAIT": "08:00:00"
+      },
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "heavy",
+      "phases": [
+        "NIGHT",
+        "PRE_MARKET",
+        "MIDDAY_BREAK",
+        "CLOSE",
+        "POST_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "policy_11",
+      "silent_until_last": true,
+      "args": {
+        "dataset": "daily_kline",
+        "failure_classes": {
+          "retryable": {
+            "exit_codes": [
+              30,
+              75
+            ],
+            "exception_types": [
+              "TimeoutError",
+              "TimeoutExpired",
+              "ConnectionError"
+            ],
+            "error_codes": [
+              "STALL_NO_PROGRESS",
+              "BAOSTOCK_TIMEOUT",
+              "BAOSTOCK_CONNECTION_ERROR",
+              "BAOSTOCK_LOGIN_FAILED",
+              "BAOSTOCK_LOGIN_ERROR",
+              "BAOSTOCK_RATE_LIMITED",
+              "BAOSTOCK_RECEIVE_EXCEPTION",
+              "FETCH_TIMEOUT",
+              "RATE_LIMITED",
+              "TIER_PARTIAL",
+              "BAOSTOCK_LOCAL_GAP_WAIT"
+            ]
+          },
+          "deterministic": {
+            "exit_codes": [
+              2,
+              40,
+              64
+            ],
+            "exception_types": [
+              "AssertionError",
+              "AttributeError",
+              "IndexError",
+              "KeyError",
+              "NameError",
+              "SyntaxError",
+              "TypeError",
+              "ValueError",
+              "JSONDecodeError",
+              "ContractError"
+            ],
+            "error_codes": [
+              "COMMAND_ARGUMENT_ERROR",
+              "CONFIG_ERROR",
+              "CONTRACT_ERROR",
+              "CONTRACT_INVALID",
+              "CONTRACT_VIOLATION",
+              "POSTCONDITION_FAILED"
+            ]
+          },
+          "default": "retryable"
+        },
+        "baostock_no_progress_seconds": 300,
+        "daily_kline_policy": {
+          "formal_coverage_threshold": 0.995,
+          "source_empty_max": 20
+        },
+        "budget_ratio": 1.0,
+        "history_min_trading_days": 10,
+        "fill_max_consecutive_failures": 5,
+        "fill_max_failure_ratio": 0.2,
+        "fill_min_failure_samples": 20,
+        "fill_max_consecutive_empty": 30,
+        "lease_ttl_seconds": 300,
+        "total_timeout_seconds": 7000
+      }
+    },
+    {
+      "event_id": "runtime_reconcile_0900",
+      "handler": "boot_apply_plan",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:00:00",
+      "available_after": null,
+      "deadline": "09:10:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_10",
+      "args": {
+        "reconciliation_checkpoint": "PRE_MARKET",
+        "checkpoint_reason": "Before PRE_MARKET heavy cutoff 09:10; recheck startup_0830 and premarket_slice_0850 expectations.",
+        "reconcile_max_load5": "cpus",
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
+      }
+    },
+    {
+      "event_id": "runtime_reconcile_0935",
+      "handler": "boot_apply_plan",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "09:35:00",
+      "available_after": null,
+      "deadline": "09:45:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_10",
+      "args": {
+        "reconciliation_checkpoint": "OPEN",
+        "checkpoint_reason": "After auction_baseline expected_by 09:20 and the 09:30 open; collect post-auction outputs.",
+        "reconcile_max_load5": "cpus",
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
+      }
+    },
+    {
+      "event_id": "runtime_reconcile_1000",
+      "handler": "boot_apply_plan",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "10:00:00",
+      "available_after": null,
+      "deadline": "10:10:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_10",
+      "args": {
+        "reconciliation_checkpoint": "INTRADAY_AM",
+        "checkpoint_reason": "First post-open checkpoint after hot_rank expected_by 09:40; recover delayed morning outputs.",
+        "reconcile_max_load5": "cpus",
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
+      }
+    },
+    {
+      "event_id": "runtime_reconcile_1145",
+      "handler": "boot_apply_plan",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "11:45:00",
+      "available_after": null,
+      "deadline": "11:55:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_10",
+      "args": {
+        "reconciliation_checkpoint": "MIDDAY_BREAK",
+        "checkpoint_reason": "End of morning session and start of MIDDAY_BREAK; collect AM outputs before quiet-phase work.",
+        "reconcile_max_load5": "cpus",
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
+      }
+    },
+    {
+      "event_id": "runtime_reconcile_1330",
+      "handler": "boot_apply_plan",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "13:30:00",
+      "available_after": null,
+      "deadline": "13:40:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_10",
+      "args": {
+        "reconciliation_checkpoint": "INTRADAY_PM",
+        "checkpoint_reason": "After midday pause and PM restart; reconcile outputs missing across the session boundary.",
+        "reconcile_max_load5": "cpus",
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
+      }
+    },
+    {
+      "event_id": "runtime_reconcile_1520",
+      "handler": "boot_apply_plan",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "15:20:00",
+      "available_after": null,
+      "deadline": "15:30:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_10",
+      "args": {
+        "reconciliation_checkpoint": "CLOSE",
+        "checkpoint_reason": "Before the 15:30 close boundary; catch late session outputs before postmarket.",
+        "reconcile_max_load5": "cpus",
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
+      }
+    },
+    {
+      "event_id": "runtime_reconcile_1540",
+      "handler": "boot_apply_plan",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "15:40:00",
+      "available_after": null,
+      "deadline": "15:50:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_10",
+      "args": {
+        "reconciliation_checkpoint": "POST_MARKET",
+        "checkpoint_reason": "After close in POST_MARKET; recover close and final-session outputs.",
+        "reconcile_max_load5": "cpus",
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
+      }
+    },
+    {
+      "event_id": "runtime_reconcile_1745",
+      "handler": "boot_apply_plan",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "17:45:00",
+      "available_after": null,
+      "deadline": "17:55:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_10",
+      "args": {
+        "reconciliation_checkpoint": "POST_MARKET",
+        "checkpoint_reason": "After baostock_probe_1730; first reconciliation for daily bars and evening outputs.",
+        "reconcile_max_load5": "cpus",
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
+      }
+    },
+    {
+      "event_id": "runtime_reconcile_1930",
+      "handler": "boot_apply_plan",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "19:30:00",
+      "available_after": null,
+      "deadline": "19:40:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_10",
+      "args": {
+        "reconciliation_checkpoint": "POST_MARKET",
+        "checkpoint_reason": "Later postmarket retry window for delayed source deliveries after the first evening pass.",
+        "reconcile_max_load5": "cpus",
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
+      }
+    },
+    {
+      "event_id": "runtime_reconcile_2100",
+      "handler": "boot_apply_plan",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "21:00:00",
+      "available_after": null,
+      "deadline": "21:10:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "policy_10",
+      "args": {
+        "reconciliation_checkpoint": "POST_MARKET",
+        "checkpoint_reason": "Final postmarket reconciliation for long-tail arrivals before the daily cycle ends.",
+        "reconcile_max_load5": "cpus",
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
+      }
+    },
+    {
+      "event_id": "stock_listing_0045",
+      "handler": "postmarket_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "00:45:00",
+      "deadline": "00:59:00",
+      "late_until": "00:59:00",
+      "phases": [
+        "any"
+      ],
+      "profile": "kline_backfill",
+      "args": {
+        "dataset": "stock_listing",
+        "target": "prev_trade_day"
+      }
+    },
+    {
+      "event_id": "daily_kline_backfill",
+      "handler": "daily_kline_backfill",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "01:00",
+      "deadline": "09:00",
+      "late_until": "09:00:00",
+      "phases": [
+        "any"
+      ],
+      "profile": "kline_backfill",
+      "args": {
+        "target": "prev_trade_day",
+        "total_timeout_seconds": 43200,
+        "daily_kline_policy": {
+          "formal_coverage_threshold": 0.995,
+          "source_empty_max": 20
+        },
+        "history_min_trading_days": 120,
+        "fill_max_consecutive_failures": 5,
+        "fill_max_failure_ratio": 0.2,
+        "fill_min_failure_samples": 20,
+        "fill_max_consecutive_empty": 30,
+        "lease_ttl_seconds": 300
+      }
+    },
+    {
+      "event_id": "limit_up_detail_d1",
+      "handler": "kaipan_fetch",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "00:50:00",
+      "available_after": "00:40:00",
+      "deadline": "08:50:00",
+      "data_date_offset": -1,
+      "on_start": null,
+      "on_deadline": "missed",
+      "late_until": "08:50:00",
+      "gate": "calendar_ready",
+      "depends_on": [
+        "limit_pool_d1"
+      ],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "profile": "limit_up_detail_d1",
+      "catchup_mode": "run_in_window",
+      "max_attempts": 100,
+      "timeout_seconds": 300,
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "retry_backoff": "5m",
+      "args": {
+        "dataset": "limit_up_detail",
+        "backfill_depth": 20,
+        "degrade": "无降级链，等待重试到 08:50 前"
+      }
+    },
+    {
+      "event_id": "td_resource_check_0055",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "00:55:00",
+      "deadline": "00:57:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": null,
+      "profile": "policy_02",
+      "catchup_mode": "skip",
+      "args": {
+        "td_check": {
+          "threshold_seconds": 1800
+        }
+      }
+    },
+    {
+      "event_id": "td_resource_check_0825",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "08:25:00",
+      "deadline": "08:27:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": null,
+      "profile": "policy_02",
+      "catchup_mode": "skip",
+      "args": {
+        "td_check": {
+          "threshold_seconds": 1800
+        }
+      }
+    },
+    {
+      "event_id": "td_resource_check_0845",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "08:45:00",
+      "deadline": "08:47:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": null,
+      "profile": "policy_02",
+      "catchup_mode": "skip",
+      "args": {
+        "td_check": {
+          "threshold_seconds": 1800
+        }
+      }
+    },
+    {
+      "event_id": "td_resource_check_0910",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "09:10:00",
+      "deadline": "09:12:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": null,
+      "profile": "policy_02",
+      "catchup_mode": "skip",
+      "args": {
+        "td_check": {
+          "threshold_seconds": 1800
+        }
+      }
+    },
+    {
+      "event_id": "td_resource_check_0935",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "09:35:00",
+      "deadline": "09:37:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": null,
+      "profile": "policy_02",
+      "catchup_mode": "skip",
+      "args": {
+        "td_check": {
+          "threshold_seconds": 1800
+        }
+      }
+    },
+    {
+      "event_id": "td_resource_check_1455",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "14:55:00",
+      "deadline": "14:57:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": null,
+      "profile": "policy_02",
+      "catchup_mode": "skip",
+      "args": {
+        "td_check": {
+          "threshold_seconds": 1800
+        }
+      }
+    },
+    {
+      "event_id": "td_resource_check_1735",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "17:35:00",
+      "deadline": "17:37:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": null,
+      "profile": "policy_02",
+      "catchup_mode": "skip",
+      "args": {
+        "td_check": {
+          "threshold_seconds": 1800
+        }
+      }
+    },
+    {
+      "event_id": "td_resource_check_2025",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "20:25:00",
+      "deadline": "20:27:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": null,
+      "profile": "policy_02",
+      "catchup_mode": "skip",
+      "args": {
+        "td_check": {
+          "threshold_seconds": 1800
+        }
+      }
+    },
+    {
+      "event_id": "adjust_factor_postclose",
+      "handler": "postmarket_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "17:40:00",
+      "deadline": "20:30:00",
+      "data_date_offset": 0,
+      "on_deadline": "missed",
+      "late_until": "20:30:00",
+      "depends_on": [
+        "baostock_probe_1730"
+      ],
+      "accept_degraded_dependencies": [
+        "baostock_probe_1730"
+      ],
+      "after": [],
+      "cost": "medium",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "kline_backfill",
+      "catchup_mode": "run_in_window",
+      "args": {
+        "dataset": "adjust_factor"
+      }
+    },
+    {
+      "event_id": "adjust_factor_0115",
+      "handler": "postmarket_data",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "01:00:00",
+      "deadline": "05:00:00",
+      "data_date_offset": 0,
+      "on_deadline": "missed",
+      "late_until": "05:00:00",
+      "depends_on": [
+        "daily_kline_backfill"
+      ],
+      "accept_degraded_dependencies": [
+        "daily_kline_backfill"
+      ],
+      "after": [],
+      "cost": "medium",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "kline_backfill",
+      "catchup_mode": "run_in_window",
+      "args": {
+        "dataset": "adjust_factor",
+        "target": "prev_trade_day"
+      }
+    },
+    {
+      "event_id": "price_volume_postclose",
+      "handler": "postmarket_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "17:40:00",
+      "deadline": "20:45:00",
+      "data_date_offset": 0,
+      "on_deadline": "missed",
+      "late_until": "20:45:00",
+      "depends_on": [
+        "adjust_factor_postclose"
+      ],
+      "accept_degraded_dependencies": [
+        "adjust_factor_postclose"
+      ],
+      "after": [],
+      "cost": "medium",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "kline_backfill",
+      "catchup_mode": "run_in_window",
+      "args": {
+        "dataset": "price_volume"
+      }
+    },
+    {
+      "event_id": "price_volume_0130",
+      "handler": "postmarket_data",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "01:00:00",
+      "deadline": "05:30:00",
+      "data_date_offset": 0,
+      "on_deadline": "missed",
+      "late_until": "05:30:00",
+      "depends_on": [
+        "adjust_factor_0115"
+      ],
+      "accept_degraded_dependencies": [
+        "adjust_factor_0115"
+      ],
+      "after": [],
+      "cost": "medium",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "kline_backfill",
+      "catchup_mode": "run_in_window",
+      "args": {
+        "dataset": "price_volume",
+        "target": "prev_trade_day"
+      }
+    },
+    {
+      "event_id": "chip_peak_postclose",
+      "handler": "postmarket_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "17:40:00",
+      "deadline": "20:50:00",
+      "data_date_offset": 0,
+      "on_deadline": "missed",
+      "late_until": "20:50:00",
+      "depends_on": [
+        "price_volume_postclose"
+      ],
+      "accept_degraded_dependencies": [
+        "price_volume_postclose"
+      ],
+      "after": [],
+      "cost": "medium",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "kline_backfill",
+      "catchup_mode": "run_in_window",
+      "args": {
+        "dataset": "chip_peak"
+      }
+    },
+    {
+      "event_id": "chip_peak_0145",
+      "handler": "postmarket_data",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "01:00:00",
+      "deadline": "05:30:00",
+      "data_date_offset": 0,
+      "on_deadline": "missed",
+      "late_until": "05:30:00",
+      "depends_on": [
+        "price_volume_0130"
+      ],
+      "accept_degraded_dependencies": [
+        "price_volume_0130"
+      ],
+      "after": [],
+      "cost": "medium",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "kline_backfill",
+      "catchup_mode": "run_in_window",
+      "args": {
+        "dataset": "chip_peak",
+        "target": "prev_trade_day"
+      }
+    },
+    {
+      "event_id": "dde_derived_0445",
+      "handler": "postmarket_data",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "02:00:00",
+      "deadline": "08:00:00",
+      "data_date_offset": 0,
+      "on_deadline": "missed",
+      "late_until": "08:00:00",
+      "depends_on": [
+        "daily_dde_0200"
+      ],
+      "accept_degraded_dependencies": [
+        "daily_dde_0200"
+      ],
+      "after": [],
+      "cost": "medium",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "kline_backfill",
+      "catchup_mode": "run_in_window",
+      "args": {
+        "dataset": "dde_derived",
+        "target": "prev_trade_day"
+      }
+    },
+    {
+      "event_id": "stock_cap_2130",
+      "handler": "intraday_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "21:30:00",
+      "available_after": null,
+      "deadline": "22:30:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "degrade",
+      "late_until": null,
+      "gate": "calendar_ready",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": null,
+      "phases": null,
+      "on_phase_mismatch": null,
+      "catchup_mode": "run_in_window",
+      "max_attempts": 3,
+      "timeout_seconds": 1200,
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "retry_backoff": null,
+      "args": {
+        "dataset": "stock_cap"
+      }
+    }
+  ]
+}

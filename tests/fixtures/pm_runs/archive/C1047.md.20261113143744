@@ -1,0 +1,9 @@
+VERDICT: BLOCKED（卡片报告标记为 ABORTED）
+
+未部署或重启服务。C1038 记录候选尚无真实 real_gate PASS；本卡未授权写入 gate 运行目录，无法执行该闸门。
+
+线上基线核对通过：current 为 `20261111_C979_46348ab`，服务 active/running、PID 3850309、NRestarts=0；运行中与磁盘 ELF 的 SHA256 均为 `e3588ce433896cbbcef4499616e91bedc79f554e3b1a4da2e28662274e54de7b`，与记录一致。
+
+构建、自测、隔离回放和切换后验证均未执行。[报告](/home/exedev/fw/reports/C1047.md)和[基线证据](/home/exedev/fw/evidence/C1047/baseline.txt)已保存。
+
+OPEN: 需由有 gate 写入授权的执行者取得适用的真实 GATE PASS，再在允许的时间窗口重新验收。

@@ -1,5 +1,950 @@
 # Project Knowledge
 
+- `[VERIFIED 2026-11-12 — C988 isolated Guardian check]` The candidate default
+  Kaipan handler reused a 93-row isolated Redis pool for 2026-11-10. The
+  limit-reasons postcondition's second date rollback also occurs at baseline
+  ba47943; it is not introduced by the pool migration. Evidence:
+  `/home/exedev/fw/evidence/C988/real_check_final.log`. This is not deployment.
+
+- `[VERIFIED 2026-11-11 — C984 isolated pool producer]` For 2026-11-10,
+  the candidate producer published 93 real Kaipan rows and 27 fields to an
+  isolated Redis key despite an injected TD recovery failure. Shared, slice and
+  prep readers matched the source; a repeat made no source, TD, catalog or Redis
+  write calls. Existing TD recovery preserved the original source digest,
+  version and visibility time and marked the result degraded. This is isolated
+  candidate evidence, not deployment. Evidence: `/home/exedev/fw/evidence/C984/`.
+  A later isolated retry preserved the TD-recovered degraded view without a
+  source, TD, catalog or Redis write; dry-run skipped writes with a fault-injected
+  TTL. Recorded Wencai and TD-derived fixtures cover same-rank retries and upgrades.
+
+- `[VERIFIED 2026-11-11 — C982 isolated pool view]` The candidate Redis pool
+  view for 2026-11-10 retained 93 real rows with zero source-field differences,
+  original version and visibility time. The isolated key expires at Shanghai
+  midnight on the fifth subsequent trading day; a missing key falls back to TD
+  with degraded status. Consumer pool reads used no TD or catalog on the hot
+  path. This is an isolated candidate, not evidence of deployment or live
+  visibility. Evidence: `/home/exedev/fw/evidence/C982/`.
+
+- `[VERIFIED 2026-11-11 — C978 candidate consumer]` The isolated C977 C++
+  producer's TD-derived Redis strings were read through Core's auction input
+  chain: 0920/0924/0925 had 4,885/5,076/5,215 candidates, respectively. A
+  0924 missing-key injection used TD and marked the product degraded while
+  retaining the Redis 0925 candidates. This is a derived test view, not raw
+  historical capture or proof of online deployment or live visibility.
+  Evidence: `/home/exedev/fw/evidence/C978/` and
+  `tests/fixtures/redis_views/PROVENANCE_c977_2026-11-11.md`.
+
+- `[VERIFIED 2026-10-29 — C607 local-universe fallback]` Daily K-line gapfill
+  resolves each affected date against the latest cataloged `symbol_universe`
+  partition on or before that date. If the target uses an earlier partition,
+  `universe_fallback_from` is returned and persisted in its daily-kline metadata.
+  Verified with captured C540/C594 rows; this records implementation behavior,
+  not a market-wide rule. Evidence: `/home/exedev/fw/reports/C607.md`.
+
+- `[VERIFIED 2026-10-27 — C564 WenCai daily-kline guard]` WenCai numeric
+  column suffixes (`[YYYYMMDD]`) are checked against the requested date. After
+  local active-universe completeness passes, the prior-session close and
+  `pct_chg` consistency must also meet the configured threshold; missing
+  reference data or either date conflict is rejected. Partial/low-coverage
+  responses retry within the WenCai tier and leave a checkpoint, not a daily
+  partition; same-day WenCai artifacts remain provisional and do not advance
+  `latest`. The two real 2026-10-26 attempts returned 177 rows (3.39%) and
+  correctly exited 30 as partial, with no partition; 2026-10-27 was not queried
+  within the two-request budget. Evidence: `/home/exedev/validation/s1/C564/`.
+
+- `[VERIFIED 2026-10-26 — C551 heavy attempt admission]` Native Guardian now
+  owns the global heavy slot only during a handler attempt. Gate polling, load
+  deferral, retry backoff, and dependency waits do not reserve it; heavy waiters
+  are FIFO and deadline handling continues while queued. Go vet/test passed,
+  guardian self-tests passed 3× fast and 1× minutes (including S15 full load and
+  S29–S32), and the full pytest result matches its two known prep failures.
+  Evidence: `/home/exedev/validation/s1/C551/`.
+
+- `[VERIFIED 2026-10-26 — C548 target-date resolution]` Native Guardian keeps
+  `trade_date` as the event day and resolves `target=prev_trade_day` (including
+  legacy `data_date_offset=-1`) from the configured trading calendar. Missing,
+  malformed, or out-of-coverage calendar data is `TARGET_DATE_UNRESOLVED` with
+  exit code 30 and retry semantics; it never substitutes the prior calendar
+  day. The 2026 BaoStock fixture resolves 2026-10-08→2026-09-30 and
+  2026-09-28→2026-09-24.
+
+- `[VERIFIED 2026-10-26 — C549 Baostock postmarket adapter]` The default
+  `DailyKlineBaostockAdapter` implements both the callable `JobRunner` contract
+  and the `.fetch(day, context)` provider-chain contract. Offline regressions
+  verify postmarket `daily_kline` persistence, all phase-job adapters, and the
+  `core_data_daily.py` injected-adapter path. The single live 2026-10-26 run
+  reached the Baostock query but timed out after 30 minutes with a receive-data
+  error; no live daily-kline result was produced, so live acquisition remains
+  unverified.
+
+- `[VERIFIED 2026-10-25 — C536/C537 calendar refresh]` Guardian's `calendar_refresh_0005`
+  forces a Baostock + SZSE refresh; `calendar_refresh_0800` still refreshes only
+  when needed. A live forced refresh on a temporary copy grew coverage from 323
+  dates / 212 trading days to 328 / 215, added five future dates through
+  2026-11-24, changed no prior `t` marks, and found zero source conflicts.
+  Single-source failure, source conflict, and total-source failure preserve
+  existing day marks and `last_ok_at`; total-source failure now persists
+  `last_refresh_at` and `last_error` through the atomic matrix writer. Calendar
+  status remains `CONFIRMED` when coverage is current and `last_ok_at` is at most
+  seven days old, while exposing `last_error`; age or insufficient forward
+  coverage yields `STALE`. C536 evidence: `/home/exedev/validation/s1/C536/`;
+  C537 evidence: `/home/exedev/validation/s1/C537/`.
+
+- `[VERIFIED 2026-10-25 — C534/C535 data access]` `data_pipeline.get()` selects immutable
+  catalog versions by gate status, business status, and coverage, followed by the
+  dataset's source preference when configured, availability time, then manifest
+  path. `quote_slice` prefers `redis_q2`, then TD, then Wencai; `get(...,
+  source=...)` can filter to one source. Canonical reads use registered adapters
+  without network access. A PARTIAL quality label now warns when coverage meets the threshold;
+  low or missing coverage still fails. Real catalog comparison covered 80
+  `daily_kline` dates, found two metadata-driven selection changes, and matched
+  legacy rows exactly for 2026-10-22 and 2026-10-23.
+
+- `[VERIFIED 2026-10-25 — C535 quote slices]` Redis Q2 and TD auction captures
+  commit independently as immutable `quote_slice` versions. Real read-only
+  capture for 2026-10-23 09:25 returned 5,226 Redis rows in 2.582s and 5,224 TD
+  rows in 1.135s, both `gate_status=OK`, coverage 1.0; the existing
+  `~/core-data/catalog.json` SHA-256 did not change. V0 replay reproduced those
+  counts for 09:20/09:24/09:25, but its Redis hashes are after-close terminal
+  state, not checkpoint-time values. TD coverage is relative to rows returned
+  by the same-date/tag query, not an independently verified universe.
+
+- `[VERIFIED BY REAL FROZEN Q2FRAME REPEAT REPLAY 2026-10-12]` The hash-pinned
+  2026-10-09 t1-v2 Q2Frame (`7474de28…483467`) replayed through Core in ordered
+  and repeat passes: 1,190 frames / 1,146,352 updates, ending at 09:39:26.
+  Both passes produced final state hash
+  `61316993dfb529dc900debd25ea79dd52eebe7e917178b5e7e68809d21e5960a` and
+  matching 0920/0924/0925 revision counts of 18/11/1. This proves repeat
+  determinism for this captured Q2Frame, not Rabbit arrival or fresh
+  TD/Redis/Rabbit equivalence. No distinct later 0925 content revision was
+  observed, so late 0925 correction remains unproven. TASK-008 remains
+  `PARTIAL_EVIDENCE`; normal-opening acceptance remains `UNPROVEN`. The Core
+  suite passed 1008 tests. Evidence:
+  `docs/evidence/task008-q2frame-core-repeat-20261012.md` and
+  `docs/evidence/task008-q2frame-core-repeat-20261012.json`.
+
+- `[VERIFIED BY REAL FROZEN Q2FRAME REPLAY 2026-10-11 — auction revisions]`
+  The hash-pinned 2026-10-09 Q2Frame (SHA-256
+  `6cfc969ce408ab859eab91a5a12f6fd5c37c565cd0be6ae2f646b1114d5e8934`)
+  completed ordered/repeat through the 09:25:06 barrier: 603 frames, 195,421
+  updates, and 5,224 observed symbols; all emitted determinism fields matched.
+  Core recorded 18 0920 revisions and 11 0924 revisions. Available symbols
+  grew 1,192→3,360 and 3,229→4,094 respectively; no availability regression
+  occurred in this input. 0925 recorded one revision at 4,872 AVAILABLE / 352
+  MISSING; the source ends at 09:25:02, so later 0925 corrections were not
+  tested. Per-revision symbol transition lists and event-path attribution were
+  added as diagnostics; the real run used only rolling Q2Frame, while the
+  sidecar path is covered by a focused fixture. These source-layer labels do
+  not establish producer-build, Rabbit arrival, historical `available_at`, or
+  full-market completeness. Execution used only the frozen local file and an
+  in-memory Core Engine; no production side effects. TASK-008 remains
+  `PARTIAL_EVIDENCE`, NORMAL acceptance `UNPROVEN`. Audit:
+  `/home/exedev/validation/task008-auction-revision-attribution-20261011T222144+0800/revision_attribution_audit.md`.
+
+- `[VERIFIED BY REAL Q2FRAME CHECK 2026-10-11 — 0925 anchor without prior timeline anchors]`
+  The frozen 2026-10-09 t1-v2 Q2Frame (603 frames, 195,421 updates) yielded
+  5,224 Core standalone 0925 facts: 4,872 AVAILABLE and 352 MISSING/null.
+  When only 0925 was observed by `AuctionTimeline`, every per-symbol content
+  and evidence hash and the 0925 revision content hash matched the complete
+  Core replay; 0920/0924 prior deltas were UNKNOWN, and PARTIAL analysis plus
+  recovery plan continued. Removing only `a20/a24` from the captured
+  in-memory Q2 state left every 0925 fact and revision hash unchanged as
+  designed. The paths share Core calculation code and frozen input; hash
+  equality confirms no dependency on the earlier anchors for this input, not
+  independent value correctness or multi-day generalization. This is
+  feature-scoped development evidence, not live 09:25:06 arrival parity. The
+  same-day Q2Frame/live capture matched
+  comparable `a25` values but has separate `mk`, `mx`, `mn`, and `ts` field
+  differences; those fields need consumer-specific checks. Evidence:
+  `/home/exedev/validation/task008-anchor-only-20261011/REPORT.md`.
+
+- `[VERIFIED BY EXECUTION-SIDE CHECKS 2026-10-11 — 2026-09-23 opening-node offline composition parity]`
+  Against the retained 2026-10-07 `Task008Q2FrameSessionEngineShadowV14`
+  report and sealed t1-v2 Q2Frame, the current-worktree live-shadow composition
+  matched all nine opening-fact fields and four compared field-quality
+  statuses for 5,222 cohort symbols. An independent-process repeat matched the
+  planned 312-symbol sample. Both paths share Core calculation code, so this
+  is not independent formula verification. The projection is `PARTIAL` (12
+  stale/partial); its last consumed `Q2FrameV1.logical_ts_ms` is 09:32:08
+  versus the 09:32:10 evaluation anchor, a frame-label cutoff difference, not
+  a failure gate. The Q2Frame SHA matches the 500-frame/1,209,672-update
+  artifact used by the 2026-10-08 full-window replay; this node pass consumed
+  its 343-frame/436,327-update prefix. The producer build is `UNKNOWN`. This
+  does not rerun t1-v2 or prove producer/Redis/Rabbit/NORMAL equivalence,
+  historical availability, or full-market completeness. CC reviewed the
+  documentation but could not read the validation artifacts; JSON and hash
+  verification were performed execution-side. See
+  `docs/evidence/task008-live-node-parity-20260923-20261011.md` and
+  `/home/exedev/validation/task008-live-node-parity-20260923-20261011T020642+0800/`.
+
+- `[CORRECTION 2026-10-09 — repository ownership and release provenance]`
+  `engine_core` is an independent Python kernel; selected behavior has only the
+  bounded comparisons named by individual evidence records. Source references
+  to an `engine_next` release do not prove byte identity with the deployed
+  executable: the recorded deployed t1-v2 binary SHA-256 is
+  `363685f830c62aa3a2a8321eb93f91c5c7babccbd74c5e67b1e5b4c2dad1ab56`, while
+  the available release source rebuilt to `bb0ff933…`; the original producer
+  build identity/toolchain was not preserved. Do not describe Core as a
+  complete extraction/mirror or the available source as the exact deployed
+  binary. Historical dated records below retain their original scope and
+  evidence; this note corrects their interpretation, not their contents.
+  The producing build for the captured 2026-09-23 Q2Frame, and its relationship
+  to Runtime development commits including `98f65f4`, are UNKNOWN; do not equate
+  that artifact with the current Runtime branch or a deployed binary.
+
+- `[VERIFIED 2026-10-09 — Runtime repository ownership boundary]`
+  `/home/exedev/repos/stock-situation-runtime` is a separate runtime-source
+  repository, initially captured from the Linux runtime on 2026-08-22 and later
+  updated by development commits. Its current HEAD does not prove the deployed
+  source or binary. Runtime owns service integration, Rabbit consumption/ACK,
+  and Redis/TDengine I/O; `engine_core` remains an independent computation and
+  replay kernel. Core may adopt selected Runtime semantics only through
+  versioned contracts, hash-pinned real-derived evidence, and parity tests; do
+  not wholesale merge, copy, or import Runtime production modules. This is a
+  migration-phase boundary, not a claim of live or Rabbit equivalence.
+
+- `[VERIFIED 2026-10-08 — current-source complete 09:15–09:40 Core replay]`
+  Current Core source replayed the hash-pinned 2026-09-23 producer artifact
+  from the real TD→t1-v2 replay path: 500 three-second frames (422 non-empty,
+  78 empty), 5,222 symbols, and 1,209,672 Q2 updates. Ordered and repeat passes
+  were deterministic across every report check; both consumed all 500 frames,
+  reached 09:39:59, and produced the same final state hash as the prior
+  full-window report. Opening facts remain 5,210 READY / 12 PARTIAL; 09:25
+  anchors remain 5,068 AVAILABLE / 154 MISSING. This verifies current Core
+  consumption of captured t1-v2 output, not a fresh TD/Rabbit read or upstream
+  t1-v2 rerun. A separate Phase L record reports 1,204,178 TD rows, while this
+  Q2Frame artifact contains 1,209,672 updates. Its upstream build identity and
+  linkage to that Phase L run were not preserved, so the 5,494 arithmetic
+  difference is not established as a same-run discrepancy, dropped rows, or
+  extra rows; it is not a stop gate. No 09:32/09:40
+  producer snapshots were supplied, so NORMAL producer parity remains
+  unproven. Runtime was about 26.5 minutes, not a gate. TASK-008 remains
+  `PARTIAL_EVIDENCE`; evidence:
+  `/home/exedev/validation/task008-current-source-full-window-20261008T181726+0800/core_full_window_report.json`
+  (SHA-256 `accf5d294809dcfb1b246c914bcf80fe0b39656b843b4c494e1d06533347c65d`).
+
+- `[VERIFIED 2026-10-08 — current-source real Q2Frame replay after robustness fixes]`
+  The current Core worktree was rerun on the same hash-pinned 2026-09-30
+  t1-v2 Q2Frame and same-date TD-derived pressure/field-delta contexts. The
+  new report is byte-identical to the prior same-input report
+  (`5330060220fb47998d78030725698289befe3ba36072911febf73c11831c7d0e`). Both
+  passes processed 754 frames / 428,586 updates through 09:32:10; all 12
+  determinism checks are true, final state hash is unchanged, and opening facts
+  remain 5,213 READY / 7 PARTIAL. This confirms no replay regression for these
+  captured inputs; it does not exercise the malformed recovery/universe cases
+  or establish live Wencai/Redis/TD/Rabbit integration. TASK-008 remains
+  `PARTIAL_EVIDENCE`; NORMAL acceptance remains `UNPROVEN`. Full rerun evidence:
+  `/home/exedev/validation/task008-current-source-replay-20261008T173904+0800/core_q2frame_report.json`.
+
+- `[VERIFIED 2026-10-08 — malformed expected auction universe member]` A
+  malformed identifier in `expected_symbols` no longer discards valid observed
+  anchor rows. The bad member is quarantined as `INVALID_EXPECTED_SYMBOL`;
+  coverage remains unknown and the revision stays `PARTIAL` because the
+  universe denominator is not trustworthy. Tests use a hash-pinned real
+  2026-09-30 Q2Frame row plus an injected malformed universe member; this is
+  fixture-backed contract verification, not a live-source rerun. Full suite:
+  933 passed; compileall and diff-check pass. No live source or production
+  effect. TASK-008 remains `PARTIAL_EVIDENCE`; NORMAL acceptance remains
+  `UNPROVEN`. Details: `docs/work/handoffs/TASK-008-COHORT-SOFT-FAILURE-20261008.md`.
+
+- `[VERIFIED 2026-10-08 — malformed recovery member quarantine]` A malformed
+  member token in `filled_symbols` or `invalid_symbols` no longer aborts a
+  recovery result that may contain valid siblings. Invalid declarations are
+  omitted from canonical member sets and recorded with stable anomaly codes.
+  If no usable fill survives, a diagnosed `APPLIED` response may reach the
+  timeline, which records `recovery_state=ERROR`, preserves `PARTIAL` facts,
+  and keeps recovery required; a clean empty `APPLIED` response is still
+  rejected. Regression uses pinned real 2026-09-30 Q2Frame rows only as the
+  primary baseline; recovery results are contract inputs, not captured
+  Wencai output. Full suite: 931 passed; compileall and diff-check pass. No
+  live Wencai/Redis/TD/Rabbit access, production service action, or write was
+  performed. TASK-008 remains `PARTIAL_EVIDENCE`; NORMAL acceptance remains
+  `UNPROVEN`.
+
+- `[VERIFIED 2026-10-08 — sparse recovery cohort completion]` Recovery
+  application now fills omitted previously observed symbols/fields from the
+  exact saved primary cohort and records restoration anomalies. A row that
+  conflicts with an observed fact is quarantined by symbol, preserving the
+  old fact while valid sibling fills continue. A follow-up contract repair
+  quarantines out-of-plan symbols/fields and unreported fills at member/field
+  scope. Invalid plan identity, trade date, and base revision remain hard
+  errors; an embedded symbol/key mismatch is quarantined at member scope,
+  preserving its primary row when known and allowing valid siblings through.
+  If no usable requested fill survives, the timeline records
+  `recovery_state=ERROR` and leaves recovery required.
+  An idempotent retry returns the timeline's latest revision if a newer
+  observation already exists, while the original recovery revision remains in
+  history.
+  Tests use the hash-pinned real 2026-09-30 Q2Frame fixture for primary rows;
+  recovery responses are contract inputs, not captured Wencai output. Current
+  full suite: 927 passed; compileall and diff-check pass. No live source,
+  production service, or write path was exercised. TASK-008 remains
+  `PARTIAL_EVIDENCE`; NORMAL acceptance remains `UNPROVEN`.
+
+- `[VERIFIED 2026-10-08 — recovery default-zero soft failure]`
+  `normalize_q2` maps auction-anchor wire value `0` to `None/MISSING`. Recovery
+  application now preserves that primary missing value if one returned member
+  again carries `0`, and continues valid sibling fills; a zero-only new member
+  with no primary row is omitted rather than blocking the cohort. Regression
+  uses the hash-pinned real 2026-09-30 Q2Frame fixture for the primary missing
+  anchor and covers first application plus idempotent retry. Focused
+  recovery/timeline/opening tests: 103 passed; full suite: 920 passed;
+  compileall and diff-check pass. The default-zero recovery response is a
+  contract edge test, not a real Wencai response; no live source or production
+  path was exercised.
+
+- `[VERIFIED 2026-10-08 — plate field-delta sidecar integrated with Q2Frame]`
+  Added a separate fact-only summary for amount, resting bid, resting ask, and
+  book pressure by frozen plate mapping, plus an optional Q2Frame report
+  sidecar. A sealed real 2026-09-29 source replay independently recomputed all
+  selected-plate aggregates with zero mismatches; ordered/repeat field-summary
+  hashes matched. For the selected 10-plate context, 1,321/1,321 context
+  members had
+  each field in the captured input. The sidecar left Engine final state, per-
+  symbol facts, transition, price, and legacy pressure summaries unchanged.
+  This remains selected-cohort evidence: full-market coverage, historical
+  availability, producer attestation, Rabbit order, and NORMAL equivalence are
+  unproven. Full tests: 854 passed; compileall and diff-check pass. No live
+  Redis/TD/Rabbit/service access or production effects. TASK-008 remains
+  `PARTIAL_EVIDENCE`; M3-1 remains blocked. Evidence:
+  `docs/work/handoffs/TASK-008-PLATE-FIELD-DELTA-Q2FRAME-INTEGRATION-20261008.md`.
+
+  Same-date follow-up used sealed 2026-09-30 TD rows and all 450 frozen plates:
+  5,151 map/TD overlap, 813 mapping-only, 69 capture-only, and 5,146 symbols
+  with both anchors. Independent raw-row field recomputation had zero
+  mismatches; each field had 5,146 available values, five missing anchor
+  values, and 813 members without a TD row. Plate statuses were 373 available,
+  67 partial, and 10 unavailable; full-market coverage remains unproven. A
+  second full Core replay with both pressure and field-delta sidecars matched
+  the prior same-date Engine, opening, and pressure results. Same-date 09:32:10
+  producer metadata records 5,213 accepted rows, matching Core's aggregate
+  READY count, but payload rows are absent so this is not per-symbol parity.
+  Core's seven PARTIAL facts are exactly the seven symbols older than its
+  60-second freshness policy at that cutoff. The count agreement is consistent
+  with excluding the stale tail but does not prove identical producer
+  membership.
+  No retained same-date 09:40 producer snapshot was found.
+
+  A follow-up same-date anchor timing audit compared sealed TD rows with the
+  same t1-v2 Q2Frame at whole-second precision. At 09:20, 925/936 positive TD
+  prices matched the candidate at the TD row's whole second; at 09:24,
+  3,163/3,229 matched. All positive TD prices appeared somewhere in their
+  candidate windows, while the 09:20/09:24 candidates continued changing.
+  At 09:25, all 5,030 positive TD prices matched and the 190 NULL rows stayed
+  missing. The 09:25:06 timeline snapshot used source data through 09:25:02;
+  by the first frame after the 09:25:30 soft deadline (09:26:00), unrelated
+  Q2 state had changed but anchor content/revision remained unchanged.
+  These are event-time observations, not Rabbit arrival or historical
+  availability proof, and no seconds-level failure gate was added. Evidence:
+  `docs/work/handoffs/TASK-008-ANCHOR-TIMING-REAL-DATA-20260930-20261008.md`.
+
+- `[VERIFIED 2026-10-08 — auction timing policy input validation]`
+  `AuctionTimingPolicyV1` now validates that each configured clock value is a
+  real, zero-padded `HH:MM:SS` time before applying the existing monotonic
+  ordering check. Regression cases first reproduced acceptance of invalid
+  characters and out-of-range minute/hour values; the default 09:20/09:24/09:25
+  policy behavior is unchanged. Full Core suite: 837 passed; compileall and
+  diff-check pass. This validates policy syntax only and adds no market-data
+  availability or completeness gate.
+
+- `[VERIFIED 2026-10-08 — current-code full 09:29 opening replay]` The current
+  Core working tree replayed the hash-pinned real t1-v2 Q2Frame through
+  09:32:10, with same-date captured TD-derived amount, price, and pressure
+  contexts. Two one-Engine passes matched: 734 frames / 418,759 updates were
+  consumed through the opening cutoff; one post-cutoff frame was excluded.
+  Opening facts were 5,211 READY / 12 PARTIAL over the observed 5,223-symbol
+  cohort. The 09:20/09:24/09:25 anchor facts and ten PARTIAL plate-pressure
+  outputs remain explicitly incomplete; full-market coverage is unproven.
+  This run took about 33 minutes, recorded as a runtime observation rather
+  than a failure gate. It used frozen files only, not live Redis/TD/Rabbit; it
+  does not prove Rabbit order, historical availability, or NORMAL acceptance.
+  TASK-008 remains partial. Details and hashes:
+  `docs/work/handoffs/TASK-008-CURRENT-CODE-FULL-REPLAY-20261008.md`.
+
+- `[VERIFIED 2026-10-08 — current-code opening price/pressure audit]` The
+  current Core working tree was re-run twice on hash-pinned real 2026-09-29
+  TD auction rows, plate mapping, and t1-v2 Q2Frame inputs. Core's
+  `OpeningPlatePriceSummaryV3` produced identical reports; 657/657 selected
+  opening samples had a valid limit state. Raw TD `chg_bp` was independently
+  checked against Q2 previous close for 3,350 symbols with zero arithmetic
+  mismatches (1,235 rows had no usable previous close). Core and the pinned
+  engine-next pure helper matched all 5,223 observed per-symbol pressure
+  formulas and all 10 plate pressure values/statuses, but 8 plate quality
+  denominators differed: the frozen selected-plate map had 1,412 members and
+  91 were absent from the captured TD cohort. The same-date Redis auction
+  anchor/effective-TD universe is not in the evidence, so the production
+  assembler gate and final report status were not replayed. Result is
+  `VALUE_PARITY_WITH_DENOMINATOR_DIFFERENCE`, not strict or production parity.
+  Legacy opening report is `replay_fixture_only` with unavailable observation
+  time; its comparison is not live truth. Full evidence:
+  `docs/work/handoffs/TASK-008-OPENING-PRICE-PRESSURE-CURRENT-CODE-20261008.md`.
+  This is feature-scoped development evidence; TASK-008 remains partial and
+  M3-1/TD health states are unchanged.
+
+- `[VERIFIED 2026-10-08 — 09:26 passive Core/T1 checkpoint follow-up]` On
+  the pinned real 2026-09-23 Q2Frame stream, the current Core runner passively
+  compared reducer state after the 09:26 event second with the T1-v2
+  `tick_batch_barrier` sidecar. All 5,222 symbols matched under the current
+  `Q2Quote.to_mapping` comparison; no duplicates or value/quality mismatches.
+  Core's 149 observer-time `stale` diagnostics were reported separately, not
+  treated as producer-value differences. Ordered and repeated full-window
+  runs remained deterministic across 500 frames / 1,209,672 updates. This
+  supersedes only the 2026-10-07 statement that the 09:26 sidecar had not yet
+  been compared; it does not prove Rabbit arrival or historical
+  `available_at`. No same-date 09:32/09:40 producer barrier records were found
+  in the retained barrier artifacts. TASK-008 remains
+  `PARTIAL_EVIDENCE`, normal opening remains `UNPROVEN`, and M3-1 / TD health
+  remain blocked/unproven. Evidence:
+  `docs/work/handoffs/TASK-008-0926-CORE-PASSIVE-CHECKPOINT-20261008.md`.
+
+- `[VERIFIED 2026-10-07 — real Core full-window Q2Frame continuation]` The
+  current working-tree runner processed the pinned 2026-09-23 T1 Q2Frame
+  artifact through all 500 frames / 1,209,672 updates in ordered and repeat
+  runs, with one Engine per pass and identical final hashes. The 09:32:10
+  opening business-fact and summary hashes match the prior 343-frame run;
+  Engine snapshot/strategy-result hashes differ because the replay horizon is
+  part of the snapshot envelope. Auction anchors remain partial (09:20
+  1,319/5,222; 09:24 3,422/5,222; 09:25 5,068/5,222, with 154 recovery
+  targets requested). In that 2026-10-07 run, the 09:26 producer sidecar was
+  not applied; the passive comparison was completed later on 2026-10-08 as
+  recorded above. 09:32/09:40 producer snapshots and the upstream per-frame
+  acquisition manifest were not present. Full evidence:
+  `docs/work/handoffs/TASK-008-CORE-FULL-WINDOW-CONTINUATION-20261007.md`.
+  This does not close TASK-008 or prove NORMAL/Rabbit-order equivalence;
+  `M3_1_NORMAL=BLOCKED` and `TD_WRITE_HEALTH=UNPROVEN` remain unchanged.
+
+- `[VERIFIED 2026-09-28 afternoon trend — 14:28 +08:00]` At 14:27:59, t1
+  progress had `batches=47075`, `source_in=36811996`, `source_reject=1592701`
+  (~4.327% cumulative), `ack=47075`, `ack_fail=0`, `reject=806`, source time
+  14:26:41, and `wall_lag_ms=78337`. Since 14:17:22, event time advanced
+  10m20 over 10m37 wall time; source reject delta was 79,107 / 1,808,035
+  inputs (~4.375%). At 14:28:02.843, read-only m2/Q2 source time was
+  14:26:44.000 / 14:26:44.287 (`delay_ms=287`), last batch 1000/1000/0,
+  sampled Q2 times 14:26:42/43, active set 5,226. This indicates data continues
+  to flow with modestly rising host/event age over this short sample; it does
+  not prove Rabbit residence time or classify drops. Keep observing; no timing
+  gate. The exact-release diagnostic candidate now has a complete progress
+  field-order regression, passed full self-test at 14:28, and remains isolated.
+  Detailed evidence is in the TASK-008 handoff.
+
+- `[VERIFIED 2026-09-28 post-lunch live flow — 14:17 +08:00]` Progress resumed
+  after lunch without a service restart. From 14:14:25 to 14:17:22, t1
+  advanced `batches` 44,245→44,859, `source_in` 34,501,853→35,003,961,
+  `source_reject` 1,492,577→1,513,594, ACK 44,245→44,859 (`ack_fail=0`),
+  and source time 14:13:41→14:16:21; `wall_lag_ms` was ~45–62s. Read-only
+  `m2`/Q2 samples at 14:16:46 and 14:17:30 also advanced from source 14:15:49
+  to 14:16:27, with Q2 sample timestamps advancing correspondingly; header-
+  minus-source `delay_ms` was 500ms and 167ms. Thus the consumer and sampled
+  Redis projection are progressing after lunch; this does not identify Rabbit
+  queue residence, prove full-universe coverage, or classify rejected ticks.
+  `td_sql=5809` remains expected under the deployed post-09:45 TD cutoff. The
+  exact-release diagnostic candidate remains undeployed; do not infer reject
+  causes or add a timing gate. At 14:18, the isolated candidate's new log
+  fields were moved to the end of the progress line and a regression test
+  confirmed the legacy field sequence; its exact-release full-dependency
+  self-test passed again. No local parser was found, but external log
+  consumers remain UNKNOWN. Detailed samples are in
+  `docs/work/handoffs/TASK-008-POST-REBOOT-Q2-AUDIT-20260928.md`.
+
+- `[VERIFIED 2026-09-28 live-session recheck — 11:59 +08:00]` Both services
+  remained active (`t1-v2-live` PID 318, `engine-next` PID 203417; each
+  `NRestarts=0`); root disk was 45% used / 21G free. No new t1 progress appeared
+  after the 11:45:23 row, whose source timestamp was 11:30:02. Read-only Redis
+  PING succeeded; `q2:active:20260928` remained 5,226, `m2:runtime:20260928`
+  remained at source 11:30:02.000 / header 11:30:02.055 with 1000 accepted,
+  zero rejected, and sampled Q2 timestamps 11:30:00 / 11:30:01. This is
+  consistent with the lunch pause, not a fresh 11:59 market-data sample or a
+  proof of full-universe coverage. The exact-release-source diagnostics
+  candidate's full-dependency self-test passed again in isolation; deployed
+  executable SHA-256 still matches the unmodified release. No deploy, restart,
+  Redis/TD write, or Rabbit access occurred. Live reject causes remain
+  `UNKNOWN`; keep TASK-008 partial and M3-1 / TD health gates unchanged. Details
+  in `docs/work/handoffs/TASK-008-POST-REBOOT-Q2-AUDIT-20260928.md`.
+
+- `[VERIFIED 2026-09-28 live timestamp cross-check — 11:52 +08:00]` At
+  11:45:23, t1's last progress had `last_ts_ms=11:30:02`, cumulative
+  `source_in=22560860`, `source_reject=927365` (4.1105%), `ack=29064`,
+  `reject=43`, and `wall_lag_ms` about 15m21. At 11:52:40, t1 PID 318 and
+  engine-next PID 203417 remained active with `NRestarts=0`. Read-only
+  `m2:runtime:20260928` showed `source_ts=11:30:02.000`, AMQP header
+  `wall_ts=11:30:02.055` (`delay_ms=55`); sampled Q2 timestamps were 11:30:00
+  and 11:30:01, active-set cardinality 5,226. Their alignment with 11:30 is
+  consistent with the Shanghai lunch break; no later progress in that window
+  is not by itself a service failure. The final batch was processed/logged
+  about 15m21 after its event timestamp, but the delay cannot be assigned
+  specifically to Rabbit queue residence. t1 uses `DataRecord.tss` as tick
+  event time and the outer message-header timestamp as `wall_ts`; local source
+  search found no producer assignment site, so header/publisher semantics
+  remain `UNKNOWN` and must not drive late-tick gates. Rejection ratios and
+  single-batch counts vary; causes remain unknown. Exact-release-source
+  instrumentation candidate and full self-test evidence are at
+  `/home/exedev/validation/t1-v2-reject-diagnostics-release-copy.xPGtnm/`;
+  it is not deployed or visible in live logs. No production state changed.
+  Keep
+  `TASK-008=PARTIAL_EVIDENCE`, `NORMAL_OPENING_ACCEPTANCE=UNPROVEN`,
+  `M3_1_NORMAL=BLOCKED`, and `TD_WRITE_HEALTH=UNPROVEN`. Details:
+  `docs/work/handoffs/TASK-008-POST-REBOOT-Q2-AUDIT-20260928.md`.
+
+- `[VERIFIED 2026-09-28 live Redis/source alignment — 11:04 +08:00]` At
+  11:04:38, t1 reported `source_in=16013873`, `source_reject=617820` (3.858%),
+  `ticks=15396053`, `td_sql=5809`, `redis_committed=15193108`,
+  `last_ts_ms=1790563761000` (=10:49:21), and `wall_lag_ms=917629` (~15m18).
+  Read-only Redis at 11:04:47 returned PONG, 5,226 members in
+  `q2:active:20260928`, and `q2:000001.ts=1790563767000` (=10:49:27), six
+  seconds ahead of that progress sample. This supports continued Q2/source
+  advancement but does not prove universe completeness, timestamp freshness,
+  or exclusive writer. Active release source shows record rejection for
+  nonpositive timestamp/bad six-digit symbol, disallowed market-symbol pair,
+  or the SZ index-price heuristic; the metric does not split these reasons.
+  If all records in a delivery reject, code rejects that delivery without
+  requeue; partial conversion accepts are processed and the whole delivery is
+  ACKed. `reject=42` does not identify the path. Raw rejected messages are not
+  available in the inspected evidence. No runtime state was changed. See
+  `docs/work/handoffs/TASK-008-POST-REBOOT-Q2-AUDIT-20260928.md`.
+
+- `[VERIFIED 2026-09-28 live progress refresh — 10:53 +08:00]` At 10:53:23,
+  t1-v2 reported `batches=18328`, `source_in=14090324`,
+  `source_reject=537025` (~3.81%), `ack=18328`, `ack_fail=0`, `reject=42`,
+  `ticks=13553299`, `td_sql=5809`, `redis_committed=13353836`,
+  `last_reject=0`, `last_ts_ms=1790563121000` (=10:38:41), and
+  `wall_lag_ms=882374` (~14m42). In the prior 15 minutes, 86 progress-line
+  samples had `last_reject` values 0:38, 1:2, 18:20, 177:6, 178:11, 179:7,
+  40:1, 67:1. These are sampled last-batch values, not the complete batch
+  distribution; recurring counts suggest a stable rejection cohort but do
+  not prove its cause. Host boot time remained 2026-09-27 09:06:54; t1 PID
+  318 and engine-next PID 203417 were active with `NRestarts=0`, but process
+  status does not prove uninterrupted health. Disk was 45% used with 21G free.
+  No Redis keys or TD rows were reread in this refresh. Keep
+  `TASK-008=PARTIAL_EVIDENCE`, opening acceptance unproven, M3-1 blocked, and
+  `TD_WRITE_HEALTH=UNPROVEN`; do not add a timing gate or infer Rabbit latency.
+  Details: `docs/work/handoffs/TASK-008-POST-REBOOT-Q2-AUDIT-20260928.md`.
+
+- `[VERIFIED 2026-09-28 live progress refresh — 10:42 +08:00]` A new t1-v2
+  progress line at 10:42:23 reported `batches=16025`,
+  `source_in=12192358`, `source_reject=456000` (about 3.74%), `ack=16025`,
+  `ack_fail=0`, `reject=42`, `ticks=11736358`, `td_sql=5809`,
+  `redis_committed=11539986`, `last_reject=0`,
+  `last_ts_ms=1790562491000` (= 10:28:11), and `wall_lag_ms=852004`
+  (about 14m12). Read-only Redis returned `PING=true`,
+  `q2:active:20260928=5226`, and `q2:000001.ts=1790562489000` (= 10:28:09),
+  consistent within two seconds of the reported progress time. At 10:43:15
+  both services were active with `NRestarts=0`; `/` was 45% used / 21G free.
+  Between the 10:33:49 and 10:42:23 progress observations, reported source
+  time advanced 8m while wall time advanced 8m34; measured age grew by about
+  33 seconds and remains substantial. This refines the prior snapshot: the
+  source-time age is not rapidly diverging at that interval, but its cause is
+  still unknown and it is not direct Rabbit arrival latency. No hard lateness
+  gate follows from this observation.
+
+- `[VERIFIED 2026-09-28 live runtime/TD cutoff readback — 10:33 +08:00]`
+  The exact active t1-v2 binary (PID 318, SHA-256
+  `363685f830c62aa3a2a8321eb93f91c5c7babccbd74c5e67b1e5b4c2dad1ab56`)
+  remained active with `NRestarts=0`; engine-next was active (PID 203417,
+  `NRestarts=0`) and root disk was 44% used / 22G available. At 10:33:49 the
+  t1 progress line had `batches=14233`, `source_in=10728372`,
+  `source_reject=394997` (about 3.68%), `ack=14233`, `ack_fail=0`,
+  `reject=42`, `ticks=10333375`, `td_sql=5809`,
+  `redis_committed=10139710`, `last_reject=0`,
+  `last_ts_ms=1790562011000` (= 10:20:11 +08:00), and
+  `wall_lag_ms=818708`. Redis `q2:active:20260928` had 5,226 members and
+  `q2:000001.ts=1790562018000` (= 10:20:18). This confirms continued
+  processing and Redis progress, while the age of the latest reported source
+  timestamp was about 13m39; it is not a Rabbit residence-time measurement.
+  Host NTP was synchronized at the preceding check. The source-time origin and
+  delay cause remain `UNKNOWN`.
+
+  The apparent `td_sql` plateau is explained by the active release's explicit
+  TD cutoff, not by a demonstrated TD failure: `td_past_store_cutoff()` gates
+  on batch logical/tick time converted to local `HHMM` and suppresses TD
+  statements when it is later than `0945`. Read-only real TD checks found
+  97,621 rows in `[09:45:00,09:46:00)`, last row 09:45:59, and zero rows in
+  `[09:46:00,09:47:00)`, consistent with that release contract; Redis commits
+  continued. This does not make the M3-1 health gate pass: `CLEANUP_BASELINE`
+  and its required controlled-window proof remain absent. `source_reject` is
+  an aggregate record-conversion filter count with no reason breakdown;
+  partial successful Rabbit batches are ACKed, so the disposition is material
+  but its causes are unknown. The active local engine-next unit is Python, and
+  the local Node receiver file is not its service entry point. No active
+  producer assigning `DataRecord.tss` was found; `DataBatch.sent_at` is
+  present in the schema but not consumed by the active t1 decoder. Producer
+  timestamp origin, Rabbit arrival time, and reject-reason distribution remain
+  `UNKNOWN`. Do not infer queue lag, discard late ticks, change ACK, or add a
+  strict time gate from these observations. Full evidence:
+  `docs/work/handoffs/TASK-008-POST-REBOOT-Q2-AUDIT-20260928.md`.
+
+- `[VERIFIED 2026-09-28 active-release vs date-guard candidate differential]`
+  Using actual `market_data1.stock_tick_v2` 3-second slices, the exact active
+  release (SHA-256 `363685f830c62aa3a2a8321eb93f91c5c7babccbd74c5e67b1e5b4c2dad1ab56`)
+  overwrote 3,884 shared 2026-09-24 Q2 hashes with 2026-09-23 values in
+  isolated DB15, as recorded in the preceding evidence. Development candidate
+  `b2aa169` (binary SHA-256
+  `7f7523d3d60ff8dd1bfb7244149634bd1f8bdb71dc88ca8a4bd67057cdf9555e`) on
+  the same narrow source slices skipped 3,884 older-date writes and committed
+  458 symbols lacking a hash in that narrow baseline; after a separate full
+  09-24 day replay, the same 4,342 older-date slice was fully skipped. In a
+  same-day reversed-slice tests on both candidate and active release, zero
+  date-guard skips occurred and 4,455/5,064 common Q2 timestamps moved
+  backward. This demonstrates the guard is cross-date only, not same-day
+  event-time monotonicity, and reproduces the same-day behavior in the exact
+  active release. The post-reboot record's source date and inspected Q2 active-set date are both
+  2026-09-24, so this cross-date guard is not proven to address that
+  same-day observation. Raw Rabbit batch identity/arrival order and per-key
+  pre-write Q2 values are missing; production causality remains `UNPROVEN`.
+  Candidate was not deployed. DB15 namespaces remain; DB0 matches=0,
+  `td_sql=0`, `ack=0`; services remained active without restart. Do not add a
+  same-day hard rejection gate based on reverse TD order. Evidence:
+  `/home/exedev/validation/task008-q2-date-guard-differential-20260928T0815+0800/`.
+
+- `[VERIFIED 2026-09-28 exact active-release functional replay mechanism]`
+  The exact `t1-v2-live` release executable (SHA-256
+  `363685f830c62aa3a2a8321eb93f91c5c7babccbd74c5e67b1e5b4c2dad1ab56`)
+  replayed real `market_data1.stock_tick_v2` three-second slices into an
+  isolated Redis DB15 namespace: 2026-09-24 `[09:30:00,09:30:03)` first, then
+  the older 2026-09-23 equivalent. Starting from 4,580 Q2 hashes all dated
+  2026-09-24, the 4,342-tick older slice committed 4,342 Q2 states. Of 3,884
+  symbols in both active sets, all 3,884 now had 2026-09-23 Q2 `ts`, and none
+  retained the newer-date `ts`; `000001` likewise changed from 09-24 to
+  09-23. This functionally reproduces a cross-date overwrite in the exact
+  release's replay writer using real TD rows. Redis writes were DB15-only
+  under unique prefixes; DB0 prefix matches=0; `td_sql=0`, `ack=0`; the service
+  stayed active with PID 318 and `NRestarts=0`. Test keys remain in DB15.
+  This is not a Rabbit/live-arrival test and does not prove the specific
+  post-reboot batch caused a production overwrite: raw Rabbit identity/order
+  and a pre-write production snapshot remain unavailable. Do not add a
+  same-day event-time rejection gate from this evidence; late auction ticks
+  can be legitimate. `TASK-008=PARTIAL_EVIDENCE`, M3-1 remains `BLOCKED`, and
+  `TD_WRITE_HEALTH=UNPROVEN`. Evidence:
+  `/home/exedev/validation/task008-live-q2-crossday-replay-20260928T0757+0800/`.
+
+- `[VERIFIED BY RELEASE PROVENANCE 2026-09-28 active t1-v2 binary audit]`
+  `t1-v2-live` PID 318 resolves to release `20260923_tdstop0945b`; SHA-256 of
+  `/proc/318/exe`, its release artifact, and the `current` target all match
+  `363685f830c62aa3a2a8321eb93f91c5c7babccbd74c5e67b1e5b4c2dad1ab56`.
+  The release's `redis_v2_writer.cpp` hash matches its source manifest, and
+  that source uses ordinary Q2 `HSET` without the development branch's
+  `Q2DateAwareHSet` cross-date guard. Thus the guard tested on development
+  commit `b2aa169` is not in the active release. This establishes the
+  release-code mechanism, not that the post-reboot batch actually overwrote a
+  newer pre-write Q2 value; Rabbit batch identity/order and a pre-write
+  snapshot remain unavailable. The t1-v2 log file and journal had no entry
+  newer than the single `2026-09-27 20:15:30` progress line at audit time;
+  lack of logging does not prove an idle queue or no unlogged activity. No
+  production state was changed. TASK-008 remains `PARTIAL_EVIDENCE`. Evidence:
+  `/home/exedev/validation/task008-live-q2-date-guard-audit-20260928T074236+0800/`.
+
+- `[VERIFIED 2026-09-28 post-reboot Redis persistence and timestamp semantics]`
+  A read-only check at 08:32:18 +08:00 still found 800 members in
+  `q2:active:20260924`, zero in the inspected 09-27/09-28 sets, and
+  `q2:600000` at `ts=2026-09-24 15:29:06` with `a20/a24/a25=0`; TTL was
+  42,193 seconds. Given the configured 86,400-second TTL, this is consistent
+  with a 20:15:30 refresh, but cannot establish the key's pre-write value.
+  Exact release source maps `DataRecord.tss` to tick `ts_ms` and batch logical
+  time to the max accepted tick timestamp; `DataBatch.sent_at` is not read,
+  while the inner JSON header timestamp in the length-prefixed wire body is
+  stored as `wall_ts_ms`; AMQP `BasicProperties.timestamp` is not read.
+  Logged `wall_lag_ms` is host wall-clock minus logical tick time, not Rabbit
+  delivery latency. The archived disabled HTTP gateway copies request bodies
+  unchanged and sets only the separate AMQP property to `int(time.time())`
+  (seconds); this is not proof of the current publisher's inner timestamp or
+  tick-time semantics. Producer-side timestamp origin remains `UNKNOWN`; no
+  producer assignment/publish path was found in checked source (including
+  `/home/exedev/t1v2work`) or local branches (`git log --all
+  -S'amqp_basic_publish'` had no matches; historical `set_tss` hits were
+  test/generated code), and no raw envelope was available.
+  At 08:54, PID 318 had an established non-loopback TCP connection to port
+  5672; local Docker contained Redis/TDengine only and systemd had no Rabbit
+  publisher unit. The Rabbit broker is outside the inspected local service
+  set; the publisher host/source remains unidentified. An earlier log check
+  had not located progress newer than 20:15:30; a later journal read found the
+  08:41:04 line recorded below, so the earlier absence was a limited
+  observation, not evidence that the consumer was idle.
+  Details: `docs/work/handoffs/TASK-008-POST-REBOOT-Q2-AUDIT-20260928.md`.
+
+- `[VERIFIED 2026-09-28 post-reboot runtime/logging recheck]` At 09:09 +08:00,
+  the host boot time was 2026-09-27 09:06:54; `t1-v2-live` PID 318 started
+  three seconds later and remained active with `NRestarts=0`. `engine-next`
+  was active as PID 203417, but its journal records a successful stop/start
+  at 2026-09-28 00:30:01; the available unit log does not show why or who
+  initiated it. Thus `NRestarts=0` is not proof that it had no intentional
+  service restart. Root filesystem use was 45%, with 21G available.
+  The latest `t1_v2 progress` remained 08:41:04: counters such as `batches`,
+  `source_in`, `ticks`, and `td_sql` are cumulative process counters, while
+  `last_*` and `last_ts_ms` describe the latest processed batch. The same PID's
+  counter rose from `batches=1` at 20:15:30 to `batches=108` at 08:41:04, so
+  107 additional batches were processed despite the wall-clock log gap. The
+  deployed logger emits based on source logical-timestamp advancement, not a
+  wall-clock timer. `td_sql=4` is a nonzero cumulative service counter, not a
+  count attributable to that final batch. It records four TD statements in
+  the runtime path since process start, but no TD readback was performed, so
+  persisted row state/health remains unverified. At 09:03 Redis had
+  `q2:active:20260928=5226`; only 24 members were sampled, so the observed
+  zero `amt`/`vol` values do not establish cause or whole-market completeness.
+  `TASK-008=PARTIAL_EVIDENCE`, `NORMAL_OPENING_ACCEPTANCE=UNPROVEN`,
+  `M3_1_NORMAL=BLOCKED`, and `TD_WRITE_HEALTH=UNPROVEN` remain unchanged.
+  Evidence and limits: `docs/work/handoffs/TASK-008-POST-REBOOT-Q2-AUDIT-20260928.md`.
+
+- `[VERIFIED 2026-09-28 latest t1-v2 progress — 09:18:20 +08:00]` A fresh
+  journal read found consecutive progress records from 09:17:40 through
+  09:18:20 on the same PID 318. Between the 08:41:04 record (`batches=108`,
+  `td_sql=4`) and 09:18:20 (`batches=538`, `source_in=224997`,
+  `source_reject=5578`, `ack=538`, `ack_fail=0`, `ticks=219419`,
+  `redis_cmds=134668`, `td_sql=434`, `redis_committed=66476`), process
+  counters advanced substantially. Latest batch fields were
+  `last_in=162`, `last_reject=0`, `last_ticks=162`; `last_ts_ms=1790558300000`
+  converts to 09:18:20 +08:00 and `wall_lag_ms=888`. This is evidence that the
+  service was processing batches with near-wall-clock source timestamps at
+  that check, not proof of Rabbit arrival latency or producer timestamp origin.
+  `td_sql` remains a cumulative statement counter; no TD readback was made, so
+  persisted-data health remains unverified. At that check both services were
+  active, t1-v2 PID 318 had `NRestarts=0`, engine-next PID 203417 had
+  `NRestarts=0`, and `/` was 45% used with 21G free. This does not erase the
+  separately observed engine-next stop/start at 00:30:01 or establish its
+  cause. No production service or data was changed by this read-only check.
+  `TASK-008=PARTIAL_EVIDENCE`, `NORMAL_OPENING_ACCEPTANCE=UNPROVEN`,
+  `M3_1_NORMAL=BLOCKED`, and `TD_WRITE_HEALTH=UNPROVEN` remain unchanged.
+  Details: `docs/work/handoffs/TASK-008-POST-REBOOT-Q2-AUDIT-20260928.md`.
+
+- `[VERIFIED 2026-09-28 latest live progress — 09:23:00 +08:00]` A final
+  read-only journal check found progress every 10 seconds through 09:23:00 on
+  PID 318. The latest cumulative counters were `batches=1104`,
+  `source_in=386713`, `source_reject=5612`, `ack=1104`, `ack_fail=0`,
+  `reject=9`, `ticks=381101`, `redis_cmds=393140`, `td_sql=1002`,
+  `redis_committed=194527`; latest batch was `last_in=196`, `last_reject=0`,
+  `last_ticks=196`, `last_ts_ms=1790558580000` (= 09:23:00 +08:00),
+  `wall_lag_ms=318`. `source_reject=5612` out of `source_in=386713` (about
+  1.45%) counts records rejected by `SourceTickBatchBuilder` when
+  `RawTickConverter` returns false; the counter has no reason breakdown. The
+  inspected converter rejects nonpositive `tss`, non-six-digit symbols,
+  non-equity market/symbol pairs, or its SZ index-price heuristic. This is not
+  the same as `reject=9`, which counts successful Rabbit `basic.reject` calls;
+  `ack_fail=0`, and the latest batch had `last_reject=0`. The cumulative
+  rejected-record causes remain unknown; do not call them harmless or corrupt
+  without classification. `td_sql` is cumulative, not an independent TD SELECT
+  or proof of persisted rows. The counter advanced from 434 at 09:18:20 to 1002
+  at 09:23:00, while current-source timestamps and other counters advanced.
+  A journal filter from midnight found no `No enough disk space`,
+  `stage=commit.tdengine`, or `t1_v2 fatal` matches; this is log evidence,
+  not a TD data readback. At 09:23:26 both services remained active with
+  `NRestarts=0`, `/` remained 45% used with 21G free. These observations
+  improve operational confidence but do not provide the missing human-confirmed
+  cleanup baseline or establish `TD_WRITE_HEALTH=PROVEN`; do not promote
+  `M3_1_NORMAL`. Details: `docs/work/handoffs/TASK-008-POST-REBOOT-Q2-AUDIT-20260928.md`.
+
+- `[VERIFIED 2026-09-28 full-day cross-day Q2 date-guard check]` With t1-v2
+  development commit `b2aa169` and actual `market_data1.stock_tick_v2`, a
+  full 2026-09-24 `[09:15,09:40)` replay of 500 sequential three-second
+  slices established 5,222 Q2 hashes in an isolated Redis DB15 namespace.
+  Applying the real 2026-09-23 `[09:30:00,09:30:03)` slice then skipped all
+  4,342 Q2 writes; all 5,222 hash contents and the current-date active set
+  were unchanged. This reconciles the earlier 458 writes after a one-frame
+  baseline: those symbols were absent from that narrow frame. This verifies
+  one cross-day date-guard case in the development build only; it does not
+  establish production Rabbit order, live-binary behavior, or causal
+  production overwrite. `td_sql=0`, `ack=0`, baseline `clocks=0`, DB0 had no
+  matching namespace keys, and services remained active with `NRestarts=0`.
+  TASK-008 remains `PARTIAL_EVIDENCE`, M3-1 remains `BLOCKED`, and TD write
+  health remains `UNPROVEN`. Evidence:
+  `/home/exedev/validation/task008-crossday-full-baseline-20260928T070100+0800/`.
+
+- `[VERIFIED 2026-09-28 same-day Q2 chronological control]` With the exact
+  current t1-v2 development binary and real `market_data1.stock_tick_v2`,
+  isolated DB15 replay of `[09:30:00,09:30:03)` then
+  `[09:30:03,09:30:06)` produced 4,580 then 5,189 Q2 symbols. Among 4,580
+  shared symbols, 4,455 timestamps advanced, 125 were unchanged, and zero
+  regressed. This pairs with a separate deliberately reversed-order test that
+  reproduced same-day Q2 timestamp regression, establishing order sensitivity
+  in the isolated t1-v2 mechanism. The tests do not reveal actual Rabbit
+  arrival order or prove production overwrite; no strict older-event-time
+  rejection follows, since late auction ticks may be valid. Redis writes were
+  isolated to DB15 TTL namespaces; `td_sql=0`, `ack=0`, DB0 prefix hits=0, and
+  both services remained active with no restarts. TASK-008 remains
+  `PARTIAL_EVIDENCE`, M3-1 remains `BLOCKED`, and TD write health remains
+  `UNPROVEN`. Evidence:
+  `/home/exedev/validation/task008-same-day-order-control-20260928T064800+0800/`.
+
+- `[OBSERVED 2026-09-27/28 post-reboot Q2 audit]` After host boot at
+  09:06:54 on 09-27, `t1-v2-live` processed one recovered batch at 20:15:30:
+  1,000 source records, 200 rejects, 800 ticks, one ACK, 800 Q2 commits,
+  `td_sql=0`, source time 09-24 15:29:39 CST. A read-only Redis check found
+  `q2:active:20260924` with 800 members and refreshed Q2 hashes spanning
+  15:00–15:29:39. The exact running release starts with an empty quote store,
+  applies base fields even for non-increasing event times, and HSETs Q2 without
+  comparing Redis's stored `ts`; this proves a stale-overwrite mechanism but
+  not that newer values existed before this write. No pre-write snapshot or
+  raw Rabbit envelope/batch identity is available. Its local release patch
+  skips TD writes after 09:45, consistent with `td_sql=0`; Redis/ACK remain
+  active. Audit actions were read-only; the service's normal Redis write and
+  ACK were observed, not initiated by the audit. `TASK-008` remains
+  `PARTIAL_EVIDENCE`, M3-1 remains `BLOCKED`, and `TD_WRITE_HEALTH` remains
+  `UNPROVEN`; no strict gate or repair was introduced. Details:
+  `docs/work/handoffs/TASK-008-POST-REBOOT-Q2-AUDIT-20260928.md`.
+
+- `[OBSERVED 2026-09-27 post-reboot TASK-008 09:25 cohort comparison]` A
+  read-only TD comparison matched all 5,221 real `auction_snapshot_v2` 0925
+  symbol tuples `(match_amt_yuan, rest_bid_amt_yuan, rest_ask_amt_yuan)` to
+  one or more of real-TD-derived t1-v2 Q2Frame replay states seq 200–202:
+  813 matched seq 200 (09:24:59), 4,537 seq 201 (09:25:02), and 3,588 seq
+  202 (09:25:04). Per-symbol matches span multiple frame states, consistent
+  with a mixed point-in-time cohort; this does not prove Rabbit delivery
+  membership, arrival order, or historical availability, and equality of
+  three fields is not a unique event identity. The comparator was rerun after
+  the server reboot with the same counts and input hash. At that check both
+  services were active, both repositories were clean, and root disk use was
+  48%; those observations do not prove TD write health. TASK-008 remains
+  `PARTIAL_EVIDENCE`, M3-1 remains blocked, and `TD_WRITE_HEALTH` remains
+  unproven. Evidence:
+  `/home/exedev/validation/task008-0925-snapshot-cohort-audit-20260927/`.
+
+- [VERIFIED 2026-09-25 Rabbit outer-header parsing hardening] ECC
+  production-audit and contract-first review found the t1-v2 metadata
+  sidecar's prior substring extractor could mistake a nested timestamp or a
+  quoted batch_id mention for a top-level header member. A regression test
+  failed before the fix (RED). t1-v2 local commit
+  8a27370b6750aa9f4173b004fd5cf60f9688f5b6 now parses the JSON object
+  structurally, decodes JSON strings, rejects duplicate top-level keys, uses
+  checked integer conversion, and reports wrong-typed/out-of-range optional
+  fields as Invalid. Full-dependency build and self-test pass at
+  /tmp/t1v2-rabbit-header-decoys-overflow-green; diff-check passes. This is
+  fixture-level parser verification, not validation against a production
+  Rabbit payload. The inspected offline contract inventory directory contains
+  only inventory/checksum artifacts; the 2026-09-15 ground-truth capture has
+  Redis Q2 snapshots and mapping/security artifacts, but no raw Rabbit
+  envelope. Rabbit delivery membership/order remains UNKNOWN. No live Rabbit,
+  Redis, TD, or production service action occurred; the commit is local only.
+  A subsequent audit found 32-bit overflow in the 4-byte-prefix plus
+  `header_len` bounds check. t1-v2 local commit
+  `16beee67cf778cebaa20fb442ca178d01b301979` now validates by subtraction
+  before pointer arithmetic and rejects the `0xFFFFFFFC` length case. The
+  full-dependency self-test and an ASan/UBSan full-dependency self-test both
+  pass; the build retains only existing hiredis/TAOS address-of-array
+  warnings. This remains fixture-level evidence, not real Rabbit payload
+  validation; no external data source or production service was accessed.
+  See docs/work/handoffs/TD_RABBIT_RUNTIME_RELEASE_AUDIT_20260925.md.
+
+- `[VERIFIED 2026-09-25 t1-v2 Rabbit metadata sidecar]` On the local
+  `stock-situation-runtime` development branch
+  `codex/task-q2-pure-function`, commit
+  `9a52e8af5f8c8adcc79151abf8dcd35c474c35ff` retains Rabbit outer-envelope
+  metadata and parsed inner `DataBatch` metadata on `TickBatch` as an
+  audit-only sidecar. The outer JSON parser distinguishes absent keys from
+  explicit empty/zero values; proto3 default-valued inner `batch_id`/`sent_at`
+  remain `Proto3DefaultAmbiguous`. Process-local `seq_no` is not presented as
+  producer sequence or arrival evidence. Full-dependency build and
+  serialization-path self-test pass (`/tmp/t1v2-rabbit-batch-metadata-final4`);
+  `git diff --check` passes. No schema, consumer, ACK, live service, or
+  calculation behavior changed; no live Rabbit/Redis/TD access or write was
+  performed. This closes development-side metadata propagation only. Actual
+  Rabbit delivery membership/order, outer-vs-inner ID meaning, `sent_at`
+  semantics/units, per-tick arrival/availability, and `p` semantics remain
+  UNKNOWN. The commit is local only, not pushed/merged/deployed. Phase P and
+  TASK-008 remain partial; M3-1 remains blocked and TD write health unproven.
+  See `docs/work/handoffs/TD_RABBIT_RUNTIME_RELEASE_AUDIT_20260925.md`.
+
+- `[OBSERVED 2026-09-25 Phase P auction-close empty-slice fix]` Real TD for
+  2026-09-23 had zero rows in `[09:25:57,09:26:00)` and five rows at exactly
+  `09:26:00.000` in the next 3-second slice. The old empty-frame logical time
+  equaled the excluded right edge, so it emitted `latest` before those rows;
+  the one-second throttle then suppressed the corrected summary. t1-v2 commit
+  `9472f4c` moves empty frames inside their half-open interval, adds the
+  09:26:00 auction-close barrier, and forces the final latest summary. A real
+  bounded `[09:15:00,09:26:03)` replay now yields `latest.total_auction_amount`
+  equal to the Q2 `am` sum (`13,621,401,036`); 5,222 Q2 hashes and the frozen
+  0920/0924/0925 projections are unchanged. Redis writes were isolated to
+  unique DB15 prefixes; TD writes and Rabbit ACKs were zero. This closes only
+  the observed auction-close replay defect. Phase P remains `PARTIAL`,
+  TASK-008 remains partial, and M3-1 remains blocked. Evidence:
+  `docs/work/handoffs/TD_RABBIT_PHASE_P_AUCTION_CLOSE_EMPTY_SLICE_20260925.md`
+  and `/home/exedev/validation/t1v2-latest-boundary-repro-20260925/`.
+
+- `[OBSERVED 2026-09-25 replay development source parity]` t1-v2 commit
+  `ca5ece0` aligns auction calculation, limit-state reference price, and
+  anchor-specific A2/legacy projection semantics with the deployed release.
+  A full-dependency validation binary replayed real TD
+  `2026-09-23 [09:15:00,09:25:09)` one 3-second SELECT at a time into isolated
+  Redis DB15. All 5,222 Q2 hashes and active symbols matched both DB5 baseline
+  and the release-source control; A2/legacy 0920/0924/0925, latest, and the
+  0925 anchor also matched exactly. The run processed 212,022 rows with
+  `td_sql=0`, `ack=0`, and no DB0 prefix keys. This is bounded pre-open
+  semantic parity, not binary identity, Rabbit arrival/delivery proof,
+  historical `available_at`, continuous-session validation, or NORMAL
+  acceptance. Phase P remains partial; M3-1 remains blocked and TD health
+  unproven. Evidence: `docs/work/handoffs/TD_T1V2_AUCTION_SEMANTIC_PARITY_20260925.md`.
+
+- `[OBSERVED 2026-09-25 controlled source-alignment replay]` A validation-only
+  hybrid build used the deployed release calculation files plus the current
+  3-second TD reader/barrier on real 2026-09-23 `[09:15:00,09:25:09)` input,
+  writing only to an isolated Redis DB15 prefix. Its 5,222 Q2 hashes and Q2
+  active set matched DB5/`task009k:` exactly (aggregate SHA-256
+  `308a928e...5b9ff04f`). Auction parity is mixed: the 0925 A2 and legacy
+  projection hashes match, while 0920/0924 each contain one fewer snapshot
+  member (4872 vs 4873; 5099 vs 5100) and their ranked/summary fields differ.
+  The 0925 anchor matches; `latest` run timestamps differ as expected. This
+  supports release-calculation source alignment for Q2, but does not close
+  barrier-time auction parity. TD writes, Rabbit consume/ACK, and service
+  changes were absent; both services remained active with zero restarts.
+  Phase P remains `PARTIAL`. Evidence:
+  `docs/work/handoffs/TD_T1V2_SOURCE_ALIGNED_HYBRID_REPLAY_20260925.md`.
+
+- `[OBSERVED 2026-09-25 source-alignment audit]` t1-v2 development HEAD
+  `e91a20a` is not calculation-source equivalent to deployed release
+  `20260923_tdstop0945b`. Verified differences include auction matching/rest
+  amount formulas, pre-09:25 limit-state reference price, and Engine logical
+  clock/session handling. Release metadata declares base commit `9fd4a42`, but
+  that object is absent from the local t1-v2 Git repo, which has no remote
+  configured. The controlled hybrid run above demonstrates exact Q2 output
+  against the release baseline when release calculation files are used; it
+  does not explain the remaining 0920/0924 auction membership/ranking delta.
+  See `docs/work/handoffs/TD_T1V2_SOURCE_ALIGNMENT_AUDIT_20260925.md` and
+  `docs/work/handoffs/TD_T1V2_SOURCE_ALIGNED_HYBRID_REPLAY_20260925.md`.
+
+- `[OBSERVED 2026-09-24 Phase P]` A real same-day `09:15:00–09:40:00` replay
+  through exact t1-v2 with isolated Redis DB10/`task009p:` processed
+  `1,194,572` TD rows (`td_sql=0`, `ack=0`) and produced 5222 Q2 symbols.
+  The semantic Q2 hash and 0920/0924/0925 stable auction projections matched
+  Phase O exactly; Core ordered/shuffled replay was deterministic. The exact
+  release still emits 1224 `tss` timestamp-group batches even when
+  `REPLAY_BATCH_SIZE=1000000`, so this is Q2 repeatability evidence, not proof
+  that one 3-second read slice has Rabbit-equivalent delivery shape. Evidence:
+  `docs/work/handoffs/TD_RABBIT_PHASE_P_AUDIT_20260924.md` and
+  `/home/exedev/validation/td-rabbit-phase-p-single-slice-20260924T232137629+0800/`.
+
+- `[OBSERVED 2026-09-25 Phase P barrier experiment]` A validation-only binary
+  replayed real 2026-09-24 TD `[09:15:00,09:25:09)` one SELECT per 3-second
+  slice, with processing boundaries only at the business barriers. Isolated
+  Redis DB13/`task009pbarrier:` received 210730 ticks in 204 batches plus one
+  Clock (`td_sql=0`, `ack=0`, DB0 prefix hits `0`). Q2 normalized SHA and
+  0920/0924/0925/latest/0925-anchor semantics matched Phase M exactly. Core
+  readback was deterministic, coverage `1.0`, with 549 stale quotes and
+  `FACT_ONLY`; this is a real barrier-aware validation, not proof of Rabbit
+  delivery/arrival or historical `available_at`. Evidence:
+  `docs/work/handoffs/TD_RABBIT_PHASE_P_BARRIER_EXPERIMENT_20260925.md`.
+
+- `[OBSERVED 2026-09-25 Phase P second real-date barrier experiment]` The same
+  validation-only binary replayed real 2026-09-23 TD `[09:15:00,09:25:09)` with
+  one SELECT per 3-second slice into isolated Redis DB14/`task009pbarrier23:`.
+  It covered 203 slices/212022 rows (one empty slice), 24 slices with multiple
+  event times for a symbol, and produced 204 batches plus one Clock with
+  `td_sql=0` and `ack=0`. Q2, legacy auction, anchor and A2 semantic content
+  matched the exact DB5/`task009k:` baseline; Core readback was deterministic,
+  coverage `1.0`, missing `0`, stale `154`, `FACT_ONLY`. This validates the
+  barrier hypothesis on a second real date, but not Rabbit delivery/arrival or
+  historical `available_at`. Evidence:
+  `docs/work/handoffs/TD_RABBIT_PHASE_P_BARRIER23_EXPERIMENT_20260925.md`.
+
+- [OBSERVED] 2026-09-24 Phase O completed a real same-day full-window replay
+  (`09:15:00–09:40:00`) from TD through the exact current t1-v2 release into
+  isolated Redis DB9/`task009o:` and then Core readback. Independent TD count
+  and t1-v2 `source_in/ticks` were both 1,194,572; the run produced 1,224
+  batches, 78 clocks, 2,408,279 Redis commands, `td_sql=0`, and `ack=0`.
+  Core read 5,222 Q2 hashes with coverage 1.0 and deterministic
+  ordered/shuffled plus sampled Engine hashes. 116 quotes were stale under the
+  explicit 10-second policy, so this is `PHASE_O_PARTIAL`/`REPLAY_PARTIAL`, not
+  NORMAL acceptance. Stable 0920/0924/0925 legacy auction projections matched
+  prior isolated runs; production DB0 had zero `task009o:*` keys. Rabbit
+  arrival/delivery membership, historical `available_at`, and live 09:25:06
+  visibility remain UNKNOWN. Evidence:
+  `docs/work/handoffs/TD_RABBIT_PHASE_O_AUDIT_20260924.md`.
+
 - [VERIFIED] 2026-09-19 commit `3889df4` adds a thin read-only Redis auction
   projection path to the bounded continuous-session shadow. It accepts the
   already-read `0920/0924/0925` Redis projections, rejects duplicate or missing
@@ -276,8 +1221,13 @@
 - [VERIFIED] 真实只读 Redis opening probe 在空 `q2:active:20260910` 时输出 `MISSING/EMPTY_UNIVERSE`、coverage `0.0`、freshness `MISSING`；这证明缺失状态不再被误报为 `FRESH`，不证明历史 live coverage。
 - [VERIFIED] 真实只读 TD `daily_kline` 为日历派生的 2026-09-09 返回 3 行，但因历史 `available_at` 未知，`PreviousDayStatsFunction` 正确输出 `UNAVAILABLE`；查询时刻仅作 `observed_at` 审计。
 - [VERIFIED] Cobra `engine-next` 与 `t1-v2-live` 当前 active、零重启；`engine_core` 尚未部署为生产服务。根分区约 83% 使用率、可用约 3.1GB；本轮仅使用独立 `/tmp` 验证目录并清理。
+- [OBSERVED] 2026-09-24 Phase A 只读源合同审计已完成为 `PARTIAL`：当前 exact release 的 Rabbit `DataBatch` 只有 `batch_id/records/sent_at`，没有每 tick arrival、delivery sequence 或 completion/watermark；TD reader 每次查询一个 3 秒片但当前实现按同 `tss` 分组发出多个 batch，因此尚不能宣称 Rabbit delivery 等价。该轮未消费 Rabbit、未写 Redis/TD、未重启服务；证据见 `/home/exedev/validation/td-rabbit-phase-a-20260924/phase_a_report.md`。进入 Phase B 前，根分区 `100%`（约 108MB 可用）和 `engine-next` `activating/auto-restart`（`NRestarts=194`）必须由运维单独处理并复核。
+- [OBSERVED] 2026-09-24 Phase B bounded sliced-read：Core runner 已改为每个 `[start,end)` 3 秒片单独 `SELECT`，当前片提交后释放，再查询下一片；真实 2026-09-18 09:25:00–09:25:06 两片返回 6041/6041 行、5171 symbols、0 invalid，VirtualClock 到 09:25:06，Redis/TD/Rabbit/effect 副作用为 0。完整 500 片、t1-v2 Q2 同源计算、Rabbit delivery 等价仍未验证。证据见 `/home/exedev/validation/td-rabbit-phase-b-slice-20260924T012653+0800/phase_b_report.md`。
+- [OBSERVED] 2026-09-24 Phase B 完整真实 sliced-read：2026-09-18 09:15–09:40 共 500 个 3 秒片、500 次 TD SELECT、1,224,811 行、98 个空片、402 个 PARTIAL、0 invalid；每片提交后释放，500 个 signal/reducer revision，VirtualClock 到 09:40，副作用为 NONE。结果为 sliced supply/function `PASS`、性能 `PASS_WITH_WARN`（约 545.7 秒）；未接 t1-v2 Q2，未证明 Rabbit delivery/arrival 或历史 available_at。证据见 `/home/exedev/validation/td-rabbit-phase-b-full-20260924T012832+0800/phase_b_report.md`。
 
 ## 1. Market & Auction Knowledge
+
+- [OBSERVED] 2026-09-24 对 2026-09-18/09-23 真实 TD `stock_tick_v2` 与 0925 `auction_snapshot_v2` 只读复核：09:25 前样本第五档未展开，09:25 后逐股展开存在 0–4 秒差异；09-18 的单侧第五档样本含 9 只快照涨跌停与 3 只普通状态，故单侧形态可作为结束盘口候选，不等于涨跌停结论。09-18 最新候选覆盖 5171/5221，快照价格非 NULL 的 4408 只逐股价格一致；763 只快照价格 NULL 与派生金额差异仍待生产计算链复核。详细查询边界、限制及分阶段目标见 `docs/work/plans/TD_RABBIT_GLOBAL_3S_REPLAY.md`；该事件时间核对不证明 Rabbit arrival 或 live 09:25:06 可见性。
 
 - [UNKNOWN] Q2 generation 是否是旧生产链真实提供的全局一致版本，待 Gate K 证实。
 - [OBSERVED] 旧 Q2 读取使用 q2:active:{trade_date} 与 q2:{symbol}；px/pc 为 milli 价格字段，其余数量单位必须继续审计。
@@ -386,6 +1336,7 @@
 
 - [VERIFIED] 当前只支持 Q2 projection fixture/live slice、Q2Frame 和 TD event-time replay；不支持 REPLAY_RECORDED，也不宣称 Rabbit arrival/batch 等价。
 - [VERIFIED] Q2Frame replay 与同一规范化 Q2 fixture 进入同一 Engine 的 semantic snapshot/Probe 结果 EXACT_EQUIVALENCE 已通过；该结论仅覆盖 Q2Frame 的 logical timestamp/逐帧 projection，不代表 Rabbit arrival/batch 等价。
+- [VERIFIED] 2026-09-23 Task008 Q2Frame runner 对同一 JSONL 连续回放两次，逐帧比较输入 frame hash、projection hash、processed_signals、reducer revision、final state hash、VirtualClock 和 symbol coverage；任一差异输出 `REPLAY_NON_DETERMINISTIC`。Coverage 无外部 universe 时只按文件内唯一 symbol 计算；tick manifest 可提供 expected-symbol 分母。历史 `available_at` 明确保持 UNKNOWN，不从 logical/source/replay time 推断。仓库 fixture 的 3 帧本地重复回放一致；这不证明 Rabbit batch 等价或实际生产 t1-v2 artifact 来源。
 - [VERIFIED] TD Event-Time Replay 已通过本地与 cobra-ion 只读验证；当前能力是 `DETERMINISTIC_EVENT_TIME_ONLY`，不恢复 Rabbit arrival/batch，不做 watermark 或 late correction。
 - [VERIFIED] TD Event-Time Replay 在同一 `event_time + symbol` 且缺少真实 source ordering key 时，使用原始字段内容 hash 作为 deterministic synthetic tie-break；该 hash 不代表生产真实先后。
 - [VERIFIED] Replay signal construction 不推进共享 VirtualClock；按 logical time 分组后在 Engine 消费前推进一次，同刻 child signal 进入下一 causal generation，不能越过当前 generation 的 parent/sibling。
@@ -590,3 +1541,428 @@ Evidence：
   The discarded first attempt had passed the wrong field names and produced
   false zero defaults; it is not evidence. See
   `docs/evidence/legacy_theme_delta_strategy_differential_20260918.md`.
+
+### 2026-09-24 TD → t1-v2 → Core bounded replay
+
+- [VERIFIED] Phase B used real `market_data1.stock_tick_v2` with exactly one
+  read-only `SELECT` per 3-second half-open frame. The complete
+  09:15–09:40 window completed 500 frame queries, returned 1,224,811 rows,
+  preserved 98 empty frames, and did not write Redis/TD or consume Rabbit.
+  Runtime was recorded as `PASS_WITH_WARN`; no correctness failure was inferred
+  from elapsed time. See
+  `/home/exedev/validation/td-rabbit-phase-b-full-20260924T012832+0800/phase_b_report.md`.
+- [VERIFIED] Phase C bounded bridge ran the exact current t1-v2 release on the
+  real TD 09:25:00–09:25:06 window in local `--q2frame` mode. It processed
+  6,041 rows into 5 source-time batches and 6,041 Q2 updates with
+  `redis=skip`, `tdengine=skip`, `ack=0`, and `td_sql=0`. Core replayed the
+  frozen Q2Frame twice; final/frame/projection hashes, signal count, reducer
+  revision, symbol coverage, and VirtualClock were identical. This proves only
+  a bounded Q2 bridge, not live Rabbit delivery parity or the full-window
+  bridge. See
+  `/home/exedev/validation/td-rabbit-phase-c-q2-2slice-20260924T014004+0800/phase_c_report.md`.
+- [OPEN] A 3-second TD read slice and a t1-v2 processing batch are different
+  boundaries: t1-v2 groups rows by source `tss`. The replay must preserve
+  source batches while maintaining the 3-second logical timeline; it must not
+  force one batch per slice or call synthetic ordering historical Rabbit
+  arrival order. TD space warnings and `TD_WRITE_HEALTH` remain unproven.
+- [VERIFIED] The same bridge was extended to the real 09:15–09:40 window.
+  Exact t1-v2 consumed `1,224,811` TD rows with no source rejects and emitted
+  `1,205` source-time batches, `1,226,603` Q2Frame updates, `98` clock events,
+  and `5,221` symbols in local `--q2frame` mode (`redis=skip`,
+  `tdengine=skip`, `ack=0`, `td_sql=0`). Core consumed that frozen artifact
+  twice; all determinism fields matched and the result was
+  `REPLAY_READY_BOUNDED`. This closes the real full-window t1-v2→Core Q2
+  bridge only. Rabbit batch membership/arrival, 09:25:06 live visibility,
+  Redis key/TTL projection, and TD write health remain open. See
+  `/home/exedev/validation/td-rabbit-phase-c-q2-full-20260924T014403+0800/phase_c_full_report.md`.
+- [VERIFIED] After correcting the Core TD runner to always canonical-sort each
+  slice (TD `ORDER BY ts,symbol` is not a proven same-time/same-symbol source
+  sequence), the real 09:15–09:40 sliced-read was rerun: 500 SELECTs,
+  1,224,811 rows, 98 empty frames, 5,221 symbols, no invalid rows, and
+  VirtualClock 09:40. The result was functional
+  `CROSS_SECTION_REPLAY_PASS_WITH_WARN`; elapsed time was recorded only, not
+  used as a failure gate. Evidence:
+  `/home/exedev/validation/td-rabbit-phase-b-full-canonical-20260924T192010+0800/phase_b_canonical_report.md`.
+- [VERIFIED] Phase E allowed Redis writes only in isolated DB14/DB13 with
+  unique prefixes. Real t1-v2 replay over 09:25:00–09:25:09 processed 6,041
+  TD ticks in 5 source-time batches, emitted one empty-slice Clock at 09:25:06,
+  produced 12,126 Redis commands, and recorded `td_sql=0`, `ack=0`. DB14
+  contained 5,172 Q2 keys, 0925/latest A2, runtime and immutable 0925 anchor;
+  production DB0 had no task prefix. A repeat run in DB13 had the same
+  normalized Redis content hash. Evidence:
+  `/home/exedev/validation/td-rabbit-phase-e-redis-20260924T193920+0800-barrier/`.
+- [VERIFIED] The current release `snapshot_trigger.cpp` and real Redis anchor
+  both use the 09:25:06 barrier. Core `AuctionAnchorRevisionV1` now records
+  `freeze_time_ms=first_observable_ms` at that barrier while retaining
+  `preferred_finalize_ms=09:25:10` as adaptive-grace evidence. Full Core tests
+  remain green. This does not prove historical Rabbit arrival or live visible
+  membership; `HISTORICAL_AVAILABLE_AT`, `RABBIT_DELIVERY_EQUIVALENCE`, and
+  `TD_WRITE_HEALTH` remain `UNKNOWN/UNPROVEN`.
+- [VERIFIED] A bounded real 09:24:00–09:25:09 replay was run twice through the
+  current t1-v2 release with isolated Redis DB12/DB11. It processed 46,507 TD
+  ticks in 65 source-time batches, emitted one empty-slice Clock at 09:25:06,
+  produced 93,480 Redis commands, and wrote no TD SQL or ACK. Both 0924 and
+  0925 A2 projections were emitted. Removing DB/prefix differences made all
+  Q2/A2/anchor semantic values identical; only runtime `redis_bytes` differed
+  because the test prefixes had different lengths.
+- [PARTIAL] Reading 5,209 real Q2 hashes from isolated Redis DB12 into Core
+  produced deterministic ordered/shuffled opening projections
+  (`REPLAY_READY_BOUNDED`, coverage 1.0 for the captured universe). Against
+  `auction_snapshot_v2`, 0925 price and change fields matched comparable rows,
+  while match amount/rest bid/rest ask had 1,576/1,626/1,621 mismatches. These
+  fields are not yet proven to share the same production/version semantics;
+  zeros are not inferred. Evidence:
+  `/home/exedev/validation/td-rabbit-phase-f-0924-0925-20260924T194854+0800/`.
+- [VERIFIED] Applying the current release `AuctionCalculator` formulas to each
+  symbol's last real TD tick before 09:25:06 reproduced t1-v2 Redis `am`, `br`,
+  and `ar` for 5171/5171 symbols each. The remaining differences against
+  `auction_snapshot_v2` therefore identify an unresolved snapshot/Q2 field
+  semantic or producer-version boundary, not a reason to silently alter Q2 or
+  fill missing values with zero.
+- [VERIFIED] Phase G extended the real Redis write path to
+  `09:20:00–09:25:09` using the exact current t1-v2 release and real TD input.
+  The run processed `129281` ticks in `305` source batches, emitted one empty
+  Clock, committed `260710` Redis commands, and wrote `td_sql=0`, `ack=0`.
+  Isolated DB15/`task009g:` produced 5209 Q2 hashes and A2 `0920/0924/0925`
+  outputs; an identical repeat in DB10/`task009g2:` had the same normalized
+  semantic content (SHA-256
+  `89af33ea3c469271ca419737e36edb091f5af4030cca19af16fc6055e502add8`). Core
+  read the DB15 Q2 capture and produced equal ordered/shuffled projection
+  hashes. DB0 stayed at 12269 keys with no test prefix. This is real Redis
+  write/read evidence, but TASK-008 remains `PARTIAL_EVIDENCE` because
+  snapshot amount/rest semantics, Rabbit delivery equivalence and historical
+  `available_at` are still unproven. See
+  `docs/work/handoffs/TD_RABBIT_PHASE_G_AUDIT_20260924.md`.
+- [VERIFIED] A follow-up SELECT-only source-time audit compared the current
+  t1-v2 formulas against all 129281 real ticks before the 09:25:06.197 barrier.
+  Of 5221 historical 0925 snapshot rows, 5184 matched some earlier TD tick's
+  `match/br/ar` tuple, but only 3576 matched the event-time latest tick before
+  the barrier. Matches clustered at 09:25:00 (3606), 09:24:59 (693),
+  09:25:01 (681), and 09:25:02 (121). This is evidence for a visibility/arrival
+  set difference between the old snapshot and event-time replay, not evidence
+  of Rabbit arrival order; the replay must not substitute the old snapshot
+  values. Rabbit delivery and historical `available_at` remain UNKNOWN. See
+  `/home/exedev/validation/td-rabbit-phase-h-snapshot-source-20260924T200951431+0800/`.
+- [PARTIAL] A cross-day real Redis repeat on 2026-09-23 09:24:00–09:25:09
+  used the exact current t1-v2 release and real TD input. DB9/`task009i:`
+  processed 44276 ticks in 64 source-time batches plus one Clock, committed
+  89010 Redis commands, and recorded `td_sql=0`, `ack=0`; DB8/`task009i2:`
+  repeated the same run. Both isolated namespaces had 5215 keys and identical
+  normalized semantic content. Core read 5206 real Q2 hashes and obtained
+  equal ordered/shuffled projection hashes. The 0925 snapshot has 5222 rows,
+  including 16 symbols absent from this TD window; this is retained as a real
+  source-set difference, not silently filled or treated as a producer failure.
+  `normal_opening_pass=UNPROVEN` and historical Rabbit/available_at evidence
+  remain open. See `docs/work/handoffs/TD_RABBIT_PHASE_I_AUDIT_20260924.md`.
+- [VERIFIED] Extending the same 2026-09-23 replay to the required 09:15
+  baseline (`09:15:00–09:25:09`) processed 212022 real TD ticks in 604
+  batches with one Clock and committed 428284 Redis commands to isolated
+  DB5. A DB4 repeat produced identical normalized semantic content. The TD
+  source, t1-v2 Q2, and 0925 snapshot symbol sets were all 5222; the 16
+  symbols absent from the 09:20-start run were present once the 09:15 baseline
+  was included. Core readback was deterministic for 5222 Q2 rows but remained
+  `REPLAY_PARTIAL` with 17 stale baseline quotes under the explicit 10-second
+  freshness policy. t1-v2 0925 A2 metadata had `n=5208` versus 5222 Q2 hashes,
+  so anchor/candidate field parity remains `PARTIAL`; no values were filled or
+  silently promoted. See `docs/work/handoffs/TD_RABBIT_PHASE_K_AUDIT_20260924.md`.
+- [VERIFIED] The 14 Q2 symbols not present in the 2026-09-23 0925 A2 anchor
+  were checked against the real `auction_snapshot_v2`: every row had
+  `px/chg=NULL` and `match_amt/rest_bid/rest_ask=0`. The A2 count of 5208
+  therefore reflects an unavailable-fact projection, not a Q2 symbol loss;
+  complete numeric A2/legacy-snapshot parity remains PARTIAL. The detailed
+  evidence is `a2_missing_symbol_audit.json` in the Phase K validation
+  directory.
+- [VERIFIED] Real field comparison for the remaining 5208 Phase K A2 symbols
+  matched change, match amount, rest bid, and rest ask at 5208/5208. Price
+  matched 5068/5068 comparable non-NULL snapshot rows; 140 rows explicitly
+  retain unavailable price semantics (`snapshot NULL`, Q2 `a25=0`). The
+  resulting status is `PARTIAL_WITH_EXPLICIT_UNAVAILABLE`, not strict full
+  parity. Evidence: `a2_field_parity_audit.json` in the Phase K directory.
+- [VERIFIED] The exact current t1-v2 release replayed the complete real
+  2026-09-23 `09:15:00–09:40:00` TD window into isolated Redis DB3 and was
+  repeated in DB2. Both runs processed 1204178 ticks in 1224 batches with 78
+  clocks and 2430075 Redis commands; normalized semantic content matched
+  exactly, with `td_sql=0` and `ack=0`. Frozen 0920/0924/0925 A2 and anchor
+  keys matched the shorter 09:25 cutoff run, proving the later rolling Q2 did
+  not overwrite frozen auction output. The final 5222-Q2 capture was then
+  read by Core with coverage=1.0; ordered/shuffled projection hashes and
+  sampled Engine hashes matched. Core status is `REPLAY_PARTIAL` because 68
+  quotes are stale under the explicit 10-second freshness policy; this is not
+  NORMAL opening acceptance. Evidence is
+  `docs/work/handoffs/TD_RABBIT_PHASE_L_AUDIT_20260924.md`.
+- [VERIFIED] The exact t1-v2 release derives auction/phase `HHMMSS` from
+  `ts_ms / 1000`: a source tick such as `09:25:06.197` is evaluated as the
+  `09:25:06` barrier second while its original millisecond remains available
+  in source evidence. This is second-truncated trigger semantics, not loss of
+  the raw event timestamp.
+- [VERIFIED] Read-only TD distributions around the real 09:25 barrier show
+  repeated per-symbol ticks rather than one tick per symbol: 2026-09-18 had
+  10914 rows / 5208 symbols / 4930 multi-tick symbols in
+  `[09:24:57,09:25:09)`, with the last event second at 09:25:04; 2026-09-23
+  had 9970 rows / 5205 symbols / 4762 multi-tick symbols, with the last event
+  second at 09:25:03. Both dates can have no event exactly at 09:25:06, so the
+  replay Clock must trigger the freeze; this does not prove Rabbit arrival or
+  live visibility. Q2 must still process every tick, while auction candidate
+  selection remains a separate view.
+- [VERIFIED] Current production Redis DB0 on 2026-09-24 had 5225 members in
+  `q2:active:20260924` and 5225 `q2:<symbol>` hashes, while same-day TD
+  09:15–09:40 and `auction_snapshot_v2` each covered 5222 symbols. The three
+  Redis-only symbols (`001246`, `301660`, `301716`) had trade-date-midnight
+  source timestamps and zero-valued fields with no same-day TD tick, so they
+  are stale/unavailable placeholders rather than valid market observations.
+  Auction Redis metadata `n=4865/5116/5208` for 0920/0924/0925 is a candidate
+  or Top-N contract, not full-market coverage. Evidence:
+  `docs/work/handoffs/TD_RABBIT_LIVE_LOG_AUDIT_20260924.md`.
+- [PARTIAL] Phase M same-day real bridge on 2026-09-24 replayed TD
+  `09:15:00–09:25:09` through the exact current t1-v2 binary into isolated
+  Redis DB1/`task009m:`. Independent TD count and t1-v2 `source_in/ticks` were
+  both 210730; t1-v2 emitted 604 batches plus one 09:25:06 Clock, 425676 Redis
+  commands, `td_sql=0`, and `ack=0`. Core read 5222 Q2 hashes with coverage
+  1.0; ordered/shuffled projection and sampled Engine hashes matched, but 549
+  quotes were stale under the explicit 10-second policy, so this is
+  `REPLAY_PARTIAL`, not NORMAL acceptance. DB0 had zero task009m keys. The
+  0925 frozen summary/top-amount matched DB0 after removing write-time
+  milliseconds; two top-change boundary ties differ. Rabbit delivery/arrival
+  and historical `available_at` remain UNKNOWN. See
+  `docs/work/handoffs/TD_RABBIT_PHASE_M_AUDIT_20260924.md`.
+- [VERIFIED] Phase M full same-day 0925 anchor comparison found 5208/5208
+  match amounts and 5208/5208 rest-bid amounts equal to TD rows. The 14 TD rows
+  absent from the anchor all had NULL price/change and zero match/rest fields;
+  they are explicit unavailable facts. Anchor does not carry rest-ask/price/
+  limit fields for strict comparison, so those remain NOT_COMPARABLE rather than
+  inferred. Anchor SHA-256:
+  `52b2c8f0faf58e2db3efaac69a1c86516be9b6ff6c4ed60016dda04179169884a`.
+- [VERIFIED] Phase M was repeated in isolated Redis DB6/`task009m2:` for the
+  same 2026-09-24 cutoff. Counters remained 210730 ticks, 604 batches, one
+  Clock, 425676 Redis commands, `td_sql=0`, and `ack=0`; normalized semantic
+  key content matched DB1 (SHA-256
+  `17d8f3f176116d8578559713fcfcf0d9d5e95294f74e00b3c4e85356acd3c28f`). Only
+  Redis runtime byte/counter metrics differed. This closes same-input repeat
+  determinism for the isolated cutoff, not Rabbit arrival equivalence.
+- [VERIFIED/PARTIAL] The same-day barrier distribution was 4681 rows in
+  `09:25:00–09:25:03`, one row in `09:25:03–09:25:06`, and zero rows in
+  `09:25:06–09:25:09`. DB1 Q2 max source time was 09:25:03 while the frozen
+  anchor meta time was 09:25:06, proving the observed-date empty-Clock path.
+  A real `05.xxx/06.xxx/07.xxx` mixed delivery is absent from available TD
+  history and remains `UNVERIFIED`; no synthetic data was used to upgrade it.
+- [VERIFIED] A read-only TD search for 2026-09-18 through 2026-09-24 found zero
+  `stock_tick_v2` rows in `[09:25:06,09:25:09)` on every date. Historical TD
+  therefore cannot supply a real mixed 05/06/07 barrier sample; Rabbit capture
+  or a future source date is required for that specific evidence.
+- [PARTIAL] Phase N (`PHASE_N_PARTIAL`) same-day real opening bridge on
+  2026-09-24 replayed TD
+  `09:15:00–09:32:09` through the exact current t1-v2 binary into isolated
+  Redis DB7/`task009n:`. Independent TD count and t1-v2 `source_in/ticks` were
+  both 429392; t1-v2 produced 753 batches, 78 clocks, 878448 Redis commands,
+  `td_sql=0`, and `ack=0`. Core directly read 5222 Q2 hashes at historical
+  observation `09:32:09`, coverage=1.0, with 24 stale quotes under the
+  explicit 10-second policy; ordered/shuffled projection and sampled Engine
+  hashes matched. Result remains `REPLAY_PARTIAL` and
+  `normal_opening_pass=UNPROVEN`; DB0 had zero `task009n:*` keys. Evidence:
+  `docs/work/handoffs/TD_RABBIT_PHASE_N_AUDIT_20260924.md`.
+- [VERIFIED] Phase N was repeated through the same t1-v2 binary into isolated
+  Redis DB8/`task009n2:`. Counters matched DB7 exactly (429392 ticks, 753
+  batches, 78 clocks, 878448 Redis commands, `td_sql=0`, `ack=0`). The two
+  Redis projections had 5232 normalized semantic keys each, zero differences,
+  and equal SHA-256
+  `c88639da305a303221c8ea9ca900060a816551bcf0385244aadb62f854050a05` after
+  excluding runtime metrics. DB0 remained untouched. This proves isolated
+  same-input repeat determinism, not Rabbit arrival or historical
+  `available_at` equivalence.
+- [PARTIAL] ECC contract-first audit of the exact t1-v2 Rabbit path confirms
+  the wire fields (`DataBatch.batch_id/records/sent_at`, DataRequest
+  compression) and the RawTick field set, but the C++ runtime `TickBatch`
+  retains only `mode/logical_ts_ms/wall_ts_ms/seq_no/ticks`; wire `batch_id`,
+  `sent_at`, and `record_count` are not propagated. Per-tick arrival,
+  delivery sequence, completion watermark, and historical `available_at` are
+  absent/UNKNOWN. Core's RabbitFixtureAdapter is implemented, but exact
+  production C++ wiring remains a separately approved contract task. See
+  `docs/work/handoffs/TD_RABBIT_CONTRACT_AUDIT_20260924.md`.
+- [PARTIAL] Same-day 2026-09-29 Core reconciliation compared the real frozen
+  09:25:06.154 Redis/TD cohort with a later Core Redis-Q2 observation. The
+  5,200 frozen Redis candidate rows match TD amount and bid amounts 5,200/5,200;
+  the 4,585 prices available in both TD freeze and later Q2 match exactly.
+  Later Q2 has another 485 positive `a25` values whose frozen TD prices were
+  unavailable (480 in the frozen archive, five outside it). Core marked its
+  later facts `late_execution=true`, but Redis `available_at` and Rabbit
+  arrival remain UNKNOWN. Full evidence and next-step alignment:
+  `docs/work/handoffs/TASK-008-AUCTION-FREEZE-Q2-RECONCILIATION-20260929.md`.
+- [VERIFIED 2026-10-08] The field-specific recovery rule for auction anchor
+  prices is source-backed, not a general `0 == missing` policy. In the pinned
+  t1-v2 release `20260923_tdstop0945b`, `AuctionState` initializes a20/a24/a25
+  to zero and the Q2 writer serializes those scalar fields; the exact-release
+  2026-09-29 Q2Frame contains `a25=0` for `000001` at 09:15, which Core maps to
+  `MISSING/null`. The real 2026-09-30 TD capture represents unavailable anchor
+  prices as NULL (zero `px_milli=0` among 15,645 auction rows). Recovery may
+  replace zero only for these three anchor-price fields; all other numeric
+  zeroes remain values. Regression tests cover all three anchors and a generic
+  zero counter. `RecoveryResultV1.is_available_by(cutoff_ms)` compares declared
+  metadata only and does not authenticate historical availability. Full Core
+  suite: 845 passed; compileall and diff-check pass. No real Wencai recovery
+  result was exercised; TASK-008 remains `PARTIAL_EVIDENCE` and recovery
+  integration is not closed.
+
+- [OBSERVED 2026-10-08 — same-date 09:20/09:24 Q2-to-TD field diagnostic]
+  A file-only comparison of sealed 2026-09-30 same-date Q2Frame and TD auction
+  rows selected each symbol's greatest Q2 source second no later than that
+  TD row's whole-second source timestamp. Q2 `am/br/ar` versus TD
+  `match_amt_yuan/rest_bid_amt_yuan/rest_ask_amt_yuan` differed for 09:20
+  counts 231/197/155 of 5,210 rows and 09:24 counts 269/246/208 of 5,215;
+  every observed difference was among source-time gaps of 0–3 seconds, while
+  all rows with gaps of 4 seconds or more matched. At 09:25, all three fields
+  matched for 5,220/5,220 observed TD rows. This association motivates
+  feature-scoped investigation but does not prove causality, Rabbit arrival,
+  historical Redis visibility, or `available_at`; the maximum differences
+  are material, not assumed rounding noise. Whole-second truncation is a
+  diagnostic convention, not a timing gate. Evidence:
+  `docs/work/handoffs/TASK-008-ANCHOR-Q2-FIELD-ALIGNMENT-20261008.md` and
+  `/home/exedev/validation/task008-anchor-q2-field-alignment-20260930-20261008T061949+0800/`.
+  The analyzer's targeted tests (3), full Core suite (857), compileall, and
+  diff-check passed; only dependency deprecation warnings were emitted.
+  TASK-008 remains `PARTIAL_EVIDENCE`; NORMAL opening remains `UNPROVEN`;
+  M3-1 remains blocked and TD write health remains unproven.
+
+- [OBSERVED 2026-10-08 — anchor Q2/TD candidate aggregate impact] The same
+  sealed 2026-09-30 inputs were reprocessed to add pairwise-valid Q2/TD sums,
+  signed net differences, and gross per-symbol absolute differences. For the
+  event-time candidate cohort, 09:20 net `am/br/ar` deltas were
+  +7.35m/+4.52m/+0.63m yuan (0.35%/0.04%/0.06% of TD sums), while gross
+  per-symbol absolute differences were 8.38m/11.30m/8.42m yuan. At 09:24,
+  net deltas were +18.14m/+6.79m/-3.40m yuan (+0.35%/+0.06%/-0.26%); gross
+  absolute differences were 18.22m/23.23m/19.90m yuan (0.35%/0.20%/1.53%).
+  All three 09:25 sums still match exactly across 5,220 rows. Small net deltas
+  can conceal larger offsetting per-symbol differences. TD assembly metadata
+  and the re-run summary both show one exact TD timestamp per tag:
+  09:20:03.276, 09:24:10.014, and 09:25:06.026. Thus the cutoff is common
+  within each anchor, while selected Q2 source timestamps vary by symbol.
+  These event-time candidate sums do not prove atomic/live Redis visibility
+  or producer parity. Added counters and cutoff metadata are regression
+  tested; targeted tests: 5 passed, full Core suite: 859 passed, compileall
+  and diff-check passed. Evidence:
+  `docs/work/handoffs/TASK-008-ANCHOR-Q2-FIELD-ALIGNMENT-20261008.md` and
+  `/home/exedev/validation/task008-anchor-q2-field-alignment-final-20260930-20261008T062642+0800/`.
+  No data source or production service was accessed by this follow-up.
+
+- [OBSERVED 2026-10-08 — same-date anchor plate-impact sensitivity] The same
+  sealed per-symbol candidate evidence was grouped using the frozen
+  2026-09-30 engine-next stock-to-one-plate map (5,964 symbols, 450 labels;
+  map effective time 08:30:32.429671). Captured TD coverage in that mapping was
+  5,141/5,210 (09:20), 5,146/5,215 (09:24), and 5,151/5,220 (09:25); 69 TD
+  symbols at each anchor were unmapped, while 823/818/813 map members were
+  absent from those captures. Thus the comparison is not full-market coverage.
+  All per-plate `am/br/ar` partitions reconcile exactly to their mapped
+  cohort totals. On the mapped intersection, 09:20 had 229/195/153 differing
+  symbols and 8.38m/11.30m/8.15m yuan gross absolute differences; 09:24 had
+  265/242/208 differing symbols and 17.78m/22.28m/19.90m yuan. At 09:25 all
+  three fields match across 5,151 mapped observed symbols. The largest notable
+  plate concentration includes 09:24 `ar` for 房地产 (39 observed mapped
+  members; 3.13m yuan gross); 09:24 `br` for 英伟达 has 2.98m across only four
+  members and is not a broad-market claim. NULL/invalid/unmapped values are
+  never coerced to zero. This is a sealed-file sensitivity diagnostic only:
+  it does not invoke the production plate assembler or prove the map was
+  visible at the auction instant, Rabbit arrival, historical Redis visibility,
+  `available_at`, or full-market coverage. Side effects `NONE_OBSERVED`; task
+  state unchanged. Unsupported field statuses are rejected; five focused
+  tests pass and the full Core suite is 864 passed (three dependency
+  deprecation warnings), with compileall/diff-check passing. Evidence and
+  limitations:
+  `docs/work/handoffs/TASK-008-ANCHOR-Q2-FIELD-ALIGNMENT-20261008.md` and
+  `/home/exedev/validation/task008-anchor-q2-plate-impact-final-20260930-20261008T063147-v2/`.
+
+- [VERIFIED 2026-10-08 — production plate path is not the one-map diagnostic]
+  Read-only system metadata resolves the running engine-next process cwd and
+  `current` symlink to release `20260903_e272842`. Its auction bucket helper
+  consumes full `IntradayContext` snapshots, resolves up to two plate names
+  with 1.0/0.6 weights and generic-plate reduction, filters
+  `abs(current_pct)>0.35`, and sums only positive `auction_amount`; snapshot
+  assembly prefers an auction-row amount over the Q2 `am` fallback. The
+  same-date `market:stock_plate` artifact contains only one primary plate per
+  symbol, and no complete same-time `real_plate_names`/IntradayContext capture
+  was found in the searched 2026-09-30 validation artifacts. Therefore the
+  all-plate unweighted Q2/TD candidate table is a primary-map sensitivity
+  diagnostic, not production auction-bucket parity (`NOT_COMPARABLE`). The
+  retained same-day context probe contains only three selected premarket
+  symbols with no latest quote timestamp. The 07:07 key inventory shows
+  date-scoped Q2/auction/hot/yesterday keys absent then; undated global map,
+  s2p, and reason hashes had counts 5,964/2,983/2,559 but historical versions
+  are `UNKNOWN`, so these counts do not recover the 09:20/09:24/09:25
+  per-symbol multi-plate context. The
+  exact-release pure fact assembly artifact, checksum-verified, reports
+  `PARTIAL`: market overview/mapping available, plate facts unavailable due
+  5,210 frozen-anchor vs 5,220 TD symbols; 10 TD-only rows are `UNKNOWN`, not
+  inactive. A separate counterfactual plate-delta helper call fails on five
+  09:25-only symbols missing 09:24; it was not the production report path.
+  Core must keep those anchor deltas unavailable rather than fabricate zero.
+  No service/source was modified. Full evidence and the required input caveat:
+  `docs/work/handoffs/TASK-008-ANCHOR-Q2-FIELD-ALIGNMENT-20261008.md` and
+  `/home/exedev/validation/task008-same-date-production-assembly-20260930-20261002T054020+0800/`.
+
+- [OBSERVED 2026-10-09 — post-open Q2/auction follow-up, not opening acceptance]
+  A read-only Redis/log capture at 09:42:27–09:42:35 found 5,227 members and
+  5,227 readable hashes in `q2:active:20261009`; all were stale under the
+  descriptive 10-second age threshold, newest source timestamp 09:39:26
+  (183.1 seconds old at read completion), with no missing member/hash in this
+  observed set. The set does not prove full-market coverage. The read-only
+  `t1-v2-live` progress log reached `wall_lag_ms=188800` at 09:42:59
+  (`last_ts_ms` 09:39:51, `ack_fail=0`); cause is UNKNOWN and increasing
+  `td_sql` is not proof of TD write health. Same-input local Core projection
+  and probe/snapshot hashes repeated; this is not Rabbit/tick-batch parity or
+  strategy/NORMAL acceptance. The capture was after the open, not a pre-open
+  check. No production write, service restart, Rabbit consume/ACK, or TD write
+  occurred. Evidence: `/home/exedev/validation/open-live-followup-20261009T094227+0800/`.
+
+- [OBSERVED 2026-10-09 — offline Q2 anchor transitions]
+  Nine real Redis captures from 09:14 through 09:30 each had 5,227/5,227
+  active members and readable hashes, with no member/row loss between
+  adjacent captures. Across 09:20:07.599→09:24:13.702, `a20` had 1,767
+  nonpositive-to-positive fills, 212 positive rewrites, 0 clears, 1,381
+  unchanged positive, and 1,867 unchanged nonpositive values. Across
+  09:24:13.702→09:25:08.429, `a24` had 764 fills, 708 positive rewrites,
+  0 clears, 2,622 unchanged positive, and 1,133 unchanged nonpositive;
+  `a25` had 4,872 fills, 0 rewrites/clears, and 355 unchanged nonpositive.
+  The 09:17→09:20 capture also observed 1,593 new positive `a20` values.
+  All 5,227 common Q2 rows had per-symbol-identical `a20/a24/a25` values in
+  09:25:06→09:30 and 09:30→09:42 comparisons; there was no sample from
+  09:30:13 to 09:42:27, so endpoint equality does not exclude transient
+  changes inside that gap. The inspected release source truncates event time
+  to whole seconds and compares inclusively (`hms >= 92000 && hms <= 92020`,
+  correspondingly `92400..92420` and `92500..92520`), so the full `:20`
+  second is eligible. There was no capture from 09:24:13.702 to 09:25:06.323;
+  this includes the final eligible `09:24:20` second and the post-window
+  09:24:21–09:24:29 seconds. The observed differences cannot be located on
+  either side of window close and do not prove late arrival, cause, exact
+  arrival time, or Rabbit order. Stored freeze timestamps were 09:20:03.138,
+  09:24:10.059, and 09:25:06.248; sub-second offsets are observations, not
+  gates. Full observed-cohort counts, capture hashes, and limits:
+  `/home/exedev/validation/open-live-followup-20261009T094227+0800/offline_anchor_transition_audit.md`.
+
+- [CONTRACT_TESTED 2026-10-09 — real-capture auction revision behavior]
+  A 20-symbol, all-Shenzhen `a24` sample was retained as a fixture; all 20
+  before/after rows were independently matched to source captures and their
+  hashes. The regression verifies immutable revision summaries/hashes and
+  independently reproducible observation hashes, not historical per-symbol
+  row retrieval. `observe()` may create a superseding revision when an
+  observed primary value changes; recovery remains fill-only and does not
+  overwrite an already observed primary field. Revision summaries plus
+  external captures satisfy the current contract; per-revision per-symbol
+  row storage/API is deferred until a concrete consumer requires it.
+  Focused regression: 1 passed; `tests/test_auction_timeline.py`: 53 passed;
+  `tests/test_opening_strategy.py`: 10 passed. These are contract tests, not
+  opening acceptance. The nine source captures total 29,969,468 bytes and the
+  original checksum manifest passed.
+
+- [PROCESS_STATE 2026-10-09 10:43 — paused full-window replay]
+  Current-code full-window replay PID 3831221 remained stopped at offset
+  339,845,120 / 342,636,341; source input hashes remained
+  `c6317dcf444ca4b54c36cba43713294ccdf04ba325c1e2abb603c29b67d5a1a4` and
+  `91daad1c6ec2236796e25b6ce4e5fcf66a077d58c2d1159e3e8e3754b145cc58`.
+  It was not resumed during market hours. After close, recheck process, input
+  hashes, t1-v2 lag, and source mtimes before deciding resume versus restart.
+  The inspected runtime release was `20260923_tdstop0945b` (recorded base
+  commit `9fd4a42b3f3944235da89e1ae2278ea93cff193c` plus local patch), not the
+  development candidate `b2aa169`; metadata is not independent build proof.
+  TASK-008 remains `PARTIAL_EVIDENCE`; NORMAL opening and TD write health remain
+  `UNPROVEN`.
+
+- [VERIFIED 2026-10-28 C571 — derived daily datasets] `daily_indicators` and `daily_report_features` are produced by the pure builders in `data_pipeline/derived_daily.py` (source `derived_v1`, `provider_chain=[]`, manifest `inputs` mapping + `input_refs`), gated on a present daily_kline partition (>= PROVISIONAL) and re-derived as a new version when any recorded upstream version changes; details, ledger evidence for the 2026-10-26/27 non-trigger and the cross-partition dependency block, unit/window facts and limits: `docs/DAILY_INDICATORS.md`. Real persisted daily_kline `pct_chg` is percent points (not bp as `docs/DAILY_KLINE.md` states). `startup.fetch_item` now verifies the partition postcondition with the post-job clock. `ArtifactCatalog` hashes only a Mapping `inputs` into the version, and does not move `latest` within the same trade_date for non-kline datasets (storage.py, not changed by C571).
+- [VERIFIED 2026-10-28 C589 — real input test evidence] The read-only Redis q2 snapshot for 2026-10-28 contains 5,226 active symbols/hashes (SHA-256 `ff2e93e4ffaf00d7ea3f8300d26c36927e2f8a08629ef4df03e9dcd361718f85`); the direct read-only contract formed 5,215 q2-final rows and 5,215 intraday-checkpoint rows. The Kaipan 2026-10-27 live check returned 41 pool rows across levels 1–5. These are date-specific observations, not universal coverage claims. The single WenCai raw capture attempt did not complete and persisted no page JSON; its cause is unknown and no second capture was made. Evidence: `fw/reports/C589.md`, `fw/evidence/C589/`.
