@@ -1,0 +1,238 @@
+#include "td_replay_tick_source.h"
+
+#include <algorithm>
+#include <chrono>
+#include <iterator>
+#include <thread>
+#include <utility>
+#include <vector>
+
+#include "source_tick_batch_builder.h"
+#include "tdengine_row_adapter.h"
+
+namespace t1_v2 {
+
+std::size_t replay_timestamp_group_size(const std::vector<SourceTickRecord>& records) {
+    if (records.empty()) {
+        return 0;
+    }
+    const int64_t group_ts_ms = records.front().tss;
+    std::size_t count = 1;
+    while (count < records.size() && records[count].tss == group_ts_ms) {
+        ++count;
+    }
+    return count;
+}
+
+TdReplayTickSource::TdReplayTickSource(const ConfigV2& config)
+    : config_(config),
+      scheduler_(config),
+      query_builder_(config) {}
+
+bool TdReplayTickSource::start() {
+    last_error_.clear();
+    seq_no_ = 0;
+    slice_no_ = 0;
+    if (!scheduler_.start()) {
+        last_error_ = "invalid TDengine replay time range";
+        started_ = false;
+        return false;
+    }
+    if (!connect()) {
+        started_ = false;
+        return false;
+    }
+    started_ = true;
+    return true;
+}
+
+void TdReplayTickSource::stop() {
+    disconnect();
+    started_ = false;
+}
+
+TickSourceResult TdReplayTickSource::next_batch() {
+    if (!started_) {
+        TickSourceResult result;
+        result.status = TickSourceStatus::Error;
+        result.error_msg = last_error_.empty() ? "TdReplayTickSource is not started" : last_error_.c_str();
+        return result;
+    }
+    if (scheduler_.finished()) {
+        TickSourceResult result;
+        result.status = TickSourceStatus::EndOfStream;
+        return result;
+    }
+    if (!pending_records_.empty()) {
+        return emit_pending_batch();
+    }
+    return query_next_slice();
+}
+
+bool TdReplayTickSource::connect() {
+#if defined(T1_V2_ENABLE_TDENGINE)
+    conn_ = taos_connect(
+        config_.tdengine.host.c_str(),
+        config_.tdengine.user.c_str(),
+        config_.tdengine.password.c_str(),
+        config_.tdengine.database.c_str(),
+        config_.tdengine.port
+    );
+    if (!conn_) {
+        last_error_ = "TDengine replay connect failed";
+        return false;
+    }
+    return true;
+#else
+    last_error_ = "TdReplayTickSource requires --with-tdengine";
+    return false;
+#endif
+}
+
+void TdReplayTickSource::disconnect() {
+#if defined(T1_V2_ENABLE_TDENGINE)
+    if (conn_) {
+        taos_close(conn_);
+        conn_ = nullptr;
+    }
+#endif
+}
+
+TickSourceResult TdReplayTickSource::query_next_slice() {
+#if defined(T1_V2_ENABLE_TDENGINE)
+    const ReplaySlice slice = scheduler_.next();
+    if (!slice.valid) {
+        TickSourceResult result;
+        result.status = TickSourceStatus::EndOfStream;
+        return result;
+    }
+    throttle_before_next_slice();
+    ++slice_no_;
+
+    const std::string sql = query_builder_.build_slice_query(slice.start_ms, slice.end_ms);
+    TAOS_RES* res = taos_query(conn_, sql.c_str());
+    if (!res) {
+        TickSourceResult result;
+        last_error_ = "TDengine replay query failed";
+        result.status = TickSourceStatus::Error;
+        result.error_msg = last_error_.c_str();
+        return result;
+    }
+    const int code = taos_errno(res);
+    if (code != 0) {
+        TickSourceResult result;
+        last_error_ = taos_errstr(res);
+        taos_free_result(res);
+        result.status = TickSourceStatus::Error;
+        result.error_msg = last_error_.c_str();
+        return result;
+    }
+
+    const int field_count = taos_field_count(res);
+    TAOS_FIELD* fields = taos_fetch_fields(res);
+    const std::vector<std::string> field_names = TdengineRowAdapter::field_names(fields, field_count);
+    const TdReplayRowPlan plan = TdReplayRowConverter::build_plan(field_names);
+    std::vector<TdReplayCell> cells;
+    std::vector<SourceTickRecord> source_records;
+    source_records.reserve(static_cast<std::size_t>(config_.replay.batch_size > 0 ? config_.replay.batch_size : 5000));
+
+    TAOS_ROW row = nullptr;
+    uint32_t raw_row_count = 0;
+    while ((row = taos_fetch_row(res)) != nullptr) {
+        ++raw_row_count;
+        TdengineRowAdapterResult adapter_result = TdengineRowAdapter::cells_from_row(row, fields, field_count, cells);
+        if (!adapter_result.ok) {
+            continue;
+        }
+        SourceTickRecord record;
+        if (TdReplayRowConverter::convert(plan, cells, record)) {
+            source_records.push_back(std::move(record));
+        }
+    }
+    taos_free_result(res);
+
+    if (source_records.empty()) {
+        TickSourceResult result;
+        // An empty historical slice still advances the replay clock.  This
+        // is a control-plane event, not a synthetic market-data batch.
+        result.status = TickSourceStatus::Clock;
+        result.batch.mode = RuntimeMode::Replay;
+        result.batch.logical_ts_ms = slice.start_ms;
+        result.batch.wall_ts_ms = slice.start_ms;
+        result.batch.seq_no = ++seq_no_;
+        return result;
+    }
+    pending_records_ = std::move(source_records);
+    // The queried slice is half-open [start, end), but the records become
+    // visible to the core only at their own historical timestamps.  Passing
+    // the slice start here would let a batch carry rows from the next few
+    // seconds into the current logical time (a replay look-ahead).  A zero
+    // override makes SourceTickBatchBuilder derive logical_ts_ms from the
+    // maximum accepted tick timestamp in each emitted batch.
+    pending_logical_ts_ms_ = 0;
+    pending_raw_input_count_ = raw_row_count;
+    pending_total_accepted_count_ = static_cast<uint32_t>(pending_records_.size());
+    return emit_pending_batch();
+#else
+    TickSourceResult result;
+    result.status = TickSourceStatus::Error;
+    result.error_msg = "TdReplayTickSource requires --with-tdengine";
+    return result;
+#endif
+}
+
+void TdReplayTickSource::throttle_before_next_slice() {
+    if (slice_no_ == 0) {
+        return;
+    }
+    if (config_.replay.speed <= 0 || config_.replay.tick_interval_ms <= 0) {
+        return;
+    }
+    const int delay_ms = config_.replay.tick_interval_ms / config_.replay.speed;
+    if (delay_ms <= 0) {
+        return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+}
+
+TickSourceResult TdReplayTickSource::emit_pending_batch() {
+    TickSourceResult result;
+    if (pending_records_.empty()) {
+        result.status = TickSourceStatus::Empty;
+        return result;
+    }
+    // The three-second query interval controls when historical rows become
+    // visible; it is not a business batch boundary.  Feeding an entire slice
+    // to EngineCore makes SnapshotTrigger observe the slice's maximum tick
+    // time and incorrectly includes later ticks at 09:20:03/09:24:10/09:25.
+    // SQL ordering is ts,symbol, so emit one complete timestamp group and do
+    // not split that group even when it exceeds the normal batch-size hint.
+    const std::size_t take = replay_timestamp_group_size(pending_records_);
+    std::vector<SourceTickRecord> batch_records(
+        std::make_move_iterator(pending_records_.begin()),
+        std::make_move_iterator(pending_records_.begin() + static_cast<std::ptrdiff_t>(take))
+    );
+    pending_records_.erase(pending_records_.begin(), pending_records_.begin() + static_cast<std::ptrdiff_t>(take));
+
+    result.status = TickSourceStatus::Ok;
+    result.source_stats = SourceTickBatchBuilder::build(
+        batch_records,
+        RuntimeMode::Replay,
+        pending_logical_ts_ms_,
+        ++seq_no_,
+        result.batch
+    );
+    result.source_stats.input_count = static_cast<uint32_t>(take);
+    if (pending_raw_input_count_ > 0 && pending_records_.empty()) {
+        const uint32_t rejected = pending_raw_input_count_ > pending_total_accepted_count_
+            ? pending_raw_input_count_ - pending_total_accepted_count_
+            : 0;
+        result.source_stats.input_count = static_cast<uint32_t>(take) + rejected;
+        result.source_stats.rejected_count += rejected;
+        pending_raw_input_count_ = 0;
+        pending_total_accepted_count_ = 0;
+    }
+    return result;
+}
+
+}  // namespace t1_v2

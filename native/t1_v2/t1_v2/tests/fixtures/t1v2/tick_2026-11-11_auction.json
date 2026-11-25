@@ -1,0 +1,58 @@
+[
+  {
+    "ts": 1794360300000,
+    "symbol": "301569",
+    "px_milli": 19180,
+    "pc_milli": 19600,
+    "amt_yuan": 6881800,
+    "vol_units": 3588,
+    "bp1_milli": 19170,
+    "ap1_milli": 19180,
+    "bv1": 10,
+    "av1": 185,
+    "bv2": 57,
+    "av2": 305
+  },
+  {
+    "ts": 1794360000000,
+    "symbol": "301718",
+    "px_milli": 55000,
+    "pc_milli": 55400,
+    "amt_yuan": 0,
+    "vol_units": 0,
+    "bp1_milli": 55000,
+    "ap1_milli": 55000,
+    "bv1": 264,
+    "av1": 264,
+    "bv2": 0,
+    "av2": 50
+  },
+  {
+    "ts": 1794359700000,
+    "symbol": "600835",
+    "px_milli": 17520,
+    "pc_milli": 17520,
+    "amt_yuan": 0,
+    "vol_units": 0,
+    "bp1_milli": 0,
+    "ap1_milli": 0,
+    "bv1": 0,
+    "av1": 0,
+    "bv2": 0,
+    "av2": 0
+  },
+  {
+    "ts": 1794360600000,
+    "symbol": "301718",
+    "px_milli": 54120,
+    "pc_milli": 55400,
+    "amt_yuan": 19495900,
+    "vol_units": 3616,
+    "bp1_milli": 54200,
+    "ap1_milli": 54570,
+    "bv1": 5,
+    "av1": 13,
+    "bv2": 261,
+    "av2": 6
+  }
+]
