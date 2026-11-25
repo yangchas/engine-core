@@ -301,17 +301,20 @@ def _redis_sample(day: str, root: Path, deps: TodayDeps, *, as_of: Any = None,
 
 
 def _close_confirmation(day: str, root: Path, deps: TodayDeps, args: Mapping[str, Any], *,
-                        as_of: Any = None) -> tuple[int, dict[str, Any]]:
+                        as_of: Any = None, intraday_fallback: bool = False) -> tuple[int, dict[str, Any]]:
     redis_snapshot = None
     redis_built = None
     redis_error = None
-    try:
-        redis_snapshot = deps.redis_snapshot(day)
-    except Exception as exc:  # noqa: BLE001 - WenCai remains the configured close fallback
-        redis_error = type(exc).__name__
+    if intraday_fallback:
+        redis_error = "SourceUnavailable"
+    else:
+        try:
+            redis_snapshot = deps.redis_snapshot(day)
+        except Exception as exc:  # noqa: BLE001 - WenCai remains the configured close fallback
+            redis_error = type(exc).__name__
     request_clock = deps.clock()
     request_time = _local_datetime(None, request_clock)
-    if not "15:20:00" <= request_time.strftime("%H:%M:%S") <= "16:00:00":
+    if not intraday_fallback and not "15:20:00" <= request_time.strftime("%H:%M:%S") <= "16:00:00":
         return 40, {"contract": 1, "status": "failed", "error_code": "WENCAI_WINDOW_CLOSED",
                     "retryable": False, "artifacts": [],
                     "detail": {"allowed_window": "15:20:00-16:00:00",
@@ -320,7 +323,7 @@ def _close_confirmation(day: str, root: Path, deps: TodayDeps, args: Mapping[str
     min_interval = args.get("wencai_min_interval_seconds", 1800)
     max_per_day = args.get("wencai_max_requests_per_day", 1)
     try:
-        if args.get("wencai_confirmation") is not True:
+        if not intraday_fallback and args.get("wencai_confirmation") is not True:
             raise ValueError("wencai_confirmation_not_configured")
         from ..runtime_state import StateStore
         throttle = authorize_wencai_request(deps.state if deps.state is not None else StateStore(), day, pre_request_time,
@@ -404,8 +407,10 @@ def _close_confirmation(day: str, root: Path, deps: TodayDeps, args: Mapping[str
         formal = not wencai_complete or merged["confirmed"]
     else:
         formal = wencai_complete and merged["confirmed"]
+    if intraday_fallback:
+        formal = False
     published_rows = (redis_rows if redis_terminal and not wencai_complete else merged["rows"])
-    status = "FORMAL" if formal else ("PROVISIONAL" if redis_built is None else "DEGRADED")
+    status = "DEGRADED" if intraday_fallback else ("FORMAL" if formal else ("PROVISIONAL" if redis_built is None else "DEGRADED"))
     provider = "redis_q2" if redis_built is not None else "wencai"
     chain = ["redis_q2", "wencai"]
     attempts = []
@@ -442,7 +447,8 @@ def _close_confirmation(day: str, root: Path, deps: TodayDeps, args: Mapping[str
     hot = _publish_hot(deps, committed, published_rows)
     if hot.get("status") == "failed":
         return 75, {"contract": 1, "status": "failed", "error_code": "HOT_PUBLISH_FAILED", "retryable": True, "artifacts": [], "detail": hot}
-    cold = _publish_td(deps, committed, published_rows)
+    cold = ({"status": "not_applicable"} if intraday_fallback else
+            _publish_td(deps, committed, published_rows))
     return (0 if formal else 10), {"contract": 1, "status": "ok" if formal else "degraded",
             "error_code": "", "retryable": False, "artifacts": [],
             "detail": {"version": committed["version"], "as_of": committed["as_of"],
@@ -456,7 +462,7 @@ def _close_confirmation(day: str, root: Path, deps: TodayDeps, args: Mapping[str
 
 def run(request: Mapping[str, Any], root: str | Path, *, dry_run: bool = False,
         deps: TodayDeps | None = None) -> tuple[int, dict[str, Any]]:
-    """Run one schedule-configured sample; only the close-confirm tier may call WenCai."""
+    """Run one schedule-configured sample with bounded WenCai fallback."""
     if dry_run:
         return 0, {"contract": 1, "status": "not_applicable", "error_code": "",
                    "retryable": False, "artifacts": [], "detail": "dry_run"}
@@ -471,8 +477,15 @@ def run(request: Mapping[str, Any], root: str | Path, *, dry_run: bool = False,
     root_path = Path(root).expanduser()
     deps = deps or TodayDeps()
     if tier == "redis":
-        return _redis_sample(day, root_path, deps, as_of=request.get("as_of"),
-                             fallback_policy=str(args.get("failure_fallback", "none")))
+        fallback = str(args.get("failure_fallback") or "none")
+        if request.get("degrade_requested") is True and fallback == "none":
+            fallback = "wencai"
+        result = _redis_sample(day, root_path, deps, as_of=request.get("as_of"),
+                               fallback_policy=fallback)
+        if fallback == "wencai" and result[1].get("error_code") == "Q2_UNAVAILABLE":
+            return _close_confirmation(day, root_path, deps, args, as_of=request.get("as_of"),
+                                       intraday_fallback=True)
+        return result
     if tier == "close_confirm":
         return _close_confirmation(day, root_path, deps, args, as_of=request.get("as_of"))
     return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",

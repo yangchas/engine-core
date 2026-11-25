@@ -1285,6 +1285,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                        reference_root: str | Path | None = None,
                        sources: DailySources | None = None, publish: bool = False,
                        dry_run: bool = False, allow_wencai_fallback: bool = False,
+                       degrade_requested: bool = False, require_live_data: bool = False,
                        reference_catalog: str | Path | None = None,
                        email_to: tuple[str, ...] | list[str] = (), email_send: bool = False,
                        close_basis: str = "LIVE_PIT") -> dict[str, Any]:
@@ -1455,20 +1456,6 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         if refs[key] is None and (available is None or available.meta.get("status") == "MISSING"):
             degraded.append(f"MISSING_SLICE:{slice_name}")
     wencai_result = None
-    if allow_wencai_fallback and stage in ("auction", "open") and src.td_error:
-        fetch = src.wencai_fetch
-        if fetch is None:
-            degraded.append("WENCAI_FALLBACK_UNAVAILABLE")
-        else:
-            # One query per invocation; the shared fallback helper retries only within this budget.
-            from .wencai_fallback import fetch_auction_fallback
-            fallback = fetch_auction_fallback(fetch, date=trade_date, min_amount_yuan=5_000_000,
-                                              include_st=True, max_queries=1, sleep_s=10)
-            wencai_result = {"rows": fallback.rows, "labels": fallback.labels,
-                             "query_log": fallback.query_log, "complete": fallback.complete,
-                             "as_of_date": fallback.as_of_date}
-            if not fallback.complete:
-                degraded.append("WENCAI_FALLBACK_PARTIAL")
     root = Path(out_root)
     actual_stage = STAGE_NAMES[stage]
     output_stage = actual_stage
@@ -1599,6 +1586,26 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                             "reason": "EVENT_TIME_REPLAY", "version": facts_meta.get("version"),
                             "quality": facts_meta.get("quality", {}), "used_date": [trade_date],
                             "coverage": facts_meta.get("quality", {}).get("coverage")}
+            if require_live_data and (src.td_error or not facts_rows):
+                from .errors import CoreError
+                raise CoreError("TD_UNAVAILABLE", "auction facts unavailable")
+            if allow_wencai_fallback and (src.td_error or not facts_rows):
+                fetch = src.wencai_fetch
+                if fetch is None:
+                    degraded.append("WENCAI_FALLBACK_UNAVAILABLE")
+                else:
+                    # One query per invocation; the shared fallback helper retries only within this budget.
+                    from .wencai_fallback import fetch_auction_fallback
+                    fallback = fetch_auction_fallback(fetch, date=trade_date, min_amount_yuan=5_000_000,
+                                                      include_st=True, max_queries=1, sleep_s=10)
+                    wencai_result = {"rows": fallback.rows, "labels": fallback.labels,
+                                     "query_log": fallback.query_log, "complete": fallback.complete,
+                                     "as_of_date": fallback.as_of_date}
+                    if not fallback.complete:
+                        degraded.append("WENCAI_FALLBACK_PARTIAL")
+            if allow_wencai_fallback and (src.td_error or not facts_rows) and (not wencai_result or not wencai_result["rows"]):
+                from .errors import CoreError
+                raise CoreError("TD_UNAVAILABLE", "auction fallback unavailable or empty")
             from .auction_v6_inputs import prepare_auction_v6_inputs
             page = ""
             payload = prepare_auction_v6_inputs(
@@ -1609,6 +1616,11 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             payload["status"] = facts_meta.get("status", "MISSING") if facts_rows else "MISSING_AUCTION_FACTS"
             if not facts_rows:
                 degraded.append("MISSING_AUCTION_FACTS")
+            if wencai_result is not None:
+                payload["status"] = "DEGRADED_WENCAI"
+                degraded.append("DEGRADED:WENCAI_AUCTION")
+        elif stage == "open" and (degrade_requested or src.td_error) and slice_results["hot_plates_today"].rows:
+            page, payload = "", {"snapshots": []}
         else:
             page, payload = live_pages.render_page(
                 src.td or _MissingTD(), trade_date=trade_date, stage=render_stage,
@@ -1619,6 +1631,27 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 kaipan_hot_rows=slice_results["hot_plates_today"].rows or None,
                 member_snapshot_date=relation_asof, member_lag_trading_days=relation_lag,
                 asof=asof_cutoff, td_connection_factory=src.td_connection_factory)
+        if stage == "open":
+            no_live = not any(row.get("priced_symbol_count") for row in payload.get("snapshots", []))
+            if require_live_data and (src.td_error or no_live):
+                from .errors import CoreError
+                raise CoreError("TD_UNAVAILABLE", "open quotes unavailable")
+            if degrade_requested and not slice_results["hot_plates_today"].rows:
+                from .errors import CoreError
+                raise CoreError("TD_UNAVAILABLE", "hot plates unavailable")
+            if (degrade_requested or src.td_error or no_live) and slice_results["hot_plates_today"].rows:
+                from .limit_reason_theme import _pool_rows
+                hot_block = live_pages._plate_quadrants({}, relations, plate_names,
+                    slice_results["hot_plates_today"].rows, None, asof_cutoff or datetime.fromisoformat(slice_asof))
+                if not hot_block.get("available") and degrade_requested:
+                    from .errors import CoreError
+                    raise CoreError("TD_UNAVAILABLE", "hot plates unavailable")
+                page = ""
+                payload = {"trade_date": trade_date, "stage": render_stage, "snapshots": [],
+                           "status": "DEGRADED_HOT_PLATES_ONLY", "limitations": "行情缺失，仅展示热板与可用参考数据。",
+                           "chapters": {"plate_quadrants": hot_block,
+                               "yesterday_highboards": _pool_rows(slice_results["yest_limit_pool"].rows)}}
+                degraded.append("DEGRADED:HOT_PLATES_ONLY")
         if stage == "open":
             payload["checkpoint"] = chosen_checkpoint
             payload["asof"] = f"{trade_date}T{asof}"
@@ -1637,7 +1670,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 if not available) + "。"
             import html
             page = page.replace(html.escape(old_limitations), html.escape(payload["limitations"]))
-        if src.td_error:
+        if src.td_error and payload.get("status") not in {"DEGRADED_HOT_PLATES_ONLY", "DEGRADED_WENCAI"}:
             payload["status"] = "DEGRADED_TD_MISSING"
         if stage == "auction":
             payload["auction_terminal_0925"] = next(
@@ -1669,7 +1702,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         point = f"{trade_date}T{asof or '09:45:30'}"
         live_stocks = payload.get("stocks") if isinstance(payload.get("stocks"), list) else []
         feedback_symbols: set[str] = set()
-        if not live_stocks and not (stage == "auction" and _auction_assembly_mode() == "v6"):
+        if not live_stocks and payload.get("status") != "DEGRADED_HOT_PLATES_ONLY" and not (stage == "auction" and _auction_assembly_mode() == "v6"):
             from .limit_reason_theme import _pool_rows, _pool_values
             feedback_symbols = {symbol for raw in _pool_rows(slice_results["yest_limit_pool"].rows)
                                 if (symbol := _pool_values(raw)[0])}
@@ -3027,6 +3060,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--publish", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--allow-wencai-fallback", action="store_true")
+    parser.add_argument("--degrade-requested", action="store_true")
+    parser.add_argument("--require-live-data", action="store_true")
     parser.add_argument("--email-to", action="append", default=[], metavar="ADDR")
     parser.add_argument("--email-send", action="store_true", help="send email; default is dry-run")
     return parser
@@ -3042,6 +3077,7 @@ def main(argv: list[str] | None = None, *, sources: DailySources | None = None) 
                                 out_root=args.out_root, reference_root=reference_root,
                                 sources=sources, publish=args.publish, dry_run=args.dry_run,
                                 allow_wencai_fallback=args.allow_wencai_fallback,
+                                degrade_requested=args.degrade_requested, require_live_data=args.require_live_data,
                                 reference_catalog=args.reference_catalog,
                                 email_to=args.email_to, email_send=args.email_send,
                                 close_basis=("POSTHOC_REVIEW" if args.stage == "close" and
