@@ -1650,9 +1650,12 @@ def _render_close_v3_board(report: Mapping[str, Any], trade_date: str) -> tuple[
             top1_n = str(b.get('top1_name') or '').strip()
             top1_str = f'{_esc(top1_n)} {pct(b.get("top1_close_pct"))}' if top1_n else ''
             badge = f'<span style="display:inline-block;padding:2px 6px;border-radius:4px;background:{vbg};color:{vc};font-size:12px;font-weight:700">{vicon} {_esc(v)}</span>'
+            crowd_val = number(b.get('crowding_multiple'))
+            crowd_tag = (f'<br><span style="font-size:11px;color:{"#c65d00" if crowd_val >= 1.5 else "#667085"}">'
+                         f'放量{crowd_val:.1f}x</span>' if crowd_val is not None else '')
             c_rows.append([
                 f'<b>{_esc(rk_tag + str(b.get("name") or "—"))}</b>',
-                _amount_with_unit(b.get('auction_amount_yuan')),
+                _amount_with_unit(b.get('auction_amount_yuan')) + crowd_tag,
                 f'{pct(a_p)} → <b style="color:{c_col}">{pct(c_p)}</b> <span style="font-size:11px;color:#667085">({d_pp})</span>',
                 lu_ld_cell,
                 f'{badge}' + (f'<br><span style="font-size:11px;color:#53677e">{top1_str}</span>' if top1_str else ''),

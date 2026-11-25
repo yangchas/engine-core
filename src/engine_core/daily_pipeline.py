@@ -2592,7 +2592,11 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 try:
                     from .auction_theme_buckets import read_and_build_hot
                     from .data_pipeline.plate_stock_index import verify_plate_reference
-                    tb = read_and_build_hot(trade_date, redis_client=src.redis, tolerance_seconds=15)
+                    _ab_slice = slice_results.get("auction_baseline")
+                    tb = read_and_build_hot(
+                        trade_date, redis_client=src.redis, tolerance_seconds=15,
+                        auction_baseline_rows=_ab_slice.rows if _ab_slice else None,
+                    )
                     if tb:
                         baselines = {}
                         baseline_slice = slice_results.get('plate_amount_baseline')
@@ -2966,6 +2970,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 closure_rows.append({
                     "rank": t.get("rank"), "name": b_name,
                     "auction_amount_yuan": t.get("amount_yuan"),
+                    "crowding_multiple": t.get("crowding_multiple"),
                     "auction_weighted_pct": round(auc_w, 2) if auc_w is not None else None,
                     "auction_mean_pct": round(auc_m, 2) if auc_m is not None else None,
                     "close_weighted_pct": round(c_weighted, 2) if c_weighted is not None else None,

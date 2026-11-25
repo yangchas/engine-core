@@ -215,7 +215,7 @@ def read_and_build(trade_date, store=None, redis_client=None):
 def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows, *, top_n_hot=40,
                             listings=None, trading_dates=None, seal_rows=(), trade_date=None,
                             previous_trade_date=None, pool_labels=None, reason_rows=(),
-                            stock_names=None, plate_baselines=None):
+                            stock_names=None, plate_baselines=None, auction_baseline_rows=None):
     """Aggregate PIT hot plates independently; overlapping members count in each plate."""
     from .auction_theme_cards import non_theme_reason
     from .stock_theme_assignment import build_stock_theme_assignments
@@ -337,15 +337,45 @@ def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows,
             if not non_theme_reason(lbl, extended=True):
                 members_by_label[lbl].add(s)
 
+        # Strictly PIT 5-day rolling baseline (D-5 .. D-1) from auction_baseline_rows
+        prior_bucket_amts = defaultdict(lambda: defaultdict(float))
+        if auction_baseline_rows:
+            cutoff_day = str(trade_date or '')[:10]
+            prior_dates_set = set()
+            for b_row in auction_baseline_rows:
+                if not isinstance(b_row, dict):
+                    continue
+                b_date = str(b_row.get('date') or '')[:10]
+                if not b_date or (cutoff_day and b_date >= cutoff_day):
+                    continue
+                prior_dates_set.add(b_date)
+            prior_5_dates = set(sorted(prior_dates_set)[-5:])
+            if prior_5_dates:
+                for b_row in auction_baseline_rows:
+                    if not isinstance(b_row, dict):
+                        continue
+                    b_date = str(b_row.get('date') or '')[:10]
+                    if b_date not in prior_5_dates:
+                        continue
+                    b_sym = str(b_row.get('symbol') or '').strip()
+                    b_amt = b_row.get('auction_amount_yuan')
+                    lbl = stock_to_label.get(b_sym)
+                    if lbl and not non_theme_reason(lbl, extended=True) and isinstance(b_amt, (int, float)):
+                        prior_bucket_amts[lbl][b_date] += float(b_amt)
+
         theme_items = []
         for name, p_rows in buckets.items():
             amt = sum(r['amount_yuan'] for r in p_rows if r.get('amount_yuan') is not None)
             if amt >= 30_000_000 and len(p_rows) >= 5:
-                theme_items.append((name, amt, p_rows))
+                nz = [v for v in prior_bucket_amts.get(name, {}).values() if v > 0]
+                raw_crowd = (amt / median(nz)) if len(nz) >= 3 and median(nz) > 0 else None
+                clamped_crowd = min(4.0, max(0.5, raw_crowd)) if raw_crowd is not None else 1.0
+                score = amt * (clamped_crowd ** 0.5)
+                theme_items.append((score, name, amt, p_rows, raw_crowd))
 
-        theme_items.sort(key=lambda x: -x[1])
+        theme_items.sort(key=lambda x: (-x[0], -x[2], x[1]))
 
-        for rank_idx, (name, amt, p_rows) in enumerate(theme_items[:10], 1):
+        for rank_idx, (_score, name, amt, p_rows, raw_crowd) in enumerate(theme_items[:10], 1):
             n = len(p_rows)
             changed = [r for r in p_rows if r.get('change_bp') is not None]
             strong = sum(r['change_bp'] >= 300 for r in changed)
@@ -378,6 +408,9 @@ def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows,
             top3_amts = [r.get('amount_yuan') or 0 for r in sorted_by_amt[:3]]
             top3_share = sum(top3_amts) / amt if amt else None
 
+            extra_fields = extras(p_rows, name, name, amt)
+            if raw_crowd is not None:
+                extra_fields['crowding_multiple'] = round(raw_crowd, 2)
             curated_themes.append({
                 'plate_code': name,
                 'name': name,
@@ -386,7 +419,7 @@ def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows,
                 'member_count': len(members_by_label.get(name, p_rows)),
                 'auction_count': n,
                 'amount_yuan': amt,
-                **extras(p_rows, name, name, amt),
+                **extra_fields,
                 'market_amount_share': amt / market_amount if market_amount else None,
                 'mean_change_bp': m_bp,
                 'weighted_mean_change_bp': w_bp,
@@ -420,7 +453,8 @@ def build_hot_theme_buckets(auction_rows, stock_plates, hot_rows, registry_rows,
 
 
 def read_and_build_hot(trade_date, store=None, redis_client=None, top_n_hot=40, *,
-                       tolerance_seconds=0, max_wait_seconds=0, poll_interval=0.5):
+                       tolerance_seconds=0, max_wait_seconds=0, poll_interval=0.5,
+                       auction_baseline_rows=None):
     """Read versions visible by 09:26 (with optional tolerance/wait); never consult retired catalog."""
     import gzip
     import json
@@ -527,7 +561,7 @@ def read_and_build_hot(trade_date, store=None, redis_client=None, top_n_hot=40, 
         result = build_hot_theme_buckets(current+previous, plates, hot['rows'], registry['rows'], top_n_hot=top_n_hot,
             listings={r['symbol']:r.get('listing_date') for r in static['rows']}, trading_dates=dates,
             seal_rows=seal['rows'], trade_date=day, previous_trade_date=prev_day, pool_labels=pool_labels, reason_rows=reasons,
-            stock_names=stock_names)
+            stock_names=stock_names, auction_baseline_rows=auction_baseline_rows)
         result.setdefault('notes', []).extend(notes)
         return result
     except Exception as exc:

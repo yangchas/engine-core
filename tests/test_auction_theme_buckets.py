@@ -466,6 +466,40 @@ def test_read_and_build_hot_supports_tolerance_window(monkeypatch):
     assert len(res["themes"]) == 1
 
 
+def test_curated_themes_rank_by_pit_5d_crowding_sqrt_and_ignore_future_dates():
+    from engine_core.auction_theme_buckets import build_hot_theme_buckets
+
+    # Bucket A ("芯片"): 100M today, 100M median over D-5..D-1 -> crowd=1.0, score=100M
+    # Bucket B ("家电"): 80M today, 20M median over D-5..D-1 -> crowd=4.0, score=80M*sqrt(4)=160M > 100M
+    # Future date row (2026-11-26) for Bucket B with 999M must be strictly ignored (PIT)!
+    auction_rows = []
+    stock_plates = {}
+    for i in range(5):
+        s_a, s_b = f"60000{i}", f"00000{i}"
+        auction_rows.append({"symbol": s_a, "amount_yuan": 20_000_000, "price_milli": 10000, "change_bp": -100, "auction_tag": "0925"})
+        auction_rows.append({"symbol": s_b, "amount_yuan": 16_000_000, "price_milli": 10000, "change_bp": 300, "auction_tag": "0925"})
+        stock_plates[s_a] = [{"plate_code": "801001", "plate_class": "THEME", "plate_member_label": "芯片"}]
+        stock_plates[s_b] = [{"plate_code": "801002", "plate_class": "THEME", "plate_member_label": "家电"}]
+
+    baseline_rows = []
+    for d in ("2026-11-18", "2026-11-19", "2026-11-20", "2026-11-23", "2026-11-24"):
+        for i in range(5):
+            baseline_rows.append({"date": d, "symbol": f"60000{i}", "auction_amount_yuan": 20_000_000})
+            baseline_rows.append({"date": d, "symbol": f"00000{i}", "auction_amount_yuan": 4_000_000})
+    # Future date poison row must be ignored
+    baseline_rows.append({"date": "2026-11-25", "symbol": "000000", "auction_amount_yuan": 999_000_000})
+    baseline_rows.append({"date": "2026-11-26", "symbol": "000000", "auction_amount_yuan": 999_000_000})
+
+    res = build_hot_theme_buckets(
+        auction_rows, stock_plates, [], [],
+        trade_date="2026-11-25", auction_baseline_rows=baseline_rows,
+    )
+    ct = res["curated_themes"]
+    assert [t["name"] for t in ct] == ["家电", "芯片"]
+    assert ct[0]["crowding_multiple"] == 4.0 and ct[0]["rank"] == 1
+    assert ct[1]["crowding_multiple"] == 1.0 and ct[1]["rank"] == 2
+
+
 
 
 
