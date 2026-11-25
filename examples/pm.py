@@ -595,6 +595,53 @@ def migration_survey(repo, name):
     return kind, sorted(writers), sorted(readers)
 
 
+def parse_card_authorization(text):
+    """Extract narrowly stated grants; ordinary descriptions never grant effects."""
+    grants = []
+    restrictions = []
+    clauses = re.split(r'[，,；;。\n]+', text.strip())
+    for clause in clauses:
+        clause = clause.strip()
+        if not clause:
+            continue
+        if re.match(r'^(?:不|禁止|不得|不能|严禁|无需|无须)', clause):
+            if re.search(r'(?:但|不过|并且?)\s*(?:允许|可以|授权|批准|同意|写|删除|触发|修改)', clause):
+                raise ValueError('否定与肯定授权混在同一句，请分别明确')
+            if re.search(r'写|修改|更新|插入', clause):
+                restrictions.append(clause)
+            continue
+        match = re.fullmatch(r'(?:允许|授权|批准|同意)\s*(?:向\s*)?(写入|写)\s*(Redis|TD)\s*(?:的)?\s*(?:目标|到)\s*([A-Za-z0-9_][A-Za-z0-9_:.-]*)', clause, re.I)
+        if match:
+            source = 'Redis' if match.group(2).lower() == 'redis' else 'TD'
+            target = match.group(3)
+            if source == 'Redis' and target.lower().startswith(('cache:', 'market:', 'a2:', 'engine_next:', 'q2:', 't1:', 'legacy:')):
+                raise ValueError('Redis 目标属于受保护命名空间')
+            if source == 'TD' and not re.fullmatch(r'core_data\.[A-Za-z_][A-Za-z0-9_]*', target, re.I):
+                raise ValueError('TD 写入目标须为 core_data 中的具体表')
+            grants.append((source, target))
+            continue
+        # Explicit read requests are descriptions, not a list of forbidden nouns.
+        if re.search(r'只读|只读取|仅(?:能|可)?读取', clause):
+            if re.search(r'(?:但|不过|并且?)\s*(?:允许|可以|授权|批准|同意)\s*(?:写|删除|触发)', clause):
+                raise ValueError('只读与授权混在同一句，请分别明确')
+            if not re.search(r'只读(?:查看|查询|检查|观察)', clause):
+                restrictions.append(clause)
+            continue
+        if re.match(r'^(?:读取|查看|查询|检查|观察)', clause):
+            continue
+        if re.search(r'(?:允许|可以|授权|批准|同意|可能|或许)\s*(?:向\s*)?(?:写|删除|删键|触发|发布|更新|修改|插入|覆盖|回填|建表|建库|迁移|重启|发信|提交|推送|push|commit|delete|write|insert|update)', clause, re.I):
+            raise ValueError('潜在写入或其他操作不明确；请分别明确操作、来源和目标')
+    for source, target in grants:
+        for restriction in restrictions:
+            sources = re.findall(r'redis|\btd\b', restriction, re.I)
+            targets = re.findall(r'(?:目标|到)\s*([A-Za-z0-9_][A-Za-z0-9_:.-]*)', restriction, re.I)
+            global_scope = bool(re.search(r'所有数据源|全部数据源|全(?:部|局|源)只读', restriction))
+            if (global_scope or (sources and source.lower() in [s.lower() for s in sources]) or
+                    (not sources and re.match(r'^(?:不|禁止|不得|不能|严禁)', restriction) and re.search(r'写|修改|更新|插入', restriction))) and (not targets or target.lower() in [t.lower() for t in targets]):
+                raise ValueError('只读或禁止写入与目标写入授权冲突，请澄清')
+    return grants
+
+
 def newcard(args):
     recipe_path = Path(__file__).with_name('card_recipes') / (args.recipe + '.json')
     if not re.fullmatch(r'[a-z0-9-]+', args.recipe) or not recipe_path.is_file():
@@ -626,6 +673,16 @@ def newcard(args):
     if missing:
         print('missing required: ' + ', '.join(missing))
         return 2
+    grants = []
+    if args.authorize:
+        if recipe['fixed']['ROLE'] != 'runner':
+            print('--authorize requires a runner recipe')
+            return 2
+        try:
+            grants = parse_card_authorization(args.authorize)
+        except ValueError as exc:
+            print(f'REFUSED: {exc}')
+            return 2
     cards = location('PM_CARDS_DIR', str(CARDS))
     repo = Path(__file__).resolve().parents[1]
     survey_summary = None
@@ -680,30 +737,21 @@ def newcard(args):
     fixed = {k: v.format_map(context) for k, v in recipe['fixed'].items()}
     if args.stubs is not None:
         fixed['STUBS_ALLOWED'] = args.stubs
-    if args.authorize:
-        if fixed['ROLE'] != 'runner':
-            print('--authorize requires a runner recipe')
-            if not args.dry_run:
-                os.close(fd)
-                path.unlink()
-            return 2
+    if grants:
+        sources = {source for source, _ in grants}
         for key in ('AUTHORIZATION', 'NOT_DO'):
             value = fixed[key]
-            redis_allowed = 'Redis' in args.authorize
-            td_allowed = 'TD' in args.authorize
-            if redis_allowed or td_allowed:
-                remaining = '不写 TD' if redis_allowed and not td_allowed else '不写 Redis' if td_allowed and not redis_allowed else ''
-                value = value.replace('不写 Redis/TD', remaining).replace('不写 Redis、TD', remaining)
-                value = value.replace('只读验收', '验收')
-                if redis_allowed:
-                    value = value.replace('Redis(守卫代理,只读)', 'Redis(守卫代理)')
-                if td_allowed:
-                    value = value.replace('TD(TD_CONFIG,SELECT/SHOW/DESCRIBE)', 'TD(TD_CONFIG)')
-                value = value.replace('不修改代码、配置、数据', '不修改代码、配置')
-            for keyword, restriction in (('联网', '不联网'), ('删键', '不删键'), ('事件', '不触发事件')):
-                if keyword in args.authorize:
-                    value = value.replace(restriction, '')
-            fixed[key] = value + ' 【PM 明确允许】' + args.authorize
+            restriction = '、'.join(('不写其他 Redis 目标' if 'Redis' in sources else '不写 Redis',
+                                    '不写其他 TD 目标' if 'TD' in sources else '不写 TD'))
+            value = value.replace('不写 Redis/TD', restriction).replace('不写 Redis、TD', restriction)
+            value = value.replace('只读验收', '按指定目标验收')
+            if 'Redis' in sources:
+                value = value.replace('Redis(守卫代理,只读)', 'Redis(守卫代理，除明确目标外只读)')
+            if 'TD' in sources:
+                value = value.replace('TD(TD_CONFIG,SELECT/SHOW/DESCRIBE)', 'TD(TD_CONFIG，除明确目标外只读)')
+            value = value.replace('不修改代码、配置、数据', '不修改代码、配置；其他数据不修改')
+            details = '；'.join(f'仅限写 {source} 目标 {target}' for source, target in grants)
+            fixed[key] = value + f' 【PM 明确允许】{details}；仍须符合适用于具体操作和目标的既有有效用户授权或当次明确授权，以及来源权限和技术守卫。'
     expanded = [str(worktree / x) if not Path(x).is_absolute() else x for x in scope]
     for extra in (location('PM_REPORTS_DIR', '/home/exedev/fw/reports') / (ident + '.md'),
                   location('PM_EVIDENCE_DIR', '/home/exedev/fw/evidence') / ident):
@@ -721,9 +769,7 @@ def newcard(args):
         entries += [('QUESTION', values['question']), ('NEED_DATA', fixed['NEED_DATA'])]
     entries += [(k, fixed[k]) for k in ('TEST_BUDGET', 'STUBS_ALLOWED', 'AUTHORIZATION') if k in fixed]
     understanding = "第 0 步:先写 ≤8 行'我的理解'(目标、不做什么、关键约束、怎么验收、不确定点)到 evidence 目录下 understanding.md,再开工。\n" if tier == 'hard' else ''
-    goal = understanding + '先读 CONTEXT 文件。\n' + values['goal']
-    if fixed['ROLE'] == 'builder' and 'PM 明确豁免' not in goal and 'PM 明确豁免' not in fixed.get('GOAL_SUFFIX', ''):
-        goal = '【PM 明确豁免】测试超过150个先停不适用；只跑 TEST_BUDGET 与点名文件，不做依赖扩展。\n' + goal
+    goal = understanding + ('' if args.no_pack else '先读 CONTEXT 文件。\n') + values['goal']
     if fixed.get('GOAL_SUFFIX'):
         goal += '\n' + fixed['GOAL_SUFFIX']
     if survey_summary:

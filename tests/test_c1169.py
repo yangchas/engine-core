@@ -44,16 +44,15 @@ def test_newcard_authorization_and_templates(case, tmp_path, monkeypatch, capsys
         args += ['--authorize', '允许写 Redis/TD 并联网、删键、触发事件']
     else:
         args += ['--template', case, '--function', 'limit_up_pool_today', '--tests', 'tests/test_limit_up_today.py']
-    assert pm.main(args) == 0
-    output = capsys.readouterr().out
     if case == 'authorize':
-        for line in (x for x in output.splitlines() if x.startswith(('AUTHORIZATION:', 'NOT_DO:'))):
-            assert '【PM 明确允许】允许写 Redis/TD 并联网、删键、触发事件' in line
-            assert all(x not in line for x in ('不写 Redis/TD', '不写 Redis、TD', '不联网', '不删键', '不触发事件'))
+        assert pm.main(args) == 2
+        assert 'REFUSED' in capsys.readouterr().out
         assert pm.main(args[:-2] + ['--authorize', '允许联网']) == 0
         narrow = capsys.readouterr().out
         assert '不写 Redis/TD' in narrow and '不删键' in narrow and '不触发事件' in narrow
     else:
+        assert pm.main(args) == 0
+        output = capsys.readouterr().out
         assert 'grep -rl limit_up_pool_today tests/' in output
         assert 'grep -rl limit_up_pool_today src/' in output
         assert '报告' in output and '验收清单' in output

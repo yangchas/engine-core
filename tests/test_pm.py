@@ -336,7 +336,7 @@ def test_c1055_newcard_and_new_files(tmp_path, monkeypatch, capsys):
             '--accept-by', 'fail-first-real-fixture', '--dry-run']
     assert main(['newcard', '--recipe', 'builder-fix', *args]) == 0
     output = capsys.readouterr().out
-    assert 'COMMIT: yes' in output
+    assert 'COMMIT: no' in output
     assert str(tmp_path / 'reports/C1055.md') in output
     assert str(tmp_path / 'evidence/C1055') in output
     assert main(['newcard', '--recipe', 'runner-verify', '--question', '验证什么?', *args]) == 0
@@ -429,7 +429,7 @@ def test_c1057_runner_tiers_and_builder(tmp_path, monkeypatch, capsys):
     assert main(['newcard', '--recipe', 'builder-framework', '--tier', 'hard', '--scope', 'examples/pm.py', *args]) == 0
     output = capsys.readouterr().out
     assert field(output, 'MODEL') == 'gpt-6.1-terra' and field(output, 'EFFORT') == 'high'
-    assert field(output, 'COMMIT') == 'yes'
+    assert field(output, 'COMMIT') == 'no'
 
 
 def test_pack_real_c1047_constraints_and_idempotency(tmp_path, monkeypatch):
@@ -903,7 +903,7 @@ def test_rollout_missing_baseline_and_pilot_real(tmp_path, monkeypatch, capsys, 
         assert '续用卡: 0 张 平均未缓存输入+输出 ?' in capsys.readouterr().out
 
 @pytest.mark.parametrize('recipe', ['builder-fix', 'builder-framework'])
-def test_builder_recipe_requires_commit_attribution(recipe, tmp_path, monkeypatch, capsys):
+def test_builder_recipe_commit_attribution_is_conditional(recipe, tmp_path, monkeypatch, capsys):
     import shutil
     cards = tmp_path / 'cards'
     shutil.copytree(Path(__file__).parent / 'fixtures/pm_cards', cards)
@@ -914,7 +914,8 @@ def test_builder_recipe_requires_commit_attribution(recipe, tmp_path, monkeypatc
             '--accept-by', 'fail-first-real-fixture', '--dry-run']
     assert main(args) == 0
     output = capsys.readouterr().out
-    assert '修复问题\n提交信息以卡号开头,末尾空一行加 Co-Authored-By: Codex <noreply@openai.com>。\nNOT_DO:' in output
+    assert '仅用户明确要求且卡片授权时提交' in output
+    assert '获授权提交时,提交信息以卡号开头' in output
 
 
 def test_memory_real_staff_duplicate_and_invalid(tmp_path, monkeypatch):
@@ -1011,7 +1012,7 @@ def test_c1105_historical_report_verdict(tmp_path, monkeypatch, capsys):
             assert first in output
 
 
-def test_c1105_builder_exemption(tmp_path, monkeypatch, capsys):
+def test_builder_goal_preserves_explicit_exemption_without_injection(tmp_path, monkeypatch, capsys):
     cards = tmp_path / 'cards'
     cards.mkdir()
     monkeypatch.setenv('PM_CARDS_DIR', str(cards))
@@ -1020,7 +1021,7 @@ def test_c1105_builder_exemption(tmp_path, monkeypatch, capsys):
             '--accept-by', 'fail-first-real-fixture', '--dry-run']
     assert main(['newcard', '--recipe', 'builder-fix', '--goal', '修复问题', *args]) == 0
     output = capsys.readouterr().out
-    assert 'PM 明确豁免' in output and '150' in output and '不做依赖扩展' in output
+    assert 'PM 明确豁免' not in output and '只跑 TEST_BUDGET' not in output
     assert main(['newcard', '--recipe', 'builder-fix', '--goal', '修复问题【PM 明确豁免】', *args]) == 0
     assert capsys.readouterr().out.count('PM 明确豁免') == 1
     assert main(['newcard', '--recipe', 'runner-verify', '--question', '验证什么?', '--goal', '观察', *args]) == 0

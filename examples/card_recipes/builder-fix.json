@@ -4,13 +4,13 @@
     "EXECUTOR": "codex",
     "REPORT": "fw/reports/{id}.md。首行 VERDICT: DONE/BLOCKED/PARTIAL;之后 FACTS/CHANGES/EVIDENCE/OPEN。并在报告末尾写 HANDOFF 小节(3–5 行:做了什么、做的决定、踩的坑、下一步建议)",
     "ROLE": "builder",
-    "AUTHORIZATION": "可读工作树全部源码与测试。python 用 /home/exedev/services/engine-next/shared/venv/bin/python。环境或执行错误允许修复并重跑。不联网,不读 cookie,不发信,不 push,不合并,不部署,不写 Redis/TD,不改 fw 下任何文件(只写自己的 reports 与 evidence)。 遇到规格内部矛盾时,选与真实历史失败原因一致的那一种并在报告 OPEN 写明,不要停下来等 PM。不在 shell 里打印环境变量或完整进程命令行。",
+    "AUTHORIZATION": "可读工作树全部源码与测试;仅修改本卡 SCOPE_WRITE 授权范围,包括本卡报告、证据及明确批准的框架改动。所有数据源网络读取默认可用;Redis 经守卫代理,TD 及写入遵循 fw/PERMISSIONS.md、既有用户授权与当次具体对象授权;禁止人工回填、伪造、删除既有数据、写受保护 legacy 命名空间或 market_data1、绕过守卫;生产 DDL/迁移、配置或重启、发信须明确授权;禁止 push,凭据和数据不落临时文件。默认不提交;仅用户明确要求且卡片授权时提交。python 用 /home/exedev/services/engine-next/shared/venv/bin/python。环境或执行错误允许修复并重跑。不打印凭据或完整进程命令行。遇到规格内部矛盾时,选与真实历史失败原因一致的那一种并在报告 OPEN 写明。",
     "NOT_DO": "不手写假样本;不 push、不合并、不部署;不顺手重构。",
     "STUBS_ALLOWED": "无需新增 kind,不使用采集工具;夹具为真实文件摘录并附 PROVENANCE",
-    "TEST_BUDGET": "新增测试 ≤2 个;真实夹具 fail-first;验收清单: {test_files}",
-    "ACCEPT": "指定验收命令 exit=0;fail-first 证据完整;git status 干净且提交以 {id}: 开头。",
-    "GOAL_SUFFIX": "提交信息以卡号开头,末尾空一行加 Co-Authored-By: Codex <noreply@openai.com>。",
-    "COMMIT": "yes"
+    "TEST_BUDGET": "按实际影响选择测试;真实夹具 fail-first;参考验收清单: {test_files}",
+    "ACCEPT": "指定验收命令 exit=0;fail-first 证据完整;报告工作树变更及未核实项。",
+    "COMMIT": "no",
+    "GOAL_SUFFIX": "获授权提交时,提交信息以卡号开头,末尾空一行加 Co-Authored-By: Codex <noreply@openai.com>。"
   },
   "required": [
     "title",
