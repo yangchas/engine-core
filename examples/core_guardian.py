@@ -295,7 +295,7 @@ def _command_handler(name: str, opts, root: Path):
             return "Core Kaipan jobs checked; existing date versions reused"
         elif name in {"premarket_data", "intraday_data", "postmarket_data", "auction_report",
                       "open_report", "close_report", "kaipan_hot_capture", "baostock_probe", "night_report"}:
-            cmd = build_handler_command(name, event, opts, root, day, py, repo)
+            cmd = build_handler_command(name, event, opts, root, day, py, repo, degraded=degraded)
         else:
             raise CoreError("CONFIG_ERROR", "handler_not_implemented:" + name)
         result = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True,

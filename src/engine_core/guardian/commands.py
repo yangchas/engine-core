@@ -299,7 +299,7 @@ def validate_handler_postcondition(name: str, day: str, root: str | Path,
     return True, ""
 
 
-def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo: Path):
+def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo: Path, *, degraded=False):
     """Return the argv for a CLI-backed handler without executing or probing anything."""
     root, repo = Path(root), Path(repo)
     if name == "premarket_data":
@@ -335,6 +335,12 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
         stage = {"auction_report": "auction", "open_report": "open", "close_report": "close"}[name]
         cmd = [py, str(repo / "examples/run_daily_reports.py"), "--stage", stage,
                "--trade-date", day, "--out-root", str(root / "reports")]
+        if not degraded and name in {"auction_report", "open_report"} and _arg(_event_args(event), "require_live_data", False) is True:
+            cmd.append("--require-live-data")
+        if degraded and name == "auction_report":
+            cmd.append("--allow-wencai-fallback")
+        if degraded and name == "open_report":
+            cmd.append("--degrade-requested")
         if name == "auction_report":
             cmd.extend(["--asof", str((getattr(event, "args", None) or {}).get("asof", event.start))])
         elif name == "open_report":
