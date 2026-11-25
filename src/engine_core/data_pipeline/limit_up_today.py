@@ -72,8 +72,8 @@ def build_redis_pool(trade_date: str, as_of: str | datetime,
                      st_names: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Derive the limit-up members from a real Q2 active-set read, excluding source values after ``as_of``.
 
-    Q2 price fields are milli-yuan. ``br`` is deliberately never interpreted as a seal amount: evidence marks it as
-    an auction residual order amount, while ``ls`` is retained only as a limit-state flag.
+    Q2 price fields are milli-yuan. Intraday book amounts come from t1_v2's
+    ``b1a``/``a1a``; auction fields ``br``/``ar`` are never used as seals.
     """
     day = date.fromisoformat(trade_date).isoformat()
     cutoff = _local_datetime(as_of)
@@ -136,14 +136,23 @@ def build_redis_pool(trade_date: str, as_of: str | datetime,
         else:
             st_status = "NON_ST"
         candidate_phases.append(str(fields.get("ph", "")).strip())
-        rows.append({
+        bid, ask = _decimal(fields.get("b1a")), _decimal(fields.get("a1a"))
+        if any(value is None or value < 0 or value != value.to_integral_value() for value in (bid, ask)):
+            seal_amount, ask1_amount, seal_status = None, None, None
+        elif ask > 0:
+            seal_amount, ask1_amount, seal_status = 0.0, float(ask), "OPEN_RISK"
+        elif bid > 0:
+            seal_amount, ask1_amount, seal_status = float(bid), 0.0, "SEALED"
+        else:
+            seal_amount, ask1_amount, seal_status = 0.0, 0.0, "EMPTY_BOOK"
+        row = {
             "symbol": symbol,
             "date": day,
             "as_of": cutoff.isoformat(timespec="seconds"),
             "pct": float(pct),
             "limit_up": True,
             "limit_price": float(limit_price),
-            "seal_amount": None,
+            "seal_amount": seal_amount,
             "first_limit_time": None,
             "final_limit_time": None,
             "open_count": None,
@@ -152,7 +161,10 @@ def build_redis_pool(trade_date: str, as_of: str | datetime,
             "st_status": st_status,
             "redis_phase": phase or None,
             "wencai_confirmed": False,
-        })
+        }
+        if seal_status is not None:
+            row.update(ask1_amount=ask1_amount, seal_status=seal_status)
+        rows.append(row)
 
     terminal = (cutoff.strftime("%H:%M:%S") >= "15:00:00" and bool(rows) and
                 all_timestamps_before_cutoff and all(phase == "3" for phase in candidate_phases))

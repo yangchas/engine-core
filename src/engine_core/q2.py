@@ -87,6 +87,8 @@ Q2_FIELD_CONTRACT: Tuple[Q2FieldSpec, ...] = (
     ),
     Q2FieldSpec("ts", "source_record_time_ms", "epoch_ms", "epoch_ms", "upstream record or batch snapshot time", True),
     Q2FieldSpec("ph", "phase", "int", "code", "market phase", False),
+    Q2FieldSpec("b1a", "bid1_amount_yuan", "int", "yuan", "real-time best bid amount", False),
+    Q2FieldSpec("a1a", "ask1_amount_yuan", "int", "yuan", "real-time best ask amount", False),
     Q2FieldSpec(
         "br",
         "auction_bid_amount_yuan",
@@ -146,7 +148,7 @@ Q2_FIELD_CONTRACT: Tuple[Q2FieldSpec, ...] = (
 )
 
 Q2_OBSERVED_OPTIONAL_FIELDS: Tuple[str, ...] = (
-    "iv", "ia", "ln", "ls", "mx", "mn", "a20", "a24", "a25",
+    "iv", "ia", "ln", "ls", "mx", "mn", "a20", "a24", "a25", "b1a", "a1a",
 )
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -243,6 +245,8 @@ class Q2Quote:
     instant_volume_lots: Optional[int] = None
     instant_amount_yuan: Optional[int] = None
     large_net_yuan: Optional[int] = None
+    bid1_amount_yuan: Optional[int] = None
+    ask1_amount_yuan: Optional[int] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "raw_fields", deep_freeze(self.raw_fields))
@@ -341,6 +345,8 @@ def normalize_q2(symbol: str, raw_hash: Mapping[Any, Any]) -> Q2Quote:
         instant_volume_lots=int_field("iv"),
         instant_amount_yuan=int_field("ia"),
         large_net_yuan=int_field("ln"),
+        bid1_amount_yuan=int_field("b1a"),
+        ask1_amount_yuan=int_field("a1a"),
         source_record_time_ms=timestamp_ms,
         phase=int_field("ph"),
         limit_state=int_field("ls"),
