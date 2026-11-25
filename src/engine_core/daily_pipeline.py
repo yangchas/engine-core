@@ -2763,15 +2763,15 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 except (AttributeError, TypeError, ValueError):
                     continue
             _enrich_close_checkpoints(fact_stocks, root, trade_date, degraded, close_report_asof)
-            plate_names = sorted({str(name) for row in fact_stocks for name in
-                                  (row.get("plates") or ([row["main_plate"]] if row.get("main_plate") else [])) if name})
+            close_plate_names = sorted({str(name) for row in fact_stocks for name in
+                                        (row.get("plates") or ([row["main_plate"]] if row.get("main_plate") else [])) if name})
             for row in fact_stocks:
                 if not row.get("plates") and row.get("main_plate"):
                     row["plates"] = [row["main_plate"]]
             snapshots = _close_hot_snapshots(src.redis, trade_date, close_report_asof)
             data = derive_close_review(fact_stocks, trade_date=trade_date,
                 live_report=live,
-                plates=[{"name": name} for name in plate_names], kaipan_snapshots=snapshots,
+                plates=[{"name": name} for name in close_plate_names], kaipan_snapshots=snapshots,
                 prev_live=_read_optional_json(prev_path, degraded, "PREVIOUS_REPORT")
                     if prev_path and prev_path.is_file() else None,
                 market={"amount_yuan": sum(amounts) if amounts else None,

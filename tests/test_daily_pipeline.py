@@ -1273,3 +1273,24 @@ def test_wencai_auction_fallback_feeds_standard_panorama(tmp_path, monkeypatch):
     assert adapted["pre_close"] is None and adapted["bid_amount_yuan"] is None and adapted["ask_amount_yuan"] is None
     html, _ = render_email_html(report, "auction", "2026-10-23", manifest=result["manifest"])
     assert "中际旭创" in html and "资金去向雷达" in html and "板块竞价全景" in html and "问财降级" in html
+
+
+def test_close_stage_preserves_plate_names_dict_with_relations(tmp_path, monkeypatch):
+    import engine_core.daily_pipeline as pipeline
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path / "core"))
+    monkeypatch.setattr(pipeline, "_load_relations",
+                        lambda *args, **kwargs: ({"801001": ["000001"]}, {"801001": "银行"}, "2026-11-25"))
+    monkeypatch.setattr(pipeline, "load_close_catalog_inputs",
+                        lambda *args, **kwargs: (
+                            [{"symbol": "000001", "name": "平安银行", "main_plate": "银行",
+                              "plates": ["银行"], "close_pct": 1.2, "amount_yuan": 1e8,
+                              "in_yest_pool": False, "lb_days": None}],
+                            {"contract": "CloseReviewV1", "basis": "POSTHOC_REVIEW",
+                             "datasets": {"daily_kline": {"storage_source": "tdengine"}},
+                             "field_coverage": {"close_pct": 1.0}},
+                        ))
+    result = run_daily_pipeline(stage="close", trade_date="2026-11-25",
+                                asof="2026-11-25T17:40:00+08:00", out_root=tmp_path / "out",
+                                sources=DailySources(td=FakeTD(), redis=FakeRedis()), dry_run=True)
+    assert result["report"]["trade_date"] == "2026-11-25"
+    assert (tmp_path / "out/2026-11-25/close_review/report.html").is_file()
