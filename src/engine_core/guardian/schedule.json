@@ -578,6 +578,120 @@
           "until": "late_until"
         }
       ]
+    },
+    "auction_report_degrade": {
+      "catchup": "run_in_window",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "primary",
+          "args": {
+            "asof": "09:26:00",
+            "require_live_data": true,
+            "email_to": [
+              "412826313@qq.com",
+              "282035379@qq.com",
+              "2561990280@qq.com"
+            ]
+          },
+          "attempts": 2,
+          "backoff": "5s*1",
+          "timeout": "180s",
+          "budget_enabled": false,
+          "on_timeout": "advance"
+        },
+        {
+          "name": "degrade_wencai",
+          "args": {
+            "asof": "09:26:00",
+            "allow_wencai_fallback": true,
+            "email_to": [
+              "412826313@qq.com",
+              "282035379@qq.com",
+              "2561990280@qq.com"
+            ]
+          },
+          "attempts": 1,
+          "timeout": "180s",
+          "budget_enabled": false,
+          "on_timeout": "advance"
+        }
+      ]
+    },
+    "open_report_degrade": {
+      "catchup": "run_in_window",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "primary",
+          "args": {
+            "require_live_data": true,
+            "email_to": [
+              "412826313@qq.com",
+              "282035379@qq.com",
+              "2561990280@qq.com"
+            ]
+          },
+          "attempts": 2,
+          "backoff": "5s*1",
+          "timeout": "180s",
+          "budget_enabled": false,
+          "on_timeout": "advance"
+        },
+        {
+          "name": "degrade_hot_plates",
+          "args": {
+            "email_to": [
+              "412826313@qq.com",
+              "282035379@qq.com",
+              "2561990280@qq.com"
+            ]
+          },
+          "attempts": 1,
+          "timeout": "180s",
+          "budget_enabled": false,
+          "on_timeout": "advance"
+        }
+      ]
+    },
+    "limit_up_today_degrade": {
+      "catchup": "run_in_window",
+      "retry_backoff": "1s",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "primary_redis",
+          "args": {
+            "dataset": "limit_up_pool_today",
+            "tier": "redis",
+            "failure_fallback": "none"
+          },
+          "attempts": 2,
+          "backoff": "1s*1",
+          "timeout": "30s",
+          "budget_enabled": false,
+          "on_timeout": "advance"
+        },
+        {
+          "name": "degrade_wencai",
+          "args": {
+            "dataset": "limit_up_pool_today",
+            "tier": "redis",
+            "failure_fallback": "wencai",
+            "wencai_max_requests_per_day": 3,
+            "wencai_min_interval_seconds": 1800
+          },
+          "attempts": 1,
+          "timeout": "60s",
+          "budget_enabled": false,
+          "on_timeout": "advance"
+        }
+      ]
     }
   },
   "events": [
@@ -1798,7 +1912,7 @@
     {
       "event_id": "auction_facts_0925",
       "handler": "auction_report",
-      "enabled": true,
+      "enabled": false,
       "calendar": "trading_day",
       "trigger_type": "window",
       "at": "09:25:10",
@@ -1875,6 +1989,7 @@
       "cost": null,
       "phases": null,
       "on_phase_mismatch": null,
+      "profile": "auction_report_degrade",
       "catchup_mode": "run_in_window",
       "max_attempts": 3,
       "timeout_seconds": 300,
@@ -1882,7 +1997,12 @@
       "silent_until_last": false,
       "retry_backoff": null,
       "args": {
-        "asof": "09:26:00"
+        "asof": "09:26:00",
+        "email_to": [
+          "412826313@qq.com",
+          "282035379@qq.com",
+          "2561990280@qq.com"
+        ]
       }
     },
     {
@@ -2068,7 +2188,7 @@
     {
       "event_id": "open_report_0932",
       "handler": "open_report",
-      "enabled": true,
+      "enabled": false,
       "calendar": "trading_day",
       "trigger_type": "window",
       "at": "09:32:10",
@@ -2206,12 +2326,20 @@
       "cost": null,
       "phases": null,
       "on_phase_mismatch": null,
+      "profile": "open_report_degrade",
       "catchup_mode": "run_in_window",
       "max_attempts": 3,
       "timeout_seconds": 300,
       "retry_until_late": false,
       "silent_until_last": false,
-      "retry_backoff": null
+      "retry_backoff": null,
+      "args": {
+        "email_to": [
+          "412826313@qq.com",
+          "282035379@qq.com",
+          "2561990280@qq.com"
+        ]
+      }
     },
     {
       "event_id": "intraday_36",
@@ -2284,7 +2412,7 @@
     {
       "event_id": "open_report_0940",
       "handler": "open_report",
-      "enabled": true,
+      "enabled": false,
       "calendar": "trading_day",
       "trigger_type": "window",
       "at": "09:40:10",
@@ -2485,12 +2613,20 @@
       "cost": null,
       "phases": null,
       "on_phase_mismatch": null,
+      "profile": "open_report_degrade",
       "catchup_mode": "run_in_window",
       "max_attempts": 3,
       "timeout_seconds": 300,
       "retry_until_late": false,
       "silent_until_last": false,
-      "retry_backoff": null
+      "retry_backoff": null,
+      "args": {
+        "email_to": [
+          "412826313@qq.com",
+          "282035379@qq.com",
+          "2561990280@qq.com"
+        ]
+      }
     },
     {
       "event_id": "kaipan_hot_101000",
@@ -2540,6 +2676,7 @@
       "cost": "light",
       "phases": null,
       "on_phase_mismatch": null,
+      "profile": "limit_up_today_degrade",
       "catchup_mode": "run_in_window",
       "max_attempts": 3,
       "timeout_seconds": 30,
@@ -2840,6 +2977,7 @@
       "cost": "light",
       "phases": null,
       "on_phase_mismatch": null,
+      "profile": "limit_up_today_degrade",
       "catchup_mode": "run_in_window",
       "max_attempts": 3,
       "timeout_seconds": 30,
@@ -2991,6 +3129,7 @@
       "cost": "light",
       "phases": null,
       "on_phase_mismatch": null,
+      "profile": "limit_up_today_degrade",
       "catchup_mode": "run_in_window",
       "max_attempts": 3,
       "timeout_seconds": 30,
@@ -3507,7 +3646,14 @@
         "POST_MARKET"
       ],
       "on_phase_mismatch": "defer",
-      "profile": "policy_08"
+      "profile": "policy_08",
+      "args": {
+        "email_to": [
+          "412826313@qq.com",
+          "282035379@qq.com",
+          "2561990280@qq.com"
+        ]
+      }
     },
     {
       "event_id": "postmarket_publish",

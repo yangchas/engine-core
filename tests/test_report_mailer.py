@@ -295,3 +295,26 @@ def test_an_unreachable_redis_stops_a_real_send_but_not_a_dry_run(tmp_path, monk
         report_mailer.send_message(_config(), msg, dry_run=False, state=_state(down=True))
     assert smtp.sent == 0
     assert report_mailer.send_message(_config(), msg, dry_run=True, state=_state(down=True)).status == "dry_run"
+
+
+def test_alert_message_includes_sanitized_exception_summary_without_leaking_paths_or_secrets():
+    err = AttributeError("'list' object has no attribute 'get' at /home/exedev/secret.py password=topsecret")
+    msg = report_mailer.build_alert_message("2026-11-25", "close_recap", err,
+                                            report_mailer.ALLOWED_RECIPIENT, "reports@example.test")
+    body = msg.get_content()
+    assert "阶段：close_recap" in body
+    assert "错误码：INTERNAL_ERROR" in body
+    assert "摘要：AttributeError: 'list' object has no attribute 'get'" in body
+    assert "/home/exedev/secret.py" not in body
+    assert "topsecret" not in body
+
+
+def test_guardian_handler_alert_includes_sanitized_error_detail():
+    from examples import guardian_handler
+    req = {"contract": 1, "event": "alert", "reason": "FAILED_FINAL",
+           "request": {"event": "close_recap", "date": "2026-11-25",
+                       "error": "DETERMINISTIC_FAILURE: AttributeError:'list' object has no attribute 'get' in /home/exedev/x.py"}}
+    receipt = guardian_handler._send_alert(req, True)
+    assert "close_recap: FAILED_FINAL (1) |" in receipt["body"]
+    assert "AttributeError:'list' object has no attribute 'get'" in receipt["body"]
+    assert "/home/exedev/x.py" not in receipt["body"]

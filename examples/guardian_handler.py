@@ -656,7 +656,8 @@ def _gate(name, request=None):
 
 
 def _send_alert(request, dry_run):
-    from engine_core.report_mailer import build_alert_message, load_smtp_config, send_message
+    from engine_core.report_mailer import (_sanitize_alert_summary, build_alert_message,
+                                           load_smtp_config, send_message)
 
     inner = request.get("request") if isinstance(request.get("request"), dict) else request
     reason = str(request.get("reason") or inner.get("reason") or "unspecified")
@@ -679,6 +680,9 @@ def _send_alert(request, dry_run):
     if reason == "TIER_FALLBACK" and inner.get("error"):
         # failed tier(s) -> succeeded tier, e.g. "wencai:DETERMINISTIC_FAILURE -> q2_final"
         lines = [f"{line} {inner['error']}" for line in lines]
+    elif inner.get("error"):
+        summary = _sanitize_alert_summary(RuntimeError(str(inner["error"])), limit=200).removeprefix("RuntimeError: ")
+        lines = [f"{line} | {summary}" for line in lines]
     from_addr = "reports@localhost"
     config = None
     if not dry_run:

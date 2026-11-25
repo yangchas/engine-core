@@ -257,6 +257,21 @@ def build_report_message(subject_prefix: str, trade_date: str, stage: str,
     return message
 
 
+def _sanitize_alert_summary(error: BaseException, *, limit: int = 160) -> str:
+    """Return a path-free, secret-free one-line exception summary for alert emails."""
+    raw = str(error or "")
+    cleaned = re.sub(r"[A-Za-z]:\\[^\s'\",;]+", "<path>", raw)
+    cleaned = re.sub(r"(?<![A-Za-z0-9_])(?:/[A-Za-z0-9._-]+)+/?", "<path>", cleaned)
+    cleaned = re.sub(r"\b\w+://[^\s'\",;]+", "<url>", cleaned)
+    cleaned = re.sub(r"(?i)\b(password|passwd|pwd|secret|token|cookie|api[_-]?key)\s*[:=]\s*\S+", r"\1=<redacted>", cleaned)
+    cleaned = " ".join(cleaned.split())
+    prefix = type(error).__name__
+    if not cleaned:
+        return prefix
+    text = f"{prefix}: {cleaned}"
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
 def build_alert_message(trade_date: str, stage: str, error: BaseException,
                         to_addr: str, from_addr: str) -> EmailMessage:
     """Build a path-free alert with a stable, controlled failure fingerprint."""
@@ -271,6 +286,7 @@ def build_alert_message(trade_date: str, stage: str, error: BaseException,
     else:
         kind = "INTERNAL_ERROR"
     missing = "检查阶段 manifest 与输入切片"
+    summary = _sanitize_alert_summary(error)
     message = EmailMessage()
     message["Subject"] = f"Core [ALERT] [{trade_date}] {stage} 阶段失败"
     message["Message-ID"] = make_msgid()
@@ -278,7 +294,7 @@ def build_alert_message(trade_date: str, stage: str, error: BaseException,
     message["To"] = to_addr
     message["X-Core-Alert-Fingerprint"] = hashlib.sha256(
         f"{kind}\0{missing}".encode("utf-8")).hexdigest()
-    message.set_content(f"阶段：{stage}\n错误码：{kind}\n检查项：{missing}")
+    message.set_content(f"阶段：{stage}\n错误码：{kind}\n摘要：{summary}\n检查项：{missing}")
     message["X-Core-Alert"] = "stage-failure"
     return message
 

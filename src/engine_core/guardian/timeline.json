@@ -581,6 +581,120 @@
           "until": "late_until"
         }
       ]
+    },
+    "auction_report_degrade": {
+      "catchup": "run_in_window",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "primary",
+          "args": {
+            "asof": "09:26:00",
+            "require_live_data": true,
+            "email_to": [
+              "412826313@qq.com",
+              "282035379@qq.com",
+              "2561990280@qq.com"
+            ]
+          },
+          "attempts": 2,
+          "backoff": "5s*1",
+          "timeout": "180s",
+          "budget_enabled": false,
+          "on_timeout": "advance"
+        },
+        {
+          "name": "degrade_wencai",
+          "args": {
+            "asof": "09:26:00",
+            "allow_wencai_fallback": true,
+            "email_to": [
+              "412826313@qq.com",
+              "282035379@qq.com",
+              "2561990280@qq.com"
+            ]
+          },
+          "attempts": 1,
+          "timeout": "180s",
+          "budget_enabled": false,
+          "on_timeout": "advance"
+        }
+      ]
+    },
+    "open_report_degrade": {
+      "catchup": "run_in_window",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "primary",
+          "args": {
+            "require_live_data": true,
+            "email_to": [
+              "412826313@qq.com",
+              "282035379@qq.com",
+              "2561990280@qq.com"
+            ]
+          },
+          "attempts": 2,
+          "backoff": "5s*1",
+          "timeout": "180s",
+          "budget_enabled": false,
+          "on_timeout": "advance"
+        },
+        {
+          "name": "degrade_hot_plates",
+          "args": {
+            "email_to": [
+              "412826313@qq.com",
+              "282035379@qq.com",
+              "2561990280@qq.com"
+            ]
+          },
+          "attempts": 1,
+          "timeout": "180s",
+          "budget_enabled": false,
+          "on_timeout": "advance"
+        }
+      ]
+    },
+    "limit_up_today_degrade": {
+      "catchup": "run_in_window",
+      "retry_backoff": "1s",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "primary_redis",
+          "args": {
+            "dataset": "limit_up_pool_today",
+            "tier": "redis",
+            "failure_fallback": "none"
+          },
+          "attempts": 2,
+          "backoff": "1s*1",
+          "timeout": "30s",
+          "budget_enabled": false,
+          "on_timeout": "advance"
+        },
+        {
+          "name": "degrade_wencai",
+          "args": {
+            "dataset": "limit_up_pool_today",
+            "tier": "redis",
+            "failure_fallback": "wencai",
+            "wencai_max_requests_per_day": 3,
+            "wencai_min_interval_seconds": 1800
+          },
+          "attempts": 1,
+          "timeout": "60s",
+          "budget_enabled": false,
+          "on_timeout": "advance"
+        }
+      ]
     }
   },
   "functions": {
@@ -1744,7 +1858,14 @@
       "policy": "policy_08",
       "accept_degraded_dependencies": [
         "baostock_probe_1730"
-      ]
+      ],
+      "args": {
+        "email_to": [
+          "412826313@qq.com",
+          "282035379@qq.com",
+          "2561990280@qq.com"
+        ]
+      }
     },
     "postmarket_publish": {
       "after": [],
@@ -2636,7 +2757,8 @@
         {
           "fn": "auction_facts",
           "id": "auction_facts_0925",
-          "deadline": "09:29:59"
+          "deadline": "09:29:59",
+          "enabled": false
         }
       ]
     },
@@ -2674,7 +2796,16 @@
         {
           "fn": "auction_report",
           "id": "auction_report_0926",
-          "deadline": "09:29:00"
+          "deadline": "09:29:00",
+          "args": {
+            "asof": "09:26:00",
+            "email_to": [
+              "412826313@qq.com",
+              "282035379@qq.com",
+              "2561990280@qq.com"
+            ]
+          },
+          "policy": "auction_report_degrade"
         },
         {
           "fn": "limit_up_today",
@@ -2719,7 +2850,8 @@
         {
           "fn": "open_report",
           "id": "open_report_0932",
-          "deadline": "09:35:00"
+          "deadline": "09:35:00",
+          "enabled": false
         }
       ]
     },
@@ -2785,7 +2917,15 @@
         {
           "fn": "open_report",
           "id": "open_report_0935",
-          "deadline": "09:38:59"
+          "deadline": "09:38:59",
+          "args": {
+            "email_to": [
+              "412826313@qq.com",
+              "282035379@qq.com",
+              "2561990280@qq.com"
+            ]
+          },
+          "policy": "open_report_degrade"
         }
       ]
     },
@@ -2840,7 +2980,8 @@
         {
           "fn": "open_report",
           "id": "open_report_0940",
-          "deadline": "09:44:59"
+          "deadline": "09:44:59",
+          "enabled": false
         }
       ]
     },
@@ -2904,7 +3045,15 @@
         {
           "fn": "open_report",
           "id": "open_report_0945",
-          "deadline": "09:49:00"
+          "deadline": "09:49:00",
+          "args": {
+            "email_to": [
+              "412826313@qq.com",
+              "282035379@qq.com",
+              "2561990280@qq.com"
+            ]
+          },
+          "policy": "open_report_degrade"
         }
       ]
     },
@@ -2942,7 +3091,8 @@
         },
         {
           "fn": "limit_up_today",
-          "id": "limit_up_today_101000"
+          "id": "limit_up_today_101000",
+          "policy": "limit_up_today_degrade"
         }
       ]
     },
@@ -3052,7 +3202,8 @@
         },
         {
           "fn": "limit_up_today",
-          "id": "limit_up_today_112500"
+          "id": "limit_up_today_112500",
+          "policy": "limit_up_today_degrade"
         }
       ]
     },
@@ -3132,7 +3283,8 @@
         },
         {
           "fn": "limit_up_today",
-          "id": "limit_up_today_143000"
+          "id": "limit_up_today_143000",
+          "policy": "limit_up_today_degrade"
         }
       ]
     },
