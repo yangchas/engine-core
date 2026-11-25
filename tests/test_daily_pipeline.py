@@ -1243,3 +1243,33 @@ def test_dead_open_renders_real_hot_plates(tmp_path, monkeypatch):
     assert "DEGRADED:HOT_PLATES_ONLY" in result["manifest"]["degraded"]
     _, html = render_email_board(result["report"], "open", "2026-11-25")
     assert "医药" in html and "真进攻主线" in html
+
+
+def test_wencai_auction_fallback_feeds_standard_panorama(tmp_path, monkeypatch):
+    import gzip
+    from pathlib import Path
+    from engine_core.email_render import render_email_html
+    from engine_core.daily_pipeline import _adapt_wencai_auction_facts_rows
+    from engine_core.slices import SliceReader
+
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path / "empty"))
+    monkeypatch.setattr("engine_core.data_pipeline.redis_day_view.hot_view_expire_at", lambda day: 1)
+    recorded = json.load(gzip.open(Path(__file__).parent / "fixtures/real/c527/wencai_auction_upstream_first60.json.gz", "rt"))
+    raw = recorded["rows"][0]
+    result = run_daily_pipeline(stage="auction", trade_date="2026-10-23", asof="09:26:00",
+        out_root=tmp_path / "out", sources=DailySources(td=FakeTD(), redis=FakeRedis(),
+        slice_reader=SliceReader({}), wencai_fetch=lambda *args: [raw], force_live_auction_facts=True),
+        dry_run=True, allow_wencai_fallback=True)
+    report_path = next((tmp_path / "out").rglob("report.json"))
+    report = json.loads(report_path.read_text())
+    panorama = report["auction_panorama"]
+    stock = panorama["capital_flow"]["top_amount"][0]
+    assert stock["symbol"] == "300308" and stock["name"] == "中际旭创"
+    assert stock["auction_amount_yuan"] == raw["竞价金额[20261023]"]
+    assert stock["pct_change"] == raw["竞价涨幅[20261023]"]
+    assert result["manifest"]["slices"]["auction_stock_facts"]["source"] == "DEGRADED:WENCAI_AUCTION"
+    adapted = _adapt_wencai_auction_facts_rows(result["report"]["wencai_fallback"]["rows"])[0]
+    assert adapted["price"] == raw["竞价匹配价[20261023]"] and adapted["valid_price"] is True
+    assert adapted["pre_close"] is None and adapted["bid_amount_yuan"] is None and adapted["ask_amount_yuan"] is None
+    html, _ = render_email_html(report, "auction", "2026-10-23", manifest=result["manifest"])
+    assert "中际旭创" in html and "资金去向雷达" in html and "板块竞价全景" in html and "问财降级" in html
