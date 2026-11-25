@@ -968,6 +968,14 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
             or (isinstance(ladder, Mapping) and bool(ladder.get("rows")))
             or report.get("email_layout") == "board"):
         board_html, board_plain = render_email_board(report, stage_key, trade_date)
+        if "close" in stage_key or "open" in stage_key:
+            degraded_items = [str(x) for x in (manifest.get("degraded") or []) if x] if isinstance(manifest, Mapping) else []
+            if degraded_items:
+                note = "降级提示：" + "；".join(degraded_items[:3])
+                note_html = f'<div style="max-width:680px;margin:6px auto;padding:6px 10px;background:#fff4e5;color:#7c2d12;font-size:11px;border-radius:6px">{_esc(note)}</div>'
+                board_html = board_html.replace("</body>", note_html + "</body>", 1)
+                board_plain = board_plain + "\n" + note
+            return board_html, board_plain
         board_html = re.sub(r"(<body\b[^>]*>)", lambda match: match.group(1) + quality_html + warning, board_html, count=1)
         return (board_html,
                 quality_plain + "\n\n" + warning_text + board_plain)

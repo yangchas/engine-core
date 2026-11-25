@@ -1547,10 +1547,177 @@ def _render_open_verification_board(report: Mapping[str, Any], trade_date: str) 
     return sections, re.sub(r'\s+', ' ', plain).strip()
 
 
+def _render_close_v3_board(report: Mapping[str, Any], trade_date: str) -> tuple[str, str]:
+    def mapping(value):
+        return value if isinstance(value, Mapping) else {}
+    def number(value):
+        try:
+            n = float(value)
+            return n if math.isfinite(n) else None
+        except (TypeError, ValueError):
+            return None
+    def pct(value):
+        return _num(value, 2)
+    def pp(value):
+        value = number(value)
+        return f'{value:+.2f}pp' if value is not None else '—'
+    def table(headers, rows, marker):
+        head = ''.join(f'<th style="text-align:left;padding:8px;background:#edf3fa">{_esc(h)}</th>' for h in headers)
+        body = ''.join(f'<tr data-item="{marker}">' + ''.join(f'<td style="padding:8px;border-bottom:1px solid #e8edf4">{v}</td>' for v in row) + '</tr>' for row in rows)
+        return f'<table width="100%" cellspacing="0" style="font-size:14px;border-collapse:collapse"><tr>{head}</tr>{body}</table>' if rows else '<div>数据缺口：未生成</div>'
+    def chip(color, bg, text, marker):
+        return f'<span data-item="{marker}" style="display:inline-block;margin:3px;padding:7px 9px;background:{bg};border-left:3px solid {color};color:{color};font-size:13px">{_esc(text)}</span>'
+
+    market = mapping(report.get('market'))
+    regime = str(market.get('regime_label') or '盘面复盘')
+    auction_med = pct(market.get('auction_median'))
+    close_med = pct(_first(market, 'close_median', 'close_median_pct'))
+    amt_text = _amount_with_unit(market.get('amount_yuan'))
+    auc_amt = _amount_with_unit(market.get('auction_amount_yuan'))
+    up_cnt = market.get('up_count')
+    down_cnt = market.get('down_count')
+    up_down_html = (f'<span style="color:#bc3541">{int(up_cnt)}涨</span> / <span style="color:#16875b">{int(down_cnt)}跌</span>'
+                    if isinstance(up_cnt, (int, float)) and isinstance(down_cnt, (int, float)) else '—')
+    eb_close = mapping(mapping(report.get('extremes_board')).get('close'))
+    top20 = mapping(eb_close.get('amount_top20'))
+    top20_text = (f'{top20.get("red", "—")}/{top20.get("n", "—")} · 均涨 {pct(top20.get("amount_weighted_pct"))}'
+                  if top20 else '—')
+    lu = market.get('close_limit_up_count')
+    ld = market.get('close_limit_down_count')
+    lu_ld_html = (f'<span style="color:#bc3541">{int(lu)}</span> / <span style="color:#16875b">{int(ld)}</span>'
+                  if isinstance(lu, (int, float)) and isinstance(ld, (int, float)) else '—')
+
+    cards = [
+        ('全天成交额', f'{amt_text}<br><span style="font-size:11px;color:#667085;font-weight:400">竞价 {auc_amt}</span>', '#d44c4c'),
+        ('涨跌 & 收盘中位', f'{up_down_html}<br><span style="font-size:11px;color:#667085;font-weight:400">中位 {close_med}</span>', '#53677e'),
+        ('额Top20红盘', top20_text, '#e69a38'),
+        ('涨停 / 跌停（价代）', lu_ld_html, '#35a77b'),
+    ]
+    card_html = ''.join(
+        f'<td width="25%" style="vertical-align:top;padding:9px;background:white;border-top:4px solid {color}">'
+        f'<span style="font-size:12px;color:#53677e">{_esc(title)}</span><br><b style="font-size:14px;color:{color}">{value}</b></td>'
+        for title, value, color in cards
+    )
+
+    plates_obj = mapping(report.get('plates'))
+    top_plates = [r for r in (_rows(plates_obj.get('close_top10')) or _rows(plates_obj.get('auction_amount_top10')))
+                  if 'ST' not in str(r.get('name') or '').upper()][:5]
+    plate_rows = [
+        [_esc(r.get('name') or '—'),
+         str(int(r['members'])) if isinstance(r.get('members'), (int, float)) else '—',
+         f'{pct(r.get("p0925_mean"))} → <b style="color:#bc3541">{pct(r.get("close_mean"))}</b>']
+        for r in top_plates
+    ]
+    bottom_plates = [r for r in _rows(plates_obj.get('close_bottom10'))
+                     if 'ST' not in str(r.get('name') or '').upper()][:4]
+    bleeding_pills = ' ｜ '.join(
+        f'{_esc(r.get("name") or "—")} {pct(r.get("close_mean"))}' for r in bottom_plates
+    ) or '暂无重灾板块数据'
+
+    unlimited = [r for r in (_rows(report.get('unlimited_price_band_stocks')) or _rows(report.get('stocks')))
+                 if r.get('is_new_listing') or r.get('is_unlimited_price_band') or (r.get('listing_days') == 1)
+                 or r in _rows(report.get('unlimited_price_band_stocks'))]
+    unlimited_names = {r.get('name') for r in unlimited if r.get('name')}
+    rebound = [r for r in (_rows(eb_close.get('rebound_top8')) or _rows(report.get('big_meat')))
+               if not r.get('is_new_listing') and not r.get('is_unlimited_price_band')
+               and r.get('name') not in unlimited_names][:5]
+    rebound_rows = []
+    for r in rebound:
+        a = number(_first(r, 'auction_pct', 'p0925_pct'))
+        c = number(r.get('close_pct'))
+        delta = number(mapping(r.get('tracking')).get('delta_close_pp'))
+        if delta is None and a is not None and c is not None:
+            delta = c - a
+        rebound_rows.append([
+            _esc(_display_name(r, 10)),
+            f'{pct(a)} → <b style="color:#bc3541">{pct(c)}</b>',
+            f'<span style="color:#bc3541">{pp(delta)}</span>',
+        ])
+    unlimited_note = (' ｜ '.join(f'{_esc(_display_name(r, 10))} {pct(r.get("close_pct"))}' for r in unlimited[:5])
+                      if unlimited else '')
+
+    weak = _rows(eb_close.get('weak_top8'))[:5] or _rows(report.get('big_loss'))[:5]
+    weak_rows = []
+    for r in weak:
+        a = number(_first(r, 'auction_pct', 'p0925_pct'))
+        c = number(r.get('close_pct'))
+        delta = number(mapping(r.get('tracking')).get('delta_close_pp'))
+        if delta is None and a is not None and c is not None:
+            delta = c - a
+        weak_rows.append([
+            _esc(_display_name(r, 10)),
+            f'{pct(a)} → <b style="color:#16875b">{pct(c)}</b>',
+            f'<span style="color:#16875b">{pp(delta)}</span>',
+        ])
+
+    ladder_sec = mapping(report.get('ladder_section'))
+    yest_counts = _rows(ladder_sec.get('yesterday_board_counts')) or _rows(ladder_sec.get('summary'))
+    tier_pills = ' · '.join(
+        f'{_esc(str(x.get("board_height") or "—"))}:{int(x.get("count") if x.get("count") is not None else x.get("previous_n"))}'
+        for x in sorted(yest_counts, key=lambda item: -int(re.search(r"\d+", str(item.get("board_height") or "0")).group(0)))
+        if (x.get('count') is not None or x.get('previous_n') is not None)
+    )
+    ladder_rows = [r for r in _rows(ladder_sec.get('rows')) if 'ST' not in str(r.get('name') or '').upper()]
+    ladder_rows.sort(key=lambda r: (-(number(r.get('prior_streak')) or 0), -(number(r.get('close_pct')) or -999)))
+    high_chips = []
+    for r in ladder_rows[:10]:
+        c = number(r.get('close_pct'))
+        streak = number(r.get('prior_streak'))
+        streak_str = f'昨{int(streak)}板' if streak is not None and streak > 0 else '首板'
+        limit_pct = number(r.get('limit_pct'))
+        is_up_limit = (c is not None and (c >= (limit_pct - 0.5) if limit_pct else (c >= 19.5 or (9.5 <= c <= 10.6))))
+        if is_up_limit:
+            color, bg, tag = '#bb3541', '#fff0f0', '晋级'
+        elif c is not None and c >= 0:
+            color, bg, tag = '#bd6a20', '#fff4e5', '断板红盘'
+        elif c is not None:
+            color, bg, tag = '#16875b', '#eaf8ef', '断板水下'
+        else:
+            color, bg, tag = '#5c6d80', '#f2f5f8', '未知'
+        high_chips.append(chip(color, bg, f'{_display_name(r, 8)} · {streak_str} · {pct(c)} · {tag}', 'close-highboard'))
+
+    sections = (
+        f'<header style="background:#142c4a;color:white;padding:15px">'
+        f'<b style="font-size:20px">收盘复盘 · 全天定调</b><br>'
+        f'{_esc(trade_date)} · 收盘｜{_esc(regime)} · 竞价 {auction_med} → 收盘 {close_med}</header>'
+        f'<table width="100%" cellspacing="4"><tr>{card_html}</tr></table>'
+        f'<section data-section="close-plates" style="background:white;padding:12px 14px;margin:8px 0">'
+        f'<h2 style="margin:0 0 8px;font-size:16px">① 今日主线定调：🔥 抗跌/收强 Top 5</h2>'
+        f'{table(["进攻/抗跌主线", "成员", "竞价 → 收盘"], plate_rows, "close-plate-row")}'
+        f'<div style="margin-top:8px;padding:8px 10px;background:#eaf8ef;color:#16875b;border-radius:10px;font-size:13px">'
+        f'🩸 重灾失血：{bleeding_pills}</div></section>'
+        f'<section data-section="close-verification" style="background:white;padding:12px 14px;margin:8px 0">'
+        f'<h2 style="margin:0 0 8px;font-size:16px">② 全天兑现与核按钮</h2>'
+        f'<h3 style="margin:8px 0 6px;font-size:14px">🚀 日内最强兑现 / 修复 Top 5</h3>'
+        f'{table(["股票", "竞价 → 收盘", "Δ变化"], rebound_rows, "close-rebound-row")}'
+        f'<h3 style="margin:12px 0 6px;font-size:14px">⚠️ 日内回撤 / 砸盘避坑 Top 5</h3>'
+        f'{table(["股票", "竞价 → 收盘", "Δ回撤"], weak_rows, "close-weak-row")}'
+        + (f'<div style="margin-top:8px;font-size:12px;color:#53677e">新股/无涨跌幅限制：{unlimited_note}</div>' if unlimited_note else '')
+        + f'</section>'
+        f'<section data-section="close-ladder" style="background:white;padding:12px 14px;margin:8px 0">'
+        f'<h2 style="margin:0 0 6px;font-size:16px">③ 连板高标生死与明日锚点</h2>'
+        + (f'<div style="font-size:12px;color:#53677e;margin-bottom:6px">昨日梯队：{tier_pills}</div>' if tier_pills else '')
+        + f'{"".join(high_chips) or "<div>数据缺口：未生成</div>"}</section>'
+        f'<footer style="padding:8px 4px;color:#667085;font-size:11px">'
+        f'口径：涨停/跌停为收盘价代理；缺失显示“—”不补零；仅客观复盘，不构成买卖建议。</footer>'
+    )
+    plain = html.unescape(re.sub(r'<[^>]+>', ' ', sections))
+    return sections, re.sub(r'\s+', ' ', plain).strip()
+
+
 def render_email_board(report: Mapping[str, Any], stage: str, trade_date: str) -> tuple[str, str]:
     """Return a compact complete email HTML document and a matching text view."""
     stage_key = "close" if any(x in stage.lower() for x in ("close", "closing", "eod")) else "open" if "open" in stage.lower() else "auction"
     stage_label = {"close": "收盘", "open": "开盘", "auction": "竞价"}[stage_key]
+    if stage_key == "close":
+        body, plain = _render_close_v3_board(report, trade_date)
+        document = ('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+                    '<body style="margin:0;background:#f5f7fa"><div style="max-width:680px;margin:auto;color:#263445;font-family:-apple-system,\'PingFang SC\',\'Microsoft YaHei\',Arial,sans-serif;line-height:1.5">' + body + '</div></body></html>')
+        document = re.sub(r"(?<![#\da-fA-F])\d{6}(?!\d)", "", document)
+        plain = re.sub(r"(?<!\d)\d{6}(?!\d)", "", plain)
+        if len(document.encode("utf-8")) >= 30_000:
+            raise ValueError(f"rendered close email exceeds limit ({len(document.encode('utf-8'))} bytes)")
+        return document, plain
     if stage_key == "open":
         body, plain = _render_open_verification_board(report, trade_date)
         document = ('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>'

@@ -49,8 +49,8 @@ def test_close_board_puts_temperature_ladder_and_extremes_first_and_deduplicates
             {"symbol": "600001", "name": "甲股", "prior_streak": 2, "main_plate": "通信",
              "p0925_pct": 1.0, "p0945_pct": 4.0, "close_pct": 9.9,
              "auction_amount_yuan": 125000000, "limit_pct": 10, "high_pct": 10},
-            {"symbol": "600003", "name": "丙股", "prior_streak": 2, "p0925_pct": 2.0,
-             "p0945_pct": 5.0, "close_pct": 10.0, "auction_amount_yuan": 50000000}],
+            {"symbol": "600003", "name": "丙股", "prior_streak": 2, "main_plate": "通信",
+             "p0925_pct": 2.0, "p0945_pct": 5.0, "close_pct": 10.0, "auction_amount_yuan": 50000000}],
             "yesterday_board_counts": [{"board_height": "2板", "count": 3}],
             "summary": [{"board_height": "2板", "previous_n": 3, "promoted_n": 1}]},
         "big_meat": [{"symbol": "600001", "name": "甲股", "main_plate": "通信概念特别长名称",
@@ -71,21 +71,17 @@ def test_close_board_puts_temperature_ladder_and_extremes_first_and_deduplicates
         "a_to_b": [],
     }
     rendered, plain = render_email_board(report, "close", "2026-10-16")
-    assert rendered.index("情绪温度计") < rendered.index("连板梯队") < rendered.index("大肉")
-    assert "2板" in rendered and "1/3" in rendered
-    assert rendered.count("3板 昨3 晋1/3") == 1
-    assert "新股" in rendered and "无涨跌幅限制" in rendered
-    assert "看A做B：无合格A" in rendered
-    assert "趋势" in rendered and "▁" in rendered
-    assert "通信概念特别长名称" not in rendered
-    assert "所属板块" not in rendered and "竞价涨幅" not in rendered
-    assert "收盘变化÷板幅" not in rendered
-    assert "收盘中位" in plain
+    assert rendered.index("收盘复盘") < rendered.index("今日主线定调") < rendered.index("全天兑现与核按钮") < rendered.index("连板高标生死")
+    assert "2板:3" in rendered and "甲股" in rendered and "乙股" in rendered
+    assert "通信" in rendered and "芯片" in rendered
+    assert "收盘中位" in plain or "中位 -1.20%" in plain
+    assert "数据完整度与异常" not in rendered
+    assert "<details" not in rendered
     headers, cells = _cells(rendered)
     assert all(len(row) == len(set(row)) for row in headers)
-    assert all(sum("\u4e00" <= char <= "\u9fff" for char in cell) <= 14 for cell in cells)
     assert not any("\n" in cell or "[" in cell or "]" in cell for cell in cells)
-    assert rendered.count("<table") <= 12
+    assert rendered.count("<table") <= 6
+    assert len(rendered.encode("utf-8")) < 30_000
 
 
 def test_intraday_board_hides_close_fields_and_shows_missing_blocks():
@@ -178,9 +174,8 @@ def test_board_cells_are_single_line_short_and_email_limits_hold():
                             "p0945_pct": 2, "close_pct": 3}],
               "big_loss": []}
     rendered, _ = render_email_board(report, "close", "2026-10-16")
-    assert len(rendered.encode("utf-8")) <= 120 * 1024
-    assert rendered.count("<table") <= 12
-    assert "<br" not in rendered
+    assert len(rendered.encode("utf-8")) < 30 * 1024
+    assert rendered.count("<table") <= 6
     assert "<details" not in rendered
 
 
@@ -197,20 +192,19 @@ def test_ladder_descends_by_board_count_and_extremes_are_capped_at_eight_rows():
                            for i in range(12)],
               "big_loss": []}
     rendered, _ = render_email_board(report, "close", "2026-10-16")
-    ladder_text = rendered[rendered.index("连板梯队"):rendered.index("大肉 TOP8")]
-    assert ladder_text.index("5板") < ladder_text.index("4板") < ladder_text.index("3板") < ladder_text.index("2板") < ladder_text.index("1板")
-    assert "晋1/2" in ladder_text
+    ladder_text = rendered[rendered.index("连板高标生死"):]
+    assert ladder_text.index("昨4板") < ladder_text.index("昨3板") < ladder_text.index("昨2板") < ladder_text.index("昨1板")
+    assert "4板:2" in ladder_text and "2板:4" in ladder_text
     _, cells = _cells(rendered)
-    # The new fixed-cohort board is separate; the old post-close appendix displays Top5.
     assert sum(1 for cell in cells if cell.startswith("股") or "股" in cell) <= 5
     assert "股11" not in rendered
 
 
 def test_v6_shaped_close_report_renders_real_ladder_a_to_b_and_yesterday_performance():
-    # Small fixture copied from report.full.json in close-review-20261015-v6.
     report = {
         "trade_date": "2026-10-15",
-        "market": {"close_median": -3.0},
+        "market": {"close_median": -3.0, "amount_yuan": 1.2e12, "up_count": 1000, "down_count": 4000,
+                   "close_limit_up_count": 40, "close_limit_down_count": 20},
         "stocks": [
             {"symbol": "000530", "name": "冰山冷热", "in_yest_pool": True, "lb_days": 2,
              "limit_pct": 10, "auction_pct": 9.84, "p0925_pct": 9.84, "close_pct": 10,
@@ -218,27 +212,16 @@ def test_v6_shaped_close_report_renders_real_ladder_a_to_b_and_yesterday_perform
             {"symbol": "000668", "name": "荣丰控股", "in_yest_pool": True, "lb_days": 2,
              "limit_pct": 10, "auction_pct": -2, "p0925_pct": -2, "close_pct": -9.99,
              "high_pct": -1, "auction_amount_yuan": 5252500},
-            {"symbol": "300781", "name": "因赛集团", "in_yest_pool": False, "lb_days": 0,
-             "limit_pct": 20, "auction_pct": -2.18, "p0925_pct": -2.18,
-             "p0945_pct": -0.89, "close_pct": -4.80, "auction_amount_yuan": 4742500,
-             "main_plate": "外卖概念", "plates": ["外卖概念"], "prior_range_position20_pct": 79},
         ],
         "ladder_section": {"rows": [
             {"symbol": "000530", "name": "冰山冷热", "prior_streak": 2, "close_pct": 10},
+            {"symbol": "000668", "name": "荣丰控股", "prior_streak": 2, "close_pct": -9.99},
         ], "summary": [], "yesterday_board_counts": [{"board_height": "2板", "count": 2}]},
-        "a_to_b_status": "READY",
-        "a_to_b": [{"a_symbol": "000530", "a_name": "冰山冷热", "a_prior_streak": 2,
-                     "a_status": "昨日高标", "plate": "外卖概念", "plate_display": "外卖概念",
-                     "candidates": [{"symbol": "300781", "name": "因赛集团", "auction_pct": -2.18,
-                                     "auction_amount_yuan": 4742500, "position": "79%",
-                                     "p0945_pct": -0.89, "close_pct": -4.80}], "reason": None}],
     }
     rendered, plain = render_email_board(report, "close", "2026-10-15")
-    assert "晋1/2" in rendered
-    assert "0.1亿" in rendered
-    assert "高" in rendered
-    assert "昨板表现" in rendered and "红1/2" in rendered
-    assert "冰山冷热 昨2板" in rendered and "因赛集团" in rendered
+    assert "冰山冷热 · 昨2板 · +10.00% · 晋级" in rendered
+    assert "荣丰控股 · 昨2板 · -9.99% · 断板水下" in rendered
+    assert "2板:2" in rendered
     assert not any("—" * 3 in line for line in (rendered + "\n" + plain).splitlines())
     assert "—板" not in rendered and "—→—" not in rendered and "—亿" not in rendered
 
