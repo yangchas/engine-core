@@ -194,7 +194,7 @@ def _manifest(day: str, sample_time: datetime, rows: list[dict[str, Any]], *, pr
                     "partial": bool(quality.get("partial")), **dict(quality)},
         "field_units": {"symbol": "none", "date": "iso_date", "as_of": "iso_datetime",
                         "pct": "percent", "limit_price": "yuan", "seal_amount": "yuan",
-                        "open_count": "count", "first_limit_time": "local_time",
+                        "ask1_amount": "yuan", "open_count": "count", "first_limit_time": "local_time",
                         "final_limit_time": "local_time", "source_ts": "iso_datetime"},
         "source_dates": {provider: day},
         "source_asof": sample_time.isoformat(timespec="seconds"),

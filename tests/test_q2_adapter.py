@@ -810,3 +810,17 @@ def test_real_legacy_context_amount_mapping_keeps_q2_amount_semantics_and_source
             assert quote.auction_amount_yuan == row["legacy_context_auction_amount"]
         else:
             assert quote.auction_amount_yuan != row["legacy_context_auction_amount"]
+
+
+def test_realtime_book_amounts_from_c1574_ticks():
+    ticks = json.loads(Path('/home/exedev/fw/evidence/C1574/real_ticks.json').read_text())
+    specs = {spec.raw_name: spec for spec in Q2_FIELD_CONTRACT}
+    for key, canonical in [('b1a', 'bid1_amount_yuan'), ('a1a', 'ask1_amount_yuan')]:
+        assert (specs[key].canonical_name, specs[key].value_type, specs[key].unit, specs[key].required) == (canonical, 'int', 'yuan', False)
+    for record, expected in zip(ticks, [(641160600, 0), (14688, 372324)]):
+        row = record['rows'][0]
+        bid, ask = row[6] * row[8] // 10, row[7] * row[9] // 10
+        quote = normalize_q2(row[1], {'b1a': str(bid), 'a1a': str(ask)})
+        assert (quote.bid1_amount_yuan, quote.ask1_amount_yuan) == expected
+    old = normalize_q2('603960', {})
+    assert (old.bid1_amount_yuan, old.ask1_amount_yuan) == (None, None)

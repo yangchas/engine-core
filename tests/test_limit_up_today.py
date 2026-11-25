@@ -180,3 +180,20 @@ def test_today_sample_publishes_without_catalog(tmp_path, monkeypatch):
     assert reply['artifacts'] == []
     assert not (tmp_path / 'catalog.json').exists()
     assert not (tmp_path / 'limit_up_pool_today').exists()
+
+
+def test_realtime_seal_status_from_c1574_tick():
+    record = json.loads(Path('/home/exedev/fw/evidence/C1574/real_ticks.json').read_text())[0]['rows'][0]
+    timestamp = int(datetime.fromisoformat(record[0] + '+08:00').timestamp() * 1000)
+    base = {'px': str(record[2]), 'pc': str(record[3]), 'ts': str(timestamp), 'br': '641160600'}
+    def row(extra):
+        return runner.core.build_redis_pool('2026-11-25', '2026-11-25T09:36:00+08:00', [record[1]], {record[1]: {**base, **extra}})['rows'][0]
+    sealed = row({'b1a': str(record[6] * record[8] // 10), 'a1a': str(record[7] * record[9] // 10)})
+    assert (sealed['seal_amount'], sealed['ask1_amount'], sealed['seal_status']) == (641160600.0, 0.0, 'SEALED')
+    opened = row({'b1a': '9300000', 'a1a': '223200'})
+    assert (opened['seal_amount'], opened['ask1_amount'], opened['seal_status']) == (0.0, 223200.0, 'OPEN_RISK')
+    empty = row({'b1a': '0', 'a1a': '0'})
+    assert (empty['seal_amount'], empty['ask1_amount'], empty['seal_status']) == (0.0, 0.0, 'EMPTY_BOOK')
+    for extra in ({}, {'b1a': '1'}, {'b1a': '-1', 'a1a': '0'}, {'b1a': '1.5', 'a1a': '0'}, {'b1a': 'bad', 'a1a': '0'}):
+        old = row(extra)
+        assert (old['seal_amount'], old.get('ask1_amount'), old.get('seal_status')) == (None, None, None)
