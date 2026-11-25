@@ -71,9 +71,9 @@ def test_close_board_puts_temperature_ladder_and_extremes_first_and_deduplicates
         "a_to_b": [],
     }
     rendered, plain = render_email_board(report, "close", "2026-10-16")
-    assert rendered.index("收盘复盘") < rendered.index("今日主线定调") < rendered.index("全天兑现与核按钮") < rendered.index("连板高标生死")
-    assert "2板:3" in rendered and "甲股" in rendered and "乙股" in rendered
-    assert "通信" in rendered and "芯片" in rendered
+    assert rendered.index("收盘复盘") < rendered.index("今日主线定调") < rendered.index("全天兑现与核按钮") < rendered.index("连板高标二维矩阵")
+    assert 'data-matrix="ladder-2d"' in rendered
+    assert "主线题材" in rendered and "通信" in rendered and "甲股" in rendered and "乙股" in rendered
     assert "收盘中位" in plain or "中位 -1.20%" in plain
     assert "数据完整度与异常" not in rendered
     assert "<details" not in rendered
@@ -192,11 +192,11 @@ def test_ladder_descends_by_board_count_and_extremes_are_capped_at_eight_rows():
                            for i in range(12)],
               "big_loss": []}
     rendered, _ = render_email_board(report, "close", "2026-10-16")
-    ladder_text = rendered[rendered.index("连板高标生死"):]
-    assert ladder_text.index("昨4板") < ladder_text.index("昨3板") < ladder_text.index("昨2板") < ladder_text.index("昨1板")
-    assert "4板:2" in ladder_text and "2板:4" in ladder_text
+    ladder_text = rendered[rendered.index("连板高标二维矩阵"):]
+    assert 'data-matrix="ladder-2d"' in ladder_text
+    assert ladder_text.index("更高(昨≥4板)") < ladder_text.index("4板(昨3板)") < ladder_text.index("3板(昨2板)") < ladder_text.index("2板(昨1板)")
     _, cells = _cells(rendered)
-    assert sum(1 for cell in cells if cell.startswith("股") or "股" in cell) <= 5
+    assert sum(1 for cell in cells if cell.startswith("股") and "→" not in cell and "%" not in cell) <= 5
     assert "股11" not in rendered
 
 
@@ -214,14 +214,15 @@ def test_v6_shaped_close_report_renders_real_ladder_a_to_b_and_yesterday_perform
              "high_pct": -1, "auction_amount_yuan": 5252500},
         ],
         "ladder_section": {"rows": [
-            {"symbol": "000530", "name": "冰山冷热", "prior_streak": 2, "close_pct": 10},
-            {"symbol": "000668", "name": "荣丰控股", "prior_streak": 2, "close_pct": -9.99},
+            {"symbol": "000530", "name": "冰山冷热", "prior_streak": 2, "close_pct": 10, "main_plate": "冷链"},
+            {"symbol": "000668", "name": "荣丰控股", "prior_streak": 2, "close_pct": -9.99, "main_plate": "地产"},
         ], "summary": [], "yesterday_board_counts": [{"board_height": "2板", "count": 2}]},
     }
     rendered, plain = render_email_board(report, "close", "2026-10-15")
-    assert "冰山冷热 · 昨2板 · +10.00% · 晋级" in rendered
-    assert "荣丰控股 · 昨2板 · -9.99% · 断板水下" in rendered
-    assert "2板:2" in rendered
+    assert 'data-matrix="ladder-2d"' in rendered
+    assert "冰山冷热" in rendered and "+10.00%" in rendered and "冷链" in rendered
+    assert "荣丰控股" in rendered and "-9.99%" in rendered and "地产" in rendered
+    assert "1/2" in rendered and "50%" in rendered
     assert not any("—" * 3 in line for line in (rendered + "\n" + plain).splitlines())
     assert "—板" not in rendered and "—→—" not in rendered and "—亿" not in rendered
 

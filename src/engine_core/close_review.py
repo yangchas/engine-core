@@ -85,6 +85,16 @@ def attach_close_sections(data: dict[str, Any], *, relation_asof: str = "UNKNOWN
             row = dict(by_symbol[symbol])
             rows.append(row)
             existing.add(symbol)
+    if relations:
+        for row in rows:
+            if not row.get("main_plate"):
+                sym = str(row.get("symbol", row.get("code", ""))).zfill(6)
+                cands = relations.get(sym) or ()
+                chosen = select_main_plate(cands, plate_metadata) if cands else None
+                if chosen:
+                    row["main_plate"] = chosen
+                elif cands:
+                    row["main_plate"] = str(cands[0])
     data["ladder_section"] = build_ladder_section(
         rows, stage="close", asof=asof, frequencies=path_frequencies,
         summary=ladder_summary, market_stocks=stocks)

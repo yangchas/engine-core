@@ -1652,29 +1652,104 @@ def _render_close_v3_board(report: Mapping[str, Any], trade_date: str) -> tuple[
 
     ladder_sec = mapping(report.get('ladder_section'))
     yest_counts = _rows(ladder_sec.get('yesterday_board_counts')) or _rows(ladder_sec.get('summary'))
-    tier_pills = ' · '.join(
-        f'{_esc(str(x.get("board_height") or "—"))}:{int(x.get("count") if x.get("count") is not None else x.get("previous_n"))}'
-        for x in sorted(yest_counts, key=lambda item: -int(re.search(r"\d+", str(item.get("board_height") or "0")).group(0)))
-        if (x.get('count') is not None or x.get('previous_n') is not None)
-    )
     ladder_rows = [r for r in _rows(ladder_sec.get('rows')) if 'ST' not in str(r.get('name') or '').upper()]
-    ladder_rows.sort(key=lambda r: (-(number(r.get('prior_streak')) or 0), -(number(r.get('close_pct')) or -999)))
-    high_chips = []
-    for r in ladder_rows[:10]:
-        c = number(r.get('close_pct'))
-        streak = number(r.get('prior_streak'))
-        streak_str = f'昨{int(streak)}板' if streak is not None and streak > 0 else '首板'
-        limit_pct = number(r.get('limit_pct'))
-        is_up_limit = (c is not None and (c >= (limit_pct - 0.5) if limit_pct else (c >= 19.5 or (9.5 <= c <= 10.6))))
-        if is_up_limit:
-            color, bg, tag = '#bb3541', '#fff0f0', '晋级'
-        elif c is not None and c >= 0:
-            color, bg, tag = '#bd6a20', '#fff4e5', '断板红盘'
-        elif c is not None:
-            color, bg, tag = '#16875b', '#eaf8ef', '断板水下'
-        else:
-            color, bg, tag = '#5c6d80', '#f2f5f8', '未知'
-        high_chips.append(chip(color, bg, f'{_display_name(r, 8)} · {streak_str} · {pct(c)} · {tag}', 'close-highboard'))
+    from .auction_theme_buckets import normalize_theme_label
+
+    def _is_promoted(row: Mapping[str, Any]) -> bool:
+        c = number(row.get('close_pct'))
+        if c is None:
+            return False
+        limit_pct = number(row.get('limit_pct'))
+        if limit_pct:
+            return c >= limit_pct - 0.5
+        return c >= 19.5 or (9.5 <= c <= 10.6)
+
+    def _streak_level(row: Mapping[str, Any]) -> int:
+        s = number(row.get('prior_streak'))
+        return int(s) if s is not None and s > 0 else 0
+
+    col_defs = [
+        ('更高(昨≥4板)', lambda lvl: lvl >= 4),
+        ('4板(昨3板)', lambda lvl: lvl == 3),
+        ('3板(昨2板)', lambda lvl: lvl == 2),
+        ('2板(昨1板)', lambda lvl: lvl == 1),
+    ]
+    # Per-tier promotion rate strip
+    tier_stats = []
+    for label, pred in col_defs:
+        bucket = [r for r in ladder_rows if pred(_streak_level(r))]
+        if not bucket:
+            continue
+        prom = sum(1 for r in bucket if _is_promoted(r))
+        rate = f'{prom / len(bucket) * 100:.0f}%'
+        tier_stats.append(f'{label.split("(")[1].rstrip(")")} <b style="color:{"#bb3541" if prom else "#53677e"}">{prom}/{len(bucket)}</b> ({rate})')
+    if not tier_stats and yest_counts:
+        tier_stats = [
+            f'{_esc(str(x.get("board_height") or "—"))}:{int(x.get("count") if x.get("count") is not None else x.get("previous_n"))}'
+            for x in sorted(yest_counts, key=lambda item: -int(re.search(r"\d+", str(item.get("board_height") or "0")).group(0)))
+            if (x.get('count') is not None or x.get('previous_n') is not None)
+        ]
+
+    # Group ladder rows by canonical theme for 2D matrix (Theme x Board Height)
+    theme_groups: dict[str, list[Mapping[str, Any]]] = {}
+    for r in ladder_rows:
+        lvl = _streak_level(r)
+        if lvl < 1:
+            continue
+        raw_theme = str(r.get('primary_reason') or r.get('main_plate') or '').strip()
+        theme = normalize_theme_label(raw_theme) if raw_theme else ''
+        theme = theme or '未归类'
+        theme_groups.setdefault(theme, []).append(r)
+
+    ordered_themes = sorted(
+        theme_groups.items(),
+        key=lambda g: (
+            g[0] == '未归类',
+            -sum(1 for r in g[1] if _is_promoted(r)),
+            -max((_streak_level(r) for r in g[1]), default=0),
+            -len(g[1]),
+            g[0],
+        ),
+    )
+    chosen_themes, omitted_themes = ordered_themes[:8], ordered_themes[8:]
+    if omitted_themes:
+        other_rows = [r for _, rs in omitted_themes for r in rs]
+        chosen_themes.append(('其他题材', other_rows))
+
+    if chosen_themes:
+        m_headers = ['主线题材', *[lbl for lbl, _ in col_defs]]
+        th_html = ''.join(f'<th style="text-align:left;padding:6px 5px;background:#edf3fa;border:1px solid #dde5ef;font-size:12px">{_esc(h)}</th>' for h in m_headers)
+        tr_list = [f'<tr>{th_html}</tr>']
+        for theme_name, items in chosen_themes:
+            cells_html = [f'<td style="vertical-align:top;padding:6px 5px;border:1px solid #e8edf4;font-weight:700;font-size:12px;background:#fafbfd">{_esc(theme_name)}</td>']
+            for _, pred in col_defs:
+                cell_items = [r for r in items if pred(_streak_level(r))]
+                cell_items.sort(key=lambda r: (not _is_promoted(r), -(number(r.get('close_pct')) or -999)))
+                visible, hidden = cell_items[:4], cell_items[4:]
+                cards_in_cell = []
+                for r in visible:
+                    c = number(r.get('close_pct'))
+                    if _is_promoted(r):
+                        color, bg = '#bb3541', '#fff0f0'
+                    elif c is not None and c >= 0:
+                        color, bg = '#bd6a20', '#fff4e5'
+                    elif c is not None:
+                        color, bg = '#16875b', '#eaf8ef'
+                    else:
+                        color, bg = '#5c6d80', '#f2f5f8'
+                    cards_in_cell.append(
+                        f'<div data-item="close-highboard" style="background:{bg};border-left:3px solid {color};padding:3px 5px;margin:2px 0;font-size:12px;line-height:1.3">'
+                        f'<b style="color:#263445">{_esc(_display_name(r, 6))}</b><br>'
+                        f'<span style="color:{color};font-weight:700">{pct(c)}</span></div>'
+                    )
+                if hidden:
+                    prom_h = sum(1 for r in hidden if _is_promoted(r))
+                    cards_in_cell.append(f'<div style="font-size:11px;color:#667085">+{len(hidden)}只(晋{prom_h})</div>')
+                cells_html.append('<td style="vertical-align:top;padding:4px;border:1px solid #e8edf4">' + (''.join(cards_in_cell) or '<span style="color:#cbd5e1">—</span>') + '</td>')
+            tr_list.append(f'<tr data-theme="{_esc(theme_name)}">{"".join(cells_html)}</tr>')
+        ladder_matrix_html = f'<table data-matrix="ladder-2d" width="100%" cellspacing="0" style="table-layout:fixed;border-collapse:collapse;font-size:12px">{"".join(tr_list)}</table>'
+    else:
+        ladder_matrix_html = '<div>数据缺口：未生成</div>'
 
     sections = (
         f'<header style="background:#142c4a;color:white;padding:15px">'
@@ -1695,9 +1770,9 @@ def _render_close_v3_board(report: Mapping[str, Any], trade_date: str) -> tuple[
         + (f'<div style="margin-top:8px;font-size:12px;color:#53677e">新股/无涨跌幅限制：{unlimited_note}</div>' if unlimited_note else '')
         + f'</section>'
         f'<section data-section="close-ladder" style="background:white;padding:12px 14px;margin:8px 0">'
-        f'<h2 style="margin:0 0 6px;font-size:16px">③ 连板高标生死与明日锚点</h2>'
-        + (f'<div style="font-size:12px;color:#53677e;margin-bottom:6px">昨日梯队：{tier_pills}</div>' if tier_pills else '')
-        + f'{"".join(high_chips) or "<div>数据缺口：未生成</div>"}</section>'
+        f'<h2 style="margin:0 0 6px;font-size:16px">③ 连板高标二维矩阵（主线 × 板高）</h2>'
+        + (f'<div style="font-size:12px;color:#53677e;margin-bottom:8px">晋级率：{" ｜ ".join(tier_stats)}</div>' if tier_stats else '')
+        + f'{ladder_matrix_html}</section>'
         f'<footer style="padding:8px 4px;color:#667085;font-size:11px">'
         f'口径：涨停/跌停为收盘价代理；缺失显示“—”不补零；仅客观复盘，不构成买卖建议。</footer>'
     )

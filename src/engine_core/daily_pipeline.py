@@ -2763,6 +2763,25 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 except (AttributeError, TypeError, ValueError):
                     continue
             _enrich_close_checkpoints(fact_stocks, root, trade_date, degraded, close_report_asof)
+            if auction_ref and (auction_ref.parent / "auction_panorama.json").is_file():
+                ap_doc = _read_optional_json(auction_ref.parent / "auction_panorama.json", degraded, "AUCTION_PANORAMA")
+                ap_pan = ap_doc.get("panorama") if isinstance(ap_doc, Mapping) else None
+                if isinstance(ap_pan, Mapping):
+                    reason_by_sym: dict[str, str] = {}
+                    for layer in ap_pan.get("yesterday_ladder") or ():
+                        if not isinstance(layer, Mapping):
+                            continue
+                        for bucket in layer.get("buckets") or ():
+                            if not isinstance(bucket, Mapping):
+                                continue
+                            for st in bucket.get("stocks") or ():
+                                if isinstance(st, Mapping) and st.get("symbol") and st.get("primary_reason"):
+                                    reason_by_sym[str(st["symbol"]).zfill(6)] = str(st["primary_reason"]).strip()
+                    if reason_by_sym:
+                        for row in fact_stocks:
+                            sym = str(row.get("symbol") or "").zfill(6)
+                            if sym in reason_by_sym and not row.get("main_plate"):
+                                row["main_plate"] = reason_by_sym[sym]
             close_plate_names = sorted({str(name) for row in fact_stocks for name in
                                         (row.get("plates") or ([row["main_plate"]] if row.get("main_plate") else [])) if name})
             for row in fact_stocks:
