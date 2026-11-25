@@ -1142,3 +1142,55 @@ def test_close_inputs_td_pit_guards(monkeypatch):
     assert not daily_calls and not rows
     assert manifest["datasets"]["daily_kline"]["status"] == "MISSING"
     assert manifest["datasets"]["plate_members"]["status"] == "MISSING"
+
+
+def test_close_inputs_names_and_checkpoints_from_real_open_report(tmp_path, monkeypatch):
+    from pathlib import Path
+    import pytest
+    from engine_core.daily_pipeline import load_close_catalog_inputs
+    from engine_core.data_pipeline import limit_pool_hot_view
+    import engine_core.daily_pipeline as pipeline
+
+    path = Path('/home/exedev/core-data/reports/2026-11-25/open_0945/report.json')
+    if not path.is_file():
+        pytest.skip('real report unavailable')
+    item = next(r for r in json.loads(path.read_text())['chapters']['emerging']
+                if r.get('0932') is not None and r.get('0945') is not None)
+    symbol = item['symbol']
+    bar = {'symbol': symbol, 'date': '2026-11-25'}
+    facts = [{'symbol': symbol, 'p0932_pct': item['0932'], 'p0945_pct': item['0945']}]
+    manifest_path = tmp_path / 'facts.json'
+    manifest_path.write_text(json.dumps({'trade_date': '2026-11-25', 'available_at': '2026-11-25T10:00:00+08:00'}))
+    class Catalog:
+        def locate(self, dataset, day): return manifest_path if dataset == 'stock_day_facts' else None
+        def read_rows(self, path): return facts
+    monkeypatch.setattr(pipeline, '_td_close_daily_kline', lambda *args: ([bar], {'status': 'READY'}))
+    monkeypatch.setattr(pipeline, '_td_close_plate_members', lambda *args: None)
+    monkeypatch.setattr(limit_pool_hot_view, 'read', lambda *args: ([], {'status': 'MISSING'}))
+    rows, _ = load_close_catalog_inputs(Catalog(), '2026-11-25', None,
+                                        stock_names={symbol: item['name']})
+    assert rows[0]['name'] == item['name']
+    assert rows[0]['p0932_pct'] == item['0932']
+    assert rows[0]['p0945_pct'] == item['0945']
+
+
+def test_close_report_wiring_with_real_open_reports():
+    from pathlib import Path
+    import pytest
+    from engine_core.daily_pipeline import _enrich_close_checkpoints, _previous_report
+    from engine_core.close_review import derive_close_review
+
+    root = Path('/home/exedev/core-data/reports')
+    current_path = root / '2026-11-25/open_0945/report.json'
+    previous_path = _previous_report(root, '2026-11-25', ('open_0946', 'close_review'))
+    if not current_path.is_file() or not previous_path:
+        pytest.skip('real reports unavailable')
+    current = json.loads(current_path.read_text())
+    previous = json.loads(previous_path.read_text())
+    original = current['chapters']['emerging'][0]
+    rows = [{'symbol': original['symbol'], 'name': original['name']}]
+    _enrich_close_checkpoints(rows, root, '2026-11-25', [])
+    assert rows[0]['p0945_pct'] == original['0945']
+    report = derive_close_review(rows, trade_date='2026-11-25', live_report=current, prev_live=previous)
+    assert report['missed_opportunities']['status'] == 'READY'
+    assert report['yesterday_review']['status'] == 'READY'

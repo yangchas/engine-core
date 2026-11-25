@@ -831,6 +831,80 @@ def _latest_report(root: Path, trade_date: str, stage: str) -> Path | None:
     return max(existing, key=lambda path: path.stat().st_mtime_ns) if existing else None
 
 
+def _enrich_close_checkpoints(rows: list[dict[str, Any]], root: Path, trade_date: str,
+                              degraded: list[str], asof: datetime | None = None) -> None:
+    by_symbol = {row["symbol"]: row for row in rows}
+    def visit(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                visit(item)
+        elif isinstance(node, Mapping):
+            symbol = str(node.get("symbol") or node.get("code") or "").zfill(6)
+            target = by_symbol.get(symbol)
+            if target is not None:
+                tracking = node.get("tracking") if isinstance(node.get("tracking"), Mapping) else {}
+                for tag in ("0932", "0935", "0940", "0945"):
+                    value = node.get(f"p{tag}_pct")
+                    if not isinstance(value, (int, float)):
+                        value = node.get(tag)
+                    if not isinstance(value, (int, float)):
+                        value = tracking.get(f"{tag}_pct")
+                    if target.get(f"p{tag}_pct") is None and isinstance(value, (int, float)):
+                        target[f"p{tag}_pct"] = value
+            for value in node.values():
+                if isinstance(value, (list, Mapping)):
+                    visit(value)
+    for tag in ("0932", "0935", "0940", "0945"):
+        path = root / trade_date / f"open_{tag}" / "report.json"
+        if path.is_file():
+            report = _read_optional_json(path, degraded, "OPEN_CHECKPOINT")
+            if isinstance(report, Mapping):
+                chapters = report.get("chapters", {})
+                if isinstance(chapters, Mapping):
+                    for key in ("extremes_board", "emerging", "yesterday_highboards"):
+                        visit(chapters.get(key))
+
+
+def _close_hot_snapshots(redis_client: Any, trade_date: str,
+                         asof: datetime | None) -> list[dict[str, Any]] | None:
+    if redis_client is None:
+        return None
+    snapshots = []
+    try:
+        for key in redis_client.scan_iter(match=f"core:cache:data:hot_plates:{trade_date}:*", count=200):
+            raw = redis_client.get(key)
+            if not raw:
+                continue
+            payload = json.loads(raw)
+            if not isinstance(payload, Mapping) or payload.get("trade_date") != trade_date:
+                continue
+            captured = payload.get("captured_at")
+            available = payload.get("available_at")
+            if not captured or not available:
+                continue
+            cutoff = asof or datetime.fromisoformat(f"{trade_date}T17:40:00+08:00")
+            if cutoff.tzinfo is None:
+                cutoff = cutoff.replace(tzinfo=TZ)
+            available_at = datetime.fromisoformat(str(available))
+            if available_at.tzinfo is None:
+                continue
+            if available_at > cutoff:
+                continue
+            source_rows = payload.get("rows")
+            if not isinstance(source_rows, list):
+                continue
+            snapshots.append({"tag": str(captured), "rows": [
+                {**row, "code": row.get("plate_code") or row.get("code"),
+                 "net_yuan": (row.get("net_yuan") if row.get("net_yuan") is not None else
+                              (row["raw_fields"][8] if isinstance(row.get("raw_fields"), list)
+                               and len(row["raw_fields"]) > 8
+                               and isinstance(row["raw_fields"][8], (int, float)) else None))}
+                for row in source_rows if isinstance(row, Mapping)]})
+    except Exception:
+        return None
+    return sorted(snapshots, key=lambda item: item["tag"]) or None
+
+
 def _previous_report(root: Path, trade_date: str, stages: tuple[str, ...]) -> Path | None:
     candidates: list[tuple[str, Path]] = []
     if not root.exists():
@@ -933,7 +1007,8 @@ def _td_close_plate_members(source_date: str, cutoff: datetime) -> tuple[list[di
 
 def load_close_catalog_inputs(catalog: Any, trade_date: str,
                               prior_trade_date: str | None, *, asof: str | None = None,
-                              basis: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                              basis: str | None = None,
+                              stock_names: Mapping[str, str] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Read the date-pinned Core close artifacts and normalize their available fields."""
     basis = basis or ("POSTHOC_REVIEW" if os.getenv("POSTHOC_DEV") == "1" else "LIVE_PIT")
     if basis not in {"LIVE_PIT", "POSTHOC_REVIEW"}:
@@ -1072,6 +1147,11 @@ def load_close_catalog_inputs(catalog: Any, trade_date: str,
         themes = [str(item.get("name")) for item in secondary if isinstance(item, Mapping) and item.get("name")]
         if primary.get("name"):
             themes.insert(0, str(primary["name"]))
+        fact_plates = fact.get("plates")
+        if isinstance(fact_plates, list):
+            themes.extend(str(name) for name in fact_plates if name)
+        if fact.get("main_plate"):
+            themes.insert(0, str(fact["main_plate"]))
         themes.extend(sorted(member_labels.get(symbol, set())))
         def first_value(*values: Any) -> Any:
             return next((value for value in values if value is not None), None)
@@ -1081,7 +1161,8 @@ def load_close_catalog_inputs(catalog: Any, trade_date: str,
         high = bar.get("high")
         low = bar.get("low")
         normalized.append({
-            "symbol": symbol, "name": auc.get("name") or "名称未知", "open": bar.get("open"),
+            **{f"p{tag}_{suffix}": fact.get(f"p{tag}_{suffix}") for tag in ("0932", "0935", "0940", "0945") for suffix in ("pct", "amount_yuan", "cumulative_amount_yuan")},
+            "symbol": symbol, "name": next((name for name in ((stock_names or {}).get(symbol), auc.get("name"), bar.get("name"), fact.get("name"), previous.get("name")) if name and name != "名称未知"), "名称未知"), "open": bar.get("open"),
             "high": high, "low": low, "close": close, "pre_close": pre_close,
             "close_pct": pct,
             "high_pct": ((high / pre_close - 1) * 100 if isinstance(high, (int, float))
@@ -1098,7 +1179,7 @@ def load_close_catalog_inputs(catalog: Any, trade_date: str,
             "in_yest_pool": (bool(previous) if provenance.get("limit_up_pool", {}).get("status") == "READY" else None),
             "lb_days": previous.get("lb_days"),
             "yesterday_limit_up": (bool(previous) if provenance.get("limit_up_pool", {}).get("status") == "READY" else None), "yesterday_lb_days": previous.get("lb_days"),
-            "main_plate": primary.get("name"), "plates": list(dict.fromkeys(themes)),
+            "main_plate": primary.get("name") or fact.get("main_plate"), "plates": list(dict.fromkeys(themes)),
             "daily_source": ("TDENGINE:core_data.daily_kline_v1" if provenance.get("daily_kline", {}).get("storage_source") == "tdengine" else "CORE_CATALOG:daily_kline"), "checkpoint_status": "MISSING",
         })
 
@@ -2544,7 +2625,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             close_catalog_rows, close_catalog_manifest = load_close_catalog_inputs(
                 ArtifactCatalog(core_root), trade_date, prior_candidates[-1] if prior_candidates else None,
                 asof=close_report_asof.isoformat() if close_report_asof else f"{trade_date}T17:40:00+08:00",
-                basis=close_basis)
+                basis=close_basis, stock_names=stock_names)
             close_catalog_ready = bool(close_catalog_rows)
             out.mkdir(parents=True, exist_ok=False)
             for dataset, dataset_info in close_catalog_manifest.get("datasets", {}).items():
@@ -2592,7 +2673,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             degraded.append("MISSING_DAILY_KLINE: need TD daily_kline or a local same-date capture")
         elif td_daily_error:
             degraded.append(f"DAILY_KLINE_FALLBACK_LOCAL:{td_daily_error}")
-        prev_path = None if stage == "close" else _previous_report(Path(refs.get("prev_reports_root") or root), trade_date,
+        prev_path = _previous_report(Path(refs.get("prev_reports_root") or root), trade_date,
+                                     (STAGE_NAMES["open"], STAGE_NAMES["close"]) if stage == "close" else
                                      (STAGE_NAMES["close"], STAGE_NAMES["open"]))
         if close_catalog_ready:
             fact_stocks = close_catalog_rows
@@ -2600,10 +2682,34 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             fact_rows = [{"symbol": row["symbol"], "yesterday_limit_up": row["in_yest_pool"],
                           "yesterday_lb_days": row["lb_days"]} for row in fact_stocks]
             amounts = [row["amount_yuan"] for row in fact_stocks if isinstance(row.get("amount_yuan"), (int, float))]
-            live_path = None
+            live = None
+            cutoff = close_report_asof or datetime.fromisoformat(f"{trade_date}T17:40:00+08:00")
+            if cutoff.tzinfo is None:
+                cutoff = cutoff.replace(tzinfo=TZ)
+            for name in ("open_0945", "open_0940", "open_0935", "open_0932", STAGE_NAMES["open"]):
+                live_path = root / trade_date / name / "report.json"
+                if not live_path.is_file():
+                    continue
+                candidate = _read_optional_json(live_path, degraded, "SAME_DAY_REPORT")
+                try:
+                    observed = datetime.fromisoformat(str(candidate.get("asof")))
+                    if observed.tzinfo is None:
+                        observed = observed.replace(tzinfo=TZ)
+                    if candidate.get("trade_date") == trade_date and observed <= cutoff:
+                        live = candidate
+                        break
+                except (AttributeError, TypeError, ValueError):
+                    continue
+            _enrich_close_checkpoints(fact_stocks, root, trade_date, degraded, close_report_asof)
+            plate_names = sorted({str(name) for row in fact_stocks for name in
+                                  (row.get("plates") or ([row["main_plate"]] if row.get("main_plate") else [])) if name})
+            for row in fact_stocks:
+                if not row.get("plates") and row.get("main_plate"):
+                    row["plates"] = [row["main_plate"]]
+            snapshots = _close_hot_snapshots(src.redis, trade_date, close_report_asof)
             data = derive_close_review(fact_stocks, trade_date=trade_date,
-                live_report=_read_optional_json(live_path, degraded, "SAME_DAY_REPORT")
-                    if live_path and live_path.is_file() else None,
+                live_report=live,
+                plates=[{"name": name} for name in plate_names], kaipan_snapshots=snapshots,
                 prev_live=_read_optional_json(prev_path, degraded, "PREVIOUS_REPORT")
                     if prev_path and prev_path.is_file() else None,
                 market={"amount_yuan": sum(amounts) if amounts else None,
@@ -2618,9 +2724,9 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             data["data_quality"]["baostock_source_unavailable"] = sorted(
                 str(symbol).zfill(6) for symbol, category in known_missing.items()
                 if category == "SOURCE_UNAVAILABLE") if isinstance(known_missing, Mapping) else []
-            data["data_quality"]["checkpoints"] = "MISSING; close market statistics remain available"
+            data["data_quality"]["checkpoints"] = {tag: "READY" if any(r.get(f"p{tag}_pct") is not None for r in fact_stocks) else "MISSING" for tag in ("0932", "0935", "0940", "0945")}
             close_manifest = close_catalog_manifest
-            if close_catalog_manifest.get("field_coverage", {}).get("p0932_pct", {}).get("valid_n", 0) == 0:
+            if not any(r.get(f"p{tag}_pct") is not None for r in fact_stocks for tag in ("0932", "0935", "0940", "0945")):
                 degraded.append("MISSING_CLOSE_CHECKPOINTS:0932-0945")
             markdown = render_close_markdown(data)
             page = render_close_html(data, markdown)
