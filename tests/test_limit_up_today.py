@@ -197,3 +197,24 @@ def test_realtime_seal_status_from_c1574_tick():
     for extra in ({}, {'b1a': '1'}, {'b1a': '-1', 'a1a': '0'}, {'b1a': '1.5', 'a1a': '0'}, {'b1a': 'bad', 'a1a': '0'}):
         old = row(extra)
         assert (old['seal_amount'], old.get('ask1_amount'), old.get('seal_status')) == (None, None, None)
+
+
+def test_degrade_requested_falls_back_to_recorded_wencai(tmp_path):
+    from unittest.mock import Mock
+    from engine_core.data_pipeline.providers.limit_up_today_sources import SourceUnavailable
+    rows = json.loads((Path(__file__).parent / 'fixtures/real/wencai_limit_up_pool_today_2026-10-28_0702.json').read_text())
+    now = datetime.fromisoformat('2026-10-28T10:30:00+08:00')
+    def unavailable(_):
+        raise SourceUnavailable('Q2 unavailable')
+    fetch = Mock(return_value={'records': rows, 'reported_total': len(rows), 'complete': True, 'truncated': False})
+    state = Mock()
+    state.claim.return_value = True
+    deps = runner.TodayDeps(redis_snapshot=unavailable, wencai_snapshot=fetch, clock=lambda: now,
+                            state=state, publish_hot=lambda *_: {'status': 'offline_replay'})
+    request = {'data_date': '2026-10-28', 'as_of': now.isoformat(),
+               'args': {'tier': 'redis', 'failure_fallback': 'none'}}
+    code, reply = runner.run({**request, 'degrade_requested': False}, tmp_path, deps=deps)
+    assert code == 75 and not fetch.called
+    code, reply = runner.run({**request, 'degrade_requested': True}, tmp_path, deps=deps)
+    assert code in (0, 10) and reply['detail']['row_count'] > 0
+    assert fetch.call_count == 1
