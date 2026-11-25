@@ -34,10 +34,10 @@ def test_degraded_reason_paths_are_not_rendered(monkeypatch):
     from engine_core import auction_panorama_view
 
     captured = {}
-    def fake_digest(panorama, quickbrief, *, completeness, degraded_note):
-        captured["note"] = degraded_note
-        return "<html>ok</html>", "ok"
-    monkeypatch.setattr(auction_panorama_view, "render_auction_email_digest", fake_digest)
+    def fake_panorama(panorama):
+        captured["panorama"] = panorama
+        return "<html><body>ok</body></html>", "ok"
+    monkeypatch.setattr(auction_panorama_view, "render_auction_panorama", fake_panorama)
     paths = ["/home/exedev/private/input.csv", "/tmp/private/input.csv",
              "C:\\Users\\alice\\secret.csv"]
     for path in paths:
@@ -46,8 +46,9 @@ def test_degraded_reason_paths_are_not_rendered(monkeypatch):
             "auction_quickbrief": {"email_lines": ["09:26 竞价速览"]}},
             "auction", "2026-10-16", manifest={"slices": {
                 "private_input": {"status": "DEGRADED", "reason": path}}})
-        assert path not in html + plain + captured["note"]
-        assert "V6_PANORAMA_MISSING:INTERNAL_ERROR" in captured["note"]
+        assert path not in html + plain
+        assert "V6_PANORAMA_MISSING:INTERNAL_ERROR" in html and "V6_PANORAMA_MISSING:INTERNAL_ERROR" in plain
+        assert captured["panorama"]["quickbrief"]["email_lines"] == ["09:26 竞价速览"]
 
 
 def test_auction_email_uses_quickbrief_card_and_curated_evidence_tables():
@@ -109,7 +110,9 @@ def test_auction_email_uses_quickbrief_card_and_curated_evidence_tables():
                 "auction_amount_yuan": 30000000, "median_pct": 1.0,
                 "stocks": [{"name": "首板甲", "pct_change": .5}, {"name": "首板乙", "pct_change": 1.5}]}]}]},
         "manifest": {}}
-    html, plain = render_email_html(report, "auction_0926", "2026-10-16")
+    from engine_core.auction_panorama_view import render_auction_email_digest
+    product = report["auction_panorama"]
+    html, plain = render_auction_email_digest(product, product["quickbrief"], completeness="READY", degraded_note="")
     assert "速览卡" in html and "题材横向对比" in html and "接力意愿" in html
     assert 'role="table"' in html and "人工智能" in html and "额#7" in html
     assert "1.00亿 额#7" in html and "封单#2 额#7" in html
