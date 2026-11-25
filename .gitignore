@@ -29,6 +29,6 @@ tmp/
 evidence/
 plate/data/image/
 plate/data/legacy/
-native/t1_v2/schema.pb.cc
-native/t1_v2/schema.pb.h
-native/t1_v2/build/
+native/tickd/schema.pb.cc
+native/tickd/schema.pb.h
+native/tickd/build/

@@ -1288,7 +1288,7 @@ bool run_self_test() {
     RedisV2Writer redis_writer(config);
     if (!expect(redis_writer.initialize(), "redis writer initialize")) return false;
     // C977: use the last real TD tick per symbol before the 0925 barrier.
-    std::ifstream c977_file("t1_v2/tests/fixtures/t1v2/auction_full_2026-11-11.json");
+    std::ifstream c977_file("tests/fixtures/t1v2/auction_full_2026-11-11.json");
     std::stringstream c977_stream; c977_stream << c977_file.rdbuf();
     const std::string c977_text = c977_stream.str();
     const std::regex c977_object_re(R"(\{[^}]+\})");
@@ -1419,7 +1419,7 @@ bool run_self_test() {
         c977_cutoff_ok = c977_cutoff_batch.ticks.size() == 2 && c977_before_px > 0 && cmd.value.find("\"301718\":{\"price_milli\":" + std::to_string(c977_before_px)) != std::string::npos;
     if (!expect(c977_cutoff_ok, "C977 0920 retains real pre-cutoff price")) return false;
     // C976: TD rows are replayed individually so each price source is checked.
-    std::ifstream c976_fixture("t1_v2/tests/fixtures/t1v2/tick_2026-11-11_auction.json");
+    std::ifstream c976_fixture("tests/fixtures/t1v2/tick_2026-11-11_auction.json");
     std::stringstream c976_stream;
     c976_stream << c976_fixture.rdbuf();
     const std::string c976_text = c976_stream.str();
@@ -1473,10 +1473,10 @@ bool run_self_test() {
                 c976_missing.find("\"a25_fb\":") == std::string::npos,
                 "C976 missing book has no price")) return false;
     // TD-stored upstream ticks: exercise the archive through its public writer.
-    std::ifstream fixture("t1_v2/tests/fixtures/t1v2/tick_2026-11-10_auction.json");
+    std::ifstream fixture("tests/fixtures/t1v2/tick_2026-11-10_auction.json");
     std::stringstream fixture_stream;
     fixture_stream << fixture.rdbuf();
-    std::ifstream extra_fixture("t1_v2/tests/fixtures/t1v2/tick_2026-11-10_C958.json");
+    std::ifstream extra_fixture("tests/fixtures/t1v2/tick_2026-11-10_C958.json");
     fixture_stream << extra_fixture.rdbuf();
     const std::string fixture_text = fixture_stream.str();
     const std::regex object_re(R"(\{[^}]+\})");
