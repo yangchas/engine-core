@@ -332,3 +332,18 @@ def test_real_open_report_converges_appendix_within_mail_budget():
     assert '收盘%' not in rendered + plain
     assert 'close_pct' not in rendered + plain
     assert re.search(r'(?<!\d)\d{6}(?!\d)', re.sub(r'<[^>]*>', ' ', rendered) + plain) is None
+
+
+def test_open_verification_real_report_contract():
+    import json
+    import re
+    from pathlib import Path
+
+    report = json.loads(Path('/home/exedev/core-data/reports/2026-11-24/open_0935/report.json').read_text())
+    rendered, plain = render_email_board(report, 'open', '2026-11-24')
+    for expected in ('data-section="open-money-flow"', 'data-section="open-verification"',
+                     'CPO/MPO', '文投控股', '荣联科技', '东山精密', '封死', '开板'):
+        assert expected in rendered
+    assert len(rendered.encode('utf-8')) < 90_000
+    assert not re.search(r'(?<!\d)\d{6}(?!\d)', rendered + plain)
+    assert not any(word in rendered + plain for word in ('close_pct', 'close_mean', 'close_median', '收盘'))
