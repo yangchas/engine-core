@@ -30,6 +30,24 @@ def _has_arg(event_args, name):
     return hasattr(event_args, name)
 
 
+def _report_email_recipients(event, opts) -> list[str]:
+    """Return configured recipients for live formal reports; tests/simulations target owner only."""
+    owner = "412826313@qq.com"
+    if getattr(opts, "simulate_clock", None):
+        return [owner]
+    raw = _arg(_event_args(event), "email_to")
+    if isinstance(raw, (list, tuple)):
+        addrs = [str(x).strip() for x in raw if str(x).strip()]
+        if addrs:
+            return addrs
+    env_raw = os.environ.get("CORE_REPORT_EMAIL_TO", "").strip()
+    if env_raw:
+        addrs = [part.strip() for part in env_raw.split(",") if part.strip()]
+        if addrs:
+            return addrs
+    return [owner]
+
+
 def _append_baostock_no_progress(cmd, event_args):
     if _has_arg(event_args, "baostock_no_progress_seconds"):
         cmd.extend(["--baostock-no-progress-seconds",
@@ -350,10 +368,11 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
         elif name == "close_report":
             cmd.append("--publish")
         if getattr(opts, "email_self", False):
-            if opts.simulate_clock:
-                cmd.extend(["--email-to", "412826313@qq.com"])
-            else:
-                cmd.extend(["--email-send", "--email-to", "412826313@qq.com"])
+            recipients = _report_email_recipients(event, opts)
+            if not opts.simulate_clock:
+                cmd.append("--email-send")
+            for addr in recipients:
+                cmd.extend(["--email-to", addr])
         return cmd
     if name == "kaipan_job":
         cmd = [py, str(repo / "examples/run_data_jobs.py"), "--job", opts.job,
@@ -442,9 +461,10 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
         if opts.simulate_clock or (not opts.write and not opts.email_self):
             cmd.append("--dry-run")
         if getattr(opts, "email_self", False):
-            if opts.simulate_clock:
-                cmd.extend(["--email-to", "412826313@qq.com"])
-            else:
-                cmd.extend(["--email-send", "--email-to", "412826313@qq.com"])
+            recipients = _report_email_recipients(event, opts)
+            if not opts.simulate_clock:
+                cmd.append("--email-send")
+            for addr in recipients:
+                cmd.extend(["--email-to", addr])
         return cmd
     raise ValueError("handler_command_not_supported:" + name)
