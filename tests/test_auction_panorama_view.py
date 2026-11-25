@@ -295,11 +295,11 @@ def test_render_auction_email_digest_with_degraded_theme_buckets():
 def test_render_auction_panorama_with_theme_buckets_and_plate_health(sample_theme_and_health_product):
     product = sample_theme_and_health_product
     html, plain = render_auction_panorama(product)
-    assert html.count('role="table"') == 3
-    assert "③ 热点题材竞价分桶" in html
-    assert "[开盘啦全景板块]" in html and "[热榜成份股×盘前映射]" in html
-    assert "[开盘啦全景板块]" in plain and "[热榜成份股×盘前映射]" in plain
-    assert "③ 热点题材竞价分桶 [热榜成份股×盘前映射]" in plain
+    assert html.count('role="table"') == 2
+    assert "① 热点题材竞价分桶" in html
+    assert "[热榜成份股×盘前映射]" in html
+    assert "[热榜成份股×盘前映射]" in plain
+    assert "热点题材竞价分桶" in plain and "[热榜成份股×盘前映射]" in plain
     assert "银行" in html and "银行" in plain
     assert "板块映射：OK · 板块 1522 个 · 覆盖率 100.0%" in html
     assert "板块映射：OK · 板块 1522 个 · 覆盖率 100.0%" in plain
@@ -459,9 +459,9 @@ def test_c1567_real_ladder_matrix_funnel_and_themes():
     html, text = _render_ladder_theme_matrix(product)
     for label in ('更高(昨≥4板)', '拟4板(昨3板)', '拟3板(昨2板)', '拟2板(昨1板)', '拟首板(今日新涨停)', '缺昨4板(断层)', '4/13', '11/130'):
         assert label in html and label in '\n'.join(text)
-    pcb = html.split('data-theme="PCB"', 1)[1].split('</section>', 1)[0]
+    pcb = html.split('data-theme="PCB"', 1)[1].split('</tr>', 1)[0]
     assert '中京电子' in pcb and '奥士康' in pcb
-    assert '东山精密' in html
+    assert '已省略' in html
 
 
 def test_c1567_real_ladder_collapses_first_board_and_size():
@@ -470,14 +470,9 @@ def test_c1567_real_ladder_collapses_first_board_and_size():
     product = json.loads(Path('/home/exedev/core-data/reports/2026-11-24/auction_0926/auction_panorama.json').read_text())['panorama']
     from engine_core.auction_panorama_view import _render_ladder_theme_matrix
     html, _ = _render_ladder_theme_matrix(product)
-    card = html.split('data-theme="机器人"', 1)[1].split('</section>', 1)[0]
-    before, rest = card.split('<details', 1)
-    hidden = rest.split('</details>', 1)[0]
-    rows = [s for l in product['yesterday_ladder'] if l['yesterday_streak'] == 1 for b in l['buckets'] for s in b['stocks'] if s.get('primary_reason') == '机器人概念' and s.get('promotion_status') != 'PROVISIONAL']
-    rows.sort(key=lambda s: -(s.get('auction_amount_yuan') or 0))
-    assert all(s['name'] in before for s in rows[:3])
-    assert all(s['name'] in hidden and s['name'] not in before for s in rows[3:])
-    assert len(render_auction_panorama(product)[0].encode()) < 100_000
+    assert 'data-matrix="ladder-2d"' in html
+    assert '已省略' in html
+    assert len(render_auction_panorama(product)[0].encode()) < 90_000
 
 
 def test_c1568_real_capital_flow():
@@ -511,7 +506,7 @@ def test_c1568_real_historical_render_and_size():
     from pathlib import Path
     product = json.loads(Path('/home/exedev/core-data/reports/2026-11-24/auction_0926/auction_panorama.json').read_text())['panorama']
     html, plain = render_auction_panorama(product)
-    for label in ('大票吸金', '④ 资金去向雷达', '中际旭创', '和林微纳', '炬光科技', '大东方', '好当家'):
+    for label in ('大票吸金', '④ 资金去向雷达', '中际旭创', '新易盛', '大东方', '好当家'):
         assert label in html and label in plain
     assert len(html.encode()) < 100_000
 
@@ -575,7 +570,7 @@ def test_c1570_real_distribution_and_plate_filter():
     assert '全市场10档竞价涨跌分布' in html
     assert all(label in html for label in ('≥7%', '5~7%', '3~5%', '0~3%', '平盘', '-3~0%', '-5~-3%', '≤-5%'))
     assert '题材封板:未封' in html
-    plate = html.split('① 板块竞价全景', 1)[1].split('② 昨日连板', 1)[0]
+    plate = html.split('① 热点题材竞价分桶', 1)[1].split('② 昨日连板', 1)[0]
     assert '福斯特' not in plate and '步长制药' not in plate
     assert '封成比' in html
 
@@ -585,7 +580,21 @@ def test_c1570_real_ladder_table_and_size():
     from pathlib import Path
     product = json.loads(Path('/home/exedev/core-data/reports/2026-11-24/auction_0926/auction_panorama.json').read_text())['panorama']
     html, _ = render_auction_panorama(product)
-    ladder = html.split('② 昨日连板', 1)[1].split('③ 热点题材', 1)[0]
-    assert all(label in ladder for label in ('股票(身位)', '竞价额 / 封单', '爆量 / 日K位', '#eef6ff'))
+    ladder = html.split('② 昨日连板', 1)[1].split('④ 资金去向', 1)[0]
+    assert all(label in ladder for label in ('data-matrix="ladder-2d"', '主线题材', '拟2板(昨1板)', '#fff1f0'))
     assert '封单—' not in ladder
     assert len(html.encode()) < 100_000
+
+
+def test_c1571_real_matrix_and_merged_themes():
+    import json
+    from pathlib import Path
+    product = json.loads(Path('/home/exedev/core-data/reports/2026-11-24/auction_0926/auction_panorama.json').read_text())['panorama']
+    html, _ = render_auction_panorama(product)
+    assert 'data-matrix="ladder-2d"' in html
+    assert all(x in html for x in ('主线题材', '更高(昨≥4板)', '拟4板(昨3板)', '拟3板(昨2板)', '拟2板(昨1板)', '拟首板'))
+    assert '#fff1f0' in html and ('#f6ffed' in html or '#fffbe6' in html)
+    assert '已省略' in html and '中位' in html
+    assert '① 板块竞价全景' not in html
+    assert '① 热点题材竞价分桶' in html
+    assert len(html.encode()) < 90_000
