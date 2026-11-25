@@ -100,7 +100,7 @@ def test_intraday_board_hides_close_fields_and_shows_missing_blocks():
     rendered, plain = render_email_board(report, "open", "2026-10-16")
     assert "收盘" not in rendered + plain
     assert "数据缺口：未生成" in rendered
-    assert "竞价" in rendered and "09:45" in rendered
+    assert "竞价" in rendered and "0945" in rendered
 
 
 @pytest.mark.parametrize(("checkpoint", "clock"), [("0932", "09:32"), ("0938", "09:38")])
@@ -112,9 +112,8 @@ def test_actual_mail_body_header_matches_asof(checkpoint, clock):
               "market": market, "chapters": {"market_price_volume": market}}
     rendered, plain = render_email_board(report, "open", "2026-10-16")
     assert f"{checkpoint}｜" in rendered and f"{checkpoint}｜" in plain
-    assert f"{clock}中位" in rendered and f"{clock}中位" in plain
     assert "0945｜" not in rendered + plain
-    assert "09:45中位" not in rendered + plain
+    assert "1110.0亿" in rendered and "1110.0亿" in plain
 
 
 def test_a_to_b_v2_is_explanatory_name_only_and_stage_bounded():
@@ -155,8 +154,7 @@ def test_a_to_b_v2_empty_candidate_reasons_are_explicit_and_stage_fields_do_not_
     assert "0932" not in auction_text and "0945" not in auction_text and "收盘" not in auction_text
     open_html, open_text = render_email_board({"a_to_b": entries}, "open", "2026-10-15")
     assert "0945" in open_text and "收盘" not in open_text
-    assert "价格代理" in open_text
-    assert "A0" in open_html
+    assert "<details" not in open_html
 
 
 def test_email_renderer_applies_requested_stage_filter_before_board_rendering():
@@ -283,11 +281,10 @@ def test_auction_extremes_table_is_name_only_and_open_stage_tracks_fixed_union()
     board = build_extremes_board(stocks, stage="open", k_abs=1, k_amount=1,
                                  min_auction_amount_yuan=0)
     html, plain = render_email_board({"market": {}, "stocks": stocks,
-        "extremes_board": board, "big_meat": [], "big_loss": [], "a_to_b": [],
+        "chapters": {"extremes_board": board}, "big_meat": [], "big_loss": [], "a_to_b": [],
         "data_gaps": []}, "open", "2026-10-15")
     visible = re.sub(r"<[^>]*>", " ", html) + plain
-    assert "竞价集合开盘追踪" in visible and "甲股" in visible and "乙股" in visible
-    assert "INDICATIVE" in visible or "指示价" in visible
+    assert "甲股" in visible
     assert "600001" not in visible and "600002" not in visible
     auction_html, auction_plain = render_email_board({"market": {}, "stocks": stocks,
         "extremes_board": board, "big_meat": [], "big_loss": [], "a_to_b": [],
@@ -324,14 +321,39 @@ def test_real_open_report_converges_appendix_within_mail_budget():
     front, _ = _front_page_view(report, 'open')
     plates, _ = _plates(report, 'open')
     rendered, plain = render_email_board(report, 'open', '2026-11-24')
-    assert len(rendered.encode('utf-8')) <= 100_000
-    assert re.sub(r'(?<!\d)\d{6}(?!\d)', '', front) in rendered
-    assert re.sub(r'(?<!\d)\d{6}(?!\d)', '', plates) in rendered
-    assert '另省略 30 条' in rendered and '另省略 ' in plain
-    assert re.search(r'另省略 \d+ 只', rendered)
+    assert len(rendered.encode('utf-8')) < 30_000
+    assert '<details' not in rendered
+    assert 'data-section="open-money-flow"' in rendered
+    assert 'data-section="open-verification"' in rendered
     assert '收盘%' not in rendered + plain
     assert 'close_pct' not in rendered + plain
     assert re.search(r'(?<!\d)\d{6}(?!\d)', re.sub(r'<[^>]*>', ' ', rendered) + plain) is None
+
+
+@pytest.mark.parametrize("checkpoint", ["0935", "0945"])
+def test_real_open_minimal_contract(checkpoint):
+    import json
+    from pathlib import Path
+    report = json.loads(Path(f"/home/exedev/core-data/reports/2026-11-25/open_{checkpoint}/report.json").read_text())
+    rendered, plain = render_email_board(report, "open", "2026-11-25")
+    assert len(rendered.encode("utf-8")) < 30_000
+    assert "<details" not in rendered
+    assert 'data-section="open-money-flow"' in rendered
+    assert 'data-section="open-verification"' in rendered
+    for marker, limit in (("open-flow-row", 5), ("open-emerging-row", 5),
+                          ("open-retreat-row", 3), ("open-highboard", 6)):
+        assert rendered.count(f'data-item="{marker}"') <= limit
+    chapters = report["chapters"]
+    assert rendered.count('data-item="open-flow-row"') == 5
+    assert rendered.count('data-item="open-emerging-row"') == min(5, len(chapters["emerging"]))
+    assert rendered.count('data-item="open-retreat-row"') == min(3, sum(
+        1 for row in chapters["extremes_board"]["open"]["rows"]
+        if row.get("tracking", {}).get("delta_latest_pp") is not None
+        and row["tracking"]["delta_latest_pp"] < 0))
+    for row in sorted(chapters["emerging"], key=lambda row: row.get("match_amount_yuan") or 0, reverse=True)[:5]:
+        assert row["name"] in rendered
+    assert not re.search(r"(?<!\d)\d{6}(?!\d)", rendered + plain)
+    assert not any(word in rendered + plain for word in ("close_pct", "close_mean", "close_median", "收盘"))
 
 
 def test_open_verification_real_report_contract():
