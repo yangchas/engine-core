@@ -1445,7 +1445,6 @@ def _front_page_view(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
 
 
 def _render_open_verification_board(report: Mapping[str, Any], trade_date: str) -> tuple[str, str]:
-    chapters = report.get('chapters') if isinstance(report.get('chapters'), Mapping) else {}
     def mapping(value):
         return value if isinstance(value, Mapping) else {}
     def number(value):
@@ -1455,71 +1454,77 @@ def _render_open_verification_board(report: Mapping[str, Any], trade_date: str) 
         except (TypeError, ValueError):
             return None
     def rank(row, key):
-        n = number(row.get(key))
-        return n if n is not None else float('-inf')
+        value = number(row.get(key))
+        return value if value is not None else float('-inf')
     def pp(value):
-        n = number(value)
-        return f'{n:+.2f}pp' if n is not None else '—'
-    def cell(value):
-        return f'<td style="padding:6px;border-bottom:1px solid #e8edf4">{value}</td>'
-    def table(headers, rows):
-        head = ''.join(f'<th style="text-align:left;padding:6px;background:#edf3fa">{_esc(h)}</th>' for h in headers)
-        body = ''.join('<tr>' + ''.join(cell(v) for v in row) + '</tr>' for row in rows)
-        return f'<table width="100%" cellspacing="0" style="font-size:11px;border-collapse:collapse"><tr>{head}</tr>{body}</table>' if rows else '<div>数据缺口：未生成</div>'
+        value = number(value)
+        return f'{value:+.2f}pp' if value is not None else '—'
     def pct(value):
         return _num(value, 2)
-    def flow(row):
-        leaders = mapping(row.get('leaders')); capital = mapping(leaders.get('amount_max')); high = mapping(leaders.get('highest_board'))
-        return [_esc(row.get('name') or '—'), f'<b style="color:#a32733">{_amount_with_unit(row.get("amount_yuan"))} · {pct(row.get("market_share_pct"))}</b>',
-                f'{pct(row.get("equal_weight_pct"))} · {_esc(row.get("up_count") if row.get("up_count") is not None else "—")}家',
-                f'{_esc(row.get("limit_up_count") if row.get("limit_up_count") is not None else "—")}/{_esc(row.get("sealed_count") if row.get("sealed_count") is not None else "—")} · {_esc(row.get("highest_board") if row.get("highest_board") is not None else "—")}板',
-                f'{_esc(capital.get("name") or "—")} ({_amount_with_unit(capital.get("value"))})', _esc(high.get('name') or '—')]
-    market = mapping(chapters.get('market_price_volume')); cross = mapping(chapters.get('plate_cross_table'))
+    def table(headers, rows, marker):
+        head = ''.join(f'<th style="text-align:left;padding:8px;background:#edf3fa">{_esc(h)}</th>' for h in headers)
+        body = ''.join(f'<tr data-item="{marker}">' + ''.join(f'<td style="padding:8px;border-bottom:1px solid #e8edf4">{v}</td>' for v in row) + '</tr>' for row in rows)
+        return f'<table width="100%" cellspacing="0" style="font-size:14px;border-collapse:collapse"><tr>{head}</tr>{body}</table>' if rows else '<div>数据缺口：未生成</div>'
+    chapters = mapping(report.get('chapters'))
+    market = mapping(chapters.get('market_price_volume'))
+    cross = mapping(chapters.get('plate_cross_table'))
     plates = _rows(cross.get('main_rows')) or _rows(cross.get('rows'))
     plates = [r for r in plates if r.get('class') != 'BROAD' and not any(w in str(r.get('name') or '') for w in ('季报', '年报', '中报'))]
     plates.sort(key=lambda r: rank(r, 'amount_yuan'), reverse=True)
-    changes = mapping(chapters.get('plate_changes')); up = _rows(chapters.get('sealed_up')); down = _rows(chapters.get('sealed_down')); highs = _rows(chapters.get('yesterday_highboards'))
-    extremes = mapping(mapping(chapters.get('extremes_board')).get('open')); top = mapping(extremes.get('amount_top20')); high_open = mapping(extremes.get('high_open_group'))
-    ladder = mapping(report.get('ladder_section')); emotion = mapping(ladder.get('emotion')).get('label') or '未知'
-    count = lambda rows, predicate: sum(1 for r in rows if predicate(r))
-    sealed = count(up, lambda r: r.get('status') == '封死') if isinstance(chapters.get('sealed_up'), list) else "—"
-    opened = count(up, lambda r: r.get('status') in ('开板', '炸板')) if isinstance(chapters.get('sealed_up'), list) else "—"
-    underwater = count(highs, lambda r: number(r.get('current_pct')) is not None and number(r.get('current_pct')) < 0) if isinstance(chapters.get('yesterday_highboards'), list) else "—"
-    cards = [('开盘成交额 & 抛压', f'{_amount_with_unit(market.get("market_match_amount_yuan"))} · 下跌额占比 {pct(market.get("down_amount_share_pct"))} · 加权 {pct(market.get("amount_weighted_pct_change"))}', '#d44c4c'),
-             ('竞价强票验真', f'红盘 {top.get("red", "—")}/{top.get("n", "—")} · 加权 {pct(top.get("amount_weighted_pct"))} · 高开红盘率 {pct(number(high_open.get("red_rate")) * 100 if number(high_open.get("red_rate")) is not None else None)}', '#e69a38'),
-             ('一字封单验真', f'封死 {sealed} · 开板/炸板 {opened} · 跌停 {len(down) if isinstance(chapters.get("sealed_down"), list) else "—"}', '#35a77b'),
-             ('高标实时状态', f'封死 {count(highs, lambda r: r.get("status") == "封死") if isinstance(chapters.get("yesterday_highboards"), list) else "—"} · 开板 {count(highs, lambda r: r.get("status") in ("开板", "炸板")) if isinstance(chapters.get("yesterday_highboards"), list) else "—"} · 水下 {underwater} · {emotion}', '#6485cb')]
-    card_html = ''.join(f'<td width="25%" style="vertical-align:top;padding:8px;background:white;border-top:4px solid {color}"><span style="color:#53677e">{_esc(title)}</span><br><b>{_esc(value)}</b></td>' for title, value, color in cards)
-    def pills(key, title, color):
-        rows = sorted(_rows(changes.get(key)), key=lambda r: rank(r, 'change_pp'), reverse=key == 'up')[:5]
-        return f'<div style="padding:7px;color:{color}"><b>{title}</b> ' + ' '.join(f'<span style="display:inline-block;background:#f3f5fa;padding:3px;margin:2px;border-radius:10px">{_esc(r.get("name"))} {pp(r.get("change_pp"))}</span>' for r in rows) + '</div>'
+    up, down = _rows(chapters.get('sealed_up')), _rows(chapters.get('sealed_down'))
+    highs = sorted(_rows(chapters.get('yesterday_highboards')), key=lambda r: rank(r, 'streak'), reverse=True)
+    extremes = mapping(mapping(chapters.get('extremes_board')).get('open'))
+    top = mapping(extremes.get('amount_top20'))
+    sealed = [r for r in up if r.get('status') == '封死']
+    opened = [r for r in up if r.get('status') in ('开板', '炸板')]
+    pressure = number(market.get('down_amount_share_pct'))
+    pressure_text = pct(pressure) + (' 高抛压/高低切换' if pressure is not None and pressure > 65 else '')
+    def count(rows, source):
+        return str(len(rows)) if isinstance(chapters.get(source), list) else '—'
+    cards = [('成交额', _amount_with_unit(market.get('market_match_amount_yuan')), '#d44c4c'),
+             ('下跌额占比（抛压）', pressure_text, '#d44c4c' if pressure is not None and pressure > 65 else '#53677e'),
+             ('额Top20红盘', f'{top.get("red", "—")}/{top.get("n", "—")} · 加权均涨 {pct(top.get("amount_weighted_pct"))}', '#e69a38'),
+             ('一字封死 / 开板 / 跌停', f'<span style="color:#bc3541">{count(sealed, "sealed_up")}</span> / <span style="color:#bd6a20">{count(opened, "sealed_up")}</span> / <span style="color:#16875b">{count(down, "sealed_down")}</span>', '#35a77b')]
+    card_html = ''.join(f'<td width="25%" style="vertical-align:top;padding:9px;background:white;border-top:4px solid {color}"><span>{_esc(title)}</span><br><b style="color:{color}">{value}</b></td>' for title, value, color in cards)
+    flow = []
+    for r in plates[:5]:
+        leaders = mapping(r.get('leaders')); capital = mapping(leaders.get('amount_max')); high = mapping(leaders.get('highest_board'))
+        representatives = ' / '.join(dict.fromkeys(str(x) for x in (capital.get('name'), high.get('name')) if x)) or '—'
+        flow.append([_esc(r.get('name') or '—'), f'{_amount_with_unit(r.get("amount_yuan"))} · {pct(r.get("equal_weight_pct"))}', f'{_esc(r.get("limit_up_count") if r.get("limit_up_count") is not None else "—")}/{_esc(r.get("sealed_count") if r.get("sealed_count") is not None else "—")}', _esc(representatives)])
+    changes = mapping(chapters.get('plate_changes'))
+    retreat = sorted(_rows(changes.get('down')), key=lambda r: number(r.get('change_pp')) if number(r.get('change_pp')) is not None else float('inf'))[:2]
+    pills = ' '.join(f'<span style="display:inline-block;background:#eaf8ef;padding:4px 8px;border-radius:12px">{_esc(r.get("name") or "—")} {pp(r.get("change_pp"))}</span>' for r in retreat) or '数据缺口：未生成'
     checkpoint = _open_checkpoint_label(report)
-    emerging = sorted(_rows(chapters.get('emerging')), key=lambda r: rank(r, 'match_amount_yuan'), reverse=True)[:8]
-    def current(r):
-        return _first(r, 'current_pct', checkpoint)
+    def current(row):
+        return _first(row, 'current_pct', checkpoint)
+    emerging = sorted(_rows(chapters.get('emerging')), key=lambda r: rank(r, 'match_amount_yuan'), reverse=True)[:5]
     erows = []
     for r in emerging:
-        a, b = number(r.get('0925')), number(current(r)); amount = number(r.get('match_amount_yuan'))
-        erows.append([_esc(r.get('name')), f'<span style="background:#eaf4ff">{pct(a)} → {pct(b)}</span>', f'<b style="color:{"#bf4a1e" if amount is not None and amount >= 1e8 else "#35465a"}">{_amount_with_unit(amount)}</b>', pp(b-a if a is not None and b is not None else None)])
-    tracked = [r for r in _rows(extremes.get('rows')) if number(mapping(r.get('tracking')).get('delta_latest_pp')) is not None]
-    def tracked_table(positive):
-        rows = [r for r in tracked if (number(mapping(r.get('tracking')).get('delta_latest_pp')) >= 0) == positive]
-        rows.sort(key=lambda r: number(mapping(r.get('tracking')).get('delta_latest_pp')), reverse=positive)
-        return table(['股票(题材)', '09:25 → 当前', 'Δ变化', '竞价额'], [[f'{_esc(r.get("name"))} ({_esc(r.get("main_plate") or "—")})', f'{pct(r.get("auction_pct"))} → {pct(mapping(r.get("tracking")).get("latest_pct"))}', f'<b style="color:{"#c43c3c" if positive else "#16875b"}">{pp(mapping(r.get("tracking")).get("delta_latest_pp"))}</b>', _amount_with_unit(r.get('auction_amount_yuan'))] for r in rows[:5]])
-    def blocks(rows, highboard=False):
-        items = []
-        for r in rows:
-            status = str(r.get('status') or '未知'); val = number(current(r))
-            color, bg, border = ('#16875b', '#eaf8ef', 'solid') if status == '封跌停' or (highboard and val is not None and val < 0) else ('#bd6a20', '#fff4e5', 'dashed') if status in ('开板', '炸板') else ('#bb3541', '#fff0f0', 'solid') if status == '封死' else ('#5c6d80', '#f2f5f8', 'solid')
-            detail = f'昨{_esc(r.get("streak") if r.get("streak") is not None else "—")}板 · {pct(r.get("0925"))} → {pct(current(r))} · 当前额 {_amount_with_unit(r.get("current_amount_yuan"))}' if highboard else f'封单 {_amount_with_unit(r.get("seal_yuan"))} · {pct(current(r))}'
-            items.append(f'<span style="display:inline-block;vertical-align:top;margin:3px;padding:6px;background:{bg};border-left:3px {border} {color};color:{color}"><b>{_esc(r.get("name") or "—")}</b> · {detail} · {_esc(status)}</span>')
-        return ''.join(items) or '数据缺口：未生成'
-    highs = sorted(highs, key=lambda r: rank(r, 'streak'), reverse=True)
-    sections = (f'<header style="background:#142c4a;color:white;padding:15px"><b style="font-size:19px">开盘验证 · 钱去哪了</b><br>{_esc(trade_date)} · 09:25 → 当前</header>'
+        a, b = number(r.get('0925')), number(current(r))
+        erows.append([_esc(r.get('name') or '—'), f'{pct(a)} → {pct(b)}', f'{_amount_with_unit(r.get("match_amount_yuan"))} · {pp(b-a if a is not None and b is not None else None)}'])
+    tracked = [r for r in _rows(extremes.get('rows')) if number(mapping(r.get('tracking')).get('delta_latest_pp')) is not None and number(mapping(r.get('tracking')).get('delta_latest_pp')) < 0]
+    tracked.sort(key=lambda r: number(mapping(r.get('tracking')).get('delta_latest_pp')))
+    trows = [[f'{_esc(r.get("name") or "—")} ({_esc(r.get("main_plate") or "—")})', f'{pct(r.get("auction_pct"))} → {pct(mapping(r.get("tracking")).get("latest_pct"))}', pp(mapping(r.get('tracking')).get('delta_latest_pp'))] for r in tracked[:3]]
+    def block(row, color, bg, text, marker):
+        return f'<span data-item="{marker}" style="display:inline-block;margin:3px;padding:7px;background:{bg};border-left:3px solid {color};color:{color}">{_esc(text)}</span>'
+    # Limit the combined stream while retaining its specified priority.
+    block_rows = [(r, color, bg, label) for rows, color, bg, label in ((sealed, '#bb3541', '#fff0f0', '封死'), (opened, '#bd6a20', '#fff4e5', '开板'), (down, '#16875b', '#eaf8ef', '跌停')) for r in rows][:12]
+    blocks = ''.join(block(r, color, bg, f'{r.get("name") or "—"} · {label}', 'open-seal') for r, color, bg, label in block_rows) or '数据缺口：未生成'
+    high_rows = [r for r in highs if number(r.get('streak')) is not None and number(r.get('streak')) >= 3]
+    high_rows = high_rows[:6] if len(high_rows) >= 4 else highs[:6]
+    high_blocks = []
+    for r in high_rows:
+        value = number(current(r)); status = str(r.get('status') or '未知')
+        if status == '封死': color, bg = '#bb3541', '#fff0f0'
+        elif status in ('开板', '炸板'): color, bg = '#bd6a20', '#fff4e5'; status = '开板'
+        elif value is not None and value < 0: color, bg = '#16875b', '#eaf8ef'; status = '水下'
+        else: color, bg = '#5c6d80', '#f2f5f8'
+        high_blocks.append(block(r, color, bg, f'{r.get("name") or "—"} · 昨{r.get("streak") if r.get("streak") is not None else "—"}板 · {pct(value)} · {status}', 'open-highboard'))
+    sections = (f'<header style="background:#142c4a;color:white;padding:15px"><b style="font-size:20px">开盘快报 · 钱去了哪</b><br>{_esc(trade_date)} · {checkpoint}｜竞价 → 当前</header>'
         f'<table width="100%" cellspacing="4"><tr>{card_html}</tr></table>'
-        f'<section data-section="open-money-flow"><h2>① 钱去哪了：主线资金流向</h2><div style="color:#68798a">成员成交额可能重叠，不可相加</div>{table(["主线题材", "开盘成交额·占市场%", "均涨·红盘", "涨停/封板·最高板", "大资金中军(成交额)", "高标代表"], [flow(r) for r in plates[:8]])}{pills("up", "🔥 09:25→当前 盘中拉升最快", "#bc3541")}{pills("down", "💧 09:25→当前 兑现回落最快", "#16875b")}</section>'
-        f'<section data-section="open-verification"><h2>② 竞价预期验真</h2><h3>🚀 盘中新涌入大资金 / 弱转强急拉 Top 8</h3>{table(["股票", "09:25 → 当前", "成交额", "盘中拉升Δ"], erows)}<h3>⚡ 竞价强票承接 vs 跳水对照</h3><b>承接最强 Top 5</b>{tracked_table(True)}<b>高开回撤最深 Top 5</b>{tracked_table(False)}<h3>🔒 竞价一字封单验真</h3>{blocks(up + down)}</section>'
-        f'<section><h2>③ 昨连板高标实时跟踪</h2>{blocks(highs, True)}</section>')
+        f'<section data-section="open-money-flow"><h2>① 钱去了哪：真主线 Top 5</h2><div>成员成交额可能重叠，不可相加</div>{table(["主线题材", "成交额·均涨", "涨停/封板", "核心代表"], flow, "open-flow-row")}<div style="padding:8px">💧 撤退/回落最快 {pills}</div></section>'
+        f'<section data-section="open-verification"><h2>② 确定性异动与风险</h2><h3>🔒 硬封先锋 &amp; 开板/跌停警示</h3>{blocks}<h3>🚀 大资金真承接 / 急拉 Top 5</h3>{table(["股票", "09:25 → 当前", "成交额·Δ"], erows, "open-emerging-row")}<h3>⚠️ 高开跳水避坑 Top 3</h3>{table(["股票(题材)", "09:25 → 当前", "Δ回撤"], trows, "open-retreat-row")}</section>'
+        f'<section><h2>③ 核心高标状态</h2>{"".join(high_blocks) or "数据缺口：未生成"}</section>')
     plain = html.unescape(re.sub(r'<[^>]+>', ' ', sections))
     return sections, re.sub(r'\s+', ' ', plain).strip()
 
@@ -1528,6 +1533,18 @@ def render_email_board(report: Mapping[str, Any], stage: str, trade_date: str) -
     """Return a compact complete email HTML document and a matching text view."""
     stage_key = "close" if any(x in stage.lower() for x in ("close", "closing", "eod")) else "open" if "open" in stage.lower() else "auction"
     stage_label = {"close": "收盘", "open": "开盘", "auction": "竞价"}[stage_key]
+    if stage_key == "open":
+        body, plain = _render_open_verification_board(report, trade_date)
+        document = ('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+                    '<body style="margin:0;background:#f5f7fa"><div style="max-width:680px;margin:auto;color:#263445;font-family:Arial,sans-serif;line-height:1.5">' + body + '</div></body></html>')
+        for forbidden in ("close_pct", "close_mean", "close_median", "收盘"):
+            document = document.replace(forbidden, "")
+            plain = plain.replace(forbidden, "")
+        document = re.sub(r"(?<!\d)\d{6}(?!\d)", "", document)
+        plain = re.sub(r"(?<!\d)\d{6}(?!\d)", "", plain)
+        if len(document.encode("utf-8")) >= 30_000:
+            raise ValueError(f"rendered open email exceeds limit ({len(document.encode('utf-8'))} bytes)")
+        return document, plain
     tiles = _tiles(report, stage_key)
     tile_html = ("<table role=\"presentation\" width=\"100%\" cellspacing=\"3\" cellpadding=\"0\"><tr>" + "".join(x[1] for x in tiles) + "</tr></table>") if tiles else "<div>数据缺口：情绪温度计字段不足</div>"
     ladder_html, ladder_text = _ladder(report, stage_key)
