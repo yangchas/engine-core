@@ -48,6 +48,21 @@ def _fact_auction_amount(fact: Mapping[str, Any]) -> Any:
     return matched if matched is not None else fact.get("p0925_cumulative_amount_yuan")
 
 
+def _adapt_wencai_auction_facts_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project only observed WenCai fields into the auction facts contract."""
+    result = []
+    for row in rows:
+        price = row.get("match_price")
+        numeric_price = _numeric(price)
+        result.append({"symbol": row.get("symbol"), "name": row.get("name"),
+            "pct_change": row.get("match_pct"), "auction_pct": row.get("match_pct"),
+            "auction_amount_yuan": row.get("amount_yuan"), "price": price,
+            "pre_close": None, "bid_amount_yuan": None, "ask_amount_yuan": None,
+            "valid_price": numeric_price is not None and numeric_price > 0,
+            "source": "wencai_fallback"})
+    return result
+
+
 def _numeric(value: Any) -> float | None:
     try:
         result = float(value)
@@ -1606,6 +1621,15 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             if allow_wencai_fallback and (src.td_error or not facts_rows) and (not wencai_result or not wencai_result["rows"]):
                 from .errors import CoreError
                 raise CoreError("TD_UNAVAILABLE", "auction fallback unavailable or empty")
+            if not facts_rows and wencai_result and wencai_result["rows"]:
+                from .slices import SliceResult
+                facts_rows = _adapt_wencai_auction_facts_rows(wencai_result["rows"])
+                facts_meta = {"slice_id": "auction_stock_facts", "status": "DEGRADED",
+                    "source": "DEGRADED:WENCAI_AUCTION", "asof": slice_asof,
+                    "reason": "DEGRADED:WENCAI_AUCTION", "quality": {}}
+                slice_results["auction_stock_facts"] = SliceResult.create(facts_rows, facts_meta)
+                slice_manifest["auction_stock_facts"] = {**facts_meta, "rows": len(facts_rows),
+                    "version": None, "used_date": [trade_date], "coverage": None}
             from .auction_v6_inputs import prepare_auction_v6_inputs
             page = ""
             payload = prepare_auction_v6_inputs(
@@ -2558,6 +2582,10 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     f"结论:题材接力意愿{lead_relay}；高标{highboard_state}"
                     if str(line).startswith("结论:") else line
                     for line in quickbrief.get("email_lines", [])]
+                if facts_meta.get("source") == "DEGRADED:WENCAI_AUCTION":
+                    lines = quickbrief.get("email_lines", [])
+                    if lines:
+                        lines[0] += "｜问财降级：竞价额≥500万，非全市场"
                 panorama["quickbrief"] = quickbrief
                 payload["auction_quickbrief"] = quickbrief
                 panorama["lineage"]["hot_rank_basis"] = hot_ranks.get("basis", "UNKNOWN")
@@ -2644,7 +2672,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         if stage == "auction":
             # The complete immutable panorama is separately stored in Core data;
             # keep the general report JSON below the live-report size ceiling.
-            persisted_payload.pop("auction_panorama", None)
+            if facts_meta.get("source") != "DEGRADED:WENCAI_AUCTION":
+                persisted_payload.pop("auction_panorama", None)
         report_json = _shrink_live_report(live_pages._json_report_payload(persisted_payload))
         report_text = json.dumps(report_json, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
         pipeline_timings["prepare_output"] = round(time.monotonic() - write_started, 3)
