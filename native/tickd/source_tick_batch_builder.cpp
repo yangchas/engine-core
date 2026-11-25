@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace t1_v2 {
+namespace tickd {
 
 SourceTickBatchBuildStats SourceTickBatchBuilder::build(
     const std::vector<SourceTickRecord>& source_records,
@@ -39,4 +39,4 @@ SourceTickBatchBuildStats SourceTickBatchBuilder::build(
     return stats;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

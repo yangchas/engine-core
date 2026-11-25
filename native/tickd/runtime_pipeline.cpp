@@ -2,7 +2,7 @@
 
 #include <iterator>
 
-namespace t1_v2 {
+namespace tickd {
 
 RuntimePipeline::RuntimePipeline(const ConfigV2& config)
     : config_(config),
@@ -173,4 +173,4 @@ int RuntimePipeline::commit_redis_success(int64_t logical_ts_ms) {
     return redis_writer_.commit_q2_writes(engine_.mutable_quote_store(), logical_ts_ms);
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

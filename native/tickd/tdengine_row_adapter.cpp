@@ -2,17 +2,17 @@
 
 #include <cstdint>
 
-namespace t1_v2 {
+namespace tickd {
 
 bool TdengineRowAdapter::enabled() {
-#if defined(T1_V2_ENABLE_TDENGINE)
+#if defined(TICKD_ENABLE_TDENGINE)
     return true;
 #else
     return false;
 #endif
 }
 
-#if defined(T1_V2_ENABLE_TDENGINE)
+#if defined(TICKD_ENABLE_TDENGINE)
 
 namespace {
 
@@ -87,4 +87,4 @@ TdengineRowAdapterResult TdengineRowAdapter::cells_from_row(
 
 #endif
 
-}  // namespace t1_v2
+}  // namespace tickd

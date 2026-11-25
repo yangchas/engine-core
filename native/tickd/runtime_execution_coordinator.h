@@ -4,7 +4,7 @@
 #include "runtime_pipeline.h"
 #include "tdengine_command_executor.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 struct RuntimeExecutionResult {
     bool ok = true;
@@ -38,4 +38,4 @@ private:
     ITDengineCommandExecutor& tdengine_executor_;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

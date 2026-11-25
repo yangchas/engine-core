@@ -12,17 +12,17 @@ echo "[health] trade_date=$TRADE_DATE date_tag=$DATE_TAG q2_prefix=$Q2_PREFIX"
 echo "[health] redis"
 redis-cli PING
 
-echo "[health] t1_v2 process"
-if pgrep -af "t1_v2|t1_v2_all_live" >/tmp/t1_v2_health_pids.$$; then
-  cat /tmp/t1_v2_health_pids.$$
-  PID="$(awk 'NR==1 {print $1}' /tmp/t1_v2_health_pids.$$)"
+echo "[health] tickd process"
+if pgrep -af "t1_v2|t1_v2_all_live" >/tmp/tickd_health_pids.$$; then
+  cat /tmp/tickd_health_pids.$$
+  PID="$(awk 'NR==1 {print $1}' /tmp/tickd_health_pids.$$)"
   if [[ -n "${PID:-}" ]]; then
     ps -o pid,ppid,stat,%cpu,%mem,etime,cmd -p "$PID"
   fi
 else
-  echo "[health][warn] no t1_v2 process found"
+  echo "[health][warn] no tickd process found"
 fi
-rm -f /tmp/t1_v2_health_pids.$$
+rm -f /tmp/tickd_health_pids.$$
 
 echo "[health] redis auction keys"
 for tag in 0920 0924 0925 latest; do

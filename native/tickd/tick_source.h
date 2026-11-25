@@ -6,7 +6,7 @@
 #include "source_tick_batch_builder.h"
 #include "tick_batch.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 enum class TickSourceStatus : uint8_t {
     Ok = 0,
@@ -49,4 +49,4 @@ public:
     }
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

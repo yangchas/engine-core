@@ -4,7 +4,7 @@
 
 #include "runtime_mode.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 struct LogicalClock {
     RuntimeMode mode = RuntimeMode::Live;
@@ -13,4 +13,4 @@ struct LogicalClock {
     int replay_speed = 1;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

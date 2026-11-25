@@ -2,7 +2,7 @@
 
 #include <cctype>
 
-namespace t1_v2 {
+namespace tickd {
 
 bool RabbitMqWireMessageParser::parse(
     const std::vector<char>& body,
@@ -129,4 +129,4 @@ int64_t RabbitMqWireMessageParser::extract_i64(const std::string& json, const ch
     return negative ? -value : value;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

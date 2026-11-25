@@ -8,7 +8,7 @@
 #include "quote_state.h"
 #include "raw_tick.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 class QuoteStateStore {
 public:
@@ -27,4 +27,4 @@ private:
     uint32_t last_batch_symbol_count_ = 0;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

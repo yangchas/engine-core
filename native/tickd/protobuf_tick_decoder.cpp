@@ -4,15 +4,15 @@
 
 #include "payload_decompressor.h"
 
-#if defined(T1_V2_ENABLE_PROTOBUF)
+#if defined(TICKD_ENABLE_PROTOBUF)
 #include "schema.pb.h"
 #endif
 
-namespace t1_v2 {
+namespace tickd {
 
 namespace {
 
-#if defined(T1_V2_ENABLE_PROTOBUF)
+#if defined(TICKD_ENABLE_PROTOBUF)
 PayloadCompression from_proto_compression(dataservice::CompressionType compression) {
     switch (compression) {
         case dataservice::NONE:
@@ -76,7 +76,7 @@ ProtobufDecodeResult ProtobufTickDecoder::decode_data_request_payload(
         return {false, false, 0, "empty protobuf payload"};
     }
 
-#if !defined(T1_V2_ENABLE_PROTOBUF)
+#if !defined(TICKD_ENABLE_PROTOBUF)
     return {false, true, 0, "protobuf support not enabled in this build"};
 #else
     dataservice::DataRequest request;
@@ -112,4 +112,4 @@ ProtobufDecodeResult ProtobufTickDecoder::decode_data_request_payload(
 #endif
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

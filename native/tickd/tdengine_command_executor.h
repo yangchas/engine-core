@@ -5,11 +5,11 @@
 
 #include "config_v2.h"
 
-#if defined(T1_V2_ENABLE_TDENGINE)
+#if defined(TICKD_ENABLE_TDENGINE)
 #include <taos.h>
 #endif
 
-namespace t1_v2 {
+namespace tickd {
 
 struct TDengineExecutionResult {
     bool ok = true;
@@ -39,7 +39,7 @@ public:
     }
 };
 
-#if defined(T1_V2_ENABLE_TDENGINE)
+#if defined(TICKD_ENABLE_TDENGINE)
 class TaosTDengineCommandExecutor final : public ITDengineCommandExecutor {
 public:
     explicit TaosTDengineCommandExecutor(const ConfigV2& config);
@@ -60,4 +60,4 @@ private:
 };
 #endif
 
-}  // namespace t1_v2
+}  // namespace tickd

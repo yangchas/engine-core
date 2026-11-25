@@ -2,7 +2,7 @@
 
 #include "quote_state.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 class DirtyMarker {
 public:
@@ -23,4 +23,4 @@ public:
     ) const;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

@@ -1,6 +1,6 @@
 # `native/tickd` — C++17 实时行情与盘口计算引擎
 
-> 原名 `t1_v2`，已于 `v1.0.0` 并入 `engine_core` Monorepo 并拍平为单层目录 `native/tickd/`。
+> 已于 `v1.0.0` 并入 `engine_core` Monorepo 并统一为单层目录 `native/tickd/` 与 `tickd.service`。
 
 ## 1. 核心职责
 
@@ -37,11 +37,11 @@ cd native/tickd
 CORE_DATA_ROOT=/home/exedev/core-data bash make.sh --self-test --out=build/tickd
 ```
 
-- 禁止不传 `--out` 覆盖默认 `/tmp/t1_v2_all_live`；
+- 禁止不传 `--out` 覆盖默认 `/tmp/tickd`；
 - 构建临时生成的 `schema.pb.cc` / `schema.pb.h` 与 `build/` 已列入 `.gitignore`。
 
 ## 4. 线上部署与回滚
 
-- 线上 systemd 服务：`t1-v2-live.service`
-- 发布软链：`/home/exedev/services/t1-v2/current` → `/home/exedev/services/t1-v2/releases/<YYYYMMDD_tag_commit>/`
-- 回滚：将 `current` 软链切回上一版本目录并执行 `sudo systemctl restart t1-v2-live.service`。
+- 线上 systemd 服务：`tickd.service`
+- 发布软链：`/home/exedev/services/tickd/current` → `/home/exedev/services/tickd/releases/<YYYYMMDD_tag_commit>/`
+- 回滚：将 `current` 软链切回上一版本目录并执行 `sudo systemctl restart tickd.service`。

@@ -5,7 +5,7 @@
 #include "config_v2.h"
 #include "runtime_mode.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 // Returns the 09:32:10 Asia/Shanghai barrier for the trade date carried by
 // ts_ms.  This is a control-plane timestamp, not a market-data tick.
@@ -49,4 +49,4 @@ private:
     int64_t last_runtime_ts_ms_ = 0;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

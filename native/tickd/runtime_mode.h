@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace t1_v2 {
+namespace tickd {
 
 enum class RuntimeMode : uint8_t {
     Live = 0,
@@ -22,4 +22,4 @@ enum class LimitState : int8_t {
     Up = 1,
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

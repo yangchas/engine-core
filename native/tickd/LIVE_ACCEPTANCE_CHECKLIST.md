@@ -1,4 +1,4 @@
-# t1_v2 Live Acceptance Checklist
+# tickd Live Acceptance Checklist
 
 This checklist is for the next live trading session. It verifies whether
 `t1_v2` can replace the old `t1.cpp` market-data path without breaking auction,
@@ -10,14 +10,14 @@ opening, Redis consumers, or strategy output.
 
 ```bash
 cd /root/work/C/t1_v2
-./make.sh --out=/tmp/t1_v2_all_live
+./make.sh --out=/tmp/tickd
 ```
 
 - Start the binary with no extra arguments. No-arg mode must be live RabbitMQ
   mode with Redis and TDengine writes enabled.
 
 ```bash
-/tmp/t1_v2_all_live
+/tmp/tickd
 ```
 
 - Confirm CPU and memory are stable before auction starts.
@@ -133,7 +133,7 @@ Expected:
 - Watch these for at least 30 minutes:
 
 ```bash
-top -p $(pgrep -f t1_v2 | head -1),$(pgrep redis-server | head -1)
+top -p $(pgrep -f tickd | head -1),$(pgrep redis-server | head -1)
 redis-cli INFO stats | egrep 'instantaneous_ops_per_sec|total_commands_processed'
 redis-cli INFO memory | egrep 'used_memory_human|mem_fragmentation_ratio'
 ```

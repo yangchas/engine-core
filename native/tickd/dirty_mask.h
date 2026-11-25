@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace t1_v2 {
+namespace tickd {
 
 enum DirtyMask : uint32_t {
     DIRTY_NONE = 0,
@@ -16,4 +16,4 @@ enum DirtyMask : uint32_t {
     DIRTY_FLOW = 1u << 7,
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

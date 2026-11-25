@@ -3,11 +3,11 @@
 #include "config_v2.h"
 #include "tick_source.h"
 
-#if defined(T1_V2_ENABLE_RABBITMQ)
+#if defined(TICKD_ENABLE_RABBITMQ)
 #include <rabbitmq-c/amqp.h>
 #endif
 
-namespace t1_v2 {
+namespace tickd {
 
 class RabbitMqTickSource final : public ITickSource {
 public:
@@ -37,10 +37,10 @@ private:
     std::string last_error_;
     int64_t next_connect_retry_ms_ = 0;
 
-#if defined(T1_V2_ENABLE_RABBITMQ)
+#if defined(TICKD_ENABLE_RABBITMQ)
     amqp_connection_state_t conn_ = nullptr;
     bool consumer_started_ = false;
 #endif
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

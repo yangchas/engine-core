@@ -6,7 +6,7 @@
 
 #include "auction_calculator.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 TDengineV2Writer::TDengineV2Writer(const ConfigV2& config) : config_(config) {}
 
@@ -328,4 +328,4 @@ bool TDengineV2Writer::is_equity_market_symbol(const char* market, const char* s
     return market_text.empty();
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

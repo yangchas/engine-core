@@ -14,7 +14,7 @@
 #include "tick_batch.h"
 #include "tick_delta_calculator.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 struct EngineProcessStats {
     uint32_t tick_count = 0;
@@ -59,4 +59,4 @@ private:
     bool has_last_batch_phase_ = false;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

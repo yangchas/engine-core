@@ -1,13 +1,13 @@
 #include "redis_command_executor.h"
 
-#if defined(T1_V2_ENABLE_REDIS)
+#if defined(TICKD_ENABLE_REDIS)
 
 #include <sys/time.h>
 
 #include <vector>
 #include <regex>
 
-namespace t1_v2 {
+namespace tickd {
 
 namespace {
 
@@ -232,6 +232,6 @@ bool HiredisRedisCommandExecutor::drain(int expected_replies, RedisExecutionResu
     return true;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd
 
 #endif

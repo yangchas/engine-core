@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <ctime>
 
-namespace t1_v2 {
+namespace tickd {
 
 void QuoteCalculator::apply_base_tick(QuoteState& state, const RawTick& tick, MarketPhase phase) const {
     state.ts_ms = tick.ts_ms;
@@ -178,4 +178,4 @@ int QuoteCalculator::hms_from_timestamp_ms(int64_t ts_ms) {
     return local_tm.tm_hour * 10000 + local_tm.tm_min * 100 + local_tm.tm_sec;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

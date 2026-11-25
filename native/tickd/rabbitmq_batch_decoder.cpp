@@ -4,7 +4,7 @@
 
 #include "protobuf_tick_decoder.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 RabbitMqBatchDecodeResult RabbitMqBatchDecoder::decode_body(
     const std::vector<char>& body,
@@ -47,4 +47,4 @@ RabbitMqBatchDecodeResult RabbitMqBatchDecoder::decode_body(
     return result;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

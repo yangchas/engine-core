@@ -6,7 +6,7 @@
 #include "raw_tick.h"
 #include "runtime_mode.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 // A formal auction snapshot price is anchor-specific.  Keep availability
 // separate from the numeric value so a missing anchor can never be rendered
@@ -46,4 +46,4 @@ private:
     int hms_from_timestamp_ms(int64_t ts_ms) const;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

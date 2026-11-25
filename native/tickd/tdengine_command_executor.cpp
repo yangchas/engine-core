@@ -1,8 +1,8 @@
 #include "tdengine_command_executor.h"
 
-#if defined(T1_V2_ENABLE_TDENGINE)
+#if defined(TICKD_ENABLE_TDENGINE)
 
-namespace t1_v2 {
+namespace tickd {
 
 TaosTDengineCommandExecutor::TaosTDengineCommandExecutor(const ConfigV2& config) : config_(config) {}
 
@@ -91,6 +91,6 @@ bool TaosTDengineCommandExecutor::execute_one(const std::string& statement, TDen
     return true;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd
 
 #endif

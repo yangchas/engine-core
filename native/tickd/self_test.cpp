@@ -38,15 +38,15 @@
 #include "tdengine_row_adapter.h"
 #include "tdengine_v2_writer.h"
 
-#if defined(T1_V2_ENABLE_ZLIB)
+#if defined(TICKD_ENABLE_ZLIB)
 #include <zlib.h>
 #endif
 
-#if defined(T1_V2_ENABLE_PROTOBUF)
+#if defined(TICKD_ENABLE_PROTOBUF)
 #include "schema.pb.h"
 #endif
 
-namespace t1_v2 {
+namespace tickd {
 namespace {
 
 int64_t make_local_ts_ms(int year, int month, int day, int hour, int minute, int second) {
@@ -318,7 +318,7 @@ bool run_self_test() {
         wire_view.payload_size,
         gzip_out
     );
-#if defined(T1_V2_ENABLE_ZLIB)
+#if defined(TICKD_ENABLE_ZLIB)
     if (!expect(!gzip_decompress.ok, "invalid gzip payload rejected")) return false;
 
     const std::string zlib_plain = "decoded-protobuf-batch";
@@ -410,7 +410,7 @@ bool run_self_test() {
 
     ConfigV2 td_replay_local_output;
     td_replay_local_output.runtime_mode = RuntimeMode::Replay;
-    td_replay_local_output.replay.q2frame_path = "/tmp/t1_v2_p1_q2frame.jsonl";
+    td_replay_local_output.replay.q2frame_path = "/tmp/tickd_p1_q2frame.jsonl";
     td_replay_local_output.replay.write_redis = true;
     td_replay_local_output.replay.write_tdengine = true;
     td_replay_local_output.processing.dry_run = true;
@@ -551,7 +551,7 @@ bool run_self_test() {
     if (!expect(replay_record.symbol == "000070" && replay_record.market == "sz", "td replay symbol normalized")) return false;
     if (!expect(replay_record.inst_amt == source.inst_amt && replay_record.large_net == source.large_net, "td replay derived fields")) return false;
     if (!expect(replay_record.limit_band_bp == 500 && replay_record.is_st, "td replay limit metadata")) return false;
-#if defined(T1_V2_ENABLE_TDENGINE)
+#if defined(TICKD_ENABLE_TDENGINE)
     if (!expect(TdengineRowAdapter::enabled(), "tdengine adapter enabled")) return false;
 #else
     if (!expect(!TdengineRowAdapter::enabled(), "tdengine adapter disabled")) return false;
@@ -599,7 +599,7 @@ bool run_self_test() {
     if (!expect(source_batch.logical_ts_ms == source.tss, "source batch logical ts fallback")) return false;
     if (!expect(source_batch.ticks.size() == 1 && std::string(source_batch.ticks[0].symbol) == "000070", "source batch tick")) return false;
 
-#if defined(T1_V2_ENABLE_PROTOBUF)
+#if defined(TICKD_ENABLE_PROTOBUF)
     dataservice::DataBatch proto_batch;
     dataservice::DataRecord* proto_record = proto_batch.add_records();
     proto_record->set_tss(source.tss);
@@ -1373,7 +1373,7 @@ bool run_self_test() {
             std::cout << "C977 sample {" << cmd.value.substr(pos, end - pos + 1) << "}\n";
         }
     }
-#if defined(T1_V2_ENABLE_REDIS)
+#if defined(TICKD_ENABLE_REDIS)
     if (std::getenv("C977_LIVE_REDIS")) {
         ConfigV2 c977_redis_config = config; c977_redis_config.redis.host = "127.0.0.1"; c977_redis_config.redis.port = 6380; c977_redis_config.redis.db = 0;
         HiredisRedisCommandExecutor c977_executor(c977_redis_config);
@@ -1726,13 +1726,13 @@ bool run_self_test() {
     if (!expect(missing_anchor_top_is_null, "redis formal snapshot missing price is null")) return false;
     if (!expect(missing_anchor_summary_counts_unavailable,
                 "redis summary separates unavailable price count")) return false;
-#if defined(T1_V2_ENABLE_REDIS)
+#if defined(TICKD_ENABLE_REDIS)
     HiredisRedisCommandExecutor hiredis_executor(config);
     const RedisExecutionResult empty_redis_result = hiredis_executor.execute({});
     if (!expect(empty_redis_result.ok && empty_redis_result.command_count == 0, "hiredis empty execute")) return false;
     if (!expect(!hiredis_executor.is_connected(), "hiredis empty execute does not connect")) return false;
 #endif
-#if defined(T1_V2_ENABLE_RABBITMQ) && (!defined(T1_V2_ENABLE_PROTOBUF) || !defined(T1_V2_ENABLE_ZLIB))
+#if defined(TICKD_ENABLE_RABBITMQ) && (!defined(TICKD_ENABLE_PROTOBUF) || !defined(TICKD_ENABLE_ZLIB))
     RabbitMqTickSource rabbit_without_decoder(config);
     if (!expect(!rabbit_without_decoder.start(), "rabbitmq source refuses to start without full live decoder")) return false;
 #endif
@@ -1848,7 +1848,7 @@ bool run_self_test() {
     progress_input.close();
     std::remove(progress_log_path.c_str());
     if (!expect(progress_stats.ok &&
-                progress_line.find("t1_v2 progress") != std::string::npos &&
+                progress_line.find("tickd progress") != std::string::npos &&
                 progress_line.find("batches=1") != std::string::npos &&
                 progress_line.find("pipeline_ms=") != std::string::npos &&
                 progress_line.find("commit_ms=") != std::string::npos &&
@@ -2140,7 +2140,7 @@ bool run_self_test() {
     );
     if (!expect(!second_batch_td.empty() && second_batch_td.front().find("CREATE ") == std::string::npos,
                 "second td batch skips schema")) return false;
-#if defined(T1_V2_ENABLE_TDENGINE)
+#if defined(TICKD_ENABLE_TDENGINE)
     TaosTDengineCommandExecutor taos_executor(config);
     const TDengineExecutionResult empty_td_result = taos_executor.execute({});
     if (!expect(empty_td_result.ok && empty_td_result.statement_count == 0, "taos empty execute")) return false;
@@ -2161,8 +2161,8 @@ bool run_self_test() {
                 "td formal snapshot preserves missing price and change as NULL")) return false;
 
     engine.shutdown();
-    std::cout << "t1_v2 self-test passed" << std::endl;
+    std::cout << "tickd self-test passed" << std::endl;
     return true;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

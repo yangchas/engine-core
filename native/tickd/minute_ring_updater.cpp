@@ -2,7 +2,7 @@
 
 #include <ctime>
 
-namespace t1_v2 {
+namespace tickd {
 
 void MinuteRingUpdater::apply_tick(MinuteRingState& ring, const RawTick& tick) const {
     const int64_t minute_index = minute_index_of(tick.ts_ms);
@@ -69,4 +69,4 @@ MinuteSlot& MinuteRingUpdater::ensure_slot(MinuteRingState& ring, int64_t minute
     return slot;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

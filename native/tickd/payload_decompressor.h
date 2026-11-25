@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-namespace t1_v2 {
+namespace tickd {
 
 enum class PayloadCompression {
     None = 0,
@@ -32,4 +32,4 @@ private:
     static PayloadDecompressResult copy_none(const char* data, std::size_t size, std::vector<char>& out);
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

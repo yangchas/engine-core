@@ -4,7 +4,7 @@
 #include <ctime>
 #include <string>
 
-namespace t1_v2 {
+namespace tickd {
 
 inline std::string runtime_log_ts() {
     const auto now = std::chrono::system_clock::now();
@@ -20,4 +20,4 @@ inline std::string runtime_log_ts() {
     return std::string(buffer);
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

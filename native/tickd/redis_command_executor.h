@@ -7,11 +7,11 @@
 #include "redis_command_formatter.h"
 #include "redis_v2_writer.h"
 
-#if defined(T1_V2_ENABLE_REDIS)
+#if defined(TICKD_ENABLE_REDIS)
 #include <hiredis/hiredis.h>
 #endif
 
-namespace t1_v2 {
+namespace tickd {
 
 struct RedisExecutionResult {
     bool ok = true;
@@ -41,7 +41,7 @@ public:
     }
 };
 
-#if defined(T1_V2_ENABLE_REDIS)
+#if defined(TICKD_ENABLE_REDIS)
 class HiredisRedisCommandExecutor final : public IRedisCommandExecutor {
 public:
     explicit HiredisRedisCommandExecutor(const ConfigV2& config);
@@ -65,4 +65,4 @@ private:
 };
 #endif
 
-}  // namespace t1_v2
+}  // namespace tickd

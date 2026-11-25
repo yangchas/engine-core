@@ -5,7 +5,7 @@
 #include "raw_tick.h"
 #include "runtime_mode.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 class QuoteCalculator {
 public:
@@ -28,4 +28,4 @@ private:
     MinuteRingUpdater ring_reader_;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

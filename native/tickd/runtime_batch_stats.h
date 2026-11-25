@@ -6,7 +6,7 @@
 #include "redis_command_formatter.h"
 #include "source_tick_batch_builder.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 struct RuntimeBatchStats {
     uint32_t seq_no = 0;
@@ -56,4 +56,4 @@ public:
     }
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

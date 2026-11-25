@@ -7,7 +7,7 @@
 #include "runtime_mode.h"
 #include "tick_batch.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 struct SourceTickBatchBuildStats {
     uint32_t input_count = 0;
@@ -27,4 +27,4 @@ public:
     );
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

@@ -5,7 +5,7 @@
 
 #include "runtime_mode.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 struct RabbitMqConfig {
     std::string host = "localhost";
@@ -151,4 +151,4 @@ private:
     ConfigV2 config_;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

@@ -7,16 +7,16 @@
 
 #include "rabbitmq_batch_decoder.h"
 
-#if defined(T1_V2_ENABLE_RABBITMQ)
+#if defined(TICKD_ENABLE_RABBITMQ)
 #include <rabbitmq-c/tcp_socket.h>
 #include <sys/time.h>
 #endif
 
-namespace t1_v2 {
+namespace tickd {
 
 namespace {
 
-#if defined(T1_V2_ENABLE_RABBITMQ)
+#if defined(TICKD_ENABLE_RABBITMQ)
 timeval timeout_from_ms(int timeout_ms) {
     if (timeout_ms <= 0) {
         timeout_ms = 1000;
@@ -35,11 +35,11 @@ RabbitMqTickSource::RabbitMqTickSource(const ConfigV2& config) : config_(config)
 bool RabbitMqTickSource::start() {
     last_error_.clear();
     seq_no_ = 0;
-#if defined(T1_V2_ENABLE_RABBITMQ) && (!defined(T1_V2_ENABLE_PROTOBUF) || !defined(T1_V2_ENABLE_ZLIB))
+#if defined(TICKD_ENABLE_RABBITMQ) && (!defined(TICKD_ENABLE_PROTOBUF) || !defined(TICKD_ENABLE_ZLIB))
     last_error_ = "RabbitMqTickSource requires --with-protobuf and --with-zlib before consuming live messages";
     started_ = false;
     return false;
-#elif defined(T1_V2_ENABLE_RABBITMQ)
+#elif defined(TICKD_ENABLE_RABBITMQ)
     started_ = connect();
     return started_;
 #else
@@ -62,7 +62,7 @@ TickSourceResult RabbitMqTickSource::next_batch() {
         return result;
     }
 
-#if defined(T1_V2_ENABLE_RABBITMQ)
+#if defined(TICKD_ENABLE_RABBITMQ)
     if ((!conn_ || !consumer_started_) && !connect()) {
         TickSourceResult result;
         result.status = TickSourceStatus::Empty;
@@ -142,7 +142,7 @@ TickSourceResult RabbitMqTickSource::next_batch() {
 }
 
 bool RabbitMqTickSource::ack(const TickSourceResult& result) {
-#if defined(T1_V2_ENABLE_RABBITMQ)
+#if defined(TICKD_ENABLE_RABBITMQ)
     if (conn_ && result.requires_ack && result.delivery_tag > 0) {
         const int status = amqp_basic_ack(conn_, 1, result.delivery_tag, 0);
         if (status == AMQP_STATUS_OK) {
@@ -159,7 +159,7 @@ bool RabbitMqTickSource::ack(const TickSourceResult& result) {
 }
 
 bool RabbitMqTickSource::reject(const TickSourceResult& result, bool requeue) {
-#if defined(T1_V2_ENABLE_RABBITMQ)
+#if defined(TICKD_ENABLE_RABBITMQ)
     if (conn_ && result.requires_ack && result.delivery_tag > 0) {
         const int status = amqp_basic_reject(conn_, 1, result.delivery_tag, requeue ? 1 : 0);
         if (status == AMQP_STATUS_OK) {
@@ -177,8 +177,8 @@ bool RabbitMqTickSource::reject(const TickSourceResult& result, bool requeue) {
 }
 
 bool RabbitMqTickSource::connect() {
-#if defined(T1_V2_ENABLE_RABBITMQ)
-#if !defined(T1_V2_ENABLE_PROTOBUF) || !defined(T1_V2_ENABLE_ZLIB)
+#if defined(TICKD_ENABLE_RABBITMQ)
+#if !defined(TICKD_ENABLE_PROTOBUF) || !defined(TICKD_ENABLE_ZLIB)
     last_error_ = "RabbitMqTickSource requires --with-protobuf and --with-zlib before consuming live messages";
     return false;
 #endif
@@ -252,7 +252,7 @@ bool RabbitMqTickSource::connect() {
 }
 
 void RabbitMqTickSource::disconnect() {
-#if defined(T1_V2_ENABLE_RABBITMQ)
+#if defined(TICKD_ENABLE_RABBITMQ)
     consumer_started_ = false;
     if (conn_) {
         amqp_connection_close(conn_, AMQP_REPLY_SUCCESS);
@@ -263,7 +263,7 @@ void RabbitMqTickSource::disconnect() {
 }
 
 bool RabbitMqTickSource::start_consumer() {
-#if defined(T1_V2_ENABLE_RABBITMQ)
+#if defined(TICKD_ENABLE_RABBITMQ)
     if (!conn_) {
         last_error_ = "RabbitMQ consumer start failed: no connection";
         return false;
@@ -321,4 +321,4 @@ void RabbitMqTickSource::set_error(const char* prefix, const char* detail) {
     }
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

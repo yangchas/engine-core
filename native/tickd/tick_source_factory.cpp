@@ -4,7 +4,7 @@
 #include "td_replay_tick_source.h"
 #include "tickpack_tick_source.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 std::unique_ptr<ITickSource> TickSourceFactory::create(const ConfigV2& config) {
     if (config.runtime_mode == RuntimeMode::Replay) {
@@ -16,4 +16,4 @@ std::unique_ptr<ITickSource> TickSourceFactory::create(const ConfigV2& config) {
     return std::make_unique<RabbitMqTickSource>(config);
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

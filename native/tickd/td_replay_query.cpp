@@ -3,7 +3,7 @@
 #include <ctime>
 #include <sstream>
 
-namespace t1_v2 {
+namespace tickd {
 namespace {
 
 bool is_v2_tick_table(const std::string& table) {
@@ -95,4 +95,4 @@ bool TdReplayQueryBuilder::is_safe_table_name(const std::string& table) {
     return true;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

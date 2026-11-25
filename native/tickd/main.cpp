@@ -11,7 +11,7 @@
 #include "tick_source_factory.h"
 
 int main(int argc, char* argv[]) {
-    using namespace t1_v2;
+    using namespace tickd;
 
     ConfigManagerV2& manager = ConfigManagerV2::instance();
     CommandLineParseResult parse_result = manager.apply_command_line(argc, argv);
@@ -47,14 +47,14 @@ int main(int argc, char* argv[]) {
     if (local_replay_output) {
         replay_executor = std::make_unique<Q2FrameCommandExecutor>(config);
     }
-#if defined(T1_V2_ENABLE_REDIS)
+#if defined(TICKD_ENABLE_REDIS)
     HiredisRedisCommandExecutor live_redis_executor(config);
 #else
     NullRedisCommandExecutor live_redis_executor;
 #endif
     IRedisCommandExecutor& redis_executor = replay_executor ? *replay_executor : live_redis_executor;
 
-#if defined(T1_V2_ENABLE_TDENGINE)
+#if defined(TICKD_ENABLE_TDENGINE)
     TaosTDengineCommandExecutor tdengine_executor(config);
 #else
     NullTDengineCommandExecutor tdengine_executor;
@@ -66,7 +66,7 @@ int main(int argc, char* argv[]) {
     RuntimeLoop loop(config, std::move(source), redis_executor, tdengine_executor, options);
     const RuntimeLoopStats stats = loop.run();
     if (!stats.ok) {
-        std::cerr << runtime_log_ts() << " | t1_v2 fatal"
+        std::cerr << runtime_log_ts() << " | tickd fatal"
                   << " | stage=" << (stats.failure_stage.empty() ? "-" : stats.failure_stage)
                   << " | error=" << (stats.error.empty() ? "-" : stats.error)
                   << " | source_error=" << (stats.source_error.empty() ? "-" : stats.source_error)
@@ -93,7 +93,7 @@ int main(int argc, char* argv[]) {
         return 3;
     }
     if (config.logging.verbose) {
-        std::cout << runtime_log_ts() << " | t1_v2 summary | batches=" << stats.batches
+        std::cout << runtime_log_ts() << " | tickd summary | batches=" << stats.batches
                   << " | source_in=" << stats.source_input
                   << " | source_reject=" << stats.source_rejected
                   << " | ack=" << stats.source_acks

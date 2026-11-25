@@ -8,7 +8,7 @@
 
 | 服务 | 管理方式 | 运行路径 | 职责 |
 |---|---|---|---|
-| **`t1-v2-live.service`** | systemd | `/home/exedev/services/t1-v2/current/content/bin/t1_v2` | 由 `native/tickd/` 编译发布，实时写 Redis `q2:*`（含 `b1a/a1a`）与 TD `stock_tick_v2` |
+| **`tickd.service`** | systemd | `/home/exedev/services/tickd/current/content/bin/tickd` | 由 `native/tickd/` 编译发布，实时写 Redis `q2:*`（含 `b1a/a1a`）与 TD `stock_tick_v2` |
 | **`guardiand`** | `supervisor.sh` + `@reboot keepalive.sh` | `/home/exedev/core-data/guardian-native/guardiand` | 读取 `config.json`，调用 `/home/exedev/repos/engine_core-live` 执行全天 117 个编排事件 |
 
 关键目录边界：

@@ -47,7 +47,7 @@ engine_core/
 │   └── q2.py                 # Redis q2:* 实时行情适配（含 b1a/a1a 一档挂单金额）
 ├── native/
 │   ├── guardiand/            # Go 原生任务编排器源码与配置生成工具
-│   └── tickd/                # C++17 实时行情采集与盘口计算引擎（原 t1_v2）
+│   └── tickd/                # C++17 实时行情采集与盘口计算引擎
 ├── examples/                 # 生产入口脚本（guardian_handler.py / run_daily_reports.py 等）
 ├── tests/                    # 单元与真实数据契约回归测试
 └── docs/                     # 架构说明（ARCHITECTURE.md）与专题技术文档

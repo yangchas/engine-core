@@ -9,7 +9,7 @@
 
 #include "runtime_log.h"
 
-namespace t1_v2 {
+namespace tickd {
 namespace {
 
 int64_t system_wall_clock_ms() {
@@ -24,7 +24,7 @@ std::string build_progress_line(const RuntimeLoopStats& stats) {
         : 0;
     std::ostringstream line;
     line << runtime_log_ts()
-         << " | t1_v2 progress"
+         << " | tickd progress"
          << " | batches=" << stats.batches
          << " | source_in=" << stats.source_input
          << " | source_reject=" << stats.source_rejected
@@ -143,7 +143,7 @@ RuntimeLoopStats RuntimeLoop::run() {
     if (config_.logging.verbose) {
         const bool local_q2frame_replay = config_.runtime_mode == RuntimeMode::Replay &&
             !config_.replay.q2frame_path.empty();
-        std::cout << runtime_log_ts() << " | t1_v2 preflight | mode="
+        std::cout << runtime_log_ts() << " | tickd preflight | mode="
                   << (config_.runtime_mode == RuntimeMode::Replay ? "replay" : "live")
                   << " | redis=" << (local_q2frame_replay ? "skip" : (
                         preflight.redis_checked
@@ -487,7 +487,7 @@ RuntimeLoopStats RuntimeLoop::run() {
 
         if (consecutive_failures > 0 && config_.logging.verbose) {
             std::cout << runtime_log_ts()
-                      << " | t1_v2 recovered"
+                      << " | tickd recovered"
                       << " | after_failures=" << consecutive_failures
                       << " | batches=" << stats.batches + 1
                       << std::endl;
@@ -581,7 +581,7 @@ void RuntimeLoop::sleep_after_failure(uint32_t consecutive_failures) const {
 
 void RuntimeLoop::log_transient_failure(const char* stage, const std::string& error, uint32_t consecutive_failures) const {
     std::cerr << runtime_log_ts()
-              << " | t1_v2 transient"
+              << " | tickd transient"
               << " | stage=" << (stage ? stage : "-")
               << " | consecutive=" << consecutive_failures
               << " | error=" << (error.empty() ? "-" : error)
@@ -605,7 +605,7 @@ void RuntimeLoop::try_full_recovery(uint32_t consecutive_failures) {
         should_preflight_tdengine()
     );
     std::cerr << runtime_log_ts()
-              << " | t1_v2 reset"
+              << " | tickd reset"
               << " | threshold=" << transient_reset_threshold()
               << " | consecutive=" << consecutive_failures
               << " | redis=" << (recheck.redis_checked ? (recheck.redis.ok ? "ok" : "fail") : "skip")
@@ -615,10 +615,10 @@ void RuntimeLoop::try_full_recovery(uint32_t consecutive_failures) {
     source_->stop();
     const bool restarted = source_->start();
     std::cerr << runtime_log_ts()
-              << " | t1_v2 source_restart"
+              << " | tickd source_restart"
               << " | ok=" << (restarted ? "yes" : "no")
               << " | error=" << (source_->error_message().empty() ? "-" : source_->error_message())
               << std::endl;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

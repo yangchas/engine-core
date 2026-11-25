@@ -5,7 +5,7 @@
 #include <cmath>
 #include <cstring>
 
-namespace t1_v2 {
+namespace tickd {
 
 namespace {
 
@@ -145,4 +145,4 @@ bool RawTickConverter::copy_market(const std::string& market, char (&out)[8]) {
     return true;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

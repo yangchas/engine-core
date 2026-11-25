@@ -2,11 +2,11 @@
 
 #include <cstddef>
 
-#if defined(T1_V2_ENABLE_ZLIB)
+#if defined(TICKD_ENABLE_ZLIB)
 #include <zlib.h>
 #endif
 
-namespace t1_v2 {
+namespace tickd {
 
 PayloadCompression PayloadDecompressor::parse_compression(const std::string& text) {
     if (text == "NONE" || text == "none" || text == "0") {
@@ -36,7 +36,7 @@ PayloadDecompressResult PayloadDecompressor::decompress(
         return copy_none(data, size, out);
     }
 
-#if defined(T1_V2_ENABLE_ZLIB)
+#if defined(TICKD_ENABLE_ZLIB)
     if (compression != PayloadCompression::Gzip && compression != PayloadCompression::Deflate) {
         return {false, false, "unknown compression"};
     }
@@ -81,4 +81,4 @@ PayloadDecompressResult PayloadDecompressor::copy_none(const char* data, std::si
     return {!out.empty(), false, out.empty() ? "empty payload" : ""};
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

@@ -10,7 +10,7 @@
 #include "source_tick_batch_builder.h"
 #include "tdengine_row_adapter.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 std::size_t replay_timestamp_group_size(const std::vector<SourceTickRecord>& records) {
     if (records.empty()) {
@@ -70,7 +70,7 @@ TickSourceResult TdReplayTickSource::next_batch() {
 }
 
 bool TdReplayTickSource::connect() {
-#if defined(T1_V2_ENABLE_TDENGINE)
+#if defined(TICKD_ENABLE_TDENGINE)
     conn_ = taos_connect(
         config_.tdengine.host.c_str(),
         config_.tdengine.user.c_str(),
@@ -90,7 +90,7 @@ bool TdReplayTickSource::connect() {
 }
 
 void TdReplayTickSource::disconnect() {
-#if defined(T1_V2_ENABLE_TDENGINE)
+#if defined(TICKD_ENABLE_TDENGINE)
     if (conn_) {
         taos_close(conn_);
         conn_ = nullptr;
@@ -99,7 +99,7 @@ void TdReplayTickSource::disconnect() {
 }
 
 TickSourceResult TdReplayTickSource::query_next_slice() {
-#if defined(T1_V2_ENABLE_TDENGINE)
+#if defined(TICKD_ENABLE_TDENGINE)
     const ReplaySlice slice = scheduler_.next();
     if (!slice.valid) {
         TickSourceResult result;
@@ -235,4 +235,4 @@ TickSourceResult TdReplayTickSource::emit_pending_batch() {
     return result;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

@@ -21,7 +21,7 @@ Usage: ./make.sh [options]
 
 Default:
   Build the production binary with zlib/protobuf/TDengine/Redis/RabbitMQ enabled
-  and write /tmp/t1_v2_all_live.
+  and write /tmp/tickd.
 
 Options:
   --self-test        Build, then run built-in semantic checks
@@ -77,9 +77,9 @@ done
 
 if [[ -z "$OUT" ]]; then
     if [[ "$WITH_ZLIB" == "1" && "$WITH_PROTOBUF" == "1" && "$WITH_TDENGINE" == "1" && "$WITH_REDIS" == "1" && "$WITH_RABBITMQ" == "1" ]]; then
-        OUT="/tmp/t1_v2_all_live"
+        OUT="/tmp/tickd"
     else
-        OUT="/tmp/t1_v2"
+        OUT="/tmp/tickd"
     fi
 fi
 
@@ -115,29 +115,29 @@ LDFLAGS_ARR+=(-lcrypto)
 SOURCES=("$ROOT_DIR"/*.cpp)
 
 if [[ "$WITH_ZLIB" == "1" ]]; then
-    CXXFLAGS_ARR+=(-DT1_V2_ENABLE_ZLIB)
+    CXXFLAGS_ARR+=(-DTICKD_ENABLE_ZLIB)
     LDFLAGS_ARR+=(-lz)
 fi
 
 if [[ "$WITH_PROTOBUF" == "1" ]]; then
     generate_protobuf_sources
-    CXXFLAGS_ARR+=(-DT1_V2_ENABLE_PROTOBUF -I /usr/local/protobuf/include -I "$ROOT_DIR")
+    CXXFLAGS_ARR+=(-DTICKD_ENABLE_PROTOBUF -I /usr/local/protobuf/include -I "$ROOT_DIR")
     LDFLAGS_ARR+=(-L/usr/local/protobuf/lib -lprotobuf -Wl,-rpath,/usr/local/protobuf/lib)
     SOURCES+=("$ROOT_DIR/schema.pb.cc")
 fi
 
 if [[ "$WITH_TDENGINE" == "1" ]]; then
-    CXXFLAGS_ARR+=(-DT1_V2_ENABLE_TDENGINE -I /usr/local/taos/include)
+    CXXFLAGS_ARR+=(-DTICKD_ENABLE_TDENGINE -I /usr/local/taos/include)
     LDFLAGS_ARR+=(-ltaos)
 fi
 
 if [[ "$WITH_REDIS" == "1" ]]; then
-    CXXFLAGS_ARR+=(-DT1_V2_ENABLE_REDIS -I /usr/local/include)
+    CXXFLAGS_ARR+=(-DTICKD_ENABLE_REDIS -I /usr/local/include)
     LDFLAGS_ARR+=(-L/usr/local/lib -lhiredis -Wl,-rpath,/usr/local/lib)
 fi
 
 if [[ "$WITH_RABBITMQ" == "1" ]]; then
-    CXXFLAGS_ARR+=(-DT1_V2_ENABLE_RABBITMQ -I /usr/local/include)
+    CXXFLAGS_ARR+=(-DTICKD_ENABLE_RABBITMQ -I /usr/local/include)
     LDFLAGS_ARR+=(-L/usr/local/lib64 -lrabbitmq -Wl,-rpath,/usr/local/lib64)
 fi
 

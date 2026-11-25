@@ -5,7 +5,7 @@
 
 #include "raw_tick_converter.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 struct ProtobufDecodeResult {
     bool ok = false;
@@ -23,4 +23,4 @@ public:
     );
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

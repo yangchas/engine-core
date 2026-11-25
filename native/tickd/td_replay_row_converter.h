@@ -6,7 +6,7 @@
 
 #include "raw_tick_converter.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 enum class TdReplayCellKind : uint8_t {
     Null = 0,
@@ -86,4 +86,4 @@ private:
     static void apply_exchange_defaults(SourceTickRecord& record);
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

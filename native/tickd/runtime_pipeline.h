@@ -9,7 +9,7 @@
 #include "runtime_batch_stats.h"
 #include "tdengine_v2_writer.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 struct RuntimePipelineResult {
     EngineProcessStats engine_stats;
@@ -41,4 +41,4 @@ private:
     int64_t last_runtime_redis_ts_ms_ = 0;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

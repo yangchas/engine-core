@@ -5,7 +5,7 @@
 
 #include "config_v2.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 struct ReplaySlice {
     int64_t start_ms = 0;
@@ -32,4 +32,4 @@ private:
     bool finished_ = true;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

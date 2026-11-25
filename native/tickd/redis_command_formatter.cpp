@@ -2,7 +2,7 @@
 
 #include <utility>
 
-namespace t1_v2 {
+namespace tickd {
 
 namespace {
 
@@ -188,4 +188,4 @@ std::size_t RedisCommandFormatter::command_payload_bytes(const RedisArgvCommand&
     return total;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

@@ -2,7 +2,7 @@
 
 #include <cstdlib>
 
-namespace t1_v2 {
+namespace tickd {
 
 void TickDeltaCalculator::apply_tick(
     QuoteState& state,
@@ -61,4 +61,4 @@ int64_t TickDeltaCalculator::signed_large_net(
     return current_px_milli > previous_px_milli ? inst_amt_yuan : -inst_amt_yuan;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

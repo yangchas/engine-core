@@ -4,7 +4,7 @@
 #include <iomanip>
 #include <sstream>
 
-namespace t1_v2 {
+namespace tickd {
 
 ReplaySliceScheduler::ReplaySliceScheduler(const ConfigV2& config) : config_(config) {}
 
@@ -62,4 +62,4 @@ int64_t ReplaySliceScheduler::parse_local_time_ms(const std::string& text) {
     return static_cast<int64_t>(seconds) * 1000;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

@@ -4,7 +4,7 @@
 
 #include "runtime_mode.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 struct AuctionFullCutoff {
     int64_t ts_ms = 0;
@@ -40,4 +40,4 @@ struct AuctionState {
     LimitState limit_state = LimitState::Normal;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

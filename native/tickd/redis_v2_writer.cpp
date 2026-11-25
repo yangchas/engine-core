@@ -17,7 +17,7 @@
 #include "auction_calculator.h"
 #include "runtime_batch_stats.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 namespace {
 
@@ -975,4 +975,4 @@ std::string RedisV2Writer::sha256_hex(const std::string& value) {
     return out.str();
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

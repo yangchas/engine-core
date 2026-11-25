@@ -6,7 +6,7 @@
 
 #include "redis_v2_writer.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 struct RedisArgvCommand {
     std::vector<std::string> argv;
@@ -35,4 +35,4 @@ private:
     static std::size_t command_payload_bytes(const RedisArgvCommand& command);
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

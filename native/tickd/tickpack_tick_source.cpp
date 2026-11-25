@@ -6,7 +6,7 @@
 
 #include "source_tick_batch_builder.h"
 
-namespace t1_v2 {
+namespace tickd {
 namespace {
 
 const char* kHeader =
@@ -266,4 +266,4 @@ bool TickPackTickSource::parse_bool(const std::string& text, bool& out) {
     return false;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

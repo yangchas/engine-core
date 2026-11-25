@@ -2,7 +2,7 @@
 
 #include <ctime>
 
-namespace t1_v2 {
+namespace tickd {
 
 namespace {
 
@@ -132,4 +132,4 @@ int SnapshotTrigger::trade_date_from_timestamp_ms(int64_t ts_ms) const {
     return (market_tm.tm_year + 1900) * 10000 + (market_tm.tm_mon + 1) * 100 + market_tm.tm_mday;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

@@ -1,6 +1,6 @@
 #include "dirty_marker.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 uint32_t DirtyMarker::mark_after_tick(
     QuoteState& state,
@@ -51,4 +51,4 @@ uint32_t DirtyMarker::mark_after_tick(
     return mask;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

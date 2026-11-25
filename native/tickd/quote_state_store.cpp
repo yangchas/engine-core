@@ -2,7 +2,7 @@
 
 #include <cstring>
 
-namespace t1_v2 {
+namespace tickd {
 
 QuoteStateStore::QuoteStateStore(std::size_t reserve_symbols) {
     states_.reserve(reserve_symbols);
@@ -43,4 +43,4 @@ void QuoteStateStore::begin_batch() {
     last_batch_symbol_count_ = 0;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

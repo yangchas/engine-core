@@ -6,7 +6,7 @@
 #include "raw_tick.h"
 #include "runtime_mode.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 class TickDeltaCalculator {
 public:
@@ -24,4 +24,4 @@ private:
     );
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

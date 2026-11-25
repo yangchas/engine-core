@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace t1_v2 {
+namespace tickd {
 
 struct MinuteSlot {
     int64_t minute_index = -1;
@@ -18,4 +18,4 @@ struct MinuteRingState {
     int64_t latest_minute = -1;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

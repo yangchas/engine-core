@@ -7,7 +7,7 @@
 #include "minute_ring.h"
 #include "runtime_mode.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 struct QuoteState {
     char symbol[7] = {0};
@@ -52,4 +52,4 @@ struct QuoteState {
     bool auction_fields_reset_pending = false;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

@@ -8,11 +8,11 @@
 #include "td_replay_query.h"
 #include "tick_source.h"
 
-#if defined(T1_V2_ENABLE_TDENGINE)
+#if defined(TICKD_ENABLE_TDENGINE)
 #include <taos.h>
 #endif
 
-namespace t1_v2 {
+namespace tickd {
 
 std::size_t replay_timestamp_group_size(const std::vector<SourceTickRecord>& records);
 
@@ -46,9 +46,9 @@ private:
     uint32_t pending_raw_input_count_ = 0;
     uint32_t pending_total_accepted_count_ = 0;
 
-#if defined(T1_V2_ENABLE_TDENGINE)
+#if defined(TICKD_ENABLE_TDENGINE)
     TAOS* conn_ = nullptr;
 #endif
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

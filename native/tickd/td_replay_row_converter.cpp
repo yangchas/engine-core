@@ -4,7 +4,7 @@
 #include <cctype>
 #include <utility>
 
-namespace t1_v2 {
+namespace tickd {
 
 TdReplayCell TdReplayCell::null() {
     return {};
@@ -234,4 +234,4 @@ void TdReplayRowConverter::apply_exchange_defaults(SourceTickRecord& record) {
     }
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

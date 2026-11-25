@@ -1,6 +1,6 @@
 #include "engine_core.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 EngineCore::EngineCore(const ConfigV2& config) : config_(config) {}
 
@@ -182,4 +182,4 @@ QuoteStateStore& EngineCore::mutable_quote_store() {
     return *quote_store_;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

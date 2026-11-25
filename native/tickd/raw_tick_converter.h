@@ -5,7 +5,7 @@
 
 #include "raw_tick.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 // SourceTickRecord mirrors the decoded DataRecord / old stock_data row fields.
 // It deliberately avoids protobuf and TDengine headers so conversion can be
@@ -51,4 +51,4 @@ public:
     static bool copy_market(const std::string& market, char (&out)[8]);
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

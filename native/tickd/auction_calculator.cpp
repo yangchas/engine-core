@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <ctime>
 
-namespace t1_v2 {
+namespace tickd {
 namespace {
 
 constexpr int64_t kBoardLotShares = 100;
@@ -230,4 +230,4 @@ int AuctionCalculator::hms_from_timestamp_ms(int64_t ts_ms) const {
     return local_tm.tm_hour * 10000 + local_tm.tm_min * 100 + local_tm.tm_sec;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

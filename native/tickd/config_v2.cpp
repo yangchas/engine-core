@@ -3,7 +3,7 @@
 #include <cstdlib>
 #include <sstream>
 
-namespace t1_v2 {
+namespace tickd {
 
 bool configure_local_replay_output(ConfigV2& config) {
     if (config.runtime_mode != RuntimeMode::Replay || config.replay.q2frame_path.empty()) {
@@ -294,4 +294,4 @@ std::string ConfigManagerV2::read_env_string(const char* key, const std::string&
     return value ? std::string(value) : fallback;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

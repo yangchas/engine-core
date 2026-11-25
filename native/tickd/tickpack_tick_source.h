@@ -9,7 +9,7 @@
 #include "raw_tick_converter.h"
 #include "tick_source.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 class TickPackTickSource final : public ITickSource {
 public:
@@ -50,4 +50,4 @@ private:
     std::string last_error_;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

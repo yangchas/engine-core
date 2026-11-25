@@ -1,7 +1,7 @@
 #pragma once
 
-namespace t1_v2 {
+namespace tickd {
 
 bool run_self_test();
 
-}  // namespace t1_v2
+}  // namespace tickd

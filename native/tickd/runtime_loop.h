@@ -9,7 +9,7 @@
 #include "runtime_pipeline.h"
 #include "tick_source.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 struct RuntimeLoopOptions {
     // 0 means unlimited. Tests can set this to prevent an accidental busy loop.
@@ -90,4 +90,4 @@ private:
     RuntimeLoopOptions options_;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

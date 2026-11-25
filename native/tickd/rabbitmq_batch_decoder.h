@@ -6,7 +6,7 @@
 #include "rabbitmq_wire_message.h"
 #include "source_tick_batch_builder.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 struct RabbitMqBatchDecodeResult {
     bool ok = false;
@@ -25,4 +25,4 @@ public:
     );
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

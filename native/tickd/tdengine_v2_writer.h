@@ -8,7 +8,7 @@
 #include "snapshot_trigger.h"
 #include "tick_batch.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 class TDengineV2Writer {
 public:
@@ -60,4 +60,4 @@ private:
     bool schema_emitted_ = false;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

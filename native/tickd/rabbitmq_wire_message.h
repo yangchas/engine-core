@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace t1_v2 {
+namespace tickd {
 
 struct RabbitMqWireHeader {
     std::string proto_version;
@@ -35,4 +35,4 @@ private:
     static int64_t extract_i64(const std::string& json, const char* key);
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

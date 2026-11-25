@@ -2,7 +2,7 @@
 
 #include <ctime>
 
-namespace t1_v2 {
+namespace tickd {
 
 MarketPhase PhaseResolver::resolve(int64_t logical_ts_ms) const {
     if (is_auction(logical_ts_ms)) {
@@ -42,4 +42,4 @@ int PhaseResolver::hms_from_timestamp_ms(int64_t ts_ms) {
     return local_tm.tm_hour * 10000 + local_tm.tm_min * 100 + local_tm.tm_sec;
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

@@ -6,7 +6,7 @@
 
 #include "redis_command_executor.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 // A concrete replay-only executor. It consumes the existing RedisCommand
 // representation and writes Q2Frame JSONL without opening Redis.
@@ -36,4 +36,4 @@ private:
     uint32_t seq_no_ = 0;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

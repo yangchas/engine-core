@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace t1_v2 {
+namespace tickd {
 
 struct RawTick {
     char symbol[7] = {0};
@@ -37,4 +37,4 @@ struct RawTick {
     bool is_st = false;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

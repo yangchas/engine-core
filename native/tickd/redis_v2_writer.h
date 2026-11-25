@@ -10,7 +10,7 @@
 #include "quote_state_store.h"
 #include "snapshot_trigger.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 struct RuntimeBatchStats;
 
@@ -111,4 +111,4 @@ private:
     bool initialized_ = false;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

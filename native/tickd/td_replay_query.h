@@ -5,7 +5,7 @@
 
 #include "config_v2.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 class TdReplayQueryBuilder {
 public:
@@ -22,4 +22,4 @@ private:
     ConfigV2 config_;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

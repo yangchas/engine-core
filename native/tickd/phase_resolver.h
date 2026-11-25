@@ -4,7 +4,7 @@
 
 #include "runtime_mode.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 class PhaseResolver {
 public:
@@ -16,4 +16,4 @@ private:
     static int hms_from_timestamp_ms(int64_t ts_ms);
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

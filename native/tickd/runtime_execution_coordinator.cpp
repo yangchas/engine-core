@@ -1,6 +1,6 @@
 #include "runtime_execution_coordinator.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 RuntimeExecutionCoordinator::RuntimeExecutionCoordinator(
     IRedisCommandExecutor& redis_executor,
@@ -68,4 +68,4 @@ void RuntimeExecutionCoordinator::reset_all_connections() {
     tdengine_executor_.reset_connection();
 }
 
-}  // namespace t1_v2
+}  // namespace tickd

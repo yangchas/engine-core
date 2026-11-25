@@ -3,7 +3,7 @@ set -euo pipefail
 
 TRADE_DATE="${1:-${TRADE_DATE:-$(date -d 'last friday' +%F)}}"
 REPLAY_TABLE="${REPLAY_TABLE:-stock_data}"
-BIN="${BIN:-/tmp/t1_v2_all_live}"
+BIN="${BIN:-/tmp/tickd}"
 TOP_N="${REDIS_AUCTION_TOP_N:-200}"
 START_TIME="${REPLAY_START_TIME:-$TRADE_DATE 09:20:00}"
 END_TIME="${REPLAY_END_TIME:-$TRADE_DATE 09:25:06}"

@@ -6,7 +6,7 @@
 #include "raw_tick.h"
 #include "runtime_mode.h"
 
-namespace t1_v2 {
+namespace tickd {
 
 struct TickBatch {
     RuntimeMode mode = RuntimeMode::Live;
@@ -16,4 +16,4 @@ struct TickBatch {
     std::vector<RawTick> ticks;
 };
 
-}  // namespace t1_v2
+}  // namespace tickd

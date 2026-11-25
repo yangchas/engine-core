@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <sstream>
 
-namespace t1_v2 {
+namespace tickd {
 
 Q2FrameCommandExecutor::Q2FrameCommandExecutor(const ConfigV2& config) : config_(config) {}
 
@@ -233,4 +233,4 @@ std::string Q2FrameCommandExecutor::build_frame(
     return json.str();
 }
 
-}  // namespace t1_v2
+}  // namespace tickd
