@@ -1587,10 +1587,26 @@ def _render_close_v3_board(report: Mapping[str, Any], trade_date: str) -> tuple[
     lu_ld_html = (f'<span style="color:#bc3541">{int(lu)}</span> / <span style="color:#16875b">{int(ld)}</span>'
                   if isinstance(lu, (int, float)) and isinstance(ld, (int, float)) else '—')
 
+    yp_closure = mapping(report.get('yest_pool_closure'))
+    if yp_closure and yp_closure.get('count'):
+        yp_auc = pct(yp_closure.get('auction_mean_pct'))
+        yp_cls = pct(yp_closure.get('close_mean_pct'))
+        yp_prom = yp_closure.get('promoted_count', '—')
+        yp_cnt = yp_closure.get('count', '—')
+        card3_title = '昨涨停接力闭环'
+        card3_val = (f'{yp_auc} → {yp_cls}<br>'
+                     f'<span style="font-size:11px;color:#667085;font-weight:400">晋级 {yp_prom}/{yp_cnt}</span>')
+        yp_c_num = number(yp_closure.get('close_mean_pct'))
+        card3_color = '#bc3541' if yp_c_num is not None and yp_c_num > 0 else '#16875b' if yp_c_num is not None and yp_c_num < 0 else '#e69a38'
+    else:
+        card3_title = '额Top20红盘'
+        card3_val = top20_text
+        card3_color = '#e69a38'
+
     cards = [
         ('全天成交额', f'{amt_text}<br><span style="font-size:11px;color:#667085;font-weight:400">竞价 {auc_amt}</span>', '#d44c4c'),
-        ('涨跌 & 收盘中位', f'{up_down_html}<br><span style="font-size:11px;color:#667085;font-weight:400">中位 {close_med}</span>', '#53677e'),
-        ('额Top20红盘', top20_text, '#e69a38'),
+        ('竞价 → 收盘中位', f'{auction_med} → {close_med}<br><span style="font-size:11px;color:#667085;font-weight:400">{up_down_html}</span>', '#53677e'),
+        (card3_title, card3_val, card3_color),
         ('涨停 / 跌停（价代）', lu_ld_html, '#35a77b'),
     ]
     card_html = ''.join(
@@ -1600,19 +1616,79 @@ def _render_close_v3_board(report: Mapping[str, Any], trade_date: str) -> tuple[
     )
 
     plates_obj = mapping(report.get('plates'))
-    top_plates = [r for r in (_rows(plates_obj.get('close_top10')) or _rows(plates_obj.get('auction_amount_top10')))
-                  if 'ST' not in str(r.get('name') or '').upper()][:5]
-    plate_rows = [
-        [_esc(r.get('name') or '—'),
-         str(int(r['members'])) if isinstance(r.get('members'), (int, float)) else '—',
-         f'{pct(r.get("p0925_mean"))} → <b style="color:#bc3541">{pct(r.get("close_mean"))}</b>']
-        for r in top_plates
-    ]
+    bucket_closure = _rows(report.get('auction_bucket_closure'))
+    first_boards = _rows(report.get('today_first_boards'))
     bottom_plates = [r for r in _rows(plates_obj.get('close_bottom10'))
                      if 'ST' not in str(r.get('name') or '').upper()][:4]
     bleeding_pills = ' ｜ '.join(
         f'{_esc(r.get("name") or "—")} {pct(r.get("close_mean"))}' for r in bottom_plates
     ) or '暂无重灾板块数据'
+
+    if bucket_closure:
+        verdict_styles = {
+            '兑现加强': ('#bb3541', '#fff0f0', '🔥'),
+            '弱转强修复': ('#1d4ed8', '#eff6ff', '🔄'),
+            '高开回落': ('#bd6a20', '#fff4e5', '⚠️'),
+            '持续失血': ('#16875b', '#eaf8ef', '🩸'),
+            '震荡延续': ('#53677e', '#f2f5f8', '➖'),
+        }
+        c_rows = []
+        for b in bucket_closure[:10]:
+            rk = b.get('rank')
+            rk_tag = f'#{rk} ' if rk is not None else ''
+            a_p = b.get('auction_weighted_pct') if b.get('auction_weighted_pct') is not None else b.get('auction_mean_pct')
+            c_p = b.get('close_weighted_pct') if b.get('close_weighted_pct') is not None else b.get('close_mean_pct')
+            c_num = number(c_p)
+            c_col = '#bc3541' if c_num is not None and c_num > 0 else '#16875b' if c_num is not None and c_num < 0 else '#53677e'
+            d_pp = pp(b.get('delta_pp'))
+            lu_c = b.get('close_limit_up_count')
+            ld_c = b.get('close_limit_down_count')
+            lu_ld_cell = (f'<span style="color:#bc3541">{int(lu_c)}</span>/<span style="color:#16875b">{int(ld_c)}</span>'
+                          if isinstance(lu_c, (int, float)) and isinstance(ld_c, (int, float)) else '—')
+            v = str(b.get('verdict') or '震荡延续')
+            vc, vbg, vicon = verdict_styles.get(v, ('#53677e', '#f2f5f8', '➖'))
+            top1_n = str(b.get('top1_name') or '').strip()
+            top1_str = f'{_esc(top1_n)} {pct(b.get("top1_close_pct"))}' if top1_n else ''
+            badge = f'<span style="display:inline-block;padding:2px 6px;border-radius:4px;background:{vbg};color:{vc};font-size:12px;font-weight:700">{vicon} {_esc(v)}</span>'
+            c_rows.append([
+                f'<b>{_esc(rk_tag + str(b.get("name") or "—"))}</b>',
+                _amount_with_unit(b.get('auction_amount_yuan')),
+                f'{pct(a_p)} → <b style="color:{c_col}">{pct(c_p)}</b> <span style="font-size:11px;color:#667085">({d_pp})</span>',
+                lu_ld_cell,
+                f'{badge}' + (f'<br><span style="font-size:11px;color:#53677e">{top1_str}</span>' if top1_str else ''),
+            ])
+        plate_section_title = '① 竞价分桶 → 收盘闭环验收（09:26 Top10）'
+        plate_table_html = table(['竞价分桶', '竞价额', '竞价 → 收盘(Δ)', '涨/跌停', '闭环定性·龙头'], c_rows, 'close-plate-row')
+        # Highlight intraday emerging 1st-board themes outside auction Top 10
+        fb_counts: dict[str, int] = {}
+        for fb in first_boards:
+            th = str(fb.get('main_plate') or '').strip()
+            if th and th != '未归类':
+                fb_counts[th] = fb_counts.get(th, 0) + 1
+        top_fb = sorted(fb_counts.items(), key=lambda x: (-x[1], x[0]))[:5]
+        emerging_fb_html = (
+            '<div style="margin-top:8px;padding:7px 10px;background:#fff5f5;color:#bb3541;border-radius:10px;font-size:13px">'
+            '🌱 盘中新首板助攻：' + ' ｜ '.join(f'{_esc(k)} {v}首板' for k, v in top_fb) + '</div>'
+        ) if top_fb else ''
+        plate_footer_html = (
+            emerging_fb_html
+            + f'<div style="margin-top:6px;padding:7px 10px;background:#eaf8ef;color:#16875b;border-radius:10px;font-size:13px">🩸 重灾失血：{bleeding_pills}</div>'
+        )
+    else:
+        top_plates = [r for r in (_rows(plates_obj.get('close_top10')) or _rows(plates_obj.get('auction_amount_top10')))
+                      if 'ST' not in str(r.get('name') or '').upper()][:5]
+        plate_rows = [
+            [_esc(r.get('name') or '—'),
+             str(int(r['members'])) if isinstance(r.get('members'), (int, float)) else '—',
+             f'{pct(r.get("p0925_mean"))} → <b style="color:#bc3541">{pct(r.get("close_mean"))}</b>']
+            for r in top_plates
+        ]
+        plate_section_title = '① 今日主线定调：🔥 抗跌/收强 Top 5'
+        plate_table_html = table(['进攻/抗跌主线', '成员', '竞价 → 收盘'], plate_rows, 'close-plate-row')
+        plate_footer_html = (
+            f'<div style="margin-top:8px;padding:8px 10px;background:#eaf8ef;color:#16875b;border-radius:10px;font-size:13px">'
+            f'🩸 重灾失血：{bleeding_pills}</div>'
+        )
 
     unlimited = [r for r in (_rows(report.get('unlimited_price_band_stocks')) or _rows(report.get('stocks')))
                  if r.get('is_new_listing') or r.get('is_unlimited_price_band') or (r.get('listing_days') == 1)
@@ -1674,9 +1750,15 @@ def _render_close_v3_board(report: Mapping[str, Any], trade_date: str) -> tuple[
         ('3板(昨2板)', lambda lvl: lvl == 2),
         ('2板(昨1板)', lambda lvl: lvl == 1),
     ]
+    if first_boards:
+        col_defs.append(('首板(新涨停)', lambda lvl: lvl == 0))
+
     # Per-tier promotion rate strip
     tier_stats = []
     for label, pred in col_defs:
+        if label.startswith('首板'):
+            tier_stats.append(f'新首板 <b style="color:#bb3541">{len(first_boards)}</b>只')
+            continue
         bucket = [r for r in ladder_rows if pred(_streak_level(r))]
         if not bucket:
             continue
@@ -1690,8 +1772,8 @@ def _render_close_v3_board(report: Mapping[str, Any], trade_date: str) -> tuple[
             if (x.get('count') is not None or x.get('previous_n') is not None)
         ]
 
-    # Group ladder rows by canonical theme for 2D matrix (Theme x Board Height)
-    theme_groups: dict[str, list[Mapping[str, Any]]] = {}
+    # Group ladder rows (+ today's new 1st-boards) by canonical theme for 2D matrix
+    theme_groups: dict[str, list[tuple[int, Mapping[str, Any]]]] = {}
     for r in ladder_rows:
         lvl = _streak_level(r)
         if lvl < 1:
@@ -1699,37 +1781,48 @@ def _render_close_v3_board(report: Mapping[str, Any], trade_date: str) -> tuple[
         raw_theme = str(r.get('primary_reason') or r.get('main_plate') or '').strip()
         theme = normalize_theme_label(raw_theme) if raw_theme else ''
         theme = theme or '未归类'
-        theme_groups.setdefault(theme, []).append(r)
+        theme_groups.setdefault(theme, []).append((lvl, r))
+    for fb in first_boards:
+        raw_theme = str(fb.get('main_plate') or '').strip()
+        theme = normalize_theme_label(raw_theme) if raw_theme else ''
+        theme = theme or '未归类'
+        theme_groups.setdefault(theme, []).append((0, fb))
 
     ordered_themes = sorted(
         theme_groups.items(),
         key=lambda g: (
             g[0] == '未归类',
-            -sum(1 for r in g[1] if _is_promoted(r)),
-            -max((_streak_level(r) for r in g[1]), default=0),
+            -max((lvl for lvl, _ in g[1]), default=0),
+            -sum(1 for lvl, r in g[1] if lvl >= 1 and _is_promoted(r)),
+            -sum(1 for lvl, _ in g[1] if lvl == 0),
             -len(g[1]),
             g[0],
         ),
     )
     chosen_themes, omitted_themes = ordered_themes[:8], ordered_themes[8:]
     if omitted_themes:
-        other_rows = [r for _, rs in omitted_themes for r in rs]
+        other_rows = [pair for _, pairs in omitted_themes for pair in pairs]
         chosen_themes.append(('其他题材', other_rows))
+
+    def _short_pct(val: Any) -> str:
+        n = number(val)
+        return f'{n:+.1f}%' if n is not None else '—'
 
     if chosen_themes:
         m_headers = ['主线题材', *[lbl for lbl, _ in col_defs]]
-        th_html = ''.join(f'<th style="text-align:left;padding:6px 5px;background:#edf3fa;border:1px solid #dde5ef;font-size:12px">{_esc(h)}</th>' for h in m_headers)
+        th_html = ''.join(f'<th style="text-align:left;padding:5px 4px;background:#edf3fa;border:1px solid #dde5ef">{_esc(h)}</th>' for h in m_headers)
         tr_list = [f'<tr>{th_html}</tr>']
-        for theme_name, items in chosen_themes:
-            cells_html = [f'<td style="vertical-align:top;padding:6px 5px;border:1px solid #e8edf4;font-weight:700;font-size:12px;background:#fafbfd">{_esc(theme_name)}</td>']
+        for theme_name, pairs in chosen_themes:
+            cells_html = [f'<td style="vertical-align:top;padding:5px 4px;border:1px solid #e8edf4;font-weight:700;background:#fafbfd">{_esc(theme_name)}</td>']
             for _, pred in col_defs:
-                cell_items = [r for r in items if pred(_streak_level(r))]
-                cell_items.sort(key=lambda r: (not _is_promoted(r), -(number(r.get('close_pct')) or -999)))
-                visible, hidden = cell_items[:4], cell_items[4:]
+                cell_items = [(lvl, r) for lvl, r in pairs if pred(lvl)]
+                cell_items.sort(key=lambda pair: (pair[0] != 0 and not _is_promoted(pair[1]), -(number(pair[1].get('close_pct')) or -999)))
+                visible, hidden = cell_items[:3], cell_items[3:]
                 cards_in_cell = []
-                for r in visible:
+                for lvl, r in visible:
+                    a = number(_first(r, 'p0925_pct', 'auction_pct'))
                     c = number(r.get('close_pct'))
-                    if _is_promoted(r):
+                    if lvl == 0 or _is_promoted(r):
                         color, bg = '#bb3541', '#fff0f0'
                     elif c is not None and c >= 0:
                         color, bg = '#bd6a20', '#fff4e5'
@@ -1737,32 +1830,30 @@ def _render_close_v3_board(report: Mapping[str, Any], trade_date: str) -> tuple[
                         color, bg = '#16875b', '#eaf8ef'
                     else:
                         color, bg = '#5c6d80', '#f2f5f8'
+                    track_str = f'{_short_pct(a)}→{_short_pct(c)}' if a is not None else pct(c)
                     cards_in_cell.append(
-                        f'<div data-item="close-highboard" style="background:{bg};border-left:3px solid {color};padding:3px 5px;margin:2px 0;font-size:12px;line-height:1.3">'
-                        f'<b style="color:#263445">{_esc(_display_name(r, 6))}</b><br>'
-                        f'<span style="color:{color};font-weight:700">{pct(c)}</span></div>'
+                        f'<div style="background:{bg};border-left:3px solid {color};padding:2px 4px;margin:2px 0">'
+                        f'<b>{_esc(_display_name(r, 6))}</b><br><span style="color:{color};font-weight:700">{track_str}</span></div>'
                     )
                 if hidden:
-                    prom_h = sum(1 for r in hidden if _is_promoted(r))
-                    cards_in_cell.append(f'<div style="font-size:11px;color:#667085">+{len(hidden)}只(晋{prom_h})</div>')
-                cells_html.append('<td style="vertical-align:top;padding:4px;border:1px solid #e8edf4">' + (''.join(cards_in_cell) or '<span style="color:#cbd5e1">—</span>') + '</td>')
+                    prom_h = sum(1 for lvl, r in hidden if lvl == 0 or _is_promoted(r))
+                    cards_in_cell.append(f'<div style="color:#667085">+{len(hidden)}只(晋{prom_h})</div>')
+                cells_html.append('<td style="vertical-align:top;padding:3px;border:1px solid #e8edf4">' + (''.join(cards_in_cell) or '<span style="color:#cbd5e1">—</span>') + '</td>')
             tr_list.append(f'<tr data-theme="{_esc(theme_name)}">{"".join(cells_html)}</tr>')
-        ladder_matrix_html = f'<table data-matrix="ladder-2d" width="100%" cellspacing="0" style="table-layout:fixed;border-collapse:collapse;font-size:12px">{"".join(tr_list)}</table>'
+        ladder_matrix_html = f'<table data-matrix="ladder-2d" width="100%" cellspacing="0" style="table-layout:fixed;border-collapse:collapse;font-size:11px;line-height:1.25">{"".join(tr_list)}</table>'
     else:
         ladder_matrix_html = '<div>数据缺口：未生成</div>'
 
     sections = (
         f'<header style="background:#142c4a;color:white;padding:15px">'
-        f'<b style="font-size:20px">收盘复盘 · 全天定调</b><br>'
+        f'<b style="font-size:20px">收盘复盘 · 竞价→收盘闭环</b><br>'
         f'{_esc(trade_date)} · 收盘｜{_esc(regime)} · 竞价 {auction_med} → 收盘 {close_med}</header>'
         f'<table width="100%" cellspacing="4"><tr>{card_html}</tr></table>'
         f'<section data-section="close-plates" style="background:white;padding:12px 14px;margin:8px 0">'
-        f'<h2 style="margin:0 0 8px;font-size:16px">① 今日主线定调：🔥 抗跌/收强 Top 5</h2>'
-        f'{table(["进攻/抗跌主线", "成员", "竞价 → 收盘"], plate_rows, "close-plate-row")}'
-        f'<div style="margin-top:8px;padding:8px 10px;background:#eaf8ef;color:#16875b;border-radius:10px;font-size:13px">'
-        f'🩸 重灾失血：{bleeding_pills}</div></section>'
+        f'<h2 style="margin:0 0 8px;font-size:16px">{plate_section_title}</h2>'
+        f'{plate_table_html}{plate_footer_html}</section>'
         f'<section data-section="close-verification" style="background:white;padding:12px 14px;margin:8px 0">'
-        f'<h2 style="margin:0 0 8px;font-size:16px">② 全天兑现与核按钮</h2>'
+        f'<h2 style="margin:0 0 8px;font-size:16px">② 全天兑现与核按钮（竞价焦点验收）</h2>'
         f'<h3 style="margin:8px 0 6px;font-size:14px">🚀 日内最强兑现 / 修复 Top 5</h3>'
         f'{table(["股票", "竞价 → 收盘", "Δ变化"], rebound_rows, "close-rebound-row")}'
         f'<h3 style="margin:12px 0 6px;font-size:14px">⚠️ 日内回撤 / 砸盘避坑 Top 5</h3>'
@@ -1770,7 +1861,7 @@ def _render_close_v3_board(report: Mapping[str, Any], trade_date: str) -> tuple[
         + (f'<div style="margin-top:8px;font-size:12px;color:#53677e">新股/无涨跌幅限制：{unlimited_note}</div>' if unlimited_note else '')
         + f'</section>'
         f'<section data-section="close-ladder" style="background:white;padding:12px 14px;margin:8px 0">'
-        f'<h2 style="margin:0 0 6px;font-size:16px">③ 连板高标二维矩阵（主线 × 板高）</h2>'
+        f'<h2 style="margin:0 0 6px;font-size:16px">③ 连板高标二维矩阵（主线 × 板高｜竞价→收盘）</h2>'
         + (f'<div style="font-size:12px;color:#53677e;margin-bottom:8px">晋级率：{" ｜ ".join(tier_stats)}</div>' if tier_stats else '')
         + f'{ladder_matrix_html}</section>'
         f'<footer style="padding:8px 4px;color:#667085;font-size:11px">'
@@ -1790,7 +1881,7 @@ def render_email_board(report: Mapping[str, Any], stage: str, trade_date: str) -
                     '<body style="margin:0;background:#f5f7fa"><div style="max-width:680px;margin:auto;color:#263445;font-family:-apple-system,\'PingFang SC\',\'Microsoft YaHei\',Arial,sans-serif;line-height:1.5">' + body + '</div></body></html>')
         document = re.sub(r"(?<![#\da-fA-F])\d{6}(?!\d)", "", document)
         plain = re.sub(r"(?<!\d)\d{6}(?!\d)", "", plain)
-        if len(document.encode("utf-8")) >= 30_000:
+        if len(document.encode("utf-8")) >= 40_000:
             raise ValueError(f"rendered close email exceeds limit ({len(document.encode('utf-8'))} bytes)")
         return document, plain
     if stage_key == "open":

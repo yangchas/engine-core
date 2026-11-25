@@ -2763,6 +2763,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 except (AttributeError, TypeError, ValueError):
                     continue
             _enrich_close_checkpoints(fact_stocks, root, trade_date, degraded, close_report_asof)
+            ap_pan = None
             if auction_ref and (auction_ref.parent / "auction_panorama.json").is_file():
                 ap_doc = _read_optional_json(auction_ref.parent / "auction_panorama.json", degraded, "AUCTION_PANORAMA")
                 ap_pan = ap_doc.get("panorama") if isinstance(ap_doc, Mapping) else None
@@ -2888,6 +2889,130 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         attach_close_sections(data, relation_asof=relation_asof, relations=symbol_plates,
             plate_metadata=plate_metadata, ladder_rows=ladder_rows,
             ladder_summary=ladder, path_frequencies=path_frequencies)
+        if close_catalog_ready:
+            from .auction_theme_buckets import normalize_theme_label
+            from .a_to_b import select_main_plate as _select_mp
+            by_sym_close = {str(r.get("symbol") or "").zfill(6): r for r in fact_stocks}
+
+            def _limit_band(r: Mapping[str, Any]) -> float:
+                lp = r.get("limit_pct")
+                if isinstance(lp, (int, float)) and lp > 0:
+                    return float(lp)
+                sym = str(r.get("symbol") or "").zfill(6)
+                if sym.startswith(("300", "301", "688", "689")):
+                    return 20.0
+                if sym.startswith(("8", "4", "92")):
+                    return 30.0
+                return 10.0
+
+            def _is_lu(r: Mapping[str, Any]) -> bool:
+                c = r.get("close_pct")
+                if not isinstance(c, (int, float)):
+                    return False
+                band = _limit_band(r)
+                return c >= band - 0.5
+
+            def _is_ld(r: Mapping[str, Any]) -> bool:
+                c = r.get("close_pct")
+                if not isinstance(c, (int, float)):
+                    return False
+                band = _limit_band(r)
+                return c <= -(band - 0.5)
+
+            # 1. Start-to-end closure for 09:26 auction theme buckets
+            bucket_members: dict[str, set[str]] = {}
+            for p_code, m_syms in relations.items():
+                p_name = plate_names.get(p_code)
+                if not p_name:
+                    continue
+                norm = normalize_theme_label(str(p_name))
+                if norm:
+                    bucket_members.setdefault(norm, set()).update(str(s).zfill(6) for s in m_syms)
+            tb = (ap_pan.get("theme_buckets") or {}) if isinstance(ap_pan, Mapping) else {}
+            curated = tb.get("curated_themes") or tb.get("top_amount") or []
+            closure_rows = []
+            for t in curated[:10]:
+                if not isinstance(t, Mapping):
+                    continue
+                b_name = str(t.get("name") or "").strip()
+                norm_b = normalize_theme_label(b_name) or b_name
+                m_set = bucket_members.get(norm_b) or bucket_members.get(b_name) or set()
+                matched = [by_sym_close[s] for s in m_set if s in by_sym_close and isinstance(by_sym_close[s].get("close_pct"), (int, float))]
+                auc_w = (t["weighted_mean_change_bp"] / 100.0) if isinstance(t.get("weighted_mean_change_bp"), (int, float)) else None
+                auc_m = (t["mean_change_bp"] / 100.0) if isinstance(t.get("mean_change_bp"), (int, float)) else None
+                c_mean = (sum(r["close_pct"] for r in matched) / len(matched)) if matched else None
+                amt_sum = sum(r.get("amount_yuan") or 0 for r in matched if isinstance(r.get("amount_yuan"), (int, float)))
+                c_weighted = (sum(r["close_pct"] * (r.get("amount_yuan") or 0) for r in matched if isinstance(r.get("amount_yuan"), (int, float))) / amt_sum) if amt_sum > 0 else c_mean
+                ref_auc = auc_w if auc_w is not None else auc_m
+                ref_cls = c_weighted if c_weighted is not None else c_mean
+                delta = (ref_cls - ref_auc) if (ref_auc is not None and ref_cls is not None) else None
+                lu_cnt = sum(1 for r in matched if _is_lu(r) and "ST" not in str(r.get("name") or "").upper())
+                ld_cnt = sum(1 for r in matched if _is_ld(r) and "ST" not in str(r.get("name") or "").upper())
+                top1_sym = str(t.get("top1_symbol") or "").zfill(6)
+                top1_row = by_sym_close.get(top1_sym) or {}
+                if ref_auc is not None and ref_cls is not None:
+                    if ref_auc >= 0 and ref_cls >= ref_auc:
+                        verdict = "兑现加强"
+                    elif ref_auc < 0 and (ref_cls > 0 or (delta is not None and delta >= 1.5)):
+                        verdict = "弱转强修复"
+                    elif ref_auc >= 0 and (ref_cls < 0 or (delta is not None and delta <= -1.5)):
+                        verdict = "高开回落"
+                    elif ref_auc < 0 and delta is not None and delta <= -1.0:
+                        verdict = "持续失血"
+                    else:
+                        verdict = "震荡延续"
+                else:
+                    verdict = "待核实"
+                closure_rows.append({
+                    "rank": t.get("rank"), "name": b_name,
+                    "auction_amount_yuan": t.get("amount_yuan"),
+                    "auction_weighted_pct": round(auc_w, 2) if auc_w is not None else None,
+                    "auction_mean_pct": round(auc_m, 2) if auc_m is not None else None,
+                    "close_weighted_pct": round(c_weighted, 2) if c_weighted is not None else None,
+                    "close_mean_pct": round(c_mean, 2) if c_mean is not None else None,
+                    "close_amount_yuan": round(amt_sum, 2) if amt_sum > 0 else None,
+                    "delta_pp": round(delta, 2) if delta is not None else None,
+                    "close_limit_up_count": lu_cnt, "close_limit_down_count": ld_cnt,
+                    "member_matched": len(matched),
+                    "top1_name": t.get("top1_name") or top1_row.get("name"),
+                    "top1_auction_pct": t.get("top1_change_pct"),
+                    "top1_close_pct": round(top1_row["close_pct"], 2) if isinstance(top1_row.get("close_pct"), (int, float)) else None,
+                    "verdict": verdict,
+                })
+            data["auction_bucket_closure"] = closure_rows
+
+            # 2. Today's new 1st-board limit-up stocks for 2D matrix + intraday emerging themes
+            first_boards = []
+            for r in fact_stocks:
+                if r.get("in_yest_pool") or "ST" in str(r.get("name") or "").upper() or r.get("is_new_listing"):
+                    continue
+                if not _is_lu(r):
+                    continue
+                sym = str(r.get("symbol") or "").zfill(6)
+                mp = r.get("main_plate")
+                if not mp and sym in symbol_plates:
+                    mp = _select_mp(symbol_plates[sym], plate_metadata) or symbol_plates[sym][0]
+                first_boards.append({
+                    "symbol": sym, "name": r.get("name"),
+                    "auction_pct": round(r["auction_pct"], 2) if isinstance(r.get("auction_pct"), (int, float)) else None,
+                    "close_pct": round(r["close_pct"], 2) if isinstance(r.get("close_pct"), (int, float)) else None,
+                    "amount_yuan": r.get("amount_yuan"),
+                    "main_plate": normalize_theme_label(str(mp)) if mp else "未归类",
+                })
+            first_boards.sort(key=lambda x: -(x.get("amount_yuan") or 0))
+            data["today_first_boards"] = first_boards[:60]
+
+            # 3. Yesterday limit-up pool auction -> close closure
+            yp = [r for r in fact_stocks if r.get("in_yest_pool") and "ST" not in str(r.get("name") or "").upper()]
+            yp_auc = [r["auction_pct"] for r in yp if isinstance(r.get("auction_pct"), (int, float))]
+            yp_cls = [r["close_pct"] for r in yp if isinstance(r.get("close_pct"), (int, float))]
+            data["yest_pool_closure"] = {
+                "count": len(yp),
+                "auction_mean_pct": round(sum(yp_auc) / len(yp_auc), 2) if yp_auc else None,
+                "close_mean_pct": round(sum(yp_cls) / len(yp_cls), 2) if yp_cls else None,
+                "promoted_count": sum(1 for r in yp if _is_lu(r)),
+                "limit_down_count": sum(1 for r in yp if _is_ld(r)),
+            }
         _attach_auction_baseline(data, slice_results["auction_baseline"].rows)
         quality = data.setdefault("data_quality", {})
         quality["basis"] = close_catalog_manifest.get("basis")

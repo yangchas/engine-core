@@ -371,3 +371,38 @@ def test_real_open_attack_and_risk_corrections():
     assert re.search(r'克来机电 · 封[\d.]+亿', seals)
     assert '砸盘/炸板避坑 Top 3' in rendered and '高开跳水避坑 Top 3' not in rendered
     assert len(rendered.encode('utf-8')) < 25_000 and '<details' not in rendered
+
+
+def test_close_v3_renders_auction_bucket_closure_and_first_boards_in_2d_matrix():
+    report = {
+        "trade_date": "2026-11-25",
+        "market": {"auction_median": -0.95, "close_median": -3.68, "amount_yuan": 1.38e12,
+                   "auction_amount_yuan": 1.39e10, "up_count": 567, "down_count": 4588,
+                   "close_limit_up_count": 57, "close_limit_down_count": 57, "regime_label": "弱势日"},
+        "yest_pool_closure": {"count": 53, "auction_mean_pct": 2.1, "close_mean_pct": -0.4,
+                              "promoted_count": 12, "limit_down_count": 5},
+        "auction_bucket_closure": [
+            {"rank": 1, "name": "光模块", "auction_amount_yuan": 13.15e8, "auction_weighted_pct": -3.37,
+             "close_weighted_pct": -1.20, "delta_pp": 2.17, "close_limit_up_count": 1,
+             "close_limit_down_count": 0, "top1_name": "中际旭创", "top1_close_pct": -1.92, "verdict": "弱转强修复"},
+            {"rank": 2, "name": "芯片", "auction_amount_yuan": 6.46e8, "auction_weighted_pct": -3.55,
+             "close_weighted_pct": -6.80, "delta_pp": -3.25, "close_limit_up_count": 0,
+             "close_limit_down_count": 4, "top1_name": "华虹宏力", "top1_close_pct": -13.89, "verdict": "持续失血"},
+        ],
+        "today_first_boards": [
+            {"symbol": "000001", "name": "医药先锋", "auction_pct": 1.2, "close_pct": 10.0,
+             "amount_yuan": 5e8, "main_plate": "医药"},
+        ],
+        "ladder_section": {"rows": [
+            {"symbol": "002579", "name": "中京电子", "prior_streak": 4, "p0925_pct": 3.39,
+             "close_pct": 10.0, "main_plate": "PCB"},
+        ]},
+    }
+    rendered, _ = render_email_board(report, "close", "2026-11-25")
+    assert "竞价分桶 → 收盘闭环验收" in rendered
+    assert "昨涨停接力闭环" in rendered and "+2.10% → -0.40%" in rendered and "晋级 12/53" in rendered
+    assert "#1 光模块" in rendered and "弱转强修复" in rendered and "中际旭创" in rendered
+    assert "#2 芯片" in rendered and "持续失血" in rendered
+    assert "首板(新涨停)" in rendered and "医药先锋" in rendered
+    assert "中京电子" in rendered and "+3.4%→+10.0%" in rendered
+    assert len(rendered.encode("utf-8")) < 30_000
