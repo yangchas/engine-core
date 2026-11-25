@@ -2660,6 +2660,40 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             assignment = stock_assignment.get(str(row.get("symbol", "")).zfill(6), {})
             primary = assignment.get("primary_theme") if isinstance(assignment, Mapping) else None
             row["main_plate"] = primary.get("name") if isinstance(primary, Mapping) else None
+        if stage == "open" and chosen_checkpoint == "0945":
+            try:
+                from .open_relay_strategy import compute_open_relay_compass_td
+                pm_slice = slice_results.get("plate_members")
+                pm_rows = pm_slice.rows if pm_slice is not None else []
+                payload["open_relay_compass"] = compute_open_relay_compass_td(
+                    trade_date=trade_date,
+                    plate_members_rows=pm_rows,
+                    stock_names=stock_names,
+                    redis_client=src.redis,
+                    write_shadow=(trade_date == date.today().isoformat()),
+                )
+            except Exception:
+                pass
+        elif stage == "auction" and src.redis is not None:
+            try:
+                from .open_relay_strategy import settle_previous_shadow_ledger
+                auc_px_map = {}
+                for row in live_stocks:
+                    if not isinstance(row, Mapping):
+                        continue
+                    sym = str(row.get("symbol", row.get("code", ""))).zfill(6)
+                    px = row.get("price") or row.get("auction_price")
+                    if sym and isinstance(px, (int, float)) and px > 0:
+                        auc_px_map[sym] = float(px)
+                settled = settle_previous_shadow_ledger(
+                    redis_client=src.redis,
+                    trade_date=trade_date,
+                    auction_price_by_symbol=auc_px_map,
+                )
+                if settled:
+                    payload["open_relay_shadow_settlement"] = settled
+            except Exception:
+                pass
         from .email_render import render_email_html
         pipeline_timings["compute"] = round(time.monotonic() - compute_started, 3)
         render_started = time.monotonic()

@@ -1538,8 +1538,71 @@ def _render_open_verification_board(report: Mapping[str, Any], trade_date: str) 
         elif value is not None and value < 0: color, bg = '#16875b', '#eaf8ef'; status = '水下'
         else: color, bg = '#5c6d80', '#f2f5f8'
         high_blocks.append(block(r, color, bg, f'{r.get("name") or "—"} · 昨{r.get("streak") if r.get("streak") is not None else "—"}板 · {pct(value)} · {status}', 'open-highboard'))
+    compass = report.get("open_relay_compass") if isinstance(report.get("open_relay_compass"), Mapping) else None
+    compass_html = ""
+    if compass and isinstance(compass.get("env"), Mapping):
+        cenv = compass["env"]
+        regime = str(cenv.get("regime") or "UNKNOWN")
+        r_style = {
+            "DEEP_GREEN": ("#16875b", "#eaf8ef", "🟢"),
+            "LIGHT_GREEN": ("#16875b", "#f0fdf4", "🟢"),
+            "YELLOW": ("#bd6a20", "#fff4e5", "🟡"),
+            "RED": ("#bb3541", "#fff0f0", "🔴"),
+        }.get(regime, ("#53677e", "#f2f5f8", "⚪"))
+        r_color, r_bg, r_dot = r_style
+        yw_v = cenv.get("yw_spread_pp")
+        v5_v = cenv.get("vol_ratio_5d")
+        y2_v = cenv.get("y2_pct")
+        yr_v = cenv.get("yr_red_pct")
+        metrics_line = (
+            f'黄白线 {f"{yw_v:+.2f}pp" if yw_v is not None else "—"} ｜ '
+            f'5日量比 {f"{v5_v:.2f}x" if v5_v is not None else "—"} ｜ '
+            f'昨连板 {f"{y2_v:+.1f}%" if y2_v is not None else "—"} ｜ '
+            f'昨烂板红盘 {f"{yr_v:.0f}%" if yr_v is not None else "—"}'
+        )
+        max_tot = cenv.get("max_total_weight_pct") or 0
+        max_sgl = cenv.get("max_single_weight_pct") or 0
+        tri_sgl = cenv.get("trial_single_weight_pct") or 0
+        pos_banner = (
+            f'标准仓位上限 {max_tot}%（单票≤{max_sgl}%，最多2股）· 试跑期半仓单票≤{tri_sgl}%'
+            if max_tot > 0 else '纪律空仓（总仓位 0%）'
+        )
+        cbuckets = _rows(compass.get("buckets"))
+        b_pills = " ｜ ".join(
+            f'<b>{_esc(b.get("theme") or "—")}</b>(#{b.get("auc_rank")} 扩散+{b.get("breadth_surge_pp")}% 放量{b.get("relay_ratio")}x)'
+            for b in cbuckets[:3]
+        ) or "暂无满足条件的反一致扩散板块"
+        cpicks = _rows(compass.get("picks"))
+        if cpicks:
+            pick_rows = [
+                [
+                    f'<b>{_esc(p.get("name") or "—")}</b> <span style="color:#64748b">({_esc(p.get("board") or "")}·{_esc(p.get("theme") or "")})</span>',
+                    f'{pct(p.get("p0945_pct"))} (拐+{p.get("acc_35_45_pp")}pp)',
+                    f'昨{pct(p.get("prev_pct"))} · {p.get("prev_amount_yi")}亿',
+                    f'{" ".join(_esc(t) for t in (p.get("tags") or [])) or "—"}<br><span style="color:{r_color};font-weight:700">标{p.get("std_weight_pct")}% / 试{p.get("trial_weight_pct")}%</span>',
+                ]
+                for p in cpicks[:2]
+            ]
+            picks_block = table(["主板/创业板买点C标的", "09:45买点", "昨日回踩·额", "星标·建议仓位"], pick_rows, "open-relay-pick")
+        elif max_tot > 0:
+            picks_block = '<div style="padding:6px 8px;color:#53677e;font-size:13px">绿灯日但暂无同时满足买点C的主板/创业板标的，耐心等待。</div>'
+        else:
+            wpicks = _rows(compass.get("watch_picks"))
+            w_txt = "、".join(f'{_esc(p.get("name") or "—")}({_esc(p.get("theme") or "")})' for p in wpicks[:2])
+            picks_block = f'<div style="padding:6px 8px;color:{r_color};font-size:13px">今日非绿灯，按纪律不开新仓。' + (f'（仅观察：{w_txt}）' if w_txt else '') + '</div>'
+        compass_html = (
+            f'<section data-section="open-relay-compass" style="background:white;padding:10px 12px;margin:8px 0;border-left:4px solid {r_color}">'
+            f'<h2 style="margin:0 0 6px;font-size:16px">🧭 09:45 环境罗盘与反一致买点（主板+创业板）</h2>'
+            f'<div style="padding:7px 9px;background:{r_bg};color:{r_color};font-weight:700;font-size:13px">{r_dot} {_esc(cenv.get("regime_label") or "—")} ｜ {_esc(pos_banner)}</div>'
+            f'<div style="font-size:12px;color:#53677e;margin:5px 0">{_esc(metrics_line)}</div>'
+            f'<div style="font-size:12px;margin:5px 0"><b>反一致候选板块：</b>{b_pills}</div>'
+            f'{picks_block}'
+            f'<div style="font-size:11px;color:#64748b;margin-top:4px">退出规则：次日 09:25 集合竞价直接卖出（自动剔除科创板/北交所/ST）。</div></section>'
+        )
+
     sections = (f'<header style="background:#142c4a;color:white;padding:15px"><b style="font-size:20px">开盘快报 · 钱去了哪</b><br>{_esc(trade_date)} · {checkpoint}｜竞价 → 当前</header>'
         f'<table width="100%" cellspacing="4"><tr>{card_html}</tr></table>'
+        f'{compass_html}'
         f'<section data-section="open-money-flow"><h2>① 钱去了哪：🔥 真进攻主线 Top 5</h2><div>成员成交额可能重叠，不可相加</div>{table(["进攻主线", "强度", "涨幅", "成交额"], flow, "open-flow-row")}<div style="padding:8px;background:#eaf8ef;color:#16875b;border-radius:12px">🩸 放量失血：{bleeding_pills}<br>💧 撤退/回落最快 {pills}</div></section>'
         f'<section data-section="open-verification"><h2>② 确定性异动与风险</h2><h3>🔒 硬封先锋 &amp; 开板/跌停警示</h3>{blocks}<h3>🚀 大资金真承接 / 急拉 Top 5</h3>{table(["股票", "09:25 → 当前", "成交额·Δ"], erows, "open-emerging-row")}<h3>⚠️ 砸盘/炸板避坑 Top 3</h3>{table(["股票(题材)", "09:25 → 当前", "Δ回撤"], trows, "open-retreat-row")}</section>'
         f'<section><h2>③ 核心高标状态</h2>{"".join(high_blocks) or "数据缺口：未生成"}</section>')
@@ -1909,11 +1972,26 @@ def render_email_board(report: Mapping[str, Any], stage: str, trade_date: str) -
     _story, story_html, story_text = _story_view(report, stage_key, trade_date)
     front_html, front_text = _front_page_view(report, stage_key)
     open_html, open_text = _render_open_verification_board(report, trade_date) if stage_key == "open" else ("", "")
+    shadow_settle = report.get("open_relay_shadow_settlement") if stage_key == "auction" and isinstance(report.get("open_relay_shadow_settlement"), Mapping) else None
+    shadow_html = ""
+    if shadow_settle and shadow_settle.get("rows"):
+        mean_n = shadow_settle.get("mean_net_pct")
+        s_color = "#bb3541" if isinstance(mean_n, (int, float)) and mean_n > 0 else "#16875b" if isinstance(mean_n, (int, float)) and mean_n < 0 else "#53677e"
+        items_txt = " ｜ ".join(
+            f'{_esc(r.get("name") or "—")}({_num(r.get("net_pct"), 2)})'
+            for r in shadow_settle["rows"][:4]
+        )
+        mean_txt = f"{mean_n:+.2f}%" if isinstance(mean_n, (int, float)) else "—"
+        shadow_html = (
+            f'<div data-section="open-relay-shadow-settlement" style="margin:6px 0;padding:7px 10px;background:#fff;border-left:4px solid {s_color};font-size:12px">'
+            f'<b>📊 T+1 影子账本竞价结算</b>（{_esc(shadow_settle.get("entry_date") or "")}→{_esc(shadow_settle.get("settle_date") or "")}）：'
+            f'均净收益 <b style="color:{s_color}">{mean_txt}</b> ｜ {items_txt}</div>'
+        )
     def assemble(extreme_html: str, ab_html: str) -> str:
         appendix_html = (f'<section style="margin:12px 0"><h2 style="font-size:13px;color:#475467">附表：完整事实章节</h2>'
                          f'{_section("情绪温度计", tile_html)}{ladder_html}{extreme_html}{ab_html}{other_html}</section>')
         main_html = (f'{story_html}{plate_html}{appendix_html}' if stage_key == "close" else
-                     f'{open_html if stage_key == "open" else front_html + plate_html}<details style="margin:8px 0"><summary style="padding:8px;background:#e9eef5">附表（极值、完整梯队、盘面、A→B、温度计）</summary>{front_html + plate_html if stage_key == "open" else ""}{appendix_html}</details>')
+                     f'{open_html if stage_key == "open" else shadow_html + front_html + plate_html}<details style="margin:8px 0"><summary style="padding:8px;background:#e9eef5">附表（极值、完整梯队、盘面、A→B、温度计）</summary>{front_html + plate_html if stage_key == "open" else ""}{appendix_html}</details>')
         body = (f'<div style="max-width:680px;margin:0 auto;background:#f5f7fa;color:#263445;font-family:Arial,"Microsoft YaHei",sans-serif;font-size:12px;line-height:1.45;font-variant-numeric:tabular-nums">'
                 f'<header style="padding:10px 2px"><b>{_esc(trade_date)} {stage_label}盘面</b></header>'
                 f'{main_html}'
