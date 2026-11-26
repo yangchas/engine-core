@@ -33,3 +33,16 @@ The TD reader is a low-level read-only row loader, not an as-of join or a
 normalization adapter. It requires taos only when called. Results need independent
 availability and provenance validation before use. `audit` checks output ordering
 and outcome separation; it cannot prove the provenance or availability of inputs.
+
+`build-real` reads TD and Kaipan captures for offline research and writes a
+compressed pickle; load only trusted pickle files. By default its metadata
+marks `RETROSPECTIVE_BACKFILL`: historical Kaipan and latest plate membership
+are retrospective, not evidence of live capture. `--strict-capture-time`
+excludes historical Kaipan fetched after the cut and uses as-of membership;
+indicator records with unknown or later availability are excluded. The TD
+source does not establish historical availability for every input. Morning
+points end at 09:45:30; close and next-open observations are outcomes. Historical
+Kaipan pool envelopes are retained as prior-day research inputs; the existing
+ladder and broken-board factors derive their cohorts from daily closes rather
+than interpreting undocumented positional pool fields. Audit checks ordering and that theme outcomes are absent from theme features;
+it does not prove input provenance or complete market coverage.

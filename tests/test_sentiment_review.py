@@ -9,6 +9,7 @@ from engine_core.sentiment_review import (FACTOR_REGISTRY, build_timeseries_data
     compute_top_amount_core_factor, compute_extremes_factor, compute_auction_themes_5d_factor,
     compute_kaipan_hot_factor, compute_sentiment_temperature)
 from engine_core.sentiment_review.adapters import load_kaipan_cache, TDReader
+from engine_core.sentiment_review.adapters.kaipan_cache import available_kaipan_plates
 
 
 def row(pct, amount=100_000_000, **kw):
@@ -103,6 +104,20 @@ def test_cache_formats(tmp_path):
     assert data[1]['plates'][0]['raw_fields'] == [42]
 
 
+def test_kaipan_availability_and_historical_envelope():
+    records = [
+        {'trade_date': '2026-11-25', 'available_at': '2026-11-26T18:59:31+08:00',
+         'his_plates': {'ok': True, 'data': {'list': [['801045', '医药', 1]]}}},
+        {'trade_date': '2026-11-25', 'available_at': None, 'plates': ['unknown']},
+    ]
+    assert available_kaipan_plates(records, '2026-11-25', '2026-11-25T15:00:00+08:00') is None
+    assert available_kaipan_plates(records, '2026-11-25', '2026-11-27T09:25:00+08:00')[0]['name'] == '医药'
+    captures = [{'trade_date': '2026-11-26', 'available_at': '2026-11-26T09:26:37', 'plates': ['A']}]
+    assert available_kaipan_plates(captures, '2026-11-26', '2026-11-26T09:25:00') is None
+    assert available_kaipan_plates(captures, '2026-11-26', '2026-11-26T09:35:00') == ['A']
+    assert available_kaipan_plates(captures, '2026-11-26', '2026-11-26T09:35:00+08:00') is None
+
+
 def test_cli_and_td_offline(tmp_path):
     assert 'ticks' in TDReader.TABLES
     source = tmp_path/'input.json'; dest = tmp_path/'dataset.json'
@@ -110,3 +125,51 @@ def test_cli_and_td_offline(tmp_path):
     for args in [('build',str(source),str(dest)),('audit',str(dest))]:
         r = subprocess.run([sys.executable,'-m','engine_core.sentiment_review',*args],capture_output=True,text=True)
         assert r.returncode == 0, r.stderr
+
+
+def test_real_loader_causality_and_retrospective(tmp_path):
+    from engine_core.sentiment_review.adapters.real_loader import build_from_td_and_cache
+    cache = tmp_path / 'cache'; cache.mkdir()
+    live = tmp_path / 'live'; live.mkdir()
+    for day in ('2026-11-24', '2026-11-25'):
+        (cache / (day + '.json')).write_text(json.dumps({'trade_date': day, 'fetched_at': '2026-11-26T18:00:00+08:00', 'his_plates': {'ok': True, 'data': {'list': [['1', 'A']]}}}))
+    class Reader:
+        def read(self, name, start, end):
+            if name == 'daily_kline':
+                return [{'ts': d + ' 00:00:00', 'symbol': '000001', 'close': p, 'pre_close': 10, 'high': p, 'low': 10, 'open': 10, 'amount_yuan': 1} for d,p in [('2026-11-24', 11), ('2026-11-25', 99)]]
+            return []
+        def read_ticks(self, day, cutoff):
+            return [{'ts': day + ' 09:25:00', 'symbol': '000001', 'px_milli': 10000, 'pc_milli': 10000},
+                    {'ts': day + ' 15:00:00', 'symbol': '000002', 'px_milli': 99999},
+                    {'ts': day + ' 09:45:30.001', 'symbol': '000003', 'px_milli': 20000, 'pc_milli': 10000}]
+        def read_members(self, asof, retrospective):
+            return {'rows': []}
+    data = build_from_td_and_cache('', cache, live, reader=Reader())
+    assert data['meta']['provenance'] == 'RETROSPECTIVE_BACKFILL'
+    day = data['intraday'][1]
+    assert [p['time'] for p in day['timepoints']] == ['09:25', '09:35', '09:45']
+    assert day['timepoints'][0]['factors']['kaipan_hot']['prev_close'] == ['A']
+    assert day['outcomes']['close']['time'] == '15:00'
+    assert day['timepoints'][2]['factors']['market_global']['eq_pct'] == 0
+    strict = build_from_td_and_cache('', cache, live, reader=Reader(), allow_retrospective=False)
+    assert strict['intraday'][1]['timepoints'][0]['factors']['kaipan_hot']['prev_close'] is None
+    class EmptyReader(Reader):
+        def read(self, name, start, end): return []
+        def read_ticks(self, day, cutoff): return []
+    empty = build_from_td_and_cache('', cache, live, reader=EmptyReader())
+    assert empty['intraday'][0]['timepoints'] == []
+    assert empty['intraday'][0]['outcomes'] == {'close': None, 'next_open': None}
+
+
+def test_build_real_cli_wiring(tmp_path, monkeypatch, capsys):
+    from engine_core.sentiment_review import cli
+    from engine_core.sentiment_review.adapters import real_loader
+    calls = []
+    def build(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {'meta': {}, 'intraday': [], 'daily': []}
+    monkeypatch.setattr(real_loader, 'build_from_td_and_cache', build)
+    out = tmp_path / 'data.pkl.gz'
+    assert cli.main(['build-real', '--td-config', 'cfg', '--kaipan-cache', 'cache', '--kaipan-live-root', 'live', '--out', str(out), '--strict-capture-time']) == 0
+    assert calls == [(('cfg', 'cache', 'live'), {'allow_retrospective': False})]
+    assert cli.main(['audit', str(out)]) == 0

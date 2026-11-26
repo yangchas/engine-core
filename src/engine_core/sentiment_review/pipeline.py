@@ -51,7 +51,8 @@ def build_timeseries_dataset(days, *, min_periods=20):
             hot = record.get('kaipan', {})
             today_hot = hot.get(cut)
             kaipan = compute_kaipan_hot_factor(hot.get('prev_close'),
-                today_hot if cut == '09:25' else None, today_hot if cut == '15:00' else None)
+                today_hot if cut == '09:25' else None, today_hot if cut == '15:00' else None,
+                today_0945=today_hot if cut == '09:45' else None)
             clean_ext = {k:v for k,v in ext.items() if k != 'sets'}
             factors = {'market_global': market, 'ladder_relay': ladder, 'broken_rotten': broken,
                        'top_amount_core': top, 'extremes': clean_ext, 'auction_themes_5d': themes,
