@@ -7,7 +7,8 @@ import pytest
 from engine_core.sentiment_review import (FACTOR_REGISTRY, build_timeseries_dataset,
     compute_market_global_factor, compute_ladder_relay_factor, compute_broken_rotten_factor,
     compute_top_amount_core_factor, compute_extremes_factor, compute_auction_themes_5d_factor,
-    compute_kaipan_hot_factor, compute_sentiment_temperature)
+    compute_kaipan_hot_factor, compute_sentiment_temperature, compute_leader_divergence_factor,
+    compute_theme_competition_factor)
 from engine_core.sentiment_review.adapters import load_kaipan_cache, TDReader
 from engine_core.sentiment_review.adapters.kaipan_cache import available_kaipan_plates
 
@@ -18,7 +19,7 @@ def row(pct, amount=100_000_000, **kw):
 
 
 def test_registry_and_market_missing():
-    assert len(FACTOR_REGISTRY) == 8
+    assert len(FACTOR_REGISTRY) == 10
     r = compute_market_global_factor({'a': row(10, float_cap=3, pos20=80, ma20=10, chip_profit_ratio=.6),
                                       'b': row(-10, float_cap=1)}, [1,2,3])
     assert r['eq_pct'] == 0 and r['cap_w_pct'] == 5 and r['yw_pp'] == -5
@@ -70,13 +71,13 @@ def test_theme_cuts_and_separate_outcomes():
 
 def test_kaipan_and_temperature():
     assert compute_kaipan_hot_factor(['A','B'],['B','C'])['prev_to_open_overlap'] == 1
-    raw = dict(time='09:25',up_ratio=5,net_lu=5,seal_rate=5,yest_lu_avg_pct=5,downside_count=5)
-    hist = [dict(raw, up_ratio=i, net_lu=i, seal_rate=i, yest_lu_avg_pct=i, downside_count=10-i) for i in range(5)]
+    raw = dict(time='09:25',up_ratio=5,net_lu=5,top100_avg_pct=5,yest_2p_avg_pct=5,nuke_5pct=5)
+    hist = [dict(raw, up_ratio=i, net_lu=i, top100_avg_pct=i, yest_2p_avg_pct=i, nuke_5pct=10-i) for i in range(5)]
     score = compute_sentiment_temperature(raw,hist,time='09:25',min_periods=3,previous_0925=50)
     assert score['temperature'] == pytest.approx(96.6666666667)
     assert score['delta_25_45'] == pytest.approx(46.6666666667) and score['regime'] == '高潮'
     assert compute_sentiment_temperature(raw,hist,time='09:35',min_periods=3)['temperature'] is None
-    assert compute_sentiment_temperature({**raw,'seal_rate':None},hist,min_periods=3)['temperature'] is None
+    assert compute_sentiment_temperature({**raw,'top100_avg_pct':None},hist,min_periods=3)['temperature'] is None
 
 
 def test_pipeline_no_future_leak_and_baselines():
@@ -143,9 +144,11 @@ def test_real_loader_causality_and_retrospective(tmp_path):
                     {'ts': day + ' 15:00:00', 'symbol': '000002', 'px_milli': 99999},
                     {'ts': day + ' 09:45:30.001', 'symbol': '000003', 'px_milli': 20000, 'pc_milli': 10000}]
         def read_members(self, asof, retrospective):
-            return {'rows': []}
+            return {'rows': [{'plate_code': '801001', 'plate_member_label': '机器人、其他', 'symbol': f'{i:06d}'} for i in range(1, 6)]}
     data = build_from_td_and_cache('', cache, live, reader=Reader())
     assert data['meta']['provenance'] == 'RETROSPECTIVE_BACKFILL'
+    assert '801001' not in data['intraday'][1]['outcomes']['theme_outcomes']
+    assert '机器人' in data['intraday'][1]['outcomes']['theme_outcomes']
     day = data['intraday'][1]
     assert [p['time'] for p in day['timepoints']] == ['09:25', '09:35', '09:45']
     assert day['timepoints'][0]['factors']['kaipan_hot']['prev_close'] == ['A']
@@ -164,7 +167,8 @@ def test_real_loader_causality_and_retrospective(tmp_path):
         def read_ticks(self, day, cutoff): return []
     empty = build_from_td_and_cache('', cache, live, reader=EmptyReader())
     assert empty['intraday'][0]['timepoints'] == []
-    assert empty['intraday'][0]['outcomes'] == {'close': None, 'next_open': None}
+    assert empty['intraday'][0]['outcomes']['close'] is None
+    assert empty['intraday'][0]['outcomes']['next_open'] is None
 
 
 def test_build_real_cli_wiring(tmp_path, monkeypatch, capsys):
@@ -257,7 +261,7 @@ def test_fixed_fields_cutoffs_and_feedback():
 
 
 def test_score_records_prior_history_and_warmup():
-    raw = dict(time='09:25', up_ratio=5, net_lu=5, seal_rate=5, yest_lu_avg_pct=5, downside_count=5)
+    raw = dict(time='09:25', up_ratio=5, net_lu=5, top100_avg_pct=5, yest_2p_avg_pct=5, nuke_5pct=5)
     history = [raw.copy() for _ in range(10)]
     result = compute_sentiment_temperature(raw, history, time='09:25', min_periods=11)
     assert result['history_n'] == 10 and result['temperature'] is not None
@@ -273,3 +277,43 @@ def test_audit_reports_zero_coverage(tmp_path, capsys):
     result = json.loads(capsys.readouterr().out)
     assert result['coverage']['15:00']['yw_pp'] == {'present': 0, 'total': 1}
     assert any('yw_pp has zero coverage' in e for e in result['errors'])
+
+
+def test_leader_structure_boundaries_and_missing():
+    streaks = {'a': 3, 'b': 2, 'c': 1, 'missing': 3}
+    def calc(a, b, c, sealed=()):
+        return compute_leader_divergence_factor(streaks, {'a': row(a), 'b': row(b), 'c': row(c)}, set(sealed))
+    x = calc(3, -2, 0)
+    assert x['structure_label'] == '龙头打高度' and x['leader_symbols'] == ['a', 'missing']
+    assert x['leader_count'] == 2 and x['leader_avg_pct'] == 3
+    assert x['high_3p_avg_pct'] == 3 and x['mid_2b_avg_pct'] == -2 and x['mid_minus_low_pp'] == -2
+    assert calc(-2, 0, .51)['structure_label'] == '高低切'
+    assert calc(-2, 0, .5)['structure_label'] == '常规分化'
+    assert calc(1, -1.01, 1)['structure_label'] == '淘汰中位'
+    assert calc(-.1, 0, -.1)['structure_label'] == '梯队通杀'
+    assert calc(0, -2, 1)['structure_label'] == '常规分化'
+    empty = compute_leader_divergence_factor({}, {}, set())
+    assert empty['max_h'] == 0 and empty['leader_avg_pct'] is None and empty['structure_label'] == '常规分化'
+
+
+def test_theme_competition_cuts_ties_and_missing():
+    features = [{'theme': '机器人概念', 'n': 5, 'p25': 1.5, 'p35': 1, 'p45': 1, 'amt25_yi': 1, 'amt35_yi': 2, 'amt45_yi': 3},
+                {'theme': '银行', 'n': 5, 'p25': 1, 'p35': 2, 'p45': 2, 'amt25_yi': 3, 'amt35_yi': 4, 'amt45_yi': 5},
+                {'theme': '小样本', 'n': 4, 'p25': 99, 'p35': 99, 'p45': 99, 'amt25_yi': 99}]
+    a = compute_theme_competition_factor(features, ['机器人'], time='09:25')
+    assert a['leader_theme'] == '机器人概念' and a['top1_vs_top2_gap_pp'] == .5
+    assert a['competition_label'] == '主线胜出' and a['top3_amt_share_pct'] == 100
+    b = compute_theme_competition_factor(features, ['机器人'], time='09:35', open_0925_leader_theme=a['leader_theme'])
+    assert b['competition_label'] == '新题材卡位' and b['is_intraday_takeover'] is True
+    missing = compute_theme_competition_factor([], None, time='09:45')
+    assert missing['leader_pct'] is None and missing['is_new_theme_breakout'] is None
+    assert missing['competition_label'] == '电风扇混战'
+
+
+def test_daily_score_preserved_and_intraday_fallback():
+    daily = dict(time='15:00', up_ratio=1, net_lu=1, seal_rate=1, yest_lu_avg_pct=1, downside_count=1)
+    assert compute_sentiment_temperature(daily, time='15:00', min_periods=1)['temperature'] == 80
+    d = {'2026-01-01': {'snapshots': {'15:00': {'600001': row(10)}}},
+         '2026-01-02': {'snapshots': {'09:25': {'600001': row(1)}}, 'prior_official_cohorts': {'official_streaks': {'600001': 1}}}}
+    score = build_timeseries_dataset(d, min_periods=1)['intraday'][1]['timepoints'][0]['factors']['sentiment_score']
+    assert score['pillars']['yest_2p_avg_pct'] == 100 and score['temperature'] is not None

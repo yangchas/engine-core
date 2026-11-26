@@ -46,3 +46,13 @@ Kaipan historical pools supply prior-day ladder and broken cohorts in retrospect
 it does not prove input provenance or complete market coverage.
 
 Float-cap weights use amount divided by turnover fraction from the preceding session for intraday, and the same-session value or preceding-session fallback at the daily close. Hot-member performance uses normalized labels and deduplicated member symbols; membership in retrospective builds is not historically point-in-time verified. Daily 20-day range position uses the current close relative to the preceding 20 trading bars.
+
+The two structural factors use the prior-session streak cohort and current
+snapshot, and current eligible theme returns, respectively. Theme comparisons
+normalize labels; the real loader groups symbols by the first member label,
+which is a retrospective theme proxy rather than verified plate membership.
+A missing prior hot list or 09:25 leader leaves the related
+comparison unavailable. Theme continuation outcomes use matched symbols and
+are separate from features. Intraday temperature uses breadth, net sealed
+limits, prior Top100 return, prior 2+ return (1-board fallback), and reversed
+5% downside count. The package's pre-existing daily scoring is unchanged.

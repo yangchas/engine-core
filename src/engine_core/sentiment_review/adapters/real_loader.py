@@ -6,6 +6,7 @@ from pathlib import Path
 from .kaipan_cache import available_kaipan_plates, load_kaipan_cache, parse_historical_cohorts
 from .td_reader import TDReader
 from ..pipeline import build_timeseries_dataset
+from ..factors._common import mean, pct
 
 
 def _day(row):
@@ -60,10 +61,6 @@ def build_from_td_and_cache(td_config, kaipan_cache, kaipan_live_root, *, allow_
             tables['daily_kline'][_day(row)][str(row['symbol'])] = row
     bar_dates = sorted(tables['daily_kline'])
     latest_members = reader.read_members(None, True) if allow_retrospective else None
-    shared_members = defaultdict(list)
-    for row in (latest_members or {}).get('rows', []):
-        if row.get('plate_code') and row.get('symbol'):
-            shared_members[str(row['plate_code'])].append(str(row['symbol']))
     def hot_mapping(snapshot):
         mapping = defaultdict(list)
         for r in (snapshot or {}).get('rows', []):
@@ -71,16 +68,13 @@ def build_from_td_and_cache(td_config, kaipan_cache, kaipan_live_root, *, allow_
             if label and r.get('symbol'):
                 mapping[label].append(str(r['symbol']))
         return mapping
+    shared_members = hot_mapping(latest_members)
     days = {}
     for i, day in enumerate(dates):
         preceding = [d for d in bar_dates if d < day]
         prev = dates[i-1] if i else (preceding[-1] if preceding else None)
         member_snapshot = latest_members if allow_retrospective else reader.read_members(day + 'T09:25:00+08:00', False)
-        members = shared_members if allow_retrospective else defaultdict(list)
-        if not allow_retrospective:
-            for row in (member_snapshot or {}).get('rows', []):
-                if row.get('plate_code') and row.get('symbol'):
-                    members[str(row['plate_code'])].append(str(row['symbol']))
+        members = shared_members if allow_retrospective else hot_mapping(member_snapshot)
         prior = {}
         if prev:
             for symbol, k in tables['daily_kline'].get(prev, {}).items():
@@ -186,7 +180,18 @@ def build_from_td_and_cache(td_config, kaipan_cache, kaipan_live_root, *, allow_
         hist = next((r for r in history if r.get('trade_date') == previous), None)
         if hist and (allow_retrospective or available_kaipan_plates([hist], previous, day['trade_date'] + 'T09:25:00+08:00') is not None):
             day['prior_kaipan_pools'] = {k: hist.get(k) for k in ('his_bans', 'his_zha', 'his_floor')}
-        day['outcomes'] = {'close': close, 'next_open': (days[dates[i+1]]['snapshots'].get('09:25') if i+1 < len(dates) else next_open or None)}
+        following = days[dates[i+1]]['snapshots'].get('09:25') if i+1 < len(dates) else next_open or None
+        snapshots = days[day['trade_date']]['snapshots']
+        morning, closing = snapshots.get('09:45', {}), snapshots.get('15:00', {})
+        theme_outcomes = {}
+        for theme, members in days[day['trade_date']]['members'].items():
+            paired = [(pct(morning[s]), pct(closing[s])) for s in set(members) if s in morning and s in closing]
+            paired = [(a, b) for a, b in paired if a is not None and b is not None]
+            opens = [pct(following[s]) for s in set(members) if following and s in following]
+            theme_outcomes[theme] = {'continuation_pp': mean([b-a for a, b in paired]),
+                                     'continuation_n': len(paired), 'next_open_pct': mean(opens),
+                                     'next_open_n': sum(v is not None for v in opens)}
+        day['outcomes'] = {'close': close, 'next_open': following, 'theme_outcomes': theme_outcomes}
     data['meta'].update(provenance='RETROSPECTIVE_BACKFILL' if allow_retrospective else 'STRICT_CAPTURE_TIME',
                         source_dates={'first': dates[0], 'last': dates[-1]},
                         membership={k: v for k, v in (latest_members or {}).items() if k != 'rows'})

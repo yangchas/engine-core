@@ -3,15 +3,17 @@ from ._common import mean
 def compute_sentiment_temperature(current, history=(), *, time=None, previous_0925=None, window=60, min_periods=20, min_history=None):
     """Percentile rank against the current and prior observations at the same cut.
 
-    Required raw pillars: up_ratio, net_lu, seal_rate, yest_lu_avg_pct,
-    downside_count. Missing pillars propagate instead of assuming neutrality.
+    Daily pillars retain the existing seal-rate and yesterday-limit-up inputs.
+    Intraday pillars use top-amount and yesterday 2+ returns and nuke count.
+    Missing pillars propagate instead of assuming neutrality.
     history items may carry a 'time' field; when time is specified it must match.
     """
     if min_history is not None:
         if min_history < 0:
             raise ValueError('min_history must be nonnegative')
         min_periods = min_history + 1
-    keys = ('up_ratio','net_lu','seal_rate','yest_lu_avg_pct','downside_count')
+    keys = (('up_ratio','net_lu','seal_rate','yest_lu_avg_pct','downside_count') if time == '15:00' or time is None else
+            ('up_ratio','net_lu','top100_avg_pct','yest_2p_avg_pct','nuke_5pct'))
     hist = [h for h in history if time is None or h.get('time') == time][-max(window-1,0):] if window > 1 else []
     sample = hist + [current]
     pillars = {}
@@ -19,7 +21,7 @@ def compute_sentiment_temperature(current, history=(), *, time=None, previous_09
         val = current.get(key)
         values = [h[key] for h in sample if h.get(key) is not None]
         rank = 100*sum(x <= val for x in values)/len(values) if val is not None and len(values) >= min_periods else None
-        pillars[key] = 100-rank if rank is not None and key == 'downside_count' else rank
+        pillars[key] = 100-rank if rank is not None and key in ('downside_count', 'nuke_5pct') else rank
     temp = mean(list(pillars.values())) if all(v is not None for v in pillars.values()) else None
     delta = temp-previous_0925 if temp is not None and previous_0925 is not None else None
     if temp is None: regime = None
