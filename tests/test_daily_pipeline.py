@@ -1245,6 +1245,40 @@ def test_dead_open_renders_real_hot_plates(tmp_path, monkeypatch):
     assert "医药" in html and "真进攻主线" in html
 
 
+def test_degrade_requested_preserves_live_open_quotes_when_td_available(tmp_path, monkeypatch):
+    from pathlib import Path
+    from engine_core import live_pages
+    from engine_core.slices import SliceReader, SliceResult
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path / "empty"))
+    report = json.loads(Path('/home/exedev/core-data/reports/2026-11-25/open_0935/report.json').read_text())
+    original = report["chapters"]["plate_quadrants"]["rows"]
+    hot = [{**r, "change_pct": r["kaipan_pct"], "trade_date": "2026-11-25"} for r in original]
+
+    def provider(reader, request):
+        return SliceResult.create(hot, {"slice_id": request.slice_id, "status": "READY", "source": "real_report", "asof": request.asof, "quality": {}, "lineage": []})
+
+    called = {"n": 0}
+    def fake_render_page(*args, **kwargs):
+        called["n"] += 1
+        return "<html>live</html>", {
+            "trade_date": "2026-11-25", "stage": "open_0946", "status": "READY",
+            "limitations": "",
+            "snapshots": [{"label": "0945", "priced_symbol_count": 5200, "market_amount_yuan": 3.5e11}],
+            "chapters": {"plate_quadrants": {"available": True, "rows": original}},
+        }
+
+    monkeypatch.setattr(live_pages, "render_page", fake_render_page)
+    result = run_daily_pipeline(
+        stage="open", trade_date="2026-11-25", asof="09:45:30",
+        out_root=tmp_path / "out",
+        sources=DailySources(td=FakeTD(), redis=FakeRedis(), slice_reader=SliceReader({"hot_plates_today": [provider]})),
+        dry_run=True, degrade_requested=True,
+    )
+    assert called["n"] == 1
+    assert result["report"].get("status") != "DEGRADED_HOT_PLATES_ONLY"
+    assert "DEGRADED:HOT_PLATES_ONLY" not in result["manifest"]["degraded"]
+
+
 def test_wencai_auction_fallback_feeds_standard_panorama(tmp_path, monkeypatch):
     import gzip
     from pathlib import Path

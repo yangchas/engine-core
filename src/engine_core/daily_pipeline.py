@@ -1643,7 +1643,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             if wencai_result is not None:
                 payload["status"] = "DEGRADED_WENCAI"
                 degraded.append("DEGRADED:WENCAI_AUCTION")
-        elif stage == "open" and (degrade_requested or src.td_error) and slice_results["hot_plates_today"].rows:
+        elif stage == "open" and src.td_error and slice_results["hot_plates_today"].rows:
             page, payload = "", {"snapshots": []}
         else:
             page, payload = live_pages.render_page(
@@ -1660,10 +1660,10 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             if require_live_data and (src.td_error or no_live):
                 from .errors import CoreError
                 raise CoreError("TD_UNAVAILABLE", "open quotes unavailable")
-            if degrade_requested and not slice_results["hot_plates_today"].rows:
+            if degrade_requested and (src.td_error or no_live) and not slice_results["hot_plates_today"].rows:
                 from .errors import CoreError
                 raise CoreError("TD_UNAVAILABLE", "hot plates unavailable")
-            if (degrade_requested or src.td_error or no_live) and slice_results["hot_plates_today"].rows:
+            if (src.td_error or no_live) and slice_results["hot_plates_today"].rows:
                 from .limit_reason_theme import _pool_rows
                 hot_block = live_pages._plate_quadrants({}, relations, plate_names,
                     slice_results["hot_plates_today"].rows, None, asof_cutoff or datetime.fromisoformat(slice_asof))
