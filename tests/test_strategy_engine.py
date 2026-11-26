@@ -157,8 +157,38 @@ def test_shadow_adapter_uses_prior_bars_and_membership_fallback(monkeypatch):
     assert ('members', None, True) in calls
     assert ('daily_kline', '2025-10-14', '2026-01-11') in calls
     assert snap.source_metadata['membership'] == 'latest_fallback'
+    assert snap.source_metadata['kaipan'] == 'daily_kline_v1_fallback'
     assert not snap.candidates
     assert snap.regime_raw['yest_2p_avg_pct'] is None
+
+
+def test_kline_fallback_streak_and_broken():
+    from engine_core.strategy_engine.adapters import _kline_cohorts, _candidates
+    dates = ['2026-01-07', '2026-01-08', '2026-01-09']
+    bars = {
+        dates[0]: {'300001': {'pre_close': 10, 'close': 10, 'high': 10}},
+        dates[1]: {'300001': {'pre_close': 10, 'close': 12, 'high': 12}},
+        dates[2]: {
+            '300001': {'pre_close': 10, 'close': 12, 'high': 12},
+            '600001': {'pre_close': 10, 'close': 10.9, 'high': 11},
+            '000001': {'pre_close': 10.05, 'close': 11.06, 'high': 11.06},
+            '600002': {'pre_close': 10, 'close': 10, 'high': 10},
+            '600003': {'close': 10, 'high': 11},
+        },
+    }
+    cohorts = _kline_cohorts(bars, dates)
+    assert cohorts['official_streaks']['300001'] == 2
+    assert cohorts['official_streaks']['600001'] == 0
+    assert cohorts['official_streaks']['600002'] == 0
+    assert cohorts['official_broken_symbols'] == {'600001'}
+    # Half-up rounding makes 10.05 * 1.10 = 11.06; earlier missing bars
+    # leave the length of this streak unknown.
+    rows = _candidates({'A': set(bars[dates[-1]])}, {}, {}, {}, cohorts, [{'theme': 'A', 'p45': 1}])
+    by_symbol = {row['symbol']: row for row in rows}
+    assert by_symbol['000001']['prev_streak'] is None
+    assert by_symbol['000001']['prev_broken'] == 0
+    assert by_symbol['600003']['prev_streak'] is None
+    assert by_symbol['600003']['prev_broken'] is None
 
 
 def test_candidate_missing_quote_and_unavailable_cohort_are_not_zero():

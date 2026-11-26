@@ -121,8 +121,8 @@ def _candidates(members, names, ticks25, ticks45, cohorts, themes):
                 ret_25=valid_pct(ticks25.get(symbol, {})), ret_45=valid_pct(row),
                 intraday_pos_45=pos, amt_45_yuan=row.get('amt_yuan'),
                 ask1=row['ap1_milli']/1000 if row.get('ap1_milli') is not None else None,
-                av1=row.get('av1'), prev_streak=streaks.get(symbol, 0) if streaks is not None else None,
-                prev_broken=int(symbol in broken) if broken is not None else None))
+                av1=row.get('av1'), prev_streak=streaks.get(symbol, 0) if streaks is not None and (cohorts.get('streak_valid') is None or symbol in cohorts['streak_valid']) else None,
+                prev_broken=int(symbol in broken) if broken is not None and (cohorts.get('broken_valid') is None or symbol in cohorts['broken_valid']) else None))
     return candidates
 
 
@@ -136,6 +136,54 @@ def _bars(reader, start, end):
         if symbol:
             result[day][symbol] = row
     return result
+
+
+def _kline_cohorts(bars, dates):
+    from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+
+    def limit(row, symbol):
+        band = '0.20' if symbol.startswith(('300', '301')) else '0.10' if symbol.startswith(('00', '60')) else None
+        try:
+            pre = Decimal(str(row.get('pre_close')))
+            if band is None or not pre.is_finite() or pre <= 0:
+                return None
+            return float((pre * (1 + Decimal(band))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+
+    def value(row, key):
+        try:
+            n = float(row[key])
+            return n if __import__('math').isfinite(n) and n > 0 else None
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    streaks, broken, streak_valid, broken_valid = {}, set(), set(), set()
+    window = dates[-15:]
+    for symbol, row in bars[window[-1]].items():
+        px, close, high = limit(row, symbol), value(row, 'close'), value(row, 'high')
+        if px is None or close is None:
+            continue
+        if high is not None:
+            broken_valid.add(symbol)
+            if high >= px - 1e-6 and close < px - 1e-6:
+                broken.add(symbol)
+        count = 0
+        for day in reversed(window):
+            bar = bars[day].get(symbol, {})
+            threshold, price = limit(bar, symbol), value(bar, 'close')
+            if threshold is None or price is None:
+                break
+            if price < threshold - 1e-6:
+                streak_valid.add(symbol)
+                break
+            count += 1
+        else:
+            streak_valid.add(symbol)
+        if symbol in streak_valid:
+            streaks[symbol] = count
+    return {'official_streaks': streaks, 'official_broken_symbols': broken,
+            'streak_valid': streak_valid, 'broken_valid': broken_valid}
 
 
 def load_backtest_snapshots(dataset_path, td_config, kaipan_cache_dir, stock_static_path=None):
@@ -198,6 +246,9 @@ def load_live_shadow_snapshot(trade_date, td_config, kaipan_cache_dir=None, stoc
     names = {**member_names, **{k: v for k, v in _read_names(stock_static_path).items() if v}}
     cache = load_kaipan_cache(kaipan_cache_dir) if kaipan_cache_dir else []
     cohorts = _cohorts(cache, prev, cutoff)
+    kaipan_source = 'kaipan_cache' if cohorts else 'daily_kline_v1_fallback'
+    if not cohorts:
+        cohorts = _kline_cohorts(bars, dates)
     streaks = cohorts.get('official_streaks')
     t25, t45 = _ticks(reader, trade_date, '09:25:00'), _ticks(reader, trade_date, '09:45:30')
     if not t25 or not t45: raise ValueError('missing intraday ticks')
@@ -224,5 +275,5 @@ def load_live_shadow_snapshot(trade_date, td_config, kaipan_cache_dir=None, stoc
            'high_minus_low_pp': divergence['high_minus_low_pp'] if streaks is not None else None,
            'yw_pp': market['yw_pp'], 'pos20_med': market['pos20_med'], 'gap': gap}
     return MarketSnapshot(trade_date, prev, cutoff, raw, themes, _candidates(members, names, t25, t45, cohorts, themes), t45,
-                          source_metadata={'membership': 'latest_fallback' if fallback else 'as_of', 'kaipan': 'available_by_cutoff' if streaks is not None else 'unavailable',
+                          source_metadata={'membership': 'latest_fallback' if fallback else 'as_of', 'kaipan': kaipan_source,
                                            'stock_names': 'static_fallback_may_be_retrospective'})
