@@ -53,6 +53,8 @@ class SelectionResult:
     themes: tuple
     picks: tuple
     funnel_counts: Mapping[str, int]
+    theme_details: tuple[dict, ...] = ()
+    evidence: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)

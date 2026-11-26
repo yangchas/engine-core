@@ -59,7 +59,13 @@ class StrategyEngine:
         executed = self.ledger.execute_intraday(snapshot.trade_date, intents, snapshot.quotes_0945)
         if self.history_store:
             self.history_store.append({**snapshot.regime_raw, 'trade_date': snapshot.trade_date, 'time': '09:45'})
-        return {'strategy': self.spec.name, 'trade_date': snapshot.trade_date, 'regime': asdict(regime), 'selection': asdict(selection), 'intents': [asdict(i) for i in intents], 'execution': executed}
+        names = {}
+        for candidate in snapshot.candidates:
+            symbol = candidate.get('symbol') if isinstance(candidate, dict) else candidate.symbol
+            name = candidate.get('name') if isinstance(candidate, dict) else candidate.name
+            if symbol and name:
+                names[symbol] = name
+        return {'strategy': self.spec.name, 'trade_date': snapshot.trade_date, 'regime': asdict(regime), 'selection': asdict(selection), 'intents': [asdict(i) for i in intents], 'execution': executed, 'stock_names': names}
 
     def run_eod(self, trade_date, close_prices):
         return self.ledger.mark_eod(trade_date, close_prices)

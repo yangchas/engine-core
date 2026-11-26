@@ -49,6 +49,8 @@ def test_selection_funnel_and_gem_cap():
     result = MainThemeNormalizedAccelSelector().select(snapshot(candidates=cs))
     assert result.funnel_counts == {'theme_pool': 12, 'after_universe': 10, 'after_landmine': 8, 'after_buyable': 7, 'after_guardrails': 4, 'selected': 3, 'gem_count': 2}
     assert [p[0] for p in result.picks] == ['300001', '301002', '600001']
+    assert result.theme_details == ({'theme': 'A', 'p45': 3},)
+    assert result.evidence[0] == {'rank': 1, 'symbol': '300001', 'name': '公司', 'board': '创业板', 'limit_pct': 20.0, 'theme': 'A', 'ret_25': 0, 'ret_45': 12, 'path_25_45': 12, 'norm_accel': .6, 'intraday_pos_45': .8, 'amt_45_yi': .4, 'ask1': 10, 'av1': 100, 'prev_streak': 0, 'prev_broken': 0}
 
 
 @pytest.mark.parametrize('label,exposure,cap,expected', [('WARM_SOLO', 1, .2, .4), ('COLD_SOLO', .5, .1, .2)])
@@ -127,6 +129,7 @@ def test_shadow_run_persists_and_is_idempotent(tmp_path, monkeypatch):
         log = [json.loads(line) for line in (tmp_path/(spec.name+'.jsonl')).read_text().splitlines()]
         assert len(log) == 1
         assert log[0]['selection']['funnel_counts']['selected'] == 1
+        assert log[0]['stock_names']['600001'] == '公司'
         state = json.loads((tmp_path/(spec.name+'.json')).read_text())
         assert state['last_trade_date'] == snap.trade_date
     assert len((tmp_path/'regime_history.jsonl').read_text().splitlines()) == 1
@@ -271,11 +274,22 @@ def test_shadow_email_rendering():
     body = msg.get_body(preferencelist=('plain',)).get_content()
     assert all(x in body for x in ('temp45=53', 'pos20=40', '芯片', 'after_guardrails=6', '600001', '手续费=1.00', 'membership=as_of', *names))
     assert msg.get_body(preferencelist=('html',)) is not None
+    selection = MainThemeNormalizedAccelSelector().select(snapshot(candidates=[candidate('600001', name='测试公司')], themes=[{'theme': 'A', 'p45': 3.5}]))
+    from dataclasses import asdict
+    decision['selection'] = asdict(selection)
+    decision['stock_names'] = {'600001': '测试公司'}
+    decision['regime'].update(label='CROWDED', target_exposure=0, max_single_weight=0)
+    rendered = build_intraday_shadow_email('2026-01-12', {n: decision for n in names}, recipients=['412826313@qq.com']).get_body(preferencelist=('html',)).get_content()
+    assert '<pre>' not in rendered
+    assert all(x in rendered for x in ('今日候补观察（未买入）', '测试公司', '+3.50%', '09:25→09:45', '归一化分', '09:45成交额', '昨日基因', '板块池', '精选 Top5', '创业板 0只'))
     mark = {'nav': 1.02, 'max_drawdown': .03, 'cash': 900, 'equity': 1020, 'positions': decision['positions']}
     msg = build_eod_shadow_email('2026-01-12', {n: mark for n in names}, recipients=['412826313@qq.com'])
     assert str(msg['Subject']) == '[影子策略 15:25盯市] 2026-01-12 | main_a_p2 NAV=1.0200 (+2.00%)'
     body = msg.get_body(preferencelist=('plain',)).get_content()
     assert all(x in body for x in ('MDD%=3.00', '持仓市值=120.00', '600001', *names))
+    mark['stock_names'] = {'600001': '测试公司'}
+    rendered = build_eod_shadow_email('2026-01-12', {n: mark for n in names}, recipients=['412826313@qq.com']).get_body(preferencelist=('html',)).get_content()
+    assert '<pre>' not in rendered and all(x in rendered for x in ('<table', '最大回撤 MDD%', '持仓市值', '测试公司'))
     with pytest.raises(ValueError, match='recipient'):
         build_eod_shadow_email('2026-01-12', {n: mark for n in names}, recipients=['other@example.com'])
 

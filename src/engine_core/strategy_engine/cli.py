@@ -166,6 +166,8 @@ def main(argv=None):
         root.mkdir(parents=True, exist_ok=True)
         store = RegimeHistoryStore(root/'regime_history.jsonl')
         snapshot = load_live_shadow_snapshot(args.trade_date, args.td_config, args.kaipan_cache, args.stock_static)
+        from .adapters import _read_names
+        static_names = _read_names(args.stock_static)
         for spec in default_strategy_specs():
             state = root/(spec.name+'.json')
             log = root/(spec.name+'.jsonl')
@@ -176,12 +178,15 @@ def main(argv=None):
                 raise ValueError('shadow runs must be chronological')
             ledger = SingleAccountLedger.from_dict(saved['ledger']) if saved else SingleAccountLedger(cost_bps=spec.cost_bps)
             decision = StrategyEngine(spec, ledger, store).run_intraday(snapshot)
+            relevant = {p.symbol for p in ledger.positions} | {t['symbol'] for t in decision['execution']['trades']}
+            known_names = {s: static_names[s] for s in relevant if static_names.get(s)}
+            decision['stock_names'] = {**known_names, **(saved or {}).get('stock_names', {}), **decision['stock_names']}
             decision['source_metadata'] = snapshot.source_metadata
             decision['regime_raw'] = snapshot.regime_raw
             decision['positions'] = ledger.to_dict()['positions']
             with log.open('a', encoding='utf-8') as out:
                 out.write(json.dumps(decision, ensure_ascii=False, allow_nan=False)+'\n')
-            _write_json(state, {**(saved or {}), 'last_trade_date': args.trade_date, 'ledger': ledger.to_dict()})
+            _write_json(state, {**(saved or {}), 'last_trade_date': args.trade_date, 'ledger': ledger.to_dict(), 'stock_names': decision['stock_names']})
             print(json.dumps(decision, ensure_ascii=False, allow_nan=False))
         if args.email_to:
             return _send_from_logs(root, args, intraday=True)
@@ -215,6 +220,7 @@ def main(argv=None):
             mark = ledger.mark_eod(args.trade_date, prices)
             mark['strategy'] = spec.name
             mark['positions'] = ledger.to_dict()['positions']
+            mark['stock_names'] = saved.get('stock_names', {})
             with (root / (spec.name + '.eod.jsonl')).open('a', encoding='utf-8') as out:
                 out.write(json.dumps(mark, ensure_ascii=False, allow_nan=False) + '\n')
             _write_json(state, {**saved, 'last_eod_date': args.trade_date, 'ledger': ledger.to_dict()})
