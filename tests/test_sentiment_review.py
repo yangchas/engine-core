@@ -132,7 +132,7 @@ def test_real_loader_causality_and_retrospective(tmp_path):
     cache = tmp_path / 'cache'; cache.mkdir()
     live = tmp_path / 'live'; live.mkdir()
     for day in ('2026-11-24', '2026-11-25'):
-        (cache / (day + '.json')).write_text(json.dumps({'trade_date': day, 'fetched_at': '2026-11-26T18:00:00+08:00', 'his_plates': {'ok': True, 'data': {'list': [['1', 'A']]}}}))
+        (cache / (day + '.json')).write_text(json.dumps({'trade_date': day, 'fetched_at': '2026-11-26T18:00:00+08:00', 'his_plates': {'ok': True, 'data': {'list': [['1', 'A']]}}, 'his_bans': {str(i): {'ok': True, 'data': {'info': [[['000001', 'one']] if i == 2 else []]}} for i in range(1, 6)}, 'his_zha': {'ok': True, 'data': {'list': [['000001', 'one']]}}, 'his_floor': {'ok': True, 'data': {'list': [['000001', 'one']]}}}))
     class Reader:
         def read(self, name, start, end):
             if name == 'daily_kline':
@@ -149,10 +149,13 @@ def test_real_loader_causality_and_retrospective(tmp_path):
     day = data['intraday'][1]
     assert [p['time'] for p in day['timepoints']] == ['09:25', '09:35', '09:45']
     assert day['timepoints'][0]['factors']['kaipan_hot']['prev_close'] == ['A']
+    assert day['timepoints'][0]['factors']['ladder_relay']['2p']['n'] == 1
+    assert day['timepoints'][0]['factors']['broken_rotten']['cohort_source'] == 'kaipan_hist_cache'
     assert day['outcomes']['close']['time'] == '15:00'
     assert day['timepoints'][2]['factors']['market_global']['eq_pct'] == 0
     strict = build_from_td_and_cache('', cache, live, reader=Reader(), allow_retrospective=False)
     assert strict['intraday'][1]['timepoints'][0]['factors']['kaipan_hot']['prev_close'] is None
+    assert strict['intraday'][1]['timepoints'][0]['factors']['ladder_relay']['cohort_source'] == 'daily_kline_v1'
     class EmptyReader(Reader):
         def read(self, name, start, end): return []
         def read_ticks(self, day, cutoff): return []
@@ -167,9 +170,61 @@ def test_build_real_cli_wiring(tmp_path, monkeypatch, capsys):
     calls = []
     def build(*args, **kwargs):
         calls.append((args, kwargs))
-        return {'meta': {}, 'intraday': [], 'daily': []}
+        return {'meta': {'daily_days': 0, 'intraday_tick_days': 0}, 'intraday': [], 'daily': []}
     monkeypatch.setattr(real_loader, 'build_from_td_and_cache', build)
     out = tmp_path / 'data.pkl.gz'
     assert cli.main(['build-real', '--td-config', 'cfg', '--kaipan-cache', 'cache', '--kaipan-live-root', 'live', '--out', str(out), '--strict-capture-time']) == 0
     assert calls == [(('cfg', 'cache', 'live'), {'allow_retrospective': False})]
     assert cli.main(['audit', str(out)]) == 0
+
+
+def test_historical_positional_cohorts():
+    from engine_core.sentiment_review.adapters.kaipan_cache import parse_historical_cohorts
+    def envelope(rows): return {'ok': True, 'data': {'list': rows}}
+    def ban(rows): return {'ok': True, 'data': {'info': [rows]}}
+    long_row = ['000005', 'five'] + [0] * 13 + [7]
+    pools = {'his_bans': {str(i): ban([['000001', 'one']] if i == 1 else [long_row] if i == 5 else []) for i in range(1, 6)},
+             'his_zha': envelope([['000002', 'broken'], ['bad', 'invalid']]),
+             'his_floor': envelope([['000003', 'floor']]), 'his_plates': envelope([['801001', 'plate', 9]])}
+    result = parse_historical_cohorts(pools)
+    assert result['official_limit_up_by_tier'][5] == {'000005'}
+    assert result['official_streaks'] == {'000001': 1, '000005': 7}
+    assert result['official_broken_symbols'] == {'000002'}
+    assert result['official_floor_symbols'] == {'000003'}
+    assert result['official_hot_plates'][0]['name'] == 'plate'
+    pools['his_bans']['3'] = {'ok': False}
+    assert parse_historical_cohorts(pools)['official_streaks'] is None
+
+
+def test_official_cohorts_and_tick_day_history():
+    cohorts = {'official_streaks': {'000002': 2}, 'official_broken_symbols': {'000003'}, 'official_floor_symbols': {'000004'}}
+    days = {'2026-01-01': {'snapshots': {'15:00': {'000001': row(10)}}},
+            '2026-01-02': {'snapshots': {'09:25': {'000002': row(1), '000003': row(-6), '000004': row(-7)}, '15:00': {'000001': row(0)}}, 'prior_official_cohorts': cohorts},
+            '2026-01-03': {'snapshots': {'15:00': {'000001': row(0)}}}}
+    data = build_timeseries_dataset(days, min_periods=1)
+    assert data['meta']['daily_days'] == 3 and data['meta']['intraday_tick_days'] == 1
+    assert [d['has_intraday_ticks'] for d in data['intraday']] == [False, True, False]
+    day = data['intraday'][1]; factors = day['timepoints'][0]['factors']
+    assert factors['ladder_relay']['cohort_source'] == 'kaipan_hist_cache'
+    assert factors['ladder_relay']['2p']['n'] == 1
+    assert factors['broken_rotten']['broken']['nuke_pct'] == 100
+    assert factors['broken_rotten']['floor']['n'] == 1
+    assert day['cohort_cross_check']['daily_kline_v1']['limit_up'] == 1
+    assert day['cohort_cross_check']['kaipan_hist_cache']['limit_up'] == 1
+
+
+def test_empty_intraday_snapshots_do_not_enter_temperature_history(monkeypatch):
+    from engine_core.sentiment_review import pipeline
+    calls = []
+    original = pipeline.compute_sentiment_temperature
+    def capture(current, history, **kwargs):
+        if kwargs['time'] == '09:25':
+            calls.append(len(history))
+        return original(current, history, **kwargs)
+    monkeypatch.setattr(pipeline, 'compute_sentiment_temperature', capture)
+    days = {'2026-01-01': {'snapshots': {'09:25': {'000001': row(0)}}},
+            '2026-01-02': {'snapshots': {'09:25': {}, '15:00': {'000001': row(0)}}},
+            '2026-01-03': {'snapshots': {'09:25': {'000001': row(1)}}}}
+    data = pipeline.build_timeseries_dataset(days)
+    assert calls == [0, 1]
+    assert [day['has_intraday_ticks'] for day in data['intraday']] == [True, False, True]

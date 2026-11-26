@@ -24,18 +24,35 @@ def build_timeseries_dataset(days, *, min_periods=20):
     for day in dates:
         record = days[day]
         points = []
+        has_ticks = any(rows for cut, rows in record.get('snapshots', {}).items() if cut != '15:00')
+        cohorts = record.get('prior_official_cohorts') or {}
+        active_streaks = cohorts.get('official_streaks')
+        active_broken = cohorts.get('official_broken_symbols')
+        floor = cohorts.get('official_floor_symbols')
+        cross_check = {'limit_up': len(streaks), 'broken': len(prior_broken),
+                       'rotten': len(prior_rotten)}
+        active_streaks = streaks if active_streaks is None else active_streaks
+        active_broken = prior_broken if active_broken is None else active_broken
         today_snaps = {}
         temp25 = None
         close_ext = None
         close_rows = None
         for cut, rows in sorted(record.get('snapshots', {}).items()):
+            if cut != '15:00' and not rows:
+                continue
             today_snaps[cut] = rows
             ext = compute_extremes_factor(rows)
             market = compute_market_global_factor(rows, amount_history.get(cut, ()))
-            ladder = compute_ladder_relay_factor(rows, streaks, ext['sets']['sealed_up'])
-            broken = compute_broken_rotten_factor(rows, prior_broken, prior_rotten)
+            ladder = compute_ladder_relay_factor(rows, active_streaks, ext['sets']['sealed_up'])
+            broken = compute_broken_rotten_factor(rows, active_broken, prior_rotten)
             top = compute_top_amount_core_factor(rows, prior_rows)
-            all_lu = [s for s in streaks]
+            from .factors._common import feedback
+            ladder['cohort_source'] = 'kaipan_hist_cache' if cohorts.get('official_streaks') is not None else 'daily_kline_v1'
+            broken['cohort_source'] = 'kaipan_hist_cache' if cohorts.get('official_broken_symbols') is not None else 'daily_kline_v1'
+            broken['rotten_cohort_source'] = 'daily_kline_v1'
+            broken['floor'] = feedback(floor, rows) if floor is not None else None
+            broken['floor_cohort_source'] = 'kaipan_hist_cache' if floor is not None else None
+            all_lu = list(active_streaks)
             from .factors._common import feedback
             ylu = feedback(all_lu, rows)
             raw = {'time': cut, 'up_ratio': market['up_ratio'], 'net_lu': ext['sealed_up']-ext['sealed_down'],
@@ -58,7 +75,8 @@ def build_timeseries_dataset(days, *, min_periods=20):
                        'top_amount_core': top, 'extremes': clean_ext, 'auction_themes_5d': themes,
                        'kaipan_hot': kaipan, 'sentiment_score': score}
             points.append({'trade_date': day, 'time': cut, 'factors': factors})
-            histories.setdefault(cut, []).append(raw)
+            if cut == '15:00' or has_ticks:
+                histories.setdefault(cut, []).append(raw)
             if market['tot_amt_yi'] is not None: amount_history.setdefault(cut, []).append(market['tot_amt_yi'])
             if cut == '15:00': close_ext,close_rows = ext,rows
         if '09:25' in today_snaps:
@@ -74,7 +92,12 @@ def build_timeseries_dataset(days, *, min_periods=20):
         else:
             # Never treat an older close as the immediately preceding session.
             streaks, prior_broken, prior_rotten, prior_rows = {}, set(), set(), {}
-        intraday.append({'trade_date': day, 'previous_date': previous_date, 'timepoints': points})
+        intraday.append({'trade_date': day, 'previous_date': previous_date, 'has_intraday_ticks': has_ticks,
+                         'cohort_cross_check': {'daily_kline_v1': cross_check,
+                           'kaipan_hist_cache': {'limit_up': len(cohorts['official_streaks']) if cohorts.get('official_streaks') is not None else None,
+                           'broken': len(cohorts['official_broken_symbols']) if cohorts.get('official_broken_symbols') is not None else None,
+                           'floor': len(floor) if floor is not None else None}}, 'timepoints': points})
         previous_date = day
-    meta = DatasetMeta(daily_days=len(daily), intraday_days=len(intraday))
+    meta = DatasetMeta(daily_days=len(daily), intraday_days=sum(d['has_intraday_ticks'] for d in intraday),
+                       intraday_tick_days=sum(d['has_intraday_ticks'] for d in intraday))
     return {'meta': asdict(meta), 'daily': daily, 'intraday': intraday}

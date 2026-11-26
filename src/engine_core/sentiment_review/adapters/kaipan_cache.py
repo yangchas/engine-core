@@ -21,6 +21,52 @@ def load_kaipan_cache(path):
     return records
 
 
+def _historical_rows(envelope, field):
+    if not isinstance(envelope, dict) or not envelope.get('ok'):
+        return None
+    data = envelope.get('data')
+    if not isinstance(data, dict):
+        return None
+    rows = data.get(field)
+    return rows if isinstance(rows, list) else None
+
+
+def _symbols(rows):
+    return {row[0] for row in rows if isinstance(row, list) and len(row) >= 2
+            and isinstance(row[0], str) and len(row[0]) == 6 and row[0].isascii() and row[0].isdigit()}
+
+
+def parse_historical_cohorts(record):
+    """Parse available pools independently; None means unavailable, not empty.
+
+    Ban tier 5 is a 5+ bucket; row[15] supplies the actual streak when valid.
+    """
+    bans = record.get('his_bans')
+    tiers, streaks = {}, {}
+    if isinstance(bans, dict):
+        for tier in range(1, 6):
+            info = _historical_rows(bans.get(str(tier)), 'info')
+            if not info or not isinstance(info[0], list):
+                tiers = None
+                break
+            rows = info[0]
+            tiers[tier] = _symbols(rows)
+            for row in rows:
+                if isinstance(row, list) and row and row[0] in tiers[tier]:
+                    value = row[15] if len(row) > 15 else None
+                    streaks[row[0]] = value if isinstance(value, int) and not isinstance(value, bool) and value >= tier and (tier == 5 or value == tier) else tier
+    else:
+        tiers = None
+    broken = _historical_rows(record.get('his_zha'), 'list')
+    floor = _historical_rows(record.get('his_floor'), 'list')
+    plates = _historical_rows(record.get('his_plates'), 'list')
+    return {'official_limit_up_by_tier': tiers, 'official_streaks': streaks if tiers is not None else None,
+            'official_broken_symbols': _symbols(broken) if broken is not None else None,
+            'official_floor_symbols': _symbols(floor) if floor is not None else None,
+            'official_hot_plates': [{'code': str(row[0]), 'name': str(row[1]), 'raw_fields': row[2:]}
+                                    for row in plates if isinstance(row, list) and len(row) >= 2] if plates is not None else None}
+
+
 def available_kaipan_plates(records, trade_date, cutoff):
     """Return the latest dated plate observation demonstrably available by cutoff.
 

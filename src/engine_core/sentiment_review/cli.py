@@ -45,7 +45,11 @@ def main(argv=None):
         errors = []
         dates = [d['trade_date'] for d in data['intraday']]
         if dates != sorted(set(dates)): errors.append('dates not strictly ordered')
+        if data['meta'].get('intraday_tick_days') != sum(d.get('has_intraday_ticks') is True for d in data['intraday']): errors.append('intraday tick day count mismatch')
+        if data['meta'].get('daily_days') != len(data['daily']): errors.append('daily day count mismatch')
         for day in data['intraday']:
+            if not isinstance(day.get('has_intraday_ticks'), bool): errors.append(f"{day['trade_date']}: missing tick flag")
+            elif day['has_intraday_ticks'] != any(p['time'] != '15:00' for p in day['timepoints']): errors.append(f"{day['trade_date']}: tick flag mismatch")
             times = [p['time'] for p in day['timepoints']]
             if times != sorted(set(times)): errors.append(f"{day['trade_date']}: cuts not strictly ordered")
             for point in day['timepoints']:

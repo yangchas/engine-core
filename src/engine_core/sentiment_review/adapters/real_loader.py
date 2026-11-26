@@ -3,7 +3,7 @@ from collections import defaultdict
 from datetime import datetime, time, timedelta
 from pathlib import Path
 
-from .kaipan_cache import available_kaipan_plates, load_kaipan_cache
+from .kaipan_cache import available_kaipan_plates, load_kaipan_cache, parse_historical_cohorts
 from .td_reader import TDReader
 from ..pipeline import build_timeseries_dataset
 
@@ -122,7 +122,10 @@ def build_from_td_and_cache(td_config, kaipan_cache, kaipan_live_root, *, allow_
                 hot['prev_close'] = available_kaipan_plates(history, prev, day + 'T09:25:00+08:00')
         for cut, clock in [('09:25', '09:25:00'), ('09:45', '09:45:30')]:
             hot[cut] = available_kaipan_plates(live, day, day + 'T' + clock)
-        days[day] = {'snapshots': snapshots, 'members': members, 'prior_features': prior, 'kaipan': hot}
+        matching = next((r for r in history if r.get('trade_date') == prev), None)
+        cohorts = parse_historical_cohorts(matching) if matching and allow_retrospective else None
+        days[day] = {'snapshots': snapshots, 'members': members, 'prior_features': prior, 'kaipan': hot,
+                     'prior_official_cohorts': cohorts}
     # The final calendar day's next-day auction is an outcome only.  Do not
     # skip missing dates and silently claim a later observation is D+1.
     next_day = (datetime.fromisoformat(dates[-1]) + timedelta(days=1)).date().isoformat()
@@ -144,8 +147,7 @@ def build_from_td_and_cache(td_config, kaipan_cache, kaipan_live_root, *, allow_
         if hist and (allow_retrospective or available_kaipan_plates([hist], previous, day['trade_date'] + 'T09:25:00+08:00') is not None):
             day['prior_kaipan_pools'] = {k: hist.get(k) for k in ('his_bans', 'his_zha', 'his_floor')}
         day['outcomes'] = {'close': close, 'next_open': (days[dates[i+1]]['snapshots'].get('09:25') if i+1 < len(dates) else next_open or None)}
-    data['daily'] = []
-    data['meta'].update(daily_days=0, provenance='RETROSPECTIVE_BACKFILL' if allow_retrospective else 'STRICT_CAPTURE_TIME',
+    data['meta'].update(provenance='RETROSPECTIVE_BACKFILL' if allow_retrospective else 'STRICT_CAPTURE_TIME',
                         source_dates={'first': dates[0], 'last': dates[-1]},
                         membership={k: v for k, v in (latest_members or {}).items() if k != 'rows'})
     return data

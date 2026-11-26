@@ -42,7 +42,5 @@ excludes historical Kaipan fetched after the cut and uses as-of membership;
 indicator records with unknown or later availability are excluded. The TD
 source does not establish historical availability for every input. Morning
 points end at 09:45:30; close and next-open observations are outcomes. Historical
-Kaipan pool envelopes are retained as prior-day research inputs; the existing
-ladder and broken-board factors derive their cohorts from daily closes rather
-than interpreting undocumented positional pool fields. Audit checks ordering and that theme outcomes are absent from theme features;
+Kaipan historical pools supply prior-day ladder and broken cohorts in retrospective mode. The floor pool has separate feedback; rotten remains a daily-bar-derived cohort. Per-day cross-checks retain daily-derived cohort counts. `daily_days` counts close records, and `intraday_tick_days` (also `intraday_days`) counts days with nonempty morning snapshots; each day carries `has_intraday_ticks`. Audit checks ordering and that theme outcomes are absent from theme features;
 it does not prove input provenance or complete market coverage.

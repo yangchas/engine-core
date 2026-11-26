@@ -23,3 +23,4 @@ class DatasetMeta:
     schema: str = "SentimentReviewV1"
     daily_days: int = 0
     intraday_days: int = 0
+    intraday_tick_days: int = 0
