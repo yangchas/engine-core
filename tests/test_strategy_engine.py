@@ -257,3 +257,82 @@ def test_guardian_contract(tmp_path, monkeypatch, capsys, mode):
     response = json.loads(result.out)
     assert response['status'] == 'failed' and response['error_code'] == 'SHADOW_ERROR'
     assert response['retryable'] is True and response['artifacts'] == []
+
+
+def test_shadow_email_rendering():
+    from engine_core.strategy_engine.mailer import build_intraday_shadow_email, build_eod_shadow_email
+    names = [s.name for s in default_strategy_specs()]
+    decision = {'regime': {'label': 'WARM_SOLO', 'target_exposure': 1, 'metrics': {'temperature': 53, 'gap': 2, 'top100_avg_pct': 3}},
+                'regime_raw': {'pos20_med': 40}, 'selection': {'themes': ['芯片'], 'funnel_counts': {'theme_pool': 10, 'after_universe': 9, 'after_landmine': 8, 'after_buyable': 7, 'after_guardrails': 6, 'selected': 1, 'gem_count': 0}},
+                'execution': {'cash': 900, 'trades': [{'side': 'BUY', 'symbol': '600001', 'qty': 10, 'price': 10, 'fee': 1}]},
+                'positions': [{'symbol': '600001', 'qty': 10, 'cost_basis': 10}], 'source_metadata': {'membership': 'as_of', 'kaipan': 'fallback', 'stock_names': 'static'}}
+    msg = build_intraday_shadow_email('2026-01-12', {n: decision for n in names}, recipients=['412826313@qq.com'])
+    assert str(msg['Subject']) == '[影子策略 09:46] 2026-01-12 WARM_SOLO | 买1卖0'
+    body = msg.get_body(preferencelist=('plain',)).get_content()
+    assert all(x in body for x in ('temp45=53', 'pos20=40', '芯片', 'after_guardrails=6', '600001', '手续费=1.00', 'membership=as_of', *names))
+    assert msg.get_body(preferencelist=('html',)) is not None
+    mark = {'nav': 1.02, 'max_drawdown': .03, 'cash': 900, 'equity': 1020, 'positions': decision['positions']}
+    msg = build_eod_shadow_email('2026-01-12', {n: mark for n in names}, recipients=['412826313@qq.com'])
+    assert str(msg['Subject']) == '[影子策略 15:25盯市] 2026-01-12 | main_a_p2 NAV=1.0200 (+2.00%)'
+    body = msg.get_body(preferencelist=('plain',)).get_content()
+    assert all(x in body for x in ('MDD%=3.00', '持仓市值=120.00', '600001', *names))
+    with pytest.raises(ValueError, match='recipient'):
+        build_eod_shadow_email('2026-01-12', {n: mark for n in names}, recipients=['other@example.com'])
+
+
+@pytest.mark.parametrize('mode', ['intraday', 'eod'])
+def test_guardian_mail_failure_retry(tmp_path, monkeypatch, capsys, mode):
+    import io
+    import sys
+    from engine_core.strategy_engine import cli
+    from engine_core.report_mailer import SendReceipt
+    from engine_core.sentiment_review.adapters import td_reader
+    class Reader:
+        def __init__(self, config): pass
+        def read(self, *args): return []
+    monkeypatch.setattr(td_reader, 'TDReader', Reader)
+    monkeypatch.setattr(cli, 'load_live_shadow_snapshot', lambda *args: snapshot())
+    if mode == 'eod':
+        cli.main(['shadow-run', '--trade-date', '2026-01-12', '--td-config', 'cfg', '--shadow-dir', str(tmp_path)])
+        capsys.readouterr()
+    args = ['guardian-run', '--mode', mode, '--td-config', 'cfg', '--shadow-dir', str(tmp_path), '--email-to', '412826313@qq.com', '--subject-prefix', '[preview]']
+    def fail(msg):
+        raise RuntimeError('SMTP failed')
+    monkeypatch.setattr(cli, 'send_shadow_email', fail)
+    monkeypatch.setattr(sys, 'stdin', io.StringIO('{"trade_date":"2026-01-12"}'))
+    assert cli.main(args) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result['status'] == 'failed' and result['retryable'] and result['email_status'] == 'error'
+    def send(msg):
+        assert str(msg['To']) == '412826313@qq.com'
+        assert str(msg['Subject']).startswith('[preview]')
+        return SendReceipt('sent', 1, 123, 0.1, None)
+    monkeypatch.setattr(cli, 'send_shadow_email', send)
+    monkeypatch.setattr(sys, 'stdin', io.StringIO('{"trade_date":"2026-01-12"}'))
+    assert cli.main(args) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['email_status'] == 'sent' and result['email_receipt']['recipient_count'] == 1
+
+
+def test_shadow_sender_uses_local_state_and_enforces_recipient(tmp_path, monkeypatch):
+    from email.message import EmailMessage
+    from engine_core.strategy_engine import mailer
+    from engine_core.report_mailer import SendReceipt
+    from types import SimpleNamespace
+    monkeypatch.setenv('CORE_DATA_ROOT', str(tmp_path))
+    monkeypatch.setattr(mailer.report_mailer, 'load_smtp_config', lambda path: SimpleNamespace(from_addr='sender@example.com'))
+    def send(cfg, msg, *, dry_run, state):
+        assert not dry_run and state.claim('key', 'sending', 60)
+        with pytest.raises(RuntimeError, match='in progress'):
+            state.claim('key', 'sending', 60)
+        state.set('key', 'sent', 60)
+        assert not state.claim('key', 'sending', 60)
+        assert state.get('key') == 'sent'
+        return SendReceipt('sent', 1, 1, 0, None)
+    monkeypatch.setattr(mailer.report_mailer, 'send_message', send)
+    msg = EmailMessage()
+    msg['To'] = '412826313@qq.com'
+    assert mailer.send_shadow_email(msg).status == 'sent'
+    msg['Cc'] = 'other@example.com'
+    with pytest.raises(ValueError, match='recipient'):
+        mailer.send_shadow_email(msg)
