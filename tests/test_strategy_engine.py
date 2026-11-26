@@ -170,3 +170,60 @@ def test_candidate_missing_quote_and_unavailable_cohort_are_not_zero():
                        [{'theme': 'A', 'p45': 2}])
     assert rows[0]['ret_25'] is None
     assert rows[0]['prev_streak'] is None and rows[0]['prev_broken'] is None
+
+
+def test_shadow_eod_marks_once_and_requires_held_closes(tmp_path, monkeypatch):
+    from engine_core.strategy_engine import cli
+    from engine_core.sentiment_review.adapters import td_reader
+    calls = []
+    class Reader:
+        def __init__(self, config):
+            assert config == 'cfg'
+        def read(self, table, start, end):
+            calls.append((table, start, end))
+            return [{'symbol': '600001', 'close': 12}]
+    monkeypatch.setattr(td_reader, 'TDReader', Reader)
+    spec = default_strategy_specs()[0]
+    ledger = SingleAccountLedger()
+    ledger.positions = [Position('600001', 10, 10, '2026-01-09', '1')]
+    state = tmp_path / (spec.name + '.json')
+    state.write_text(json.dumps({'last_trade_date': '2026-01-12', 'ledger': ledger.to_dict()}))
+    args = ['shadow-eod', '--trade-date', '2026-01-12', '--td-config', 'cfg', '--shadow-dir', str(tmp_path)]
+    cli.main(args)
+    cli.main(args)
+    saved = json.loads(state.read_text())
+    assert saved['last_eod_date'] == '2026-01-12'
+    assert len(saved['ledger']['nav']) == 1
+    assert json.loads((tmp_path / (spec.name + '.eod.jsonl')).read_text())['equity'] == 1000120
+    assert calls == [('daily_kline', '2026-01-12', '2026-01-12')] * 2
+    monkeypatch.setattr(Reader, 'read', lambda *args: [])
+    with pytest.raises(ValueError, match='missing EOD close'):
+        cli.main(['shadow-eod', '--trade-date', '2026-01-13', '--td-config', 'cfg', '--shadow-dir', str(tmp_path)])
+    assert json.loads(state.read_text()) == saved
+
+
+@pytest.mark.parametrize('mode', ['intraday', 'eod'])
+def test_guardian_contract(tmp_path, monkeypatch, capsys, mode):
+    import io
+    import sys
+    from engine_core.strategy_engine import cli
+    from engine_core.sentiment_review.adapters import td_reader
+    class Reader:
+        def __init__(self, config): pass
+        def read(self, *args): return []
+    monkeypatch.setattr(td_reader, 'TDReader', Reader)
+    monkeypatch.setattr(cli, 'load_live_shadow_snapshot', lambda *args: snapshot())
+    args = ['guardian-run', '--mode', mode, '--td-config', 'cfg', '--shadow-dir', str(tmp_path)]
+    monkeypatch.setattr(sys, 'stdin', io.StringIO('{"date":"2026-01-12"}'))
+    assert cli.main(args) == 0
+    result = capsys.readouterr()
+    assert len(result.out.splitlines()) == 1
+    response = json.loads(result.out)
+    assert response['contract'] == 1 and response['status'] == 'ok'
+    monkeypatch.setattr(sys, 'stdin', io.StringIO('invalid'))
+    assert cli.main(args) == 1
+    result = capsys.readouterr()
+    assert len(result.out.splitlines()) == 1
+    response = json.loads(result.out)
+    assert response['status'] == 'failed' and response['error_code'] == 'SHADOW_ERROR'
+    assert response['retryable'] is True and response['artifacts'] == []

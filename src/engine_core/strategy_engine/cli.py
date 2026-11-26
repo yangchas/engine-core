@@ -1,7 +1,12 @@
 """Read-only research and local shadow command-line interface."""
 import argparse
+import contextlib
 import json
+import math
+import sys
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from .adapters import load_dataset, extract_regime_history, load_backtest_snapshots, load_live_shadow_snapshot
 from .engine import RegimeHistoryStore, StrategyEngine, default_strategy_specs
 from .ledger import SingleAccountLedger
@@ -81,7 +86,40 @@ def main(argv=None):
     shadow.add_argument('--kaipan-cache')
     shadow.add_argument('--stock-static')
     shadow.add_argument('--shadow-dir', required=True)
+    eod = sub.add_parser('shadow-eod')
+    eod.add_argument('--trade-date', required=True)
+    eod.add_argument('--td-config', required=True)
+    eod.add_argument('--shadow-dir', required=True)
+    guardian = sub.add_parser('guardian-run')
+    guardian.add_argument('--mode', required=True, choices=('intraday', 'eod'))
+    guardian.add_argument('--td-config', required=True)
+    guardian.add_argument('--shadow-dir', required=True)
+    guardian.add_argument('--stock-static')
     args = parser.parse_args(argv)
+    if args.command == 'guardian-run':
+        try:
+            request = json.load(sys.stdin)
+            trade_date = request.get('trade_date') or request.get('date') or datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
+            date.fromisoformat(trade_date)
+            command = ['shadow-run' if args.mode == 'intraday' else 'shadow-eod',
+                       '--trade-date', trade_date, '--td-config', args.td_config, '--shadow-dir', args.shadow_dir]
+            if args.mode == 'intraday' and args.stock_static:
+                command += ['--stock-static', args.stock_static]
+            with contextlib.redirect_stdout(sys.stderr):
+                main(command)
+            root = Path(args.shadow_dir)
+            suffix = '.jsonl' if args.mode == 'intraday' else '.eod.jsonl'
+            artifacts = [str(root / (spec.name + suffix)) for spec in default_strategy_specs()
+                         if (root / (spec.name + suffix)).exists()]
+            response = {'contract': 1, 'status': 'ok', 'artifacts': artifacts,
+                        'detail': f'{args.mode} completed for {trade_date}'}
+            code = 0
+        except Exception as exc:
+            response = {'contract': 1, 'status': 'failed', 'error_code': 'SHADOW_ERROR',
+                        'retryable': True, 'artifacts': [], 'detail': str(exc)}
+            code = 1
+        print(json.dumps(response, ensure_ascii=False, allow_nan=False))
+        return code
     if args.command == 'seed-history':
         records = extract_regime_history(load_dataset(args.dataset))
         # Replace the complete file only after validating all records.
@@ -111,8 +149,40 @@ def main(argv=None):
             decision['source_metadata'] = snapshot.source_metadata
             with log.open('a', encoding='utf-8') as out:
                 out.write(json.dumps(decision, ensure_ascii=False, allow_nan=False)+'\n')
-            _write_json(state, {'last_trade_date': args.trade_date, 'ledger': ledger.to_dict()})
+            _write_json(state, {**(saved or {}), 'last_trade_date': args.trade_date, 'ledger': ledger.to_dict()})
             print(json.dumps(decision, ensure_ascii=False, allow_nan=False))
+        return
+    if args.command == 'shadow-eod':
+        from engine_core.sentiment_review.adapters.td_reader import TDReader
+        date.fromisoformat(args.trade_date)
+        root = Path(args.shadow_dir)
+        rows = TDReader(config=args.td_config).read('daily_kline', args.trade_date, args.trade_date)
+        prices = {}
+        for row in rows:
+            symbol = str(row.get('symbol') or '')
+            if symbol in prices:
+                raise ValueError(f'duplicate daily bar: {args.trade_date} {symbol}')
+            if symbol:
+                prices[symbol] = row.get('close')
+        for spec in default_strategy_specs():
+            state = root / (spec.name + '.json')
+            if not state.exists():
+                continue
+            saved = json.loads(state.read_text(encoding='utf-8'))
+            if saved.get('last_eod_date') == args.trade_date:
+                continue
+            if saved.get('last_eod_date', '') > args.trade_date or saved['last_trade_date'] > args.trade_date:
+                raise ValueError('shadow marks must be chronological')
+            ledger = SingleAccountLedger.from_dict(saved['ledger'])
+            for pos in ledger.positions:
+                price = prices.get(pos.symbol)
+                if not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
+                    raise ValueError(f'missing EOD close {args.trade_date} {pos.symbol}')
+            mark = ledger.mark_eod(args.trade_date, prices)
+            with (root / (spec.name + '.eod.jsonl')).open('a', encoding='utf-8') as out:
+                out.write(json.dumps(mark, ensure_ascii=False, allow_nan=False) + '\n')
+            _write_json(state, {**saved, 'last_eod_date': args.trade_date, 'ledger': ledger.to_dict()})
+            print(json.dumps(mark, ensure_ascii=False, allow_nan=False))
         return
     snapshots = load_backtest_snapshots(args.dataset, args.td_config, args.kaipan_cache, args.stock_static)
     print('RETROSPECTIVE_BACKFILL: latest plate membership, static names and historical Kaipan cohorts; historical visibility is unverified.')
