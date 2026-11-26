@@ -1539,17 +1539,18 @@ def _render_open_verification_board(report: Mapping[str, Any], trade_date: str) 
         else: color, bg = '#5c6d80', '#f2f5f8'
         high_blocks.append(block(r, color, bg, f'{r.get("name") or "—"} · 昨{r.get("streak") if r.get("streak") is not None else "—"}板 · {pct(value)} · {status}', 'open-highboard'))
     compass = report.get("open_relay_compass") if isinstance(report.get("open_relay_compass"), Mapping) else None
+    compass_banner_html = ""
     compass_html = ""
     if compass and isinstance(compass.get("env"), Mapping):
         cenv = compass["env"]
         regime = str(cenv.get("regime") or "UNKNOWN")
         r_style = {
-            "DEEP_GREEN": ("#16875b", "#eaf8ef", "🟢"),
-            "LIGHT_GREEN": ("#16875b", "#f0fdf4", "🟢"),
-            "YELLOW": ("#bd6a20", "#fff4e5", "🟡"),
-            "RED": ("#bb3541", "#fff0f0", "🔴"),
-        }.get(regime, ("#53677e", "#f2f5f8", "⚪"))
-        r_color, r_bg, r_dot = r_style
+            "DEEP_GREEN": ("#15803d", "#eaf8ef", "#16a34a", "🟢", "深绿进攻信号｜可出手（最多2股）"),
+            "LIGHT_GREEN": ("#0f766e", "#f0fdf4", "#0d9488", "🟢", "浅绿稳健出击｜可出手（最多2股）"),
+            "YELLOW": ("#b45309", "#fff4e5", "#d97706", "🟡", "黄灯震荡观望｜原则不开新仓（0%）"),
+            "RED": ("#b91c1c", "#fff0f0", "#dc2626", "🔴", "红灯空仓警报｜今日严禁开新仓（0%）"),
+        }.get(regime, ("#53677e", "#f2f5f8", "#64748b", "⚪", "环境数据不足｜今日观望（0%）"))
+        r_color, r_bg, r_solid, r_dot, r_headline = r_style
         yw_v = cenv.get("yw_spread_pp")
         v5_v = cenv.get("vol_ratio_5d")
         y2_v = cenv.get("y2_pct")
@@ -1564,8 +1565,14 @@ def _render_open_verification_board(report: Mapping[str, Any], trade_date: str) 
         max_sgl = cenv.get("max_single_weight_pct") or 0
         tri_sgl = cenv.get("trial_single_weight_pct") or 0
         pos_banner = (
-            f'标准仓位上限 {max_tot}%（单票≤{max_sgl}%，最多2股）· 试跑期半仓单票≤{tri_sgl}%'
-            if max_tot > 0 else '纪律空仓（总仓位 0%）'
+            f'标准总仓 ≤{max_tot}%（单票≤{max_sgl}%） · 试跑期半仓：单票≤{tri_sgl}%'
+            if max_tot > 0 else f'原因：{_esc(cenv.get("regime_label") or "非绿灯环境")} · 管住手就是最高胜率'
+        )
+        compass_banner_html = (
+            f'<div data-section="open-relay-alert" style="background:{r_solid};color:white;padding:12px 14px;margin:6px 0;border-radius:6px">'
+            f'<div style="font-size:18px;font-weight:800;letter-spacing:0.3px">{r_dot} {_esc(r_headline)}</div>'
+            f'<div style="font-size:13px;margin-top:4px;opacity:0.95">{pos_banner}</div>'
+            f'<div style="font-size:12px;margin-top:4px;opacity:0.9">{_esc(metrics_line)}</div></div>'
         )
         cbuckets = _rows(compass.get("buckets"))
         b_pills = " ｜ ".join(
@@ -1585,22 +1592,21 @@ def _render_open_verification_board(report: Mapping[str, Any], trade_date: str) 
             ]
             picks_block = table(["主板/创业板买点C标的", "09:45买点", "昨日回踩·额", "星标·建议仓位"], pick_rows, "open-relay-pick")
         elif max_tot > 0:
-            picks_block = '<div style="padding:6px 8px;color:#53677e;font-size:13px">绿灯日但暂无同时满足买点C的主板/创业板标的，耐心等待。</div>'
+            picks_block = '<div style="padding:8px;background:#f8fafc;color:#53677e;font-size:13px;font-weight:700">绿灯日但暂无同时满足买点C的主板/创业板标的，耐心等待。</div>'
         else:
             wpicks = _rows(compass.get("watch_picks"))
             w_txt = "、".join(f'{_esc(p.get("name") or "—")}({_esc(p.get("theme") or "")})' for p in wpicks[:2])
-            picks_block = f'<div style="padding:6px 8px;color:{r_color};font-size:13px">今日非绿灯，按纪律不开新仓。' + (f'（仅观察：{w_txt}）' if w_txt else '') + '</div>'
+            picks_block = f'<div style="padding:8px 10px;background:{r_bg};color:{r_color};font-size:14px;font-weight:700">{r_dot} 非绿灯纪律：今日严禁开新仓。' + (f'（仅观察：{w_txt}）' if w_txt else '') + '</div>'
         compass_html = (
-            f'<section data-section="open-relay-compass" style="background:white;padding:10px 12px;margin:8px 0;border-left:4px solid {r_color}">'
-            f'<h2 style="margin:0 0 6px;font-size:16px">🧭 09:45 环境罗盘与反一致买点（主板+创业板）</h2>'
-            f'<div style="padding:7px 9px;background:{r_bg};color:{r_color};font-weight:700;font-size:13px">{r_dot} {_esc(cenv.get("regime_label") or "—")} ｜ {_esc(pos_banner)}</div>'
-            f'<div style="font-size:12px;color:#53677e;margin:5px 0">{_esc(metrics_line)}</div>'
+            f'<section data-section="open-relay-compass" style="background:white;padding:10px 12px;margin:8px 0;border:2px solid {r_solid};border-radius:6px">'
+            f'<h2 style="margin:0 0 6px;font-size:16px;color:{r_color}">🧭 09:45 反一致买点池（仅主板+创业板）</h2>'
             f'<div style="font-size:12px;margin:5px 0"><b>反一致候选板块：</b>{b_pills}</div>'
             f'{picks_block}'
-            f'<div style="font-size:11px;color:#64748b;margin-top:4px">退出规则：次日 09:25 集合竞价直接卖出（自动剔除科创板/北交所/ST）。</div></section>'
+            f'<div style="font-size:11px;color:#64748b;margin-top:5px">退出规则：次日 09:25 集合竞价直接卖出（自动剔除科创板/北交所/ST）。</div></section>'
         )
 
     sections = (f'<header style="background:#142c4a;color:white;padding:15px"><b style="font-size:20px">开盘快报 · 钱去了哪</b><br>{_esc(trade_date)} · {checkpoint}｜竞价 → 当前</header>'
+        f'{compass_banner_html}'
         f'<table width="100%" cellspacing="4"><tr>{card_html}</tr></table>'
         f'{compass_html}'
         f'<section data-section="open-money-flow"><h2>① 钱去了哪：🔥 真进攻主线 Top 5</h2><div>成员成交额可能重叠，不可相加</div>{table(["进攻主线", "强度", "涨幅", "成交额"], flow, "open-flow-row")}<div style="padding:8px;background:#eaf8ef;color:#16875b;border-radius:12px">🩸 放量失血：{bleeding_pills}<br>💧 撤退/回落最快 {pills}</div></section>'

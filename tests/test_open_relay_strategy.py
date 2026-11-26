@@ -180,10 +180,11 @@ def test_open_email_renders_compass_under_30kb_with_no_6digit_codes():
         },
     }
     html_doc, plain = render_email_board(report, "open", "2026-11-02")
+    assert 'data-section="open-relay-alert"' in html_doc
     assert 'data-section="open-relay-compass"' in html_doc
     assert 'data-item="open-relay-pick"' in html_doc
     assert "天娱数科" in html_doc
-    assert "深绿·白线稳+放量" in html_doc
+    assert "深绿进攻信号" in html_doc
     assert len(html_doc.encode("utf-8")) < 30_000
     assert not re.search(r"(?<!\d)\d{6}(?!\d)", html_doc + plain)
 
