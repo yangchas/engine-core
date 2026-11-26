@@ -71,11 +71,11 @@ def test_theme_cuts_and_separate_outcomes():
 
 def test_kaipan_and_temperature():
     assert compute_kaipan_hot_factor(['A','B'],['B','C'])['prev_to_open_overlap'] == 1
-    raw = dict(time='09:25',up_ratio=5,net_lu=5,top100_avg_pct=5,yest_2p_avg_pct=5,nuke_5pct=5)
-    hist = [dict(raw, up_ratio=i, net_lu=i, top100_avg_pct=i, yest_2p_avg_pct=i, nuke_5pct=10-i) for i in range(5)]
+    raw = dict(time='09:25',up_ratio=5,net_lu=5,top100_avg_pct=5,yest_2p_avg_pct=5,high_minus_low_pp=5,yw_pp=5)
+    hist = [dict(raw, up_ratio=i, net_lu=i, top100_avg_pct=i, yest_2p_avg_pct=i, high_minus_low_pp=10-i, yw_pp=10-i) for i in range(5)]
     score = compute_sentiment_temperature(raw,hist,time='09:25',min_periods=3,previous_0925=50)
-    assert score['temperature'] == pytest.approx(96.6666666667)
-    assert score['delta_25_45'] == pytest.approx(46.6666666667) and score['regime'] == '高潮'
+    assert score['temperature'] == pytest.approx(94.4444444444)
+    assert score['delta_25_45'] == pytest.approx(44.4444444444) and score['regime'] == '高潮'
     assert compute_sentiment_temperature(raw,hist,time='09:35',min_periods=3)['temperature'] is None
     assert compute_sentiment_temperature({**raw,'top100_avg_pct':None},hist,min_periods=3)['temperature'] is None
 
@@ -261,7 +261,7 @@ def test_fixed_fields_cutoffs_and_feedback():
 
 
 def test_score_records_prior_history_and_warmup():
-    raw = dict(time='09:25', up_ratio=5, net_lu=5, top100_avg_pct=5, yest_2p_avg_pct=5, nuke_5pct=5)
+    raw = dict(time='09:25', up_ratio=5, net_lu=5, top100_avg_pct=5, yest_2p_avg_pct=5, high_minus_low_pp=5, yw_pp=5)
     history = [raw.copy() for _ in range(10)]
     result = compute_sentiment_temperature(raw, history, time='09:25', min_periods=11)
     assert result['history_n'] == 10 and result['temperature'] is not None
@@ -314,6 +314,41 @@ def test_daily_score_preserved_and_intraday_fallback():
     daily = dict(time='15:00', up_ratio=1, net_lu=1, seal_rate=1, yest_lu_avg_pct=1, downside_count=1)
     assert compute_sentiment_temperature(daily, time='15:00', min_periods=1)['temperature'] == 80
     d = {'2026-01-01': {'snapshots': {'15:00': {'600001': row(10)}}},
-         '2026-01-02': {'snapshots': {'09:25': {'600001': row(1)}}, 'prior_official_cohorts': {'official_streaks': {'600001': 1}}}}
+         '2026-01-02': {'snapshots': {'09:25': {'600001': row(1, float_cap=1)}}, 'prior_official_cohorts': {'official_streaks': {'600001': 1}}}}
     score = build_timeseries_dataset(d, min_periods=1)['intraday'][1]['timepoints'][0]['factors']['sentiment_score']
     assert score['pillars']['yest_2p_avg_pct'] == 100 and score['temperature'] is not None
+
+
+def test_intraday_optional_divergence_and_required_pillars():
+    raw = dict(time='09:45', up_ratio=2, net_lu=2, top100_avg_pct=2,
+               yest_2p_avg_pct=2, high_minus_low_pp=0, yw_pp=0)
+    history = [dict(raw, up_ratio=1, net_lu=1, top100_avg_pct=1,
+                    yest_2p_avg_pct=1, high_minus_low_pp=1, yw_pp=1)] * 2
+    score = compute_sentiment_temperature(raw, history, time='09:45', min_periods=3)
+    assert score['pillars']['high_minus_low_pp'] == pytest.approx(200/3)
+    assert score['pillars']['yw_pp'] == pytest.approx(200/3)
+    missing = dict(raw, high_minus_low_pp=None)
+    assert compute_sentiment_temperature(missing, history, time='09:45', min_periods=3)['temperature'] == pytest.approx(280/3)
+    assert compute_sentiment_temperature(missing, history[:1], time='09:45', min_periods=3)['temperature'] is None
+    for key in ('up_ratio', 'net_lu', 'top100_avg_pct', 'yest_2p_avg_pct', 'yw_pp'):
+        assert compute_sentiment_temperature(dict(missing, **{key: None}), history, time='09:45', min_periods=3)['temperature'] is None
+    daily = dict(up_ratio=1, net_lu=1, seal_rate=1, yest_lu_avg_pct=1, downside_count=1)
+    for cut in (None, '15:00'):
+        assert tuple(compute_sentiment_temperature(daily, time=cut, min_periods=1)['pillars']) == ('up_ratio', 'net_lu', 'seal_rate', 'yest_lu_avg_pct', 'downside_count')
+
+
+def test_score_pipeline_future_invariance():
+    days = {}
+    for i in range(1, 5):
+        rows = {'a': row(i, float_cap=1), 'b': row(-i, float_cap=3), 'c': row(i/2, float_cap=2)}
+        days[f'2026-01-0{i}'] = {'snapshots': {'09:45': deepcopy(rows), '15:00': deepcopy(rows)},
+                                   'prior_official_cohorts': {'official_streaks': {'a': 3, 'b': 1}}}
+    before = build_timeseries_dataset(days, min_periods=2)
+    changed = deepcopy(days)
+    changed['2026-01-03']['snapshots']['15:00']['a']['pct'] = 99
+    changed['2026-01-04']['snapshots']['09:45']['a']['pct'] = -99
+    after = build_timeseries_dataset(changed, min_periods=2)
+    assert before['intraday'][2]['timepoints'][0] == after['intraday'][2]['timepoints'][0]
+    factors = before['intraday'][2]['timepoints'][0]['factors']
+    assert factors['sentiment_score']['pillars']['high_minus_low_pp'] is not None
+    assert factors['sentiment_score']['pillars']['yw_pp'] is not None

@@ -57,11 +57,13 @@ def build_timeseries_dataset(days, *, min_periods=None, min_history=10):
             all_lu = list(active_streaks)
             from .factors._common import feedback
             ylu = feedback(all_lu, rows)
+            divergence = compute_leader_divergence_factor(active_streaks, rows, ext['sets']['sealed_up'])
             raw = {'time': cut, 'up_ratio': market['up_ratio'], 'net_lu': ext['sealed_up']-ext['sealed_down'],
                    'seal_rate': ext['seal_rate'], 'yest_lu_avg_pct': ylu['avg_pct'],
                    'top100_avg_pct': top['avg_pct'],
                    'yest_2p_avg_pct': ladder['2p']['avg_pct'] if ladder['2p']['avg_pct'] is not None else ladder['1b']['avg_pct'],
                    'nuke_5pct': ext['nuke_5pct'],
+                   'high_minus_low_pp': divergence['high_minus_low_pp'], 'yw_pp': market['yw_pp'],
                    'downside_count': ext['big_noodle'] if cut == '15:00' else ext['nuke_5pct']}
             score = compute_sentiment_temperature(raw, histories.get(cut, ()), time=cut,
                 previous_0925=temp25 if cut == '09:45' else None, min_periods=min_periods if min_periods is not None else (20 if cut == '15:00' else min_history + 1))
@@ -84,7 +86,6 @@ def build_timeseries_dataset(days, *, min_periods=None, min_history=10):
                 vals = [pct(r) for r in present]
                 amounts = [r['amount_yuan'] for r in present if r.get('amount_yuan') is not None]
                 kaipan['prev_hot_member_perf'] = {'avg_pct': mean(vals), 'red_pct': ratio(sum(v > 0 for v in vals), len(vals)), 'tot_amt_yi': sum(amounts)/1e8 if amounts else None, 'n_symbols': len(vals)} if symbols else None
-            divergence = compute_leader_divergence_factor(active_streaks, rows, ext['sets']['sealed_up'])
             competition = (compute_theme_competition_factor(themes['features'], kaipan['prev_close'], time=cut, open_0925_leader_theme=open_leader_theme)
                            if cut != '15:00' else None)
             if cut == '09:25':

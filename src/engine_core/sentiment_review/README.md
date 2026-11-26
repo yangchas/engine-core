@@ -25,7 +25,7 @@ observations and require 20 nonmissing observations per pillar at the daily clos
 The inverse downside percentile follows the reference formula. Regime thresholds
 are an explicit research convention: <=10 is 双冰点 (假冰点 if the change from
 09:25 is positive), <30 偏冷, <60 中性, <80 活跃, otherwise 高潮. This
-classification is not established by the reference scripts. Missing pillars,
+classification is not established by the reference scripts. Missing required pillars,
 empty ratios and unavailable seal amounts remain null. The reference's 50%
 empty seal-rate and zero fallback returns are intentionally not used.
 
@@ -54,5 +54,4 @@ which is a retrospective theme proxy rather than verified plate membership.
 A missing prior hot list or 09:25 leader leaves the related
 comparison unavailable. Theme continuation outcomes use matched symbols and
 are separate from features. Intraday temperature uses breadth, net sealed
-limits, prior Top100 return, prior 2+ return (1-board fallback), and reversed
-5% downside count. The package's pre-existing daily scoring is unchanged.
+limits, prior Top100 return, prior 2+ return (1-board fallback), reversed high-minus-low divergence, and reversed equal-weight minus cap-weight spread. If current divergence is missing, the five remaining pillars may score after their normal warmup; other missing pillars remain null. The package's pre-existing daily scoring is unchanged.
