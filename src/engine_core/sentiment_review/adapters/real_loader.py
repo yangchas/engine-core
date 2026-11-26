@@ -53,14 +53,28 @@ def build_from_td_and_cache(td_config, kaipan_cache, kaipan_live_root, *, allow_
                 if symbol:
                     by_date[d][symbol] = row
         tables[name] = by_date
+    # Load pre-sample bars so the first study date can use a full prior window.
+    start = (datetime.fromisoformat(dates[0]) - timedelta(days=75)).date().isoformat()
+    for row in reader.read('daily_kline', start, (datetime.fromisoformat(dates[0]) - timedelta(days=1)).date().isoformat()):
+        if row.get('symbol'):
+            tables['daily_kline'][_day(row)][str(row['symbol'])] = row
+    bar_dates = sorted(tables['daily_kline'])
     latest_members = reader.read_members(None, True) if allow_retrospective else None
     shared_members = defaultdict(list)
     for row in (latest_members or {}).get('rows', []):
         if row.get('plate_code') and row.get('symbol'):
             shared_members[str(row['plate_code'])].append(str(row['symbol']))
+    def hot_mapping(snapshot):
+        mapping = defaultdict(list)
+        for r in (snapshot or {}).get('rows', []):
+            label = str(r.get('plate_member_label') or r.get('plate_name') or '').replace('、', ',').split(',')[0].strip()
+            if label and r.get('symbol'):
+                mapping[label].append(str(r['symbol']))
+        return mapping
     days = {}
     for i, day in enumerate(dates):
-        prev = dates[i-1] if i else None
+        preceding = [d for d in bar_dates if d < day]
+        prev = dates[i-1] if i else (preceding[-1] if preceding else None)
         member_snapshot = latest_members if allow_retrospective else reader.read_members(day + 'T09:25:00+08:00', False)
         members = shared_members if allow_retrospective else defaultdict(list)
         if not allow_retrospective:
@@ -83,15 +97,19 @@ def build_from_td_and_cache(td_config, kaipan_cache, kaipan_live_root, *, allow_
                     pv = pv if visible(pv) else {}
                     chip = chip if visible(chip) else {}
                 ma = pv.get('ma20'); close = k.get('close')
-                bars = [tables['daily_kline'].get(d, {}).get(symbol, {}) for d in dates[max(0, i-20):i]]
+                bars = [tables['daily_kline'].get(d, {}).get(symbol, {}) for d in preceding[-20:]]
                 highs = [r.get('high') for r in bars if r.get('high') is not None]
                 lows = [r.get('low') for r in bars if r.get('low') is not None]
                 pos20 = ((close - min(lows)) / (max(highs) - min(lows)) * 100
                          if len(highs) == len(lows) == 20 and close is not None and max(highs) > min(lows) else None)
-                dde_rows = [tables['daily_dde'].get(d, {}).get(symbol, {}).get('ddje') for d in dates[max(0, i-5):i]]
+                dde_rows = [tables['daily_dde'].get(d, {}).get(symbol, {}).get('ddje') for d in preceding[-5:]]
                 prior[symbol] = {'ma20': ma, 'pos20': pos20, 'chip_profit_ratio': chip.get('profit_ratio'),
-                    'above_ma20': close > ma if close is not None and ma is not None else None,
+                    'above_ma20': close >= ma if close is not None and ma is not None else None,
                     'dde5_yuan': sum(dde_rows) if len(dde_rows) == 5 and all(v is not None for v in dde_rows) else None}
+        def float_cap(k):
+            amount, turnover = k.get('amount_yuan'), k.get('turnover_pct')
+            return amount / (turnover / 100) if amount is not None and turnover is not None and amount > 0 and turnover > 0 else None
+        caps = {symbol: float_cap(k) for symbol, k in tables['daily_kline'].get(prev, {}).items()} if prev else {}
         snapshots = {}
         for cut, clock in [('09:25', '09:25:00'), ('09:35', '09:35:00'), ('09:45', '09:45:30')]:
             rows = reader.read_ticks(day, clock)
@@ -105,10 +123,29 @@ def build_from_td_and_cache(td_config, kaipan_cache, kaipan_live_root, *, allow_
                     continue
                 symbol = str(row.get('symbol') or '')
                 if symbol:
-                    normalized[symbol] = {**_tick(row), **{k: v for k, v in prior.get(symbol, {}).items() if k in ('ma20', 'chip_profit_ratio', 'pos20')}}
+                    normalized[symbol] = {**_tick(row), 'float_cap': caps.get(symbol), **{k: v for k, v in prior.get(symbol, {}).items() if k in ('ma20', 'chip_profit_ratio', 'pos20')}}
             if normalized:
                 snapshots[cut] = normalized
-        close_rows = {s: _close(r) for s, r in tables['daily_kline'].get(day, {}).items()}
+        close_rows = {}
+        for symbol, k in tables['daily_kline'].get(day, {}).items():
+            pv = tables['price_volume'].get(day, {}).get(symbol, {})
+            chip = tables['chip'].get(day, {}).get(symbol, {})
+            if not allow_retrospective:
+                cutoff = datetime.fromisoformat(day + 'T15:00:00+08:00')
+                def visible_close(row):
+                    try:
+                        t = datetime.fromisoformat(row.get('available_at', ''))
+                        return t.tzinfo is not None and t <= cutoff
+                    except (TypeError, ValueError):
+                        return False
+                pv = pv if visible_close(pv) else {}
+                chip = chip if visible_close(chip) else {}
+            bars = [tables['daily_kline'].get(d, {}).get(symbol, {}) for d in preceding[-20:]]
+            highs = [r.get('high') for r in bars if r.get('high') is not None]
+            lows = [r.get('low') for r in bars if r.get('low') is not None]
+            close = k.get('close')
+            pos = (100 * (close-min(lows))/(max(highs)-min(lows)) if len(highs) == len(lows) == 20 and close is not None and max(highs) > min(lows) else None)
+            close_rows[symbol] = {**_close(k), 'float_cap': float_cap(k) or caps.get(symbol), 'pos20': pos, 'ma20': pv.get('ma20'), 'chip_profit_ratio': chip.get('profit_ratio')}
         if close_rows:
             snapshots['15:00'] = close_rows
         hot = {}
@@ -120,12 +157,15 @@ def build_from_td_and_cache(td_config, kaipan_cache, kaipan_live_root, *, allow_
                     hot['prev_close'] = available_kaipan_plates(matching, prev, '9999-12-31T23:59:59+08:00')
             else:
                 hot['prev_close'] = available_kaipan_plates(history, prev, day + 'T09:25:00+08:00')
-        for cut, clock in [('09:25', '09:25:00'), ('09:45', '09:45:30')]:
+        for cut, clock in [('09:25', '09:25:00'), ('09:35', '09:35:00'), ('09:45', '09:45:30')]:
             hot[cut] = available_kaipan_plates(live, day, day + 'T' + clock)
+        today_hist = next ( (r for r in history if r.get('trade_date') == day), None)
+        if today_hist:
+            hot['15:00'] = parse_historical_cohorts(today_hist)['official_hot_plates'] if allow_retrospective else available_kaipan_plates([today_hist], day, day + 'T15:00:00+08:00')
         matching = next((r for r in history if r.get('trade_date') == prev), None)
         cohorts = parse_historical_cohorts(matching) if matching and allow_retrospective else None
         days[day] = {'snapshots': snapshots, 'members': members, 'prior_features': prior, 'kaipan': hot,
-                     'prior_official_cohorts': cohorts}
+                     'prior_official_cohorts': cohorts, 'hot_members': hot_mapping(member_snapshot)}
     # The final calendar day's next-day auction is an outcome only.  Do not
     # skip missing dates and silently claim a later observation is D+1.
     next_day = (datetime.fromisoformat(dates[-1]) + timedelta(days=1)).date().isoformat()

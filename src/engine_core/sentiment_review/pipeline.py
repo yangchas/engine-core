@@ -5,7 +5,7 @@ from .factors import (compute_market_global_factor, compute_ladder_relay_factor,
     compute_broken_rotten_factor, compute_top_amount_core_factor, compute_extremes_factor,
     compute_auction_themes_5d_factor, compute_kaipan_hot_factor, compute_sentiment_temperature)
 
-def build_timeseries_dataset(days, *, min_periods=20):
+def build_timeseries_dataset(days, *, min_periods=None, min_history=10):
     """Build from date-keyed day records.
 
     Each day has `snapshots` mapping HH:MM to symbol-keyed normalized rows, and
@@ -44,13 +44,13 @@ def build_timeseries_dataset(days, *, min_periods=20):
             ext = compute_extremes_factor(rows)
             market = compute_market_global_factor(rows, amount_history.get(cut, ()))
             ladder = compute_ladder_relay_factor(rows, active_streaks, ext['sets']['sealed_up'])
-            broken = compute_broken_rotten_factor(rows, active_broken, prior_rotten)
-            top = compute_top_amount_core_factor(rows, prior_rows)
+            broken = compute_broken_rotten_factor(rows, active_broken, prior_rotten, ext['sets']['sealed_up'])
+            top = compute_top_amount_core_factor(rows, prior_rows, ext['sets']['sealed_up'])
             from .factors._common import feedback
             ladder['cohort_source'] = 'kaipan_hist_cache' if cohorts.get('official_streaks') is not None else 'daily_kline_v1'
             broken['cohort_source'] = 'kaipan_hist_cache' if cohorts.get('official_broken_symbols') is not None else 'daily_kline_v1'
             broken['rotten_cohort_source'] = 'daily_kline_v1'
-            broken['floor'] = feedback(floor, rows) if floor is not None else None
+            broken['floor'] = feedback(floor, rows, ext['sets']['sealed_up']) if floor is not None else None
             broken['floor_cohort_source'] = 'kaipan_hist_cache' if floor is not None else None
             all_lu = list(active_streaks)
             from .factors._common import feedback
@@ -59,7 +59,7 @@ def build_timeseries_dataset(days, *, min_periods=20):
                    'seal_rate': ext['seal_rate'], 'yest_lu_avg_pct': ylu['avg_pct'],
                    'downside_count': ext['big_noodle'] if cut == '15:00' else ext['nuke_5pct']}
             score = compute_sentiment_temperature(raw, histories.get(cut, ()), time=cut,
-                previous_0925=temp25 if cut == '09:45' else None, min_periods=min_periods)
+                previous_0925=temp25 if cut == '09:45' else None, min_periods=min_periods if min_periods is not None else (20 if cut == '15:00' else min_history + 1))
             if cut == '09:25': temp25 = score['temperature']
             themes = compute_auction_themes_5d_factor(record.get('members', {}),
                 {k:v for k,v in today_snaps.items() if k in ('09:25','09:35','09:45')},
@@ -69,7 +69,16 @@ def build_timeseries_dataset(days, *, min_periods=20):
             today_hot = hot.get(cut)
             kaipan = compute_kaipan_hot_factor(hot.get('prev_close'),
                 today_hot if cut == '09:25' else None, today_hot if cut == '15:00' else None,
-                today_0945=today_hot if cut == '09:45' else None)
+                today_0945=today_hot if cut == '09:45' else None, today_0935=today_hot if cut == '09:35' else None)
+            if cut != '15:00':
+                from engine_core.auction_theme_buckets import normalize_theme_label
+                from .factors._common import pct, mean, ratio
+                names = {normalize_theme_label(x) for x in (kaipan['prev_close'] or [])}
+                symbols = {s for name, members in record.get('hot_members', record.get('members', {})).items() if normalize_theme_label(name) in names for s in members}
+                present = [rows[s] for s in symbols if s in rows and pct(rows[s]) is not None]
+                vals = [pct(r) for r in present]
+                amounts = [r['amount_yuan'] for r in present if r.get('amount_yuan') is not None]
+                kaipan['prev_hot_member_perf'] = {'avg_pct': mean(vals), 'red_pct': ratio(sum(v > 0 for v in vals), len(vals)), 'tot_amt_yi': sum(amounts)/1e8 if amounts else None, 'n_symbols': len(vals)} if symbols else None
             clean_ext = {k:v for k,v in ext.items() if k != 'sets'}
             factors = {'market_global': market, 'ladder_relay': ladder, 'broken_rotten': broken,
                        'top_amount_core': top, 'extremes': clean_ext, 'auction_themes_5d': themes,

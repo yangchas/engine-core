@@ -8,7 +8,7 @@ class TDReader:
               'price_volume': ('core_data.price_volume_indicators_v1', 'ts'),
               'ticks': ('market_data1.stock_tick_v2', 'ts'),
               'limit_up_detail': ('core_data.limit_up_detail_v1', 'trade_date')}
-    COLUMNS = {'daily_kline': 'ts,symbol,open,high,low,close,pre_close,pct_chg,amount_yuan',
+    COLUMNS = {'daily_kline': 'ts,symbol,open,high,low,close,pre_close,pct_chg,amount_yuan,turnover_pct',
                'daily_dde': 'ts,symbol,ddje',
                'chip': 'ts,symbol,profit_ratio,available_at',
                'price_volume': 'ts,symbol,ma20,available_at'}

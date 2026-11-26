@@ -54,6 +54,31 @@ def main(argv=None):
             if times != sorted(set(times)): errors.append(f"{day['trade_date']}: cuts not strictly ordered")
             for point in day['timepoints']:
                 if 'outcomes' in point['factors']['auction_themes_5d']: errors.append('outcomes in features')
-        print(json.dumps({'ok': not errors, 'errors': errors}, ensure_ascii=False))
+        coverage = {}
+        cuts = {'15:00': data['daily']}
+        for cut in ('09:25', '09:35', '09:45'):
+            cuts[cut] = [p for d in data['intraday'] for p in d['timepoints'] if p['time'] == cut]
+        for cut, points in cuts.items():
+            checks = {
+                'pos20_med': lambda f: f['market_global'].get('pos20_med') is not None,
+                'above_ma20_pct': lambda f: f['market_global'].get('above_ma20_pct') is not None,
+                'chip_prof_med': lambda f: f['market_global'].get('chip_prof_med') is not None,
+                'yw_pp': lambda f: f['market_global'].get('yw_pp') is not None,
+                'top_amount_promo_pct': lambda f: f['top_amount_core'].get('promo_pct') is not None,
+                **{f'{group}_promo_pct': (lambda f, group=group: (f['broken_rotten'].get(group) or {}).get('promo_pct') is not None) for group in ('broken', 'rotten', 'floor')},
+            }
+            if cut == '15:00':
+                checks['today_close'] = lambda f: f['kaipan_hot'].get('today_close') is not None
+            if cut == '09:35':
+                checks['today_0935'] = lambda f: f['kaipan_hot'].get('today_0935') is not None
+            if cut != '15:00':
+                checks['prev_hot_member_perf'] = lambda f: (f['kaipan_hot'].get('prev_hot_member_perf') or {}).get('avg_pct') is not None
+            if cut == '09:45':
+                checks['amt45_yi'] = lambda f: any(x.get('amt45_yi') is not None for x in f['auction_themes_5d']['features'])
+            coverage[cut] = {name: {'present': sum(bool(fn(p['factors'])) for p in points), 'total': len(points)} for name, fn in checks.items()}
+            for name, counts in coverage[cut].items():
+                if counts['total'] and not counts['present']:
+                    errors.append(f'{cut}: {name} has zero coverage')
+        print(json.dumps({'ok': not errors, 'errors': errors, 'coverage': coverage}, ensure_ascii=False))
         return 1 if errors else 0
     return 0

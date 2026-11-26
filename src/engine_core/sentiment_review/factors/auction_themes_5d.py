@@ -26,13 +26,13 @@ def compute_auction_themes_5d_factor(members, snapshots, prior_auction_amounts=N
         history = [x for x in list(prior_auction_amounts.get(theme, ())) [-5:] if x is not None and x > 0]
         crowd = a25 / mean(history) if len(history) >= 3 else None
         v25,v35,v45 = (vals(c) for c in ('09:25','09:35','09:45'))
-        u35,u45 = (ratio(sum(v > 0 for v in vs),len(vs)) for vs in (v35,v45))
+        u25,u35,u45 = (ratio(sum(v > 0 for v in vs),len(vs)) for vs in (v25,v35,v45))
         pf = [prior_features[s] for s in present if s in prior_features]
         ma = [r['above_ma20'] for r in pf if r.get('above_ma20') is not None]
         dde = [r['dde5_yuan'] for r in pf if r.get('dde5_yuan') is not None]
         output.append({'theme': theme, 'n': len(present), 'amt25_yi': a25/1e8,
             'crowd5': crowd, 'p25': mean(v25), 'p35': mean(v35), 'p45': mean(v45),
-            'up35': u35, 'up45': u45, 'bsurge': u45-u35 if u35 is not None and u45 is not None else None,
+            'up25': u25, 'up35': u35, 'up45': u45, 'amt35_yi': a35/1e8 if a35 is not None else None, 'amt45_yi': a45/1e8 if a45 is not None else None, 'bsurge': u45-u35 if u35 is not None and u45 is not None else None,
             'relay': (a45-a35)/(a35-a25) if a45 is not None and a35 is not None and a35 > a25 else None,
             'pos20': med([r.get('pos20') for r in pf]), 'ma20_pct': ratio(sum(ma),len(ma)),
             'dde5_yi': sum(dde)/1e8 if dde else None,

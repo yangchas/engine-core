@@ -1,12 +1,16 @@
 from ._common import mean
 
-def compute_sentiment_temperature(current, history=(), *, time=None, previous_0925=None, window=60, min_periods=20):
+def compute_sentiment_temperature(current, history=(), *, time=None, previous_0925=None, window=60, min_periods=20, min_history=None):
     """Percentile rank against the current and prior observations at the same cut.
 
     Required raw pillars: up_ratio, net_lu, seal_rate, yest_lu_avg_pct,
     downside_count. Missing pillars propagate instead of assuming neutrality.
     history items may carry a 'time' field; when time is specified it must match.
     """
+    if min_history is not None:
+        if min_history < 0:
+            raise ValueError('min_history must be nonnegative')
+        min_periods = min_history + 1
     keys = ('up_ratio','net_lu','seal_rate','yest_lu_avg_pct','downside_count')
     hist = [h for h in history if time is None or h.get('time') == time][-max(window-1,0):] if window > 1 else []
     sample = hist + [current]
@@ -24,4 +28,4 @@ def compute_sentiment_temperature(current, history=(), *, time=None, previous_09
     elif temp < 60: regime = '中性'
     elif temp < 80: regime = '活跃'
     else: regime = '高潮'
-    return {'temperature': temp, 'pillars': pillars, 'delta_25_45': delta, 'regime': regime}
+    return {'history_n': len(hist), 'temperature': temp, 'pillars': pillars, 'delta_25_45': delta, 'regime': regime}

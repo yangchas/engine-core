@@ -136,7 +136,7 @@ def test_real_loader_causality_and_retrospective(tmp_path):
     class Reader:
         def read(self, name, start, end):
             if name == 'daily_kline':
-                return [{'ts': d + ' 00:00:00', 'symbol': '000001', 'close': p, 'pre_close': 10, 'high': p, 'low': 10, 'open': 10, 'amount_yuan': 1} for d,p in [('2026-11-24', 11), ('2026-11-25', 99)]]
+                return [{'ts': d + ' 00:00:00', 'symbol': '000001', 'close': p, 'pre_close': 10, 'high': p, 'low': 10, 'open': 10, 'amount_yuan': 1, 'turnover_pct': 10} for d,p in [('2026-11-24', 11), ('2026-11-25', 99)]]
             return []
         def read_ticks(self, day, cutoff):
             return [{'ts': day + ' 09:25:00', 'symbol': '000001', 'px_milli': 10000, 'pc_milli': 10000},
@@ -153,6 +153,9 @@ def test_real_loader_causality_and_retrospective(tmp_path):
     assert day['timepoints'][0]['factors']['broken_rotten']['cohort_source'] == 'kaipan_hist_cache'
     assert day['outcomes']['close']['time'] == '15:00'
     assert day['timepoints'][2]['factors']['market_global']['eq_pct'] == 0
+    assert day['timepoints'][0]['factors']['market_global']['cap_w_pct'] == 0
+    assert data['daily'][1]['factors']['market_global']['cap_w_pct'] is not None
+    assert data['daily'][1]['factors']['kaipan_hot']['today_close'] == ['A']
     strict = build_from_td_and_cache('', cache, live, reader=Reader(), allow_retrospective=False)
     assert strict['intraday'][1]['timepoints'][0]['factors']['kaipan_hot']['prev_close'] is None
     assert strict['intraday'][1]['timepoints'][0]['factors']['ladder_relay']['cohort_source'] == 'daily_kline_v1'
@@ -228,3 +231,45 @@ def test_empty_intraday_snapshots_do_not_enter_temperature_history(monkeypatch):
     data = pipeline.build_timeseries_dataset(days)
     assert calls == [0, 1]
     assert [day['has_intraday_ticks'] for day in data['intraday']] == [True, False, True]
+
+
+def test_fixed_fields_cutoffs_and_feedback():
+    symbols = [f'{i:06d}' for i in range(5)]
+    rows = {s: row(10, 1e7, float_cap=2, bid_price=11, ask_price=0, ask_volume=0) for s in symbols}
+    days = {
+        '2026-01-01': {'snapshots': {'15:00': {s: row(10, 1e7) for s in symbols}}},
+        '2026-01-02': {'snapshots': {'09:25': rows, '09:35': rows, '09:45': rows},
+                       'members': {'机器人': symbols}, 'hot_members': {'机器人概念': symbols},
+                       'kaipan': {'prev_close': [{'name': '机器人'}], '09:35': [{'name': 'A'}]},
+                       'prior_official_cohorts': {'official_broken_symbols': set(symbols), 'official_floor_symbols': set(symbols)}}}
+    points = build_timeseries_dataset(days)['intraday'][1]['timepoints']
+    early, mid, late = (p['factors'] for p in points)
+    assert early['broken_rotten']['broken']['promo_pct'] == 100
+    assert early['broken_rotten']['floor']['promo_pct'] == 100
+    assert early['top_amount_core']['promo_pct'] == 100
+    assert early['kaipan_hot']['prev_hot_member_perf']['n_symbols'] == 5
+    assert mid['kaipan_hot']['today_0935'] == ['A']
+    a = early['auction_themes_5d']['features'][0]
+    b = late['auction_themes_5d']['features'][0]
+    assert a['up25'] == 100 and a['amt35_yi'] is None and a['amt45_yi'] is None
+    assert b['amt35_yi'] == .5 and b['amt45_yi'] == .5
+    assert early['sentiment_score']['history_n'] == 0
+
+
+def test_score_records_prior_history_and_warmup():
+    raw = dict(time='09:25', up_ratio=5, net_lu=5, seal_rate=5, yest_lu_avg_pct=5, downside_count=5)
+    history = [raw.copy() for _ in range(10)]
+    result = compute_sentiment_temperature(raw, history, time='09:25', min_periods=11)
+    assert result['history_n'] == 10 and result['temperature'] is not None
+    assert compute_sentiment_temperature(raw, history[:9], time='09:25', min_periods=11)['temperature'] is None
+
+
+def test_audit_reports_zero_coverage(tmp_path, capsys):
+    from engine_core.sentiment_review import cli
+    data = build_timeseries_dataset({'2026-01-01': {'snapshots': {'15:00': {'000001': row(0)}}}})
+    path = tmp_path / 'dataset.json'
+    path.write_text(json.dumps(data))
+    assert cli.main(['audit', str(path)]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result['coverage']['15:00']['yw_pp'] == {'present': 0, 'total': 1}
+    assert any('yw_pp has zero coverage' in e for e in result['errors'])
