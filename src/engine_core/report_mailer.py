@@ -20,6 +20,11 @@ from .email_render import RENDER_VERSION, _quality_banner, render_email_html
 logger = logging.getLogger(__name__)
 MAX_HTML_ATTACHMENT_BYTES = int(1.5 * 1024 * 1024)
 ALLOWED_RECIPIENT = "412826313@qq.com"
+ALLOWED_RECIPIENTS = frozenset({
+    "412826313@qq.com",
+    "282035379@qq.com",
+    "2561990280@qq.com",
+})
 DEFAULT_CONFIG_PATH = Path("/home/exedev/services/engine-next/shared/secrets/engine_next_notify.json")
 
 
@@ -341,8 +346,13 @@ def send_message(config: SmtpConfig | None, msg: EmailMessage, *, dry_run: bool 
             [str(msg.get(key, "")) for key in ("To", "Cc", "Bcc") if msg.get(key)])
                              if address.strip()]
         envelope = [address.strip().lower() for address in recipients]
-        if header_recipients != [ALLOWED_RECIPIENT] or envelope != [ALLOWED_RECIPIENT]:
+        if (not header_recipients or not envelope
+                or not set(header_recipients).issubset(ALLOWED_RECIPIENTS)
+                or not set(envelope).issubset(ALLOWED_RECIPIENTS)
+                or set(header_recipients) != set(envelope)):
             raise ValueError("fixed recipient policy rejected message")
+    else:
+        envelope = [address.strip().lower() for address in recipients]
     if dry_run:
         try:  # a dry run only reports whether the message was already sent; an unreachable Redis just means "not known"
             already = state.get(key) is not None
@@ -364,7 +374,7 @@ def send_message(config: SmtpConfig | None, msg: EmailMessage, *, dry_run: bool 
         if config.port == 465 and not config.starttls:
             with smtplib.SMTP_SSL(config.host, config.port, context=ssl.create_default_context(), timeout=10) as client:
                 client.login(config.user, config.password)
-                client.send_message(msg, to_addrs=[ALLOWED_RECIPIENT])
+                client.send_message(msg, to_addrs=envelope)
         else:
             with smtplib.SMTP(config.host, config.port, timeout=10) as client:
                 client.ehlo()
@@ -372,7 +382,7 @@ def send_message(config: SmtpConfig | None, msg: EmailMessage, *, dry_run: bool 
                     client.starttls(context=ssl.create_default_context())
                     client.ehlo()
                 client.login(config.user, config.password)
-                client.send_message(msg, to_addrs=[ALLOWED_RECIPIENT])
+                client.send_message(msg, to_addrs=envelope)
     except Exception as exc:
         try:
             state.delete(key)  # nothing went out: release the claim so the retry can send
