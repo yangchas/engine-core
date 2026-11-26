@@ -91,3 +91,82 @@ def test_history_and_engine(tmp_path):
     engine = StrategyEngine(default_strategy_specs()[2], SingleAccountLedger(), store)
     assert engine.run_intraday(snapshot())['regime']['label'] == 'WARM'
     assert engine.run_eod('2026-01-12', {})['nav'] == 1
+
+
+def test_extract_regime_history_and_seed(tmp_path, monkeypatch, capsys):
+    from engine_core.strategy_engine import cli
+    from engine_core.strategy_engine.adapters import extract_regime_history
+    factors = {'market_global': {'up_ratio': 0, 'yw_pp': 2, 'pos20_med': 3},
+               'extremes': {'sealed_up': 2, 'sealed_down': 3},
+               'ladder_relay': {'2p': {'avg_pct': None}, '1b': {'avg_pct': 0}},
+               'top_amount_core': {'avg_pct': 4}, 'leader_divergence': {'high_minus_low_pp': 5},
+               'theme_competition': {'top1_vs_top2_gap_pp': 6}}
+    def day(d):
+        return {'trade_date': d, 'timepoints': [{'trade_date': d, 'time': '09:45', 'factors': factors}]}
+    data = {'intraday': [day('2026-01-02'), day('2026-01-01')]}
+    records = extract_regime_history(data)
+    assert [r['trade_date'] for r in records] == ['2026-01-01', '2026-01-02']
+    assert records[0]['net_lu'] == -1 and records[0]['yest_2p_avg_pct'] == 0
+    monkeypatch.setattr(cli, 'load_dataset', lambda _: data)
+    out = tmp_path/'regime_history.jsonl'
+    cli.main(['seed-history', '--dataset', 'unused', '--out', str(out)])
+    first = out.read_text()
+    cli.main(['seed-history', '--dataset', 'unused', '--out', str(out)])
+    assert out.read_text() == first
+    assert [json.loads(line) for line in first.splitlines()] == records
+
+
+def test_shadow_run_persists_and_is_idempotent(tmp_path, monkeypatch):
+    from engine_core.strategy_engine import cli
+    snap = snapshot(candidates=[candidate('600001')], quotes_0945={'600001': {'ap1_milli': 10000, 'av1': 100, 'px_milli': 10000}})
+    monkeypatch.setattr(cli, 'load_live_shadow_snapshot', lambda *args: snap)
+    args = ['shadow-run', '--trade-date', snap.trade_date, '--td-config', 'unused', '--shadow-dir', str(tmp_path)]
+    cli.main(args)
+    cli.main(args)
+    for spec in default_strategy_specs():
+        log = [json.loads(line) for line in (tmp_path/(spec.name+'.jsonl')).read_text().splitlines()]
+        assert len(log) == 1
+        assert log[0]['selection']['funnel_counts']['selected'] == 1
+        state = json.loads((tmp_path/(spec.name+'.json')).read_text())
+        assert state['last_trade_date'] == snap.trade_date
+    assert len((tmp_path/'regime_history.jsonl').read_text().splitlines()) == 1
+
+
+def test_shadow_adapter_uses_prior_bars_and_membership_fallback(monkeypatch):
+    from engine_core.strategy_engine import adapters
+    from engine_core.sentiment_review.adapters import td_reader
+    calls = []
+    class Reader:
+        def __init__(self, **kwargs):
+            assert kwargs == {'config': 'cfg'}
+        def read(self, table, start, end):
+            calls.append((table, start, end))
+            return [{'ts': '2026-01-09', 'symbol': '600001', 'close': 10, 'high': 11, 'low': 9,
+                     'amount_yuan': 1000, 'turnover_pct': 1}]
+        def read_members(self, asof, retrospective):
+            calls.append(('members', asof, retrospective))
+            return {'rows': [{'symbol': '600001', 'plate_name': 'A', 'stock_name': '公司'}]} if retrospective else None
+        def read_ticks(self, day, cutoff):
+            calls.append(('ticks', day, cutoff))
+            return [{'symbol': '600001', 'ts': day+' '+cutoff, 'px_milli': 10000, 'pc_milli': 10000,
+                     'h_milli': 11000, 'l_milli': 9000, 'ap1_milli': 10000, 'av1': 1}]
+    monkeypatch.setattr(td_reader, 'TDReader', Reader)
+    monkeypatch.setattr(adapters, '_read_names', lambda path: {})
+    snap = adapters.load_live_shadow_snapshot('2026-01-12', 'cfg')
+    assert ('members', '2026-01-12T09:45:30+08:00', False) in calls
+    assert ('members', None, True) in calls
+    assert ('daily_kline', '2025-10-14', '2026-01-11') in calls
+    assert snap.source_metadata['membership'] == 'latest_fallback'
+    assert not snap.candidates
+    assert snap.regime_raw['yest_2p_avg_pct'] is None
+
+
+def test_candidate_missing_quote_and_unavailable_cohort_are_not_zero():
+    from engine_core.strategy_engine.adapters import _candidates
+    ticks25 = {'600001': {'px_milli': 0, 'pc_milli': 10000}}
+    ticks45 = {'600001': {'px_milli': 10500, 'pc_milli': 10000, 'h_milli': 11000,
+                          'l_milli': 10000, 'ap1_milli': 10500, 'av1': 10}}
+    rows = _candidates({'A': {'600001'}}, {'600001': '公司'}, ticks25, ticks45, {},
+                       [{'theme': 'A', 'p45': 2}])
+    assert rows[0]['ret_25'] is None
+    assert rows[0]['prev_streak'] is None and rows[0]['prev_broken'] is None

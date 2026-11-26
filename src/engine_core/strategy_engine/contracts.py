@@ -13,6 +13,7 @@ class MarketSnapshot:
     candidates: Any
     quotes_0945: Mapping[str, Any]
     eod_close: Any = None
+    source_metadata: Any = None
 
     def __post_init__(self):
         if self.prior_trade_date >= self.trade_date or self.asof_ts[:10] != self.trade_date:
