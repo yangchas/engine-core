@@ -48,25 +48,31 @@ def _color(value):
     return '#d93025' if isinstance(value, (int, float)) and value > 0 else '#188038' if isinstance(value, (int, float)) and value < 0 else '#374151'
 
 
+def _wan(value):
+    if not isinstance(value, (int, float)):
+        return '未知'
+    return f'{value/10000:.2f}万'
+
+
 def _positions(positions, names=None):
     names = names or {}
     if not positions:
-        return '无'
-    return '; '.join(f"{p['symbol']} {names.get(p['symbol'], '名称未知')} 数量={p['qty']:.2f} 成本={p['cost_basis']:.2f}" for p in positions)
+        return '空仓'
+    return '；'.join(f"{p['symbol']}{names.get(p['symbol'], '')}({p['qty']*p['cost_basis']/10000:.1f}万@{p['cost_basis']:.2f})" for p in positions)
 
 
 def _table(headers, rows):
-    th = ''.join(f'<th style="padding:10px 8px;text-align:left;border-bottom:1px solid #e5e7eb;white-space:nowrap;color:#6b7280">{_esc(h)}</th>' for h in headers)
-    body = ''.join('<tr>' + ''.join(f'<td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;vertical-align:top">{cell}</td>' for cell in row) + '</tr>' for row in rows)
-    return '<div style="overflow-x:auto"><table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr>' + th + '</tr></thead><tbody>' + body + '</tbody></table></div>'
+    th = ''.join(f'<th style="padding:5px 6px;text-align:left;border-bottom:1px solid #d1d5db;white-space:nowrap;color:#4b5563;background:#f9fafb;font-weight:600">{_esc(h)}</th>' for h in headers)
+    body = ''.join('<tr>' + ''.join(f'<td style="padding:5px 6px;border-bottom:1px solid #eef2f7;vertical-align:middle;white-space:nowrap">{cell}</td>' for cell in row) + '</tr>' for row in rows)
+    return '<div style="overflow-x:auto"><table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;font-size:12px;line-height:1.35"><thead><tr>' + th + '</tr></thead><tbody>' + body + '</tbody></table></div>'
 
 
-def _card(title, content):
-    return f'<div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin:14px 0"><h2 style="font-size:17px;margin:0 0 14px;color:#111827">{_esc(title)}</h2>{content}</div>'
+def _section(title, content):
+    return f'<div style="padding:8px 0;border-top:1px solid #e5e7eb"><div style="font-size:13px;font-weight:700;color:#111827;margin:0 0 5px">{_esc(title)}</div>{content}</div>'
 
 
 def _page(content):
-    return '<!doctype html><html><body style="margin:0;background:#f5f7fa;color:#374151;font-family:-apple-system,BlinkMacSystemFont,\'PingFang SC\',\'Microsoft YaHei\',sans-serif;line-height:1.6"><div style="max-width:740px;margin:0 auto;padding:20px 12px">' + content + '</div></body></html>'
+    return '<!doctype html><html><body style="margin:0;background:#f3f4f6;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,\'PingFang SC\',\'Microsoft YaHei\',sans-serif;font-size:12px;line-height:1.45"><div style="max-width:760px;margin:0 auto;padding:8px"><div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px">' + content + '</div></div></body></html>'
 
 
 def _comparison(value, threshold, unit, digits=2):
@@ -87,7 +93,7 @@ def build_intraday_shadow_email(trade_date, decisions, *, recipients, subject_pr
     subject = f"{subject_prefix} {trade_date} {regime['label']} | 买{buys}卖{sells}"
     funnel = selection['funnel_counts']
     keys = ('theme_pool', 'after_universe', 'after_landmine', 'after_buyable', 'after_guardrails', 'selected', 'gem_count')
-    labels = ('板块池', '主板/创业板非ST', '剔2板+/炸板', '可买', '护栏(承接≥0.7/额≥3000万/不追高)', '精选 Top5')
+    labels = ('板块池', '主板/创业板非ST', '剔2板+/炸板', '可买', '护栏', '精选 Top5')
     funnel_text = ' → '.join(f'{label} {funnel.get(key, "未知")}' for label, key in zip(labels, keys)) + f" (创业板 {funnel.get('gem_count', '未知')}只)"
     badge = {'WARM_SOLO': ('偏暖独秀·满仓', '#d93025'), 'COLD_SOLO': ('偏冷独秀·半仓', '#b45309'), 'CROWDED': ('混战打架·空仓', '#6b7280'), 'RED': ('偏冷防御·空仓', '#188038')}.get(regime['label'], (regime['label'], '#6b7280'))
     gap, temp, top = metrics.get('gap'), metrics.get('temperature'), metrics.get('top100_avg_pct')
@@ -95,34 +101,65 @@ def build_intraday_shadow_email(trade_date, decisions, *, recipients, subject_pr
     explain = f"独秀差 {_comparison(gap, .60, 'pp')}；情绪温度 {_comparison(temp, 45, '°', 0)}；昨日 TOP100 {top_cmp}。"
     if regime.get('reasons'):
         explain += ' 原因：' + ', '.join(regime['reasons'])
-    header = f'<div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:22px"><h1 style="font-size:22px;margin:0 0 10px">影子策略早盘报告 · {_esc(trade_date)} 09:46</h1><span style="background:{badge[1]};color:#fff;border-radius:20px;padding:5px 10px;font-size:13px">{_esc(regime["label"] + " " + badge[0])}</span><p style="margin:14px 0 0">{_esc(explain)}</p></div>'
-    values = [('09:45 情绪温度', _num(temp, '°')), ('昨日 TOP100', _num(top, '%', True)), ('因子10 独秀差 gap', _num(gap, 'pp')), ('昨日 pos20', _num(raw.get('pos20_med'))), ('目标总仓位', _num(regime['target_exposure']*100 if regime.get('target_exposure') is not None else None, '%')), ('单票仓位上限', _num(regime['max_single_weight']*100 if regime.get('max_single_weight') is not None else None, '%'))]
-    grid = '<table role="presentation" style="width:100%;table-layout:fixed">' + ''.join('<tr>' + ''.join(f'<td style="padding:8px;vertical-align:top;width:33%"><div style="font-size:12px;color:#6b7280">{_esc(k)}</div><strong>{_esc(v)}</strong></td>' for k, v in values[i:i+3]) + '</tr>' for i in (0, 3)) + '</table>'
+    exp_pct = regime['target_exposure'] * 100 if regime.get('target_exposure') is not None else None
+    max_w_pct = regime['max_single_weight'] * 100 if regime.get('max_single_weight') is not None else None
+    header = f'<div style="padding-bottom:8px"><span style="font-size:15px;font-weight:700;color:#111827">影子策略 · {_esc(trade_date)} 09:46</span> <span style="background:{badge[1]};color:#fff;border-radius:10px;padding:2px 8px;font-size:11px;margin-left:6px">{_esc(regime["label"] + " " + badge[0])}</span> <span style="color:#6b7280;margin-left:6px">买{buys} / 卖{sells}</span></div>'
+    env_html = f'<div style="background:#f9fafb;border:1px solid #eef2f7;border-radius:6px;padding:6px 8px">温度 <strong>{_esc(_num(temp, "°"))}</strong> ｜ TOP100 <strong style="color:{_color(top)}">{_esc(_num(top, "%", True))}</strong> ｜ 独秀差gap <strong>{_esc(_num(gap, "pp"))}</strong> ｜ pos20 <strong>{_esc(_num(raw.get("pos20_med")))}</strong> ｜ 目标仓位 <strong>{_esc(_num(exp_pct, "%", digits=0))}</strong>（单票上限 {_esc(_num(max_w_pct, "%", digits=0))}）</div>'
     details = selection.get('theme_details') or [{'theme': t, 'p45': None} for t in selection['themes']]
-    pills = ' '.join(f'<span style="display:inline-block;background:#f5f7fa;border:1px solid #e5e7eb;border-radius:16px;padding:4px 10px;margin:3px">{_esc(t["theme"])} <strong style="color:{_color(t.get("p45"))}">{_esc(_num(t.get("p45"), "%", True))}</strong></span>' for t in details) or '无'
-    funnel_html = '<p style="line-height:2">' + ' → '.join(f'<span style="display:inline-block;background:#f5f7fa;border-radius:12px;padding:3px 8px">{_esc(label)} {_esc(funnel.get(key, "未知"))}</span>' for label, key in zip(labels, keys)) + f'（创业板 {_esc(funnel.get("gem_count", "未知"))}只）</p>'
+    pills = ' '.join(f'<span style="display:inline-block;background:#f3f4f6;border-radius:4px;padding:2px 6px;margin-right:4px">{_esc(t["theme"])} <strong style="color:{_color(t.get("p45"))}">{_esc(_num(t.get("p45"), "%", True))}</strong></span>' for t in details) or '无'
+    funnel_html = f'<div style="color:#4b5563;margin-top:4px;font-size:11px">漏斗：{_esc(funnel_text)}</div>'
+    equity_ref = main['execution'].get('equity_before_buys') or main['execution'].get('cash') or 1_000_000.0
+    buy_by_sym = {t['symbol']: t for t in trades if t['side'] == 'BUY'}
     rows = []
     for e in selection.get('evidence', []):
-        rows.append([_esc(e['rank']), _esc(e['symbol'] + ' ' + e['name']), _esc(e['theme'] + ' / ' + e['board'] + f" {e['limit_pct']:.0f}%"), _esc(_num(e['ret_25'], '%', True) + ' → ' + _num(e['ret_45'], '%', True) + ' (' + _num(e['path_25_45'], 'pp', True) + ')'), _esc(_num(e['norm_accel'], signed=True, digits=3)), _esc(_num(e['intraday_pos_45'])), _esc(_num(e['amt_45_yi'], '亿')), _esc(_num(e['ask1']) + ' / 量 ' + str(e['av1'])), _esc(f"连板 {e['prev_streak']} / 炸板 {e['prev_broken']}")])
-    callout = '<div style="background:#fef2f2;color:#b91c1c;padding:12px;border-radius:8px;margin-bottom:12px">今日环境未满足出手条件，坚决空仓观望</div><strong>今日候补观察（未买入）</strong>' if regime['target_exposure'] == 0 else ''
-    evidence_table = _table(['#', '标的(代码+名称)', '主线/板别', '09:25→09:45 (加速)', '归一化分', '早盘承接', '09:45成交额', '卖一入场价', '昨日基因'], rows) if rows else '<p>暂无通过护栏的候选</p>'
+        bt = buy_by_sym.get(e['symbol'])
+        if bt:
+            amt = bt['qty'] * bt['price']
+            pos_cell = f"<strong style='color:#d93025'>{amt/equity_ref*100:.1f}% / {_wan(amt)}</strong>"
+        else:
+            pos_cell = '<span style="color:#9ca3af">0% / 未买</span>'
+        rows.append([
+            _esc(e['rank']),
+            f"<strong>{_esc(e['symbol'])}</strong> {_esc(e['name'])}",
+            _esc(e['theme'] + '·' + e['board']),
+            f"{_esc(_num(e['ret_25'], '%', True))}→<strong style='color:{_color(e['ret_45'])}'>{_esc(_num(e['ret_45'], '%', True))}</strong> ({_esc(_num(e['path_25_45'], 'pp', True))})",
+            _esc(_num(e['norm_accel'], signed=True, digits=3)),
+            _esc(_num(e['intraday_pos_45'])),
+            _esc(_num(e['amt_45_yi'], '亿')),
+            _esc(_num(e['ask1'])),
+            pos_cell,
+            _esc(f"{e['prev_streak']}板/炸{e['prev_broken']}"),
+        ])
+    trigger_line = f'<div style="margin-bottom:5px;color:#374151">{_esc(explain)}</div>'
+    if regime['target_exposure'] == 0:
+        trigger_line += '<div style="background:#fef2f2;color:#b91c1c;padding:4px 8px;border-radius:4px;margin-bottom:5px">未触发买点，今日空仓观望 · 今日候补观察（未买入）</div>'
+    evidence_table = _table(['#', '标的', '板块/板', '09:25→09:45(加速)', '归一化分', '承接', '09:45成交额', '卖一价', '买入仓位/金额', '昨日基因'], rows) if rows else '<div style="color:#6b7280">暂无通过护栏的候选</div>'
     compare = []
     lines = [f'影子策略 {trade_date}', '大盘环境与因子 10：', f"temp45={temp} top100={top} gap={gap} pos20={raw.get('pos20_med')} regime={regime['label']} target_exposure={regime['target_exposure']}", explain, 'B1 Top3 主线板块：' + ', '.join(str(t['theme']) + ' ' + _num(t.get('p45'), '%', True) for t in details), '选股漏斗：' + funnel_text, '漏斗明细：' + ' → '.join(f'{key}={funnel.get(key, "未知")}' for key in keys)]
-    if callout: lines.append('今日环境未满足出手条件，坚决空仓观望；今日候补观察（未买入）')
+    if regime['target_exposure'] == 0:
+        lines.append('今日环境未满足出手条件，坚决空仓观望；今日候补观察（未买入）')
     for e in selection.get('evidence', []):
         lines.append('买入证据：' + ' | '.join(f'{k}={v}' for k, v in e.items()))
     for name in NAMES:
         record, execution = records[name], records[name]['execution']
         names = record.get('stock_names', {})
         positions = _positions(record.get('positions', []), names)
-        trade_lines = [f"{t['symbol']} {names.get(t['symbol'], '名称未知')} {t['side']} 价格={t['price']:.2f} 数量={t['qty']:.2f} 手续费={t['fee']:.2f}" for t in execution['trades']]
+        trade_lines = [f"{t['symbol']} {names.get(t['symbol'], '名称未知')} {t['side']} 价格={t['price']:.2f} 数量={t['qty']:.2f} 金额={_wan(t['qty']*t['price'])} 手续费={t['fee']:.2f}" for t in execution['trades']]
+        compact_trades = [f"{t['side']} {t['symbol']}{names.get(t['symbol'], '')} @{t['price']:.2f} ({_wan(t['qty']*t['price'])})" for t in execution['trades']]
         lines.append(f"\n{name}：现金={execution['cash']:.2f} 持仓={positions}")
         lines.extend(trade_lines or ['无买卖'])
-        compare.append([_esc(name), _esc(record['regime']['label']), '<br>'.join(_esc(t) for t in trade_lines) or '无买卖', _esc(_num(execution['cash'])), _esc(positions)])
+        compare.append([f"<strong>{_esc(name)}</strong>", _esc(record['regime']['label']), '<br>'.join(_esc(t) for t in compact_trades) or '无', _esc(_wan(execution['cash'])), _esc(positions)])
     sources = main.get('source_metadata') or {}
     provenance = '；'.join(f'{k}={sources.get(k, "未知")}' for k in ('membership', 'kaipan', 'stock_names'))
     lines.append('\n数据来源：' + provenance + '；只读影子策略，不构成交易指令。')
-    markup = _page(header + _card('大盘环境与触发证据', grid) + _card('主线板块（B1 Top3）与选股漏斗', pills + funnel_html) + _card('核心买入证据明细（逐只拆解）', callout + evidence_table) + _card('3 条影子策略赛马对比', _table(['策略', '环境', '今日成交明细(代码+名称/方向/价格/股数/手续费)', '剩余现金', '当前持仓'], compare)) + '<p style="color:#6b7280;font-size:12px">数据来源：' + _esc(provenance) + '<br>只读影子策略，不构成交易指令。</p>')
+    markup = _page(
+        header
+        + _section('1. 大盘环境', env_html)
+        + _section('2. 板块分析（B1 Top3 + 漏斗）', f'<div>{pills}</div>{funnel_html}')
+        + _section('3. 买点触发 · 买入仓位与金额', trigger_line + evidence_table)
+        + _section('4. 持仓与 3 策略对照', _table(['策略', '判定', '今日买卖(金额)', '现金', '当前持仓'], compare))
+        + f'<div style="color:#9ca3af;font-size:11px;padding-top:6px;border-top:1px solid #eef2f7">来源：{_esc(provenance)} ｜ 只读影子验证，不构成交易指令</div>'
+    )
     return _message(subject, lines, recipients, markup)
 
 
@@ -137,8 +174,8 @@ def build_eod_shadow_email(trade_date, marks, *, recipients, subject_prefix='[�
         ret = (mark['nav']-1)*100
         lines.append(f"\n{name}: NAV={mark['nav']:.4f} 累计收益%={ret:+.2f} MDD%={mark['max_drawdown']*100:.2f} 现金={mark['cash']:.2f} 持仓市值={mark['equity']-mark['cash']:.2f}")
         lines.append('持仓：' + positions)
-        rows.append([_esc(name), _esc(_num(mark['nav'], digits=4)), f'<span style="color:{_color(ret)}">{_esc(_num(ret, "%", True))}</span>', _esc(_num(mark['max_drawdown']*100, '%')), _esc(_num(mark['cash'])), _esc(_num(mark['equity']-mark['cash'])), _esc(positions)])
-    markup = _page(_card('影子策略收盘盯市 · ' + trade_date, _table(['策略', 'NAV', '累计收益%', '最大回撤 MDD%', '现金', '持仓市值', '当前持仓明细含名称'], rows)) + '<p style="color:#6b7280;font-size:12px">只读影子策略，不构成交易指令。</p>')
+        rows.append([f"<strong>{_esc(name)}</strong>", _esc(_num(mark['nav'], digits=4)), f'<strong style="color:{_color(ret)}">{_esc(_num(ret, "%", True))}</strong>', _esc(_num(mark['max_drawdown']*100, '%')), _esc(_wan(mark['cash'])), _esc(_wan(mark['equity']-mark['cash'])), _esc(positions)])
+    markup = _page(f'<div style="font-size:15px;font-weight:700;color:#111827;padding-bottom:6px">影子策略收盘盯市 · {_esc(trade_date)}</div>' + _table(['策略', 'NAV', '累计收益%', '最大回撤 MDD%', '现金', '持仓市值', '当前持仓'], rows) + '<div style="color:#9ca3af;font-size:11px;padding-top:6px">只读影子验证，不构成交易指令</div>')
     return _message(subject, lines, recipients, markup)
 
 
