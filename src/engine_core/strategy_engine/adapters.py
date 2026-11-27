@@ -220,6 +220,59 @@ def load_backtest_snapshots(dataset_path, td_config, kaipan_cache_dir, stock_sta
     return snapshots
 
 
+
+def _auction_candidates(bars, dates, names, t25, t32, t3005, t3205, prev_t25):
+    from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+    from math import isfinite
+
+    def number(x):
+        return isinstance(x, (int, float)) and isfinite(x)
+
+    def percent(t):
+        px, pc = t.get('px_milli'), t.get('pc_milli')
+        return 100 * (px / pc - 1) if number(px) and number(pc) and px > 0 and pc > 0 else None
+
+    amounts = sorted((r['amt_yuan'] for symbol, r in prev_t25.items()
+                      if symbol.startswith(('00', '60', '300', '301')) and number(r.get('amt_yuan'))), reverse=True)
+    ranks = {}
+    for index, amount in enumerate(amounts, 1):
+        ranks.setdefault(amount, index)
+    result = []
+    for symbol, tick in sorted(t25.items()):
+        if not symbol.startswith(('00', '60', '300', '301')):
+            continue
+        bar = bars[dates[-1]].get(symbol, {})
+        close, pre = bar.get('close'), bar.get('pre_close')
+        prev_pct = 100 * (close / pre - 1) if number(close) and number(pre) and close > 0 and pre > 0 else None
+        is_lu = None
+        if prev_pct is not None:
+            try:
+                band = Decimal('1.20') if symbol.startswith(('300', '301')) else Decimal('1.10')
+                limit = (Decimal(str(pre)) * band).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+                is_lu = Decimal(str(close)) >= limit
+            except InvalidOperation:
+                pass
+        window = [bars[d].get(symbol, {}) for d in dates[-20:]]
+        highs, lows = [r.get('high') for r in window], [r.get('low') for r in window]
+        pos = (100 * (close - min(lows)) / (max(highs) - min(lows))
+               if len(window) == 20 and number(close) and all(number(x) for x in highs+lows) and max(highs) > min(lows) else None)
+        q3005, q3205 = t3005.get(symbol, {}), t3205.get(symbol, {})
+        ap3005, ap3205 = q3005.get('ap1_milli'), q3205.get('ap1_milli')
+        amount = prev_t25.get(symbol, {}).get('amt_yuan')
+        result.append({'symbol': symbol, 'name': names.get(symbol), 'pos20_prev': pos,
+                       'prev_pct_chg': prev_pct, 'prev_is_lu': is_lu, 'amt25_yuan': tick.get('amt_yuan'),
+                       'p25': percent(tick), 'p32': percent(t32.get(symbol, {})),
+                       'prev_auc_rank': ranks.get(amount) if number(amount) else None,
+                       'ask1_3005': ap3005 / 1000 if number(ap3005) else None, 'av1_3005': q3005.get('av1'),
+                       'ask1_3205': ap3205 / 1000 if number(ap3205) else None, 'av1_3205': q3205.get('av1')})
+    return result
+
+
+def _ticks_after(reader, day, cut, lower):
+    rows = _ticks(reader, day, cut)
+    # Compare full time strings so sub-second ticks after the boundary remain eligible.
+    return {s: r for s, r in rows.items() if str(r.get('ts'))[11:] > lower}
+
 def load_live_shadow_snapshot(trade_date, td_config, kaipan_cache_dir=None, stock_static_path=None, shadow_dir=None):
     from datetime import date, timedelta
     from engine_core.sentiment_review.adapters.td_reader import TDReader
@@ -248,6 +301,17 @@ def load_live_shadow_snapshot(trade_date, td_config, kaipan_cache_dir=None, stoc
     streaks = cohorts.get('official_streaks')
     t25, t45 = _ticks(reader, trade_date, '09:25:00'), _ticks(reader, trade_date, '09:45:30')
     if not t25 or not t45: raise ValueError('missing intraday ticks')
+    from .engine import resolve_strategy_specs
+    from pathlib import Path
+    enabled = {spec.name for spec in resolve_strategy_specs(Path(shadow_dir) / 'strategies.json' if shadow_dir else None)}
+    if enabled & {'c6_300_ice_pos20_top5', 'v1_h3_cont_2m'}:
+        t3005 = _ticks_after(reader, trade_date, '09:30:05', '09:25:00')
+        t3130 = _ticks_after(reader, trade_date, '09:31:30', '09:30:00')
+        t32 = _ticks_after(reader, trade_date, '09:32:00', '09:30:00')
+        t3205 = _ticks_after(reader, trade_date, '09:32:05', '09:32:00')
+        prev_t25 = _ticks(reader, prev, '09:25:00')
+    else:
+        t3005 = t3130 = t32 = t3205 = prev_t25 = {}
     rows = {}
     for symbol, tick in t45.items():
         k = bars[prev].get(symbol, {})
@@ -278,7 +342,7 @@ def load_live_shadow_snapshot(trade_date, td_config, kaipan_cache_dir=None, stoc
     history = RegimeHistoryStore(Path(shadow_dir) / 'macro_regime_history.jsonl').before(trade_date) if shadow_dir else []
     if history:
         last = history[-1]
-        raw.update(macro_state=last.get('macro_state'), macro_as_of=last['trade_date'], macro_above_ma20_pct=last.get('above_ma20_pct'), macro_idx=last.get('mkt_ew_idx'), macro_ma20=last.get('mkt_ma20'))
+        raw.update(macro_state=last.get('macro_state'), macro_as_of=last['trade_date'], macro_above_ma20_pct=last.get('above_ma20_pct'), macro_idx=last.get('mkt_ew_idx'), macro_ma20=last.get('mkt_ma20'), prev_eod_temp=last.get('eod_temp'))
     candidates = _candidates(members, names, t25, t45, cohorts, themes)
     for c in candidates:
         c['pos20_prev'] = rows.get(c['symbol'], {}).get('pos20')
@@ -290,6 +354,8 @@ def load_live_shadow_snapshot(trade_date, td_config, kaipan_cache_dir=None, stoc
         theme['up45'] = 100 * sum(x > 0 for x in returns) / len(returns) if returns else None
         theme['members'] = len(members.get(theme.get('theme'), ()))
     return MarketSnapshot(trade_date, prev, cutoff, raw, themes, candidates, t45,
+                          quotes_093005=t3005, quotes_093130=t3130, quotes_093205=t3205,
+                          auction_candidates=_auction_candidates(bars, dates, names, t25, t32, t3005, t3205, prev_t25) if enabled & {'c6_300_ice_pos20_top5', 'v1_h3_cont_2m'} else (),
                           source_metadata={'membership': 'latest_fallback' if fallback else 'as_of', 'kaipan': kaipan_source,
                                            'stock_names': 'static_fallback_may_be_retrospective'})
 

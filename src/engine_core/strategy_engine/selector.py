@@ -113,3 +113,50 @@ class LowPos20SectorSelector:
             seen.add(symbol); gems += int(gem)
         counts.update(selected=len(picks), gem_count=gems)
         return SelectionResult(names, tuple(picks), counts, tuple(dict(t) for t in themes), tuple(evidence))
+
+
+def _auction_universe(c, prefixes):
+    symbol, name = str(_get(c, 'symbol', '')), _get(c, 'name')
+    return symbol.startswith(prefixes) and bool(name) and 'ST' not in name.upper() and '退' not in name
+
+
+def _auction_result(pool, score, price, top_k=None):
+    if top_k is not None:
+        pool = pool[:top_k]
+    picks = tuple((_get(c, 'symbol'), score(c), _get(c, price), '竞价') for c in pool)
+    return SelectionResult((), picks, {'selected': len(picks)}, (), ())
+
+
+@dataclass(frozen=True)
+class ChiNextIceBigDropSelector:
+    top_k: int = 5
+    min_amt25_yuan: float = 1e7
+    max_prev_pct: float = -5.0
+    max_relay_pct: float = 12.0
+
+    def select(self, snapshot):
+        pool = [c for c in snapshot.auction_candidates if _auction_universe(c, ('300', '301'))
+                and _get(c, 'prev_is_lu') is False
+                and all(_number(_get(c, k)) for k in ('pos20_prev', 'prev_pct_chg', 'amt25_yuan', 'ask1_3005', 'av1_3005'))
+                and _get(c, 'prev_pct_chg') < self.max_relay_pct and _get(c, 'prev_pct_chg') <= self.max_prev_pct
+                and _get(c, 'amt25_yuan') >= self.min_amt25_yuan and _get(c, 'ask1_3005') > 0 and _get(c, 'av1_3005') > 0]
+        pool.sort(key=lambda c: (_get(c, 'pos20_prev'), _get(c, 'symbol')))
+        return _auction_result(pool, lambda c: _get(c, 'pos20_prev'), 'ask1_3005', self.top_k)
+
+
+@dataclass(frozen=True)
+class HighPosAuctionContSelector:
+    min_pos20: float = 70.0
+    min_amt25_yuan: float = 5e7
+    min_p25: float = 3.0
+    max_p25: float = 8.0
+    max_prev_auc_rank: int = 300
+
+    def select(self, snapshot):
+        pool = [c for c in snapshot.auction_candidates if _auction_universe(c, ('00', '60', '300', '301'))
+                and all(_number(_get(c, k)) for k in ('pos20_prev', 'amt25_yuan', 'p25', 'p32', 'prev_auc_rank', 'ask1_3205', 'av1_3205'))
+                and _get(c, 'pos20_prev') > self.min_pos20 and _get(c, 'amt25_yuan') >= self.min_amt25_yuan
+                and self.min_p25 <= _get(c, 'p25') <= self.max_p25 and _get(c, 'p32') >= _get(c, 'p25')
+                and _get(c, 'prev_auc_rank') <= self.max_prev_auc_rank and _get(c, 'ask1_3205') > 0 and _get(c, 'av1_3205') > 0]
+        pool.sort(key=lambda c: (-_get(c, 'amt25_yuan'), _get(c, 'symbol')))
+        return _auction_result(pool, lambda c: _get(c, 'amt25_yuan'), 'ask1_3205')

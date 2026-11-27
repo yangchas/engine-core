@@ -1,9 +1,9 @@
 """Composition and dated rolling history."""
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import json
 from pathlib import Path
-from .regime import WeatherSoloRegime, MacroB1Regime, AlwaysOnBaselineRegime
-from .selector import MainThemeNormalizedAccelSelector, LowPos20SectorSelector
+from .regime import WeatherSoloRegime, MacroB1Regime, AlwaysOnBaselineRegime, BearIceRegime, AuctionAlwaysOnRegime
+from .selector import MainThemeNormalizedAccelSelector, LowPos20SectorSelector, ChiNextIceBigDropSelector, HighPosAuctionContSelector
 from .portfolio import SyncSwitchPortfolioPolicy
 
 
@@ -48,6 +48,9 @@ class StrategySpec:
     category: str = 'intraday'
     slots: tuple[str, ...] = ('0945', '1810')
     enabled: bool = True
+    buy_quotes_attr: str = 'quotes_0945'
+    sell_quotes_attr: str = 'quotes_0945'
+    buy_before_sell: bool = False
 
 
 class StrategyEngine:
@@ -58,12 +61,15 @@ class StrategyEngine:
         history = self.history_store.before(snapshot.trade_date) if self.history_store else []
         regime = self.spec.regime.detect(snapshot, history)
         selection = self.spec.selector.select(snapshot)
-        intents = self.spec.policy.plan(snapshot, regime, selection, self.ledger.positions)
-        executed = self.ledger.execute_intraday(snapshot.trade_date, intents, snapshot.quotes_0945)
+        buy_quotes = getattr(snapshot, self.spec.buy_quotes_attr) or snapshot.quotes_0945
+        sell_quotes = getattr(snapshot, self.spec.sell_quotes_attr) or snapshot.quotes_0945
+        policy_snapshot = replace(snapshot, quotes_0945=sell_quotes) if self.spec.sell_quotes_attr != 'quotes_0945' else snapshot
+        intents = self.spec.policy.plan(policy_snapshot, regime, selection, self.ledger.positions)
+        executed = self.ledger.execute_intraday(snapshot.trade_date, intents, snapshot.quotes_0945, buy_quotes=buy_quotes, sell_quotes=sell_quotes, buy_before_sell=self.spec.buy_before_sell)
         if self.history_store:
             self.history_store.append({**snapshot.regime_raw, 'trade_date': snapshot.trade_date, 'time': '09:45'})
         names = {}
-        for candidate in snapshot.candidates:
+        for candidate in (*snapshot.candidates, *snapshot.auction_candidates):
             symbol = candidate.get('symbol') if isinstance(candidate, dict) else candidate.symbol
             name = candidate.get('name') if isinstance(candidate, dict) else candidate.name
             if symbol and name:
@@ -79,6 +85,9 @@ def all_strategy_specs():
     return (StrategySpec('b1_low_pos20', MacroB1Regime(), LowPos20SectorSelector(), SyncSwitchPortfolioPolicy(), category='macro'),
             StrategySpec('b1_dual_green', MacroB1Regime(True, .30), LowPos20SectorSelector(prefer_up45_in_bear=True), SyncSwitchPortfolioPolicy()),
             StrategySpec('baseline_low_pos20', AlwaysOnBaselineRegime(), LowPos20SectorSelector(), SyncSwitchPortfolioPolicy(), category='baseline'),
+            StrategySpec('r2_b1_ice25_s6', MacroB1Regime(allow_bear_ice=True), LowPos20SectorSelector(), SyncSwitchPortfolioPolicy(), category='macro'),
+            StrategySpec('c6_300_ice_pos20_top5', BearIceRegime(), ChiNextIceBigDropSelector(), SyncSwitchPortfolioPolicy(), category='auction', buy_quotes_attr='quotes_093005', buy_before_sell=True),
+            StrategySpec('v1_h3_cont_2m', AuctionAlwaysOnRegime(), HighPosAuctionContSelector(), SyncSwitchPortfolioPolicy(), category='auction', buy_quotes_attr='quotes_093205', sell_quotes_attr='quotes_093130'),
             StrategySpec('main_a_p2', WeatherSoloRegime(), old, SyncSwitchPortfolioPolicy(), enabled=False),
             StrategySpec('main_a_p2_lu_hold', WeatherSoloRegime(), old, SyncSwitchPortfolioPolicy(True), enabled=False))
 

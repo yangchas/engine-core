@@ -98,11 +98,11 @@ def build_intraday_shadow_email(trade_date, decisions, *, recipients, subject_pr
         keys = ('theme_pool', 'after_universe', 'after_buyable', 'selected', 'gem_count')
         labels = ('板块池', '主板/创业板非ST', '可买', '精选 Top5')
     funnel_text = ' → '.join(f'{label} {funnel.get(key, "未知")}' for label, key in zip(labels, keys)) + f" (创业板 {funnel.get('gem_count', '未知')}只)"
-    badge = {'WARM_SOLO': ('偏暖独秀·满仓', '#d93025'), 'COLD_SOLO': ('偏冷独秀·半仓', '#b45309'), 'CROWDED': ('混战打架·空仓', '#6b7280'), 'RED': ('偏冷防御·空仓', '#188038')}.get(regime['label'], (regime['label'], '#6b7280'))
+    badge = {'WARM_SOLO': ('偏暖独秀·满仓', '#d93025'), 'COLD_SOLO': ('偏冷独秀·半仓', '#b45309'), 'CROWDED': ('混战打架·空仓', '#6b7280'), 'RED': ('偏冷防御·空仓', '#188038'), 'BEAR_ICE': ('冰点策略', '#2563eb'), 'AUCTION_ON': ('竞价策略', '#b45309')}.get(regime['label'], (regime['label'], '#6b7280'))
     gap, temp, top = metrics.get('gap'), metrics.get('temperature'), metrics.get('top100_avg_pct')
     top_cmp = '未知 vs -1.0%' if not isinstance(top, (int, float)) else f"{top:.2f}% {'>' if top > -1 else '≤'} -1.0%"
     explain = f"独秀差 {_comparison(gap, .60, 'pp')}；情绪温度 {_comparison(temp, 45, '°', 0)}；昨日 TOP100 {top_cmp}。"
-    if regime['label'] in ('BULL', 'BULL_EMERGENCY_EXIT', 'BEAR_CASH', 'BEAR_GREEN', 'BASELINE_ON'):
+    if regime['label'] in ('BULL', 'BULL_EMERGENCY_EXIT', 'BEAR_CASH', 'BEAR_GREEN', 'BASELINE_ON', 'BEAR_ICE', 'AUCTION_ON'):
         explain = f"宏观状态 {raw.get('macro_state', '未知')}（截至 {raw.get('macro_as_of', '未知')}）；温度 {_num(temp, '°')}；TOP100 {_num(top, '%', True)}。"
     if regime.get('reasons'):
         explain += ' 原因：' + ', '.join(regime['reasons'])
@@ -208,13 +208,18 @@ def build_daily_summary_payload(trade_date, intraday_decisions=None, eod_marks=N
             metrics = regime.get('metrics') or {}
             if label == 'BASELINE_ON':
                 prefix = '无门控基线'
+            elif label == 'BEAR_ICE':
+                temp = metrics.get('prev_eod_temp')
+                prefix = 'BEAR_ICE' + (f'（前日 {temp:.1f}°）' if isinstance(temp, (int, float)) else '')
+            elif label == 'AUCTION_ON':
+                prefix = 'AUCTION_ON 竞价信号'
             elif label == 'BEAR_GREEN':
                 temp = metrics.get('temperature')
                 prefix = 'BEAR + 09:45 GREEN' + (f'({temp:.1f}°)' if isinstance(temp, (int, float)) else '')
             else:
                 prefix = reasons[0] if reasons else label
             selection = rec.get('selection') or {}
-            themes = '/'.join(str(t) for t in (selection.get('themes') or [])[:3]) or '板块未知'
+            themes = '/'.join(str(t) for t in (selection.get('themes') or [])[:3]) or ('竞价候选' if label in ('BEAR_ICE', 'AUCTION_ON') and name.startswith(('c6_', 'v1_')) else '板块未知')
             picks = selection.get('picks')
             count = f'({len(picks)}股)' if isinstance(picks, (list, tuple)) else ''
             chain = f'{prefix} → {themes}{count}'

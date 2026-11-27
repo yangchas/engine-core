@@ -1,5 +1,7 @@
 # Project Knowledge
 
+- `[VERIFIED 2026-11-28 — Shadow EOD temperature]` The daily-kline-only six-component temperature uses strictly prior 60-session midranks; TDengine had no daily-kline rows before 2026-05-12, so the 137-record seed contains 39 warmup nulls. Two isolated retrospective TDengine shadow runs confirmed the requested November 23 ICE and November 25 auction decisions. Evidence and limits: `docs/evidence/shadow-phase26-20261128.md`.
+
 - `[VERIFIED 2026-11-12 — C988 isolated Guardian check]` The candidate default
   Kaipan handler reused a 93-row isolated Redis pool for 2026-11-10. The
   limit-reasons postcondition's second date rollback also occurs at baseline

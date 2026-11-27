@@ -398,8 +398,8 @@ def test_low_pos_selector_and_registry():
     from engine_core.strategy_engine.selector import LowPos20SectorSelector
     from engine_core.strategy_engine.engine import all_strategy_specs
     active = default_strategy_specs()
-    assert [s.name for s in active] == ['b1_low_pos20', 'b1_dual_green', 'baseline_low_pos20']
-    assert {s.name for s in all_strategy_specs() if not s.enabled} == {'main_a_p2', 'main_a_p2_lu_hold'}
+    assert [s.name for s in active] == ['b1_low_pos20', 'b1_dual_green', 'baseline_low_pos20', 'r2_b1_ice25_s6', 'c6_300_ice_pos20_top5', 'v1_h3_cont_2m']
+    assert {'main_a_p2', 'main_a_p2_lu_hold'} <= {s.name for s in all_strategy_specs() if not s.enabled}
     themes = [{'theme': 'A', 'pos20_prev': 1, 'up45': 0, 'members': 5},
               {'theme': 'B', 'pos20_prev': 2, 'up45': 100, 'members': 5},
               {'theme': 'C', 'pos20_prev': 3, 'up45': 80, 'members': 5},
@@ -433,14 +433,14 @@ def test_macro_history_update_is_idempotent_and_asof(tmp_path, monkeypatch):
 def test_resolve_strategy_specs_config_toggle(tmp_path):
     from engine_core.strategy_engine.engine import resolve_strategy_specs
     cfg = tmp_path / 'strategies.json'
-    assert [s.name for s in resolve_strategy_specs(cfg)] == ['b1_low_pos20', 'b1_dual_green', 'baseline_low_pos20']
+    assert [s.name for s in resolve_strategy_specs(cfg)] == ['b1_low_pos20', 'b1_dual_green', 'baseline_low_pos20', 'r2_b1_ice25_s6', 'c6_300_ice_pos20_top5', 'v1_h3_cont_2m']
     cfg.write_text(json.dumps({
         'b1_low_pos20': {'enabled': True},
         'b1_dual_green': {'enabled': False},
         'baseline_low_pos20': False,
         'main_a_p2': {'enabled': True},
     }), encoding='utf-8')
-    assert [s.name for s in resolve_strategy_specs(cfg)] == ['b1_low_pos20', 'main_a_p2']
+    assert [s.name for s in resolve_strategy_specs(cfg)] == ['b1_low_pos20', 'r2_b1_ice25_s6', 'c6_300_ice_pos20_top5', 'v1_h3_cont_2m', 'main_a_p2']
 
 
 def test_eod_email_and_daily_summary_include_decision_trace_and_macro(tmp_path):
@@ -483,3 +483,52 @@ def test_shadow_section_and_close_board(tmp_path, monkeypatch):
     assert len(rendered.encode()) < 40000
     path.write_text('{"strategies": []}')
     assert _render_shadow_strategy_section(day) == ''
+
+
+def test_auction_clock_order_and_cash():
+    ledger = SingleAccountLedger(initial_cash=1000, cost_bps=0)
+    ledger.cash = 500
+    ledger.positions = [Position('300001', 50, 10, '2026-01-09', '1')]
+    buy = {'300002': {'ap1': 10, 'av1': 1}}
+    sell = {'300001': {'bp1': 10, 'bv1': 1}}
+    intents = [OrderIntent('BUY', '300002', 1), OrderIntent('SELL', '300001')]
+    result = ledger.execute_intraday('2026-01-12', intents, {}, buy_quotes=buy, sell_quotes=sell, buy_before_sell=True)
+    assert [t['side'] for t in result['trades']] == ['BUY', 'SELL']
+    assert result['trades'][0]['qty'] == 50 and result['cash'] == 500
+    result = ledger.execute_intraday('2026-01-13', [OrderIntent('SELL', '300002'), OrderIntent('BUY', '300003', 1)], {},
+                                     buy_quotes={'300003': {'ap1': 10, 'av1': 1}}, sell_quotes={'300002': {'bp1': 10, 'bv1': 1}})
+    assert [t['side'] for t in result['trades']] == ['SELL', 'BUY']
+    assert result['trades'][1]['qty'] == 100
+
+
+def test_auction_filters_and_ice_regime():
+    from engine_core.strategy_engine.selector import ChiNextIceBigDropSelector, HighPosAuctionContSelector
+    from engine_core.strategy_engine.regime import BearIceRegime, MacroB1Regime
+    candidates = [dict(symbol=f'30000{i}', name='公司', pos20_prev=i, prev_is_lu=False, prev_pct_chg=-5,
+                       amt25_yuan=5e7, ask1_3005=10, av1_3005=1, p25=3, p32=3,
+                       prev_auc_rank=300, ask1_3205=10, av1_3205=1) for i in range(7)]
+    snap = snapshot(auction_candidates=candidates, regime_raw={'macro_state': 'BEAR', 'prev_eod_temp': 25})
+    assert len(ChiNextIceBigDropSelector().select(snap).picks) == 5
+    assert BearIceRegime().detect(snap).label == MacroB1Regime(allow_bear_ice=True).detect(snap).label == 'BEAR_ICE'
+    assert BearIceRegime().detect(replace(snap, regime_raw={'prev_eod_temp': 25.01})).label == 'BEAR_CASH'
+    high = dict(candidates[0], pos20_prev=71)
+    assert len(HighPosAuctionContSelector().select(replace(snap, auction_candidates=[high])).picks) == 1
+    assert not HighPosAuctionContSelector().select(replace(snap, auction_candidates=[dict(high, p32=2.99)])).picks
+
+
+def test_eod_temperature_midrank_causal_and_rolling():
+    from datetime import date, timedelta
+    from engine_core.strategy_engine.regime import compute_macro_b1_series
+    bars = {}
+    for i in range(102):
+        day = (date(2026, 1, 1) + timedelta(days=i)).isoformat()
+        bars[day] = {'600001': {'close': 10, 'pre_close': 10, 'high': 11, 'low': 9}}
+    records = compute_macro_b1_series(bars)
+    assert all(r['eod_temp'] is None for r in records[:39])
+    assert all(r['eod_temp'] == 50 for r in records[39:])
+    changed = dict(bars)
+    last = list(bars)[-1]
+    changed[last] = {'600001': {'close': 11, 'pre_close': 10, 'high': 11, 'low': 9}}
+    revised = compute_macro_b1_series(changed)
+    assert revised[:-1] == records[:-1]
+    assert revised[-1]['eod_temp'] == pytest.approx(550 / 6)

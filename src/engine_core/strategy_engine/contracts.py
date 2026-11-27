@@ -15,6 +15,11 @@ class MarketSnapshot:
     eod_close: Any = None
     source_metadata: Any = None
 
+    quotes_093005: Mapping[str, Any] | None = None
+    quotes_093130: Mapping[str, Any] | None = None
+    quotes_093205: Mapping[str, Any] | None = None
+    auction_candidates: Any = ()
+
     def __post_init__(self):
         if self.prior_trade_date >= self.trade_date or self.asof_ts[:10] != self.trade_date:
             raise ValueError('snapshot dates violate as-of ordering')
@@ -29,7 +34,7 @@ class RegimeDecision:
     reasons: tuple
 
     def __post_init__(self):
-        if self.label not in ('WARM_SOLO', 'COLD_SOLO', 'CROWDED', 'RED', 'WARM', 'COLD', 'BULL', 'BULL_EMERGENCY_EXIT', 'BEAR_CASH', 'BEAR_GREEN', 'BASELINE_ON'):
+        if self.label not in ('WARM_SOLO', 'COLD_SOLO', 'CROWDED', 'RED', 'WARM', 'COLD', 'BULL', 'BULL_EMERGENCY_EXIT', 'BEAR_CASH', 'BEAR_GREEN', 'BASELINE_ON', 'BEAR_ICE', 'AUCTION_ON'):
             raise ValueError('invalid regime label')
 
 
