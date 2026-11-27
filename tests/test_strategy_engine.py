@@ -455,8 +455,31 @@ def test_eod_email_and_daily_summary_include_decision_trace_and_macro(tmp_path):
     }
     macro = {'trade_date': '2026-11-27', 'macro_state': 'BEAR', 'mkt_ew_ret': 0.0651, 'mkt_ew_idx': 0.7591, 'mkt_ma20': 0.7845, 'above_ma20_pct': 18.05, 'n_stocks': 4604}
     md = render_daily_summary_md('2026-11-27', intraday, marks, macro)
-    assert 'BEAR' in md and 'MACRO_BEAR' in md and '赣锋锂业' in md and '18.05%' in md
+    assert 'BEAR' in md and 'MACRO_BEAR' in md and '002460' not in md and '18.05%' in md
     msg = build_eod_shadow_email('2026-11-27', marks, recipients=['412826313@qq.com'], intraday_decisions=intraday, macro_record=macro)
     assert '明日宏观:BEAR' in str(msg['Subject'])
     html_body = msg.get_body(preferencelist=('html',)).get_content()
-    assert '今日触发信号与理由路径复盘' in html_body and '明日宏观牛熊底座' in html_body and '赣锋锂业' in html_body
+    assert '多策略推导线与仓位' in html_body and 'MACRO_BEAR' in html_body and '002460' not in html_body
+
+
+def test_shadow_section_and_close_board(tmp_path, monkeypatch):
+    import json
+    from engine_core.email_board import _render_shadow_strategy_section, render_email_board
+    from engine_core.strategy_engine.mailer import build_daily_summary_payload
+    monkeypatch.setenv('CORE_DATA_ROOT', str(tmp_path))
+    day = '2026-11-27'
+    assert _render_shadow_strategy_section(day) == ''
+    path = tmp_path / 'shadow_strategies' / 'daily_summary' / (day + '.json')
+    path.parent.mkdir(parents=True)
+    path.write_text('{broken')
+    assert _render_shadow_strategy_section(day) == ''
+    decision = {'regime': {'target_exposure': 0, 'label': 'BEAR_CASH', 'reasons': ['MACRO_BEAR']}}
+    payload = build_daily_summary_payload(day, {'<test>': decision}, {'<test>': {'nav': 1.02}}, {'macro_state': 'BEAR', 'mkt_ew_ret': .0651})
+    path.write_text(json.dumps(payload))
+    section = _render_shadow_strategy_section(day)
+    assert '&lt;test&gt;' in section and 'MACRO_BEAR → 空仓观望' in section and 'NAV 1.0200 (+2.00%)' in section
+    rendered, _ = render_email_board({}, 'close', day)
+    assert rendered.index('close-ladder') < rendered.index('close-strategies') < rendered.index('<footer')
+    assert len(rendered.encode()) < 40000
+    path.write_text('{"strategies": []}')
+    assert _render_shadow_strategy_section(day) == ''

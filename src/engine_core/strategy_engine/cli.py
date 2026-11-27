@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from .adapters import load_dataset, extract_regime_history, load_backtest_snapshots, load_live_shadow_snapshot, update_macro_regime_history
 from .engine import RegimeHistoryStore, StrategyEngine, default_strategy_specs, resolve_strategy_specs
 from .ledger import SingleAccountLedger
-from .mailer import build_intraday_shadow_email, build_eod_shadow_email, render_daily_summary_md, send_shadow_email
+from .mailer import build_intraday_shadow_email, build_eod_shadow_email, build_daily_summary_payload, render_daily_summary_md, send_shadow_email
 from dataclasses import asdict
 
 
@@ -107,6 +107,7 @@ def _write_daily_summary(root, trade_date):
         return None
     summary_dir = root / 'daily_summary'
     summary_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(summary_dir / f'{trade_date}.json', build_daily_summary_payload(trade_date, intraday, eod, macro))
     path = summary_dir / f'{trade_date}.md'
     path.write_text(render_daily_summary_md(trade_date, intraday or None, eod or None, macro), encoding='utf-8')
     return path

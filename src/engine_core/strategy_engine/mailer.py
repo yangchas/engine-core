@@ -186,38 +186,69 @@ def _trace_summary(record):
     return {'label': regime.get('label', '未知'), 'exp': f'{exp:.0f}%', 'chain': ' → '.join(parts), 'themes': themes, 'trades': trade_str}
 
 
+def build_daily_summary_payload(trade_date, intraday_decisions=None, eod_marks=None, macro_record=None):
+    decisions = _by_name(intraday_decisions or {})
+    marks = _by_name(eod_marks or {})
+    names = list(dict.fromkeys([*decisions, *marks]))
+    macro_keys = ('macro_state', 'mkt_ew_ret', 'mkt_ew_idx', 'mkt_ma20', 'above_ma20_pct', 'n_stocks')
+    macro = {key: macro_record.get(key) for key in macro_keys} if macro_record else None
+    strategies = []
+    for name in names:
+        rec = decisions.get(name, {})
+        regime = rec.get('regime', {})
+        exposure = regime.get('target_exposure')
+        pct = round(exposure * 100) if isinstance(exposure, (int, float)) else None
+        label = regime.get('label', '未知')
+        reasons = regime.get('reasons') or []
+        if pct == 0:
+            chain = f"{reasons[0] if reasons else label} → 空仓观望"
+        elif pct is None:
+            chain = '盘中决策未知'
+        else:
+            metrics = regime.get('metrics') or {}
+            if label == 'BASELINE_ON':
+                prefix = '无门控基线'
+            elif label == 'BEAR_GREEN':
+                temp = metrics.get('temperature')
+                prefix = 'BEAR + 09:45 GREEN' + (f'({temp:.1f}°)' if isinstance(temp, (int, float)) else '')
+            else:
+                prefix = reasons[0] if reasons else label
+            selection = rec.get('selection') or {}
+            themes = '/'.join(str(t) for t in (selection.get('themes') or [])[:3]) or '板块未知'
+            picks = selection.get('picks')
+            count = f'({len(picks)}股)' if isinstance(picks, (list, tuple)) else ''
+            chain = f'{prefix} → {themes}{count}'
+        import re
+        chain = re.sub(r'(?<!\d)\d{6}(?!\d)', '', chain)
+        nav = marks.get(name, {}).get('nav')
+        nav = float(nav) if isinstance(nav, (int, float)) else None
+        strategies.append({'name': name, 'exposure_pct': pct, 'derivation': chain,
+                           'nav': nav, 'ret_pct': (nav - 1) * 100 if nav is not None else None})
+    return {'trade_date': str(trade_date), 'macro': macro, 'strategies': strategies}
+
+
+def _summary_lines(payload):
+    lines = []
+    macro = payload['macro']
+    if macro:
+        ret = macro.get('mkt_ew_ret')
+        ret = ret * 100 if isinstance(ret, (int, float)) else None
+        lines.append(f"明日宏观 B1：{macro.get('macro_state') or '未知'}（全市场 {_num(ret, '%', True)}｜指数 {_num(macro.get('mkt_ew_idx'), digits=4)} vs MA20 {_num(macro.get('mkt_ma20'), digits=4)}｜站上MA20 {_num(macro.get('above_ma20_pct'), '%')}）")
+    for i, item in enumerate(payload['strategies']):
+        branch = '└──' if i == len(payload['strategies']) - 1 else '├──'
+        exposure = f"{item['exposure_pct']}%" if item['exposure_pct'] is not None else '未知'
+        nav = _num(item['nav'], digits=4)
+        ret = _num(item['ret_pct'], '%', True)
+        lines.append(f"{branch} {item['name']} ｜ 仓位 {exposure} ｜ 推导：{item['derivation']} ｜ NAV {nav} ({ret})")
+    return lines
+
+
 def render_daily_summary_md(trade_date, intraday_decisions=None, eod_marks=None, macro_record=None):
-    lines = [f'# {trade_date} 多策略决策与盘后复盘汇总', '']
-    if macro_record:
-        lines.append('## 1. 宏观牛熊底座（截至收盘 · 用于下个交易日）')
-        lines.append(
-            f"- 状态：**`{macro_record.get('macro_state', '未知')}`** ｜ "
-            f"全市场等权 `{_num(macro_record.get('mkt_ew_ret', 0) * 100 if isinstance(macro_record.get('mkt_ew_ret'), (int, float)) else None, '%', True)}` ｜ "
-            f"指数 `{_num(macro_record.get('mkt_ew_idx'), digits=4)}` vs MA20 `{_num(macro_record.get('mkt_ma20'), digits=4)}` ｜ "
-            f"站上 MA20 占比 `{_num(macro_record.get('above_ma20_pct'), '%')}`（样本 `{macro_record.get('n_stocks', '未知')}` 股）"
-        )
-        lines.append('')
-    if intraday_decisions:
-        lines.append('## 2. 今日多策略触发信号与理由链路')
-        lines.append('| 策略 | 判定 | 目标仓位 | 触发理由链路 | 选中板块 | 今日买卖 |')
-        lines.append('| :--- | :--- | ---: | :--- | :--- | :--- |')
-        for name, rec in _by_name(intraday_decisions).items():
-            t = _trace_summary(rec)
-            lines.append(f"| {name} | {t['label']} | {t['exp']} | {t['chain']} | {t['themes']} | {t['trades']} |")
-        lines.append('')
-    if eod_marks:
-        lines.append('## 3. 收盘盯市与净值复盘')
-        lines.append('| 策略 | NAV | 累计收益% | 最大回撤 MDD% | 现金 | 持仓市值 | 当前持仓 |')
-        lines.append('| :--- | ---: | ---: | ---: | ---: | ---: | :--- |')
-        for name, mark in _by_name(eod_marks).items():
-            ret = (mark['nav'] - 1) * 100
-            pos = _positions(mark.get('positions', []), mark.get('stock_names', {}))
-            lines.append(f"| {name} | {mark['nav']:.4f} | {ret:+.2f}% | {mark['max_drawdown']*100:.2f}% | {_wan(mark['cash'])} | {_wan(mark['equity']-mark['cash'])} | {pos} |")
-        lines.append('')
-    return '\n'.join(lines)
+    payload = build_daily_summary_payload(trade_date, intraday_decisions, eod_marks, macro_record)
+    return '\n'.join([f'# {trade_date} 多策略推导线与仓位', '', *_summary_lines(payload), ''])
 
 
-def build_eod_shadow_email(trade_date, marks, *, recipients, subject_prefix='[影子策略 18:10复盘]', intraday_decisions=None, macro_record=None):
+def _legacy_eod_shadow_email(trade_date, marks, *, recipients, subject_prefix='[影子策略 18:10复盘]', intraday_decisions=None, macro_record=None):
     records = _by_name(marks)
     first = next(iter(records))
     nav = records[first]['nav']
@@ -250,6 +281,19 @@ def build_eod_shadow_email(trade_date, marks, *, recipients, subject_prefix='[�
         sections.append(_section('3. 今日触发信号与理由路径复盘', _table(['策略', '判定', '目标仓位', '触发理由链路', '选中板块', '今日买卖'], trace_rows)))
     sections.append('<div style="color:#9ca3af;font-size:11px;padding-top:6px">只读影子验证，不构成交易指令</div>')
     return _message(subject, lines, recipients, _page(''.join(sections)))
+
+
+def build_eod_shadow_email(trade_date, marks, *, recipients, subject_prefix='[影子策略 18:10复盘]', intraday_decisions=None, macro_record=None):
+    # Preserve the established mark-only email contract for existing callers.
+    if not intraday_decisions:
+        return _legacy_eod_shadow_email(trade_date, marks, recipients=recipients, subject_prefix=subject_prefix, macro_record=macro_record)
+    payload = build_daily_summary_payload(trade_date, intraday_decisions, marks, macro_record)
+    lines = _summary_lines(payload)
+    first = payload['strategies'][0]
+    tag = f" | 明日宏观:{macro_record['macro_state']}" if macro_record and macro_record.get('macro_state') else ''
+    subject = f"{subject_prefix} {trade_date}{tag} | {first['name']} NAV={_num(first['nav'], digits=4)} ({_num(first['ret_pct'], '%', True)})"
+    markup = _page('<h2>多策略推导线与仓位</h2>' + ''.join(f'<div>{_esc(line)}</div>' for line in lines))
+    return _message(subject, lines, recipients, markup)
 
 
 class _LocalMailState:

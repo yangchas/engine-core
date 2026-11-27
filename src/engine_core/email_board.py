@@ -4,6 +4,7 @@ from __future__ import annotations
 import html
 import json
 import math
+import os
 import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -1616,6 +1617,33 @@ def _render_open_verification_board(report: Mapping[str, Any], trade_date: str) 
     return sections, re.sub(r'\s+', ' ', plain).strip()
 
 
+def _render_shadow_strategy_section(trade_date: str) -> str:
+    try:
+        path = Path(os.environ.get('CORE_DATA_ROOT', '/home/exedev/core-data')) / 'shadow_strategies' / 'daily_summary' / f'{trade_date}.json'
+        payload = json.loads(path.read_text(encoding='utf-8'))
+        strategies = payload['strategies']
+        if not strategies:
+            return ''
+        def number(value, fmt, suffix=''):
+            return format(value, fmt) + suffix if isinstance(value, (int, float)) and math.isfinite(value) else '未知'
+        parts = ['<section data-section="close-strategies" style="background:white;padding:12px 14px;margin:8px 0">',
+                 '<h2 style="margin:0 0 6px;font-size:16px">④ 多策略推导线与仓位</h2>']
+        macro = payload.get('macro')
+        if macro:
+            ret = macro.get('mkt_ew_ret')
+            ret = ret * 100 if isinstance(ret, (int, float)) else None
+            parts.append(f'<div>明日宏观 B1：<strong>{_esc(macro.get("macro_state") or "未知")}</strong>（全市场 {number(ret, "+.2f", "%")}｜指数 {number(macro.get("mkt_ew_idx"), ".4f")} vs MA20 {number(macro.get("mkt_ma20"), ".4f")}｜站上MA20 {number(macro.get("above_ma20_pct"), ".2f", "%")}）</div>')
+        for i, item in enumerate(strategies):
+            branch = '└──' if i == len(strategies) - 1 else '├──'
+            exposure = number(item.get('exposure_pct'), '.0f', '%')
+            nav = number(item.get('nav'), '.4f')
+            ret = number(item.get('ret_pct'), '+.2f', '%')
+            parts.append(f'<div>{branch} <strong>{_esc(item["name"])}</strong> ｜ 仓位 <strong>{exposure}</strong> ｜ 推导：{_esc(item["derivation"])} ｜ NAV {nav} ({ret})</div>')
+        return ''.join(parts) + '</section>'
+    except Exception:
+        return ''
+
+
 def _render_close_v3_board(report: Mapping[str, Any], trade_date: str) -> tuple[str, str]:
     def mapping(value):
         return value if isinstance(value, Mapping) else {}
@@ -1936,7 +1964,8 @@ def _render_close_v3_board(report: Mapping[str, Any], trade_date: str) -> tuple[
         f'<h2 style="margin:0 0 6px;font-size:16px">③ 连板高标二维矩阵（主线 × 板高｜竞价→收盘）</h2>'
         + (f'<div style="font-size:12px;color:#53677e;margin-bottom:8px">晋级率：{" ｜ ".join(tier_stats)}</div>' if tier_stats else '')
         + f'{ladder_matrix_html}</section>'
-        f'<footer style="padding:8px 4px;color:#667085;font-size:11px">'
+        + _render_shadow_strategy_section(trade_date)
+        + f'<footer style="padding:8px 4px;color:#667085;font-size:11px">'
         f'口径：涨停/跌停为收盘价代理；缺失显示“—”不补零；仅客观复盘，不构成买卖建议。</footer>'
     )
     plain = html.unescape(re.sub(r'<[^>]+>', ' ', sections))
