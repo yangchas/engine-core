@@ -2,8 +2,8 @@
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
-from .regime import WeatherSoloRegime, Pos20Regime
-from .selector import MainThemeNormalizedAccelSelector
+from .regime import WeatherSoloRegime, MacroB1Regime, AlwaysOnBaselineRegime
+from .selector import MainThemeNormalizedAccelSelector, LowPos20SectorSelector
 from .portfolio import SyncSwitchPortfolioPolicy
 
 
@@ -45,6 +45,9 @@ class StrategySpec:
     selector: object
     policy: object
     cost_bps: float = 20.0
+    category: str = 'intraday'
+    slots: tuple[str, ...] = ('0945', '1810')
+    enabled: bool = True
 
 
 class StrategyEngine:
@@ -71,8 +74,33 @@ class StrategyEngine:
         return self.ledger.mark_eod(trade_date, close_prices)
 
 
+def all_strategy_specs():
+    old = MainThemeNormalizedAccelSelector()
+    return (StrategySpec('b1_low_pos20', MacroB1Regime(), LowPos20SectorSelector(), SyncSwitchPortfolioPolicy(), category='macro'),
+            StrategySpec('b1_dual_green', MacroB1Regime(True, .30), LowPos20SectorSelector(prefer_up45_in_bear=True), SyncSwitchPortfolioPolicy()),
+            StrategySpec('baseline_low_pos20', AlwaysOnBaselineRegime(), LowPos20SectorSelector(), SyncSwitchPortfolioPolicy(), category='baseline'),
+            StrategySpec('main_a_p2', WeatherSoloRegime(), old, SyncSwitchPortfolioPolicy(), enabled=False),
+            StrategySpec('main_a_p2_lu_hold', WeatherSoloRegime(), old, SyncSwitchPortfolioPolicy(True), enabled=False))
+
+
 def default_strategy_specs():
-    selector = MainThemeNormalizedAccelSelector()
-    return (StrategySpec('main_a_p2', WeatherSoloRegime(), selector, SyncSwitchPortfolioPolicy()),
-            StrategySpec('main_a_p2_lu_hold', WeatherSoloRegime(), selector, SyncSwitchPortfolioPolicy(True)),
-            StrategySpec('baseline_pos20', Pos20Regime(), selector, SyncSwitchPortfolioPolicy()))
+    return tuple(spec for spec in all_strategy_specs() if spec.enabled)
+
+
+def resolve_strategy_specs(config_path=None):
+    specs = all_strategy_specs()
+    if not config_path or not Path(config_path).exists():
+        return tuple(spec for spec in specs if spec.enabled)
+    cfg = json.loads(Path(config_path).read_text(encoding='utf-8'))
+    if not isinstance(cfg, dict):
+        raise ValueError('strategies config must be a JSON object')
+    active = []
+    for spec in specs:
+        if spec.name in cfg:
+            val = cfg[spec.name]
+            enabled = bool(val.get('enabled')) if isinstance(val, dict) else bool(val)
+        else:
+            enabled = spec.enabled
+        if enabled:
+            active.append(spec)
+    return tuple(active)

@@ -91,7 +91,7 @@ def test_history_and_engine(tmp_path):
     assert [r['trade_date'] for r in store.before('2026-01-11')] == ['2026-01-09', '2026-01-10']
     with pytest.raises(ValueError): store.append({'trade_date': '2026-01-10', 'time': '15:00'})
     engine = StrategyEngine(default_strategy_specs()[2], SingleAccountLedger(), store)
-    assert engine.run_intraday(snapshot())['regime']['label'] == 'WARM'
+    assert engine.run_intraday(snapshot())['regime']['label'] == 'BASELINE_ON'
     assert engine.run_eod('2026-01-12', {})['nav'] == 1
 
 
@@ -121,14 +121,14 @@ def test_extract_regime_history_and_seed(tmp_path, monkeypatch, capsys):
 def test_shadow_run_persists_and_is_idempotent(tmp_path, monkeypatch):
     from engine_core.strategy_engine import cli
     snap = snapshot(candidates=[candidate('600001')], quotes_0945={'600001': {'ap1_milli': 10000, 'av1': 100, 'px_milli': 10000}})
-    monkeypatch.setattr(cli, 'load_live_shadow_snapshot', lambda *args: snap)
+    monkeypatch.setattr(cli, 'load_live_shadow_snapshot', lambda *args, **kwargs: snap)
     args = ['shadow-run', '--trade-date', snap.trade_date, '--td-config', 'unused', '--shadow-dir', str(tmp_path)]
     cli.main(args)
     cli.main(args)
     for spec in default_strategy_specs():
         log = [json.loads(line) for line in (tmp_path/(spec.name+'.jsonl')).read_text().splitlines()]
         assert len(log) == 1
-        assert log[0]['selection']['funnel_counts']['selected'] == 1
+        assert log[0]['selection']['funnel_counts']['selected'] == 0
         assert log[0]['stock_names']['600001'] == '公司'
         state = json.loads((tmp_path/(spec.name+'.json')).read_text())
         assert state['last_trade_date'] == snap.trade_date
@@ -161,7 +161,7 @@ def test_shadow_adapter_uses_prior_bars_and_membership_fallback(monkeypatch):
     assert ('daily_kline', '2025-10-14', '2026-01-11') in calls
     assert snap.source_metadata['membership'] == 'latest_fallback'
     assert snap.source_metadata['kaipan'] == 'daily_kline_v1_fallback'
-    assert not snap.candidates
+    assert snap.candidates[0]['pos20_prev'] is None
     assert snap.regime_raw['yest_2p_avg_pct'] is None
 
 
@@ -216,6 +216,7 @@ def test_shadow_eod_marks_once_and_requires_held_closes(tmp_path, monkeypatch):
             calls.append((table, start, end))
             return [{'symbol': '600001', 'close': 12}]
     monkeypatch.setattr(td_reader, 'TDReader', Reader)
+    monkeypatch.setattr(cli, 'update_macro_regime_history', lambda *args, **kwargs: [])
     spec = default_strategy_specs()[0]
     ledger = SingleAccountLedger()
     ledger.positions = [Position('600001', 10, 10, '2026-01-09', '1')]
@@ -245,7 +246,8 @@ def test_guardian_contract(tmp_path, monkeypatch, capsys, mode):
         def __init__(self, config): pass
         def read(self, *args): return []
     monkeypatch.setattr(td_reader, 'TDReader', Reader)
-    monkeypatch.setattr(cli, 'load_live_shadow_snapshot', lambda *args: snapshot())
+    monkeypatch.setattr(cli, 'update_macro_regime_history', lambda *args, **kwargs: [])
+    monkeypatch.setattr(cli, 'load_live_shadow_snapshot', lambda *args, **kwargs: snapshot())
     args = ['guardian-run', '--mode', mode, '--td-config', 'cfg', '--shadow-dir', str(tmp_path)]
     monkeypatch.setattr(sys, 'stdin', io.StringIO('{"date":"2026-01-12"}'))
     assert cli.main(args) == 0
@@ -284,7 +286,7 @@ def test_shadow_email_rendering():
     assert all(x in rendered for x in ('今日候补观察（未买入）', '测试公司', '+3.50%', '09:25→09:45', '归一化分', '09:45成交额', '昨日基因', '板块池', '精选 Top5', '创业板 0只'))
     mark = {'nav': 1.02, 'max_drawdown': .03, 'cash': 900, 'equity': 1020, 'positions': decision['positions']}
     msg = build_eod_shadow_email('2026-01-12', {n: mark for n in names}, recipients=['412826313@qq.com'])
-    assert str(msg['Subject']) == '[影子策略 15:25盯市] 2026-01-12 | main_a_p2 NAV=1.0200 (+2.00%)'
+    assert str(msg['Subject']) == '[影子策略 18:10复盘] 2026-01-12 | b1_low_pos20 NAV=1.0200 (+2.00%)'
     body = msg.get_body(preferencelist=('plain',)).get_content()
     assert all(x in body for x in ('MDD%=3.00', '持仓市值=120.00', '600001', *names))
     mark['stock_names'] = {'600001': '测试公司'}
@@ -305,7 +307,8 @@ def test_guardian_mail_failure_retry(tmp_path, monkeypatch, capsys, mode):
         def __init__(self, config): pass
         def read(self, *args): return []
     monkeypatch.setattr(td_reader, 'TDReader', Reader)
-    monkeypatch.setattr(cli, 'load_live_shadow_snapshot', lambda *args: snapshot())
+    monkeypatch.setattr(cli, 'update_macro_regime_history', lambda *args, **kwargs: [])
+    monkeypatch.setattr(cli, 'load_live_shadow_snapshot', lambda *args, **kwargs: snapshot())
     if mode == 'eod':
         cli.main(['shadow-run', '--trade-date', '2026-01-12', '--td-config', 'cfg', '--shadow-dir', str(tmp_path)])
         capsys.readouterr()
@@ -350,3 +353,110 @@ def test_shadow_sender_uses_local_state_and_enforces_recipient(tmp_path, monkeyp
     msg['Cc'] = 'other@example.com'
     with pytest.raises(ValueError, match='recipient'):
         mailer.send_shadow_email(msg)
+
+
+def test_macro_series_hysteresis_and_universe():
+    from datetime import date, timedelta
+    from engine_core.strategy_engine.regime import compute_macro_b1_series
+    bars = {}
+    for i in range(24):
+        day = (date(2026, 1, 1) + timedelta(days=i)).isoformat()
+        # Flat warmup initializes BEAR; a broad rise flips BULL. A mixed
+        # session holds BULL; a broad fall flips BEAR.
+        values = [10] * 10 if i < 20 else [11]*10 if i == 20 else ([12]*5 + [9]*5 if i == 21 else [8]*10)
+        bars[day] = {f'60000{j}': {'close': value, 'pre_close': 10} for j, value in enumerate(values)}
+        bars[day]['688001'] = {'close': 10000, 'pre_close': 1}
+    result = compute_macro_b1_series(bars)
+    assert result[19]['macro_state'] == 'BEAR'
+    assert result[20]['macro_state'] == 'BULL'
+    assert result[21]['macro_state'] == 'BULL'
+    assert result[22]['macro_state'] == 'BEAR'
+    assert result[20]['n_stocks'] == 10
+
+
+def test_macro_regime_decisions_and_strict_history(monkeypatch):
+    from engine_core.strategy_engine import regime
+    seen = []
+    def score(raw, history, **kwargs):
+        seen.extend(history)
+        return {'temperature': raw.get('test_temp'), 'history_n': len(history)}
+    monkeypatch.setattr(regime, 'compute_sentiment_temperature', score)
+    def decide(state, **raw):
+        return regime.MacroB1Regime(True).detect(snapshot(regime_raw={'macro_state': state, **raw}),
+            [{'trade_date': '2026-01-11'}, {'trade_date': '2026-01-12'}, {'trade_date': '2026-01-13'}])
+    assert decide('BULL', test_temp=40).label == 'BULL'
+    for raw in ({'test_temp': 29}, {'live_limit_down': 25}, {'top100_avg_pct': -1.5}):
+        assert decide('BULL', **raw).label == 'BULL_EMERGENCY_EXIT'
+    assert decide('BEAR', test_temp=44, top100_avg_pct=0).label == 'BEAR_CASH'
+    green = decide('BEAR', test_temp=45, top100_avg_pct=0)
+    assert (green.label, green.target_exposure, green.max_single_weight) == ('BEAR_GREEN', .3, .06)
+    assert decide(None).reasons == ('MISSING_MACRO_STATE',)
+    assert all(row['trade_date'] < '2026-01-12' for row in seen)
+
+
+def test_low_pos_selector_and_registry():
+    from engine_core.strategy_engine.selector import LowPos20SectorSelector
+    from engine_core.strategy_engine.engine import all_strategy_specs
+    active = default_strategy_specs()
+    assert [s.name for s in active] == ['b1_low_pos20', 'b1_dual_green', 'baseline_low_pos20']
+    assert {s.name for s in all_strategy_specs() if not s.enabled} == {'main_a_p2', 'main_a_p2_lu_hold'}
+    themes = [{'theme': 'A', 'pos20_prev': 1, 'up45': 0, 'members': 5},
+              {'theme': 'B', 'pos20_prev': 2, 'up45': 100, 'members': 5},
+              {'theme': 'C', 'pos20_prev': 3, 'up45': 80, 'members': 5},
+              {'theme': 'D', 'pos20_prev': 4, 'up45': 90, 'members': 5}]
+    cs = [dict(symbol=s, name='公司', theme='A', pos20_prev=i, ask1=10, av1=1, ret_25=0, ret_45=1)
+          for i, s in enumerate(['300001', '301002', '300003', '600001', '000001'])]
+    cs.append(dict(symbol='600002', name='公司', theme='A', pos20_prev=-1, ask1=0, av1=1))
+    snap = snapshot(themes=themes, candidates=cs, regime_raw={'macro_state': 'BEAR'})
+    result = LowPos20SectorSelector().select(snap)
+    assert [p[0] for p in result.picks] == ['300001', '301002', '600001', '000001']
+    assert result.themes == ('A', 'B', 'C')
+    assert LowPos20SectorSelector(prefer_up45_in_bear=True).select(snap).themes == ('B', 'A', 'C')
+
+
+def test_macro_history_update_is_idempotent_and_asof(tmp_path, monkeypatch):
+    from engine_core.strategy_engine import adapters
+    from engine_core.sentiment_review.adapters import td_reader
+    class Reader:
+        def __init__(self, **kwargs): pass
+        def read(self, table, start, end):
+            return [{'ts': f'2026-05-{i:02}', 'symbol': '600001', 'close': 10+i/10, 'pre_close': 10} for i in range(1, 24)]
+    monkeypatch.setattr(td_reader, 'TDReader', Reader)
+    path = tmp_path / 'macro_regime_history.jsonl'
+    adapters.update_macro_regime_history('cfg', path, '2026-05-12', '2026-05-23')
+    before = path.read_bytes()
+    adapters.update_macro_regime_history('cfg', path, '2026-05-12', '2026-05-23')
+    assert path.read_bytes() == before
+    assert RegimeHistoryStore(path).before('2026-05-23')[-1]['trade_date'] == '2026-05-22'
+
+
+def test_resolve_strategy_specs_config_toggle(tmp_path):
+    from engine_core.strategy_engine.engine import resolve_strategy_specs
+    cfg = tmp_path / 'strategies.json'
+    assert [s.name for s in resolve_strategy_specs(cfg)] == ['b1_low_pos20', 'b1_dual_green', 'baseline_low_pos20']
+    cfg.write_text(json.dumps({
+        'b1_low_pos20': {'enabled': True},
+        'b1_dual_green': {'enabled': False},
+        'baseline_low_pos20': False,
+        'main_a_p2': {'enabled': True},
+    }), encoding='utf-8')
+    assert [s.name for s in resolve_strategy_specs(cfg)] == ['b1_low_pos20', 'main_a_p2']
+
+
+def test_eod_email_and_daily_summary_include_decision_trace_and_macro(tmp_path):
+    from engine_core.strategy_engine.mailer import build_eod_shadow_email, render_daily_summary_md
+    marks = {
+        'b1_low_pos20': {'nav': 1.0, 'max_drawdown': 0.0, 'cash': 1_000_000.0, 'equity': 1_000_000.0, 'positions': [], 'stock_names': {}},
+        'b1_dual_green': {'nav': 1.015, 'max_drawdown': 0.005, 'cash': 700_000.0, 'equity': 1_015_000.0, 'positions': [], 'stock_names': {}},
+    }
+    intraday = {
+        'b1_low_pos20': {'strategy': 'b1_low_pos20', 'regime': {'label': 'BEAR_CASH', 'target_exposure': 0.0, 'metrics': {'macro_state': 'BEAR'}, 'reasons': ['MACRO_BEAR']}, 'selection': {'themes': ['锂矿']}, 'execution': {'trades': []}, 'stock_names': {}},
+        'b1_dual_green': {'strategy': 'b1_dual_green', 'regime': {'label': 'BEAR_GREEN', 'target_exposure': 0.3, 'metrics': {'macro_state': 'BEAR', 'temperature': 56.8}, 'reasons': []}, 'selection': {'themes': ['锂矿']}, 'execution': {'trades': [{'side': 'BUY', 'symbol': '002460', 'price': 35.0, 'qty': 1000}]}, 'stock_names': {'002460': '赣锋锂业'}},
+    }
+    macro = {'trade_date': '2026-11-27', 'macro_state': 'BEAR', 'mkt_ew_ret': 0.0651, 'mkt_ew_idx': 0.7591, 'mkt_ma20': 0.7845, 'above_ma20_pct': 18.05, 'n_stocks': 4604}
+    md = render_daily_summary_md('2026-11-27', intraday, marks, macro)
+    assert 'BEAR' in md and 'MACRO_BEAR' in md and '赣锋锂业' in md and '18.05%' in md
+    msg = build_eod_shadow_email('2026-11-27', marks, recipients=['412826313@qq.com'], intraday_decisions=intraday, macro_record=macro)
+    assert '明日宏观:BEAR' in str(msg['Subject'])
+    html_body = msg.get_body(preferencelist=('html',)).get_content()
+    assert '今日触发信号与理由路径复盘' in html_body and '明日宏观牛熊底座' in html_body and '赣锋锂业' in html_body

@@ -84,7 +84,7 @@ def _comparison(value, threshold, unit, digits=2):
 
 def build_intraday_shadow_email(trade_date, decisions, *, recipients, subject_prefix='[影子策略 09:46]'):
     records = _by_name(decisions)
-    main = records['main_a_p2']
+    main = next(iter(records.values()))
     regime, selection = main['regime'], main['selection']
     metrics, raw = regime['metrics'], main.get('regime_raw', {})
     trades = main['execution']['trades']
@@ -94,11 +94,16 @@ def build_intraday_shadow_email(trade_date, decisions, *, recipients, subject_pr
     funnel = selection['funnel_counts']
     keys = ('theme_pool', 'after_universe', 'after_landmine', 'after_buyable', 'after_guardrails', 'selected', 'gem_count')
     labels = ('板块池', '主板/创业板非ST', '剔2板+/炸板', '可买', '护栏', '精选 Top5')
+    if 'after_landmine' not in funnel:
+        keys = ('theme_pool', 'after_universe', 'after_buyable', 'selected', 'gem_count')
+        labels = ('板块池', '主板/创业板非ST', '可买', '精选 Top5')
     funnel_text = ' → '.join(f'{label} {funnel.get(key, "未知")}' for label, key in zip(labels, keys)) + f" (创业板 {funnel.get('gem_count', '未知')}只)"
     badge = {'WARM_SOLO': ('偏暖独秀·满仓', '#d93025'), 'COLD_SOLO': ('偏冷独秀·半仓', '#b45309'), 'CROWDED': ('混战打架·空仓', '#6b7280'), 'RED': ('偏冷防御·空仓', '#188038')}.get(regime['label'], (regime['label'], '#6b7280'))
     gap, temp, top = metrics.get('gap'), metrics.get('temperature'), metrics.get('top100_avg_pct')
     top_cmp = '未知 vs -1.0%' if not isinstance(top, (int, float)) else f"{top:.2f}% {'>' if top > -1 else '≤'} -1.0%"
     explain = f"独秀差 {_comparison(gap, .60, 'pp')}；情绪温度 {_comparison(temp, 45, '°', 0)}；昨日 TOP100 {top_cmp}。"
+    if regime['label'] in ('BULL', 'BULL_EMERGENCY_EXIT', 'BEAR_CASH', 'BEAR_GREEN', 'BASELINE_ON'):
+        explain = f"宏观状态 {raw.get('macro_state', '未知')}（截至 {raw.get('macro_as_of', '未知')}）；温度 {_num(temp, '°')}；TOP100 {_num(top, '%', True)}。"
     if regime.get('reasons'):
         explain += ' 原因：' + ', '.join(regime['reasons'])
     exp_pct = regime['target_exposure'] * 100 if regime.get('target_exposure') is not None else None
@@ -140,7 +145,7 @@ def build_intraday_shadow_email(trade_date, decisions, *, recipients, subject_pr
         lines.append('今日环境未满足出手条件，坚决空仓观望；今日候补观察（未买入）')
     for e in selection.get('evidence', []):
         lines.append('买入证据：' + ' | '.join(f'{k}={v}' for k, v in e.items()))
-    for name in NAMES:
+    for name in records:
         record, execution = records[name], records[name]['execution']
         names = record.get('stock_names', {})
         positions = _positions(record.get('positions', []), names)
@@ -163,20 +168,88 @@ def build_intraday_shadow_email(trade_date, decisions, *, recipients, subject_pr
     return _message(subject, lines, recipients, markup)
 
 
-def build_eod_shadow_email(trade_date, marks, *, recipients, subject_prefix='[影子策略 15:25盯市]'):
+def _trace_summary(record):
+    regime = record.get('regime', {})
+    metrics = regime.get('metrics', {})
+    reasons = ', '.join(regime.get('reasons') or ()) or '条件满足'
+    exp = regime.get('target_exposure', 0.0) * 100.0
+    themes = ', '.join(record.get('selection', {}).get('themes') or ()) or '无'
+    names = record.get('stock_names', {})
+    trades = record.get('execution', {}).get('trades', [])
+    trade_str = '；'.join(f"{t['side']} {t['symbol']}{names.get(t['symbol'], '')}@{t['price']:.2f}({_wan(t['qty']*t['price'])})" for t in trades) or '无买卖'
+    parts = [f"判定={regime.get('label', '未知')}", f"目标仓位={exp:.0f}%"]
+    if metrics.get('macro_state'):
+        parts.append(f"宏观={metrics['macro_state']}")
+    if isinstance(metrics.get('temperature'), (int, float)):
+        parts.append(f"09:45温度={metrics['temperature']:.1f}°")
+    parts.append(f"理由={reasons}")
+    return {'label': regime.get('label', '未知'), 'exp': f'{exp:.0f}%', 'chain': ' → '.join(parts), 'themes': themes, 'trades': trade_str}
+
+
+def render_daily_summary_md(trade_date, intraday_decisions=None, eod_marks=None, macro_record=None):
+    lines = [f'# {trade_date} 多策略决策与盘后复盘汇总', '']
+    if macro_record:
+        lines.append('## 1. 宏观牛熊底座（截至收盘 · 用于下个交易日）')
+        lines.append(
+            f"- 状态：**`{macro_record.get('macro_state', '未知')}`** ｜ "
+            f"全市场等权 `{_num(macro_record.get('mkt_ew_ret', 0) * 100 if isinstance(macro_record.get('mkt_ew_ret'), (int, float)) else None, '%', True)}` ｜ "
+            f"指数 `{_num(macro_record.get('mkt_ew_idx'), digits=4)}` vs MA20 `{_num(macro_record.get('mkt_ma20'), digits=4)}` ｜ "
+            f"站上 MA20 占比 `{_num(macro_record.get('above_ma20_pct'), '%')}`（样本 `{macro_record.get('n_stocks', '未知')}` 股）"
+        )
+        lines.append('')
+    if intraday_decisions:
+        lines.append('## 2. 今日多策略触发信号与理由链路')
+        lines.append('| 策略 | 判定 | 目标仓位 | 触发理由链路 | 选中板块 | 今日买卖 |')
+        lines.append('| :--- | :--- | ---: | :--- | :--- | :--- |')
+        for name, rec in _by_name(intraday_decisions).items():
+            t = _trace_summary(rec)
+            lines.append(f"| {name} | {t['label']} | {t['exp']} | {t['chain']} | {t['themes']} | {t['trades']} |")
+        lines.append('')
+    if eod_marks:
+        lines.append('## 3. 收盘盯市与净值复盘')
+        lines.append('| 策略 | NAV | 累计收益% | 最大回撤 MDD% | 现金 | 持仓市值 | 当前持仓 |')
+        lines.append('| :--- | ---: | ---: | ---: | ---: | ---: | :--- |')
+        for name, mark in _by_name(eod_marks).items():
+            ret = (mark['nav'] - 1) * 100
+            pos = _positions(mark.get('positions', []), mark.get('stock_names', {}))
+            lines.append(f"| {name} | {mark['nav']:.4f} | {ret:+.2f}% | {mark['max_drawdown']*100:.2f}% | {_wan(mark['cash'])} | {_wan(mark['equity']-mark['cash'])} | {pos} |")
+        lines.append('')
+    return '\n'.join(lines)
+
+
+def build_eod_shadow_email(trade_date, marks, *, recipients, subject_prefix='[影子策略 18:10复盘]', intraday_decisions=None, macro_record=None):
     records = _by_name(marks)
-    nav = records['main_a_p2']['nav']
-    subject = f'{subject_prefix} {trade_date} | main_a_p2 NAV={nav:.4f} ({(nav-1)*100:+.2f}%)'
-    lines, rows = [f'影子策略盯市 {trade_date}'], []
-    for name in NAMES:
+    first = next(iter(records))
+    nav = records[first]['nav']
+    macro_tag = f" | 明日宏观:{macro_record['macro_state']}" if macro_record and macro_record.get('macro_state') else ''
+    subject = f'{subject_prefix} {trade_date}{macro_tag} | {first} NAV={nav:.4f} ({(nav-1)*100:+.2f}%)'
+    lines, rows = [f'影子策略复盘 {trade_date}'], []
+    sections = [f'<div style="font-size:15px;font-weight:700;color:#111827;padding-bottom:6px">影子策略每日复盘汇总 · {_esc(trade_date)}</div>']
+    if macro_record:
+        m_state = macro_record.get('macro_state', '未知')
+        m_ret = macro_record.get('mkt_ew_ret') * 100 if isinstance(macro_record.get('mkt_ew_ret'), (int, float)) else None
+        m_line = f"明日宏观状态={m_state} | 全市场等权={_num(m_ret, '%', True)} | 指数={_num(macro_record.get('mkt_ew_idx'), digits=4)} vs MA20={_num(macro_record.get('mkt_ma20'), digits=4)} | 站上MA20={_num(macro_record.get('above_ma20_pct'), '%')}"
+        lines.append(m_line)
+        m_color = '#d93025' if m_state == 'BULL' else '#188038'
+        sections.append(_section('1. 明日宏观牛熊底座（截至今日收盘）', f'<div style="background:#f9fafb;border:1px solid #eef2f7;border-radius:6px;padding:6px 8px">状态 <strong style="color:{m_color}">{_esc(m_state)}</strong> ｜ 全市场等权 <strong style="color:{_color(m_ret)}">{_esc(_num(m_ret, "%", True))}</strong> ｜ 指数 <strong>{_esc(_num(macro_record.get("mkt_ew_idx"), digits=4))}</strong> vs MA20 <strong>{_esc(_num(macro_record.get("mkt_ma20"), digits=4))}</strong> ｜ 站上 MA20 <strong>{_esc(_num(macro_record.get("above_ma20_pct"), "%"))}</strong></div>'))
+    for name in records:
         mark = records[name]
         positions = _positions(mark.get('positions', []), mark.get('stock_names', {}))
         ret = (mark['nav']-1)*100
         lines.append(f"\n{name}: NAV={mark['nav']:.4f} 累计收益%={ret:+.2f} MDD%={mark['max_drawdown']*100:.2f} 现金={mark['cash']:.2f} 持仓市值={mark['equity']-mark['cash']:.2f}")
         lines.append('持仓：' + positions)
         rows.append([f"<strong>{_esc(name)}</strong>", _esc(_num(mark['nav'], digits=4)), f'<strong style="color:{_color(ret)}">{_esc(_num(ret, "%", True))}</strong>', _esc(_num(mark['max_drawdown']*100, '%')), _esc(_wan(mark['cash'])), _esc(_wan(mark['equity']-mark['cash'])), _esc(positions)])
-    markup = _page(f'<div style="font-size:15px;font-weight:700;color:#111827;padding-bottom:6px">影子策略收盘盯市 · {_esc(trade_date)}</div>' + _table(['策略', 'NAV', '累计收益%', '最大回撤 MDD%', '现金', '持仓市值', '当前持仓'], rows) + '<div style="color:#9ca3af;font-size:11px;padding-top:6px">只读影子验证，不构成交易指令</div>')
-    return _message(subject, lines, recipients, markup)
+    sections.append(_section('2. 多策略收盘盯市与净值' if macro_record else '收盘盯市与净值', _table(['策略', 'NAV', '累计收益%', '最大回撤 MDD%', '现金', '持仓市值', '当前持仓'], rows)))
+    if intraday_decisions:
+        trace_rows = []
+        lines.append('\n今日多策略触发信号与理由链路：')
+        for name, rec in _by_name(intraday_decisions).items():
+            t = _trace_summary(rec)
+            lines.append(f"- {name}: {t['chain']} | 板块={t['themes']} | 买卖={t['trades']}")
+            trace_rows.append([f"<strong>{_esc(name)}</strong>", _esc(t['label']), _esc(t['exp']), _esc(t['chain']), _esc(t['themes']), _esc(t['trades'])])
+        sections.append(_section('3. 今日触发信号与理由路径复盘', _table(['策略', '判定', '目标仓位', '触发理由链路', '选中板块', '今日买卖'], trace_rows)))
+    sections.append('<div style="color:#9ca3af;font-size:11px;padding-top:6px">只读影子验证，不构成交易指令</div>')
+    return _message(subject, lines, recipients, _page(''.join(sections)))
 
 
 class _LocalMailState:

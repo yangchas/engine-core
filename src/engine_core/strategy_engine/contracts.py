@@ -29,7 +29,7 @@ class RegimeDecision:
     reasons: tuple
 
     def __post_init__(self):
-        if self.label not in ('WARM_SOLO', 'COLD_SOLO', 'CROWDED', 'RED', 'WARM', 'COLD'):
+        if self.label not in ('WARM_SOLO', 'COLD_SOLO', 'CROWDED', 'RED', 'WARM', 'COLD', 'BULL', 'BULL_EMERGENCY_EXIT', 'BEAR_CASH', 'BEAR_GREEN', 'BASELINE_ON'):
             raise ValueError('invalid regime label')
 
 

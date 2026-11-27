@@ -105,11 +105,7 @@ def _candidates(members, names, ticks25, ticks45, cohorts, themes):
     from engine_core.sentiment_review.factors._common import pct
     streaks, broken = cohorts.get('official_streaks'), cohorts.get('official_broken_symbols')
     candidates = []
-    ranked = sorted((t for t in themes if t.get('p45') is not None), key=lambda t: (-t['p45'], t['theme']))
-    selected_themes = {t['theme'] for t in ranked[:3]}
     for theme, symbols in members.items():
-        if theme not in selected_themes:
-            continue
         for symbol in sorted(symbols):
             row = ticks45.get(symbol, {})
             p, hi, lo = row.get('px_milli'), row.get('h_milli'), row.get('l_milli')
@@ -224,7 +220,7 @@ def load_backtest_snapshots(dataset_path, td_config, kaipan_cache_dir, stock_sta
     return snapshots
 
 
-def load_live_shadow_snapshot(trade_date, td_config, kaipan_cache_dir=None, stock_static_path=None):
+def load_live_shadow_snapshot(trade_date, td_config, kaipan_cache_dir=None, stock_static_path=None, shadow_dir=None):
     from datetime import date, timedelta
     from engine_core.sentiment_review.adapters.td_reader import TDReader
     from engine_core.sentiment_review.adapters.kaipan_cache import load_kaipan_cache
@@ -270,10 +266,55 @@ def load_live_shadow_snapshot(trade_date, td_config, kaipan_cache_dir=None, stoc
     divergence = compute_leader_divergence_factor(streaks or {}, rows, ext['sets']['sealed_up'])
     themes = compute_auction_themes_5d_factor(members, {'09:25': normalized25, '09:45': rows})['features']
     gap = compute_theme_competition_factor(themes, None, time='09:45')['top1_vs_top2_gap_pp']
+    observed_themes = {t['theme'] for t in themes}
+    themes.extend({'theme': name} for name in members if name not in observed_themes)
     raw = {'up_ratio': market['up_ratio'], 'net_lu': ext['sealed_up']-ext['sealed_down'],
            'top100_avg_pct': top['avg_pct'], 'yest_2p_avg_pct': (ladder['2p']['avg_pct'] if ladder['2p']['avg_pct'] is not None else ladder['1b']['avg_pct']) if streaks is not None else None,
            'high_minus_low_pp': divergence['high_minus_low_pp'] if streaks is not None else None,
-           'yw_pp': market['yw_pp'], 'pos20_med': market['pos20_med'], 'gap': gap}
-    return MarketSnapshot(trade_date, prev, cutoff, raw, themes, _candidates(members, names, t25, t45, cohorts, themes), t45,
+           'yw_pp': market['yw_pp'], 'pos20_med': market['pos20_med'], 'gap': gap, 'live_limit_down': ext['sealed_down']}
+    from .engine import RegimeHistoryStore
+    from pathlib import Path
+    from statistics import median
+    history = RegimeHistoryStore(Path(shadow_dir) / 'macro_regime_history.jsonl').before(trade_date) if shadow_dir else []
+    if history:
+        last = history[-1]
+        raw.update(macro_state=last.get('macro_state'), macro_as_of=last['trade_date'], macro_above_ma20_pct=last.get('above_ma20_pct'), macro_idx=last.get('mkt_ew_idx'), macro_ma20=last.get('mkt_ma20'))
+    candidates = _candidates(members, names, t25, t45, cohorts, themes)
+    for c in candidates:
+        c['pos20_prev'] = rows.get(c['symbol'], {}).get('pos20')
+    for theme in themes:
+        group = [c for c in candidates if c['theme'] == theme.get('theme')]
+        positions = [c['pos20_prev'] for c in group if c['pos20_prev'] is not None and c.get('ask1') is not None and c['ask1'] > 0 and c.get('av1') is not None and c['av1'] > 0]
+        returns = [c['ret_45'] for c in group if c['ret_45'] is not None]
+        theme['pos20_prev'] = median(positions) if positions else None
+        theme['up45'] = 100 * sum(x > 0 for x in returns) / len(returns) if returns else None
+        theme['members'] = len(members.get(theme.get('theme'), ()))
+    return MarketSnapshot(trade_date, prev, cutoff, raw, themes, candidates, t45,
                           source_metadata={'membership': 'latest_fallback' if fallback else 'as_of', 'kaipan': kaipan_source,
                                            'stock_names': 'static_fallback_may_be_retrospective'})
+
+
+def update_macro_regime_history(td_config, out_path, start_date='2026-05-12', end_date=None):
+    from datetime import date, timedelta
+    from pathlib import Path
+    import json
+    from engine_core.sentiment_review.adapters.td_reader import TDReader
+    from .regime import compute_macro_b1_series
+    end_date = end_date or date.today().isoformat()
+    start = date.fromisoformat(start_date)
+    bars = _bars(TDReader(config=td_config), (start - timedelta(days=90)).isoformat(), end_date)
+    records = [r for r in compute_macro_b1_series(bars) if start_date <= r['trade_date'] <= end_date]
+    if not records:
+        raise ValueError('no macro history bars in requested range')
+    path = Path(out_path)
+    existing = {}
+    if path.exists():
+        for line in path.read_text(encoding='utf-8').splitlines():
+            if line.strip():
+                row = json.loads(line); existing[row['trade_date']] = row
+    existing.update({r['trade_date']: r for r in records})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    tmp.write_text(''.join(json.dumps(existing[d], ensure_ascii=False, allow_nan=False) + '\n' for d in sorted(existing)), encoding='utf-8')
+    tmp.replace(path)
+    return records

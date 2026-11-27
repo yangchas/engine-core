@@ -7,10 +7,10 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
-from .adapters import load_dataset, extract_regime_history, load_backtest_snapshots, load_live_shadow_snapshot
-from .engine import RegimeHistoryStore, StrategyEngine, default_strategy_specs
+from .adapters import load_dataset, extract_regime_history, load_backtest_snapshots, load_live_shadow_snapshot, update_macro_regime_history
+from .engine import RegimeHistoryStore, StrategyEngine, default_strategy_specs, resolve_strategy_specs
 from .ledger import SingleAccountLedger
-from .mailer import build_intraday_shadow_email, build_eod_shadow_email, send_shadow_email
+from .mailer import build_intraday_shadow_email, build_eod_shadow_email, render_daily_summary_md, send_shadow_email
 from dataclasses import asdict
 
 
@@ -70,19 +70,72 @@ def _write_json(path, value):
     temp.replace(path)
 
 
+def _read_day_records(root, trade_date, suffix):
+    records = {}
+    for spec in resolve_strategy_specs(root / 'strategies.json'):
+        path = root / (spec.name + suffix)
+        if not path.exists():
+            continue
+        matches = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()
+                   if line.strip() and json.loads(line).get('trade_date') == trade_date]
+        if len(matches) == 1:
+            records[spec.name] = matches[0]
+        elif len(matches) > 1:
+            raise ValueError(f'duplicate shadow record: {spec.name} {trade_date}')
+    return records
+
+
+def _latest_macro_record(root, trade_date):
+    path = root / 'macro_regime_history.jsonl'
+    if not path.exists():
+        return None
+    found = None
+    for line in path.read_text(encoding='utf-8').splitlines():
+        if not line.strip():
+            continue
+        item = json.loads(line)
+        if item.get('trade_date', '') <= trade_date:
+            found = item
+    return found
+
+
+def _write_daily_summary(root, trade_date):
+    intraday = _read_day_records(root, trade_date, '.jsonl')
+    eod = _read_day_records(root, trade_date, '.eod.jsonl')
+    macro = _latest_macro_record(root, trade_date)
+    if not intraday and not eod:
+        return None
+    summary_dir = root / 'daily_summary'
+    summary_dir.mkdir(parents=True, exist_ok=True)
+    path = summary_dir / f'{trade_date}.md'
+    path.write_text(render_daily_summary_md(trade_date, intraday or None, eod or None, macro), encoding='utf-8')
+    return path
+
+
 def _send_from_logs(root, args, *, intraday):
     records = {}
-    for spec in default_strategy_specs():
+    for spec in resolve_strategy_specs(root / 'strategies.json'):
         path = root / (spec.name + ('.jsonl' if intraday else '.eod.jsonl'))
+        if not path.exists() and not intraday:
+            continue
         matches = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()
                    if line.strip() and json.loads(line).get('trade_date') == args.trade_date]
         if len(matches) != 1:
             raise ValueError(f'missing or duplicate shadow record: {spec.name} {args.trade_date}')
         records[spec.name] = matches[0]
+    if not records:
+        return None
     builder = build_intraday_shadow_email if intraday else build_eod_shadow_email
     options = {'recipients': [x.strip() for x in args.email_to.split(',')]}
     if args.subject_prefix is not None:
         options['subject_prefix'] = args.subject_prefix
+    if not intraday:
+        intraday_decisions = _read_day_records(root, args.trade_date, '.jsonl')
+        if intraday_decisions:
+            options['intraday_decisions'] = intraday_decisions
+        macro_record = _latest_macro_record(root, args.trade_date)
+        if macro_record:
+            options['macro_record'] = macro_record
     receipt = send_shadow_email(builder(args.trade_date, records, **options))
     return asdict(receipt)
 
@@ -93,6 +146,11 @@ def main(argv=None):
     seed = sub.add_parser('seed-history')
     seed.add_argument('--dataset', required=True)
     seed.add_argument('--out', required=True)
+    macro = sub.add_parser('seed-macro-history')
+    macro.add_argument('--td-config', required=True)
+    macro.add_argument('--out', required=True)
+    macro.add_argument('--start', default='2026-05-12')
+    macro.add_argument('--end', required=True)
     back = sub.add_parser('backtest')
     back.add_argument('--dataset', required=True)
     back.add_argument('--td-config', required=True)
@@ -135,7 +193,7 @@ def main(argv=None):
                 receipt = main(command)
             root = Path(args.shadow_dir)
             suffix = '.jsonl' if args.mode == 'intraday' else '.eod.jsonl'
-            artifacts = [str(root / (spec.name + suffix)) for spec in default_strategy_specs()
+            artifacts = [str(root / (spec.name + suffix)) for spec in resolve_strategy_specs(root / 'strategies.json')
                          if (root / (spec.name + suffix)).exists()]
             response = {'contract': 1, 'status': 'ok', 'artifacts': artifacts,
                         'detail': f'{args.mode} completed for {trade_date}',
@@ -150,6 +208,10 @@ def main(argv=None):
             code = 1
         print(json.dumps(response, ensure_ascii=False, allow_nan=False))
         return code
+    if args.command == 'seed-macro-history':
+        records = update_macro_regime_history(args.td_config, args.out, args.start, args.end)
+        print(f'Seeded {len(records)} macro history records')
+        return
     if args.command == 'seed-history':
         records = extract_regime_history(load_dataset(args.dataset))
         # Replace the complete file only after validating all records.
@@ -165,10 +227,10 @@ def main(argv=None):
         root = Path(args.shadow_dir)
         root.mkdir(parents=True, exist_ok=True)
         store = RegimeHistoryStore(root/'regime_history.jsonl')
-        snapshot = load_live_shadow_snapshot(args.trade_date, args.td_config, args.kaipan_cache, args.stock_static)
+        snapshot = load_live_shadow_snapshot(args.trade_date, args.td_config, args.kaipan_cache, args.stock_static, shadow_dir=root)
         from .adapters import _read_names
         static_names = _read_names(args.stock_static)
-        for spec in default_strategy_specs():
+        for spec in resolve_strategy_specs(root / 'strategies.json'):
             state = root/(spec.name+'.json')
             log = root/(spec.name+'.jsonl')
             saved = json.loads(state.read_text(encoding='utf-8')) if state.exists() else None
@@ -188,6 +250,7 @@ def main(argv=None):
                 out.write(json.dumps(decision, ensure_ascii=False, allow_nan=False)+'\n')
             _write_json(state, {**(saved or {}), 'last_trade_date': args.trade_date, 'ledger': ledger.to_dict(), 'stock_names': decision['stock_names']})
             print(json.dumps(decision, ensure_ascii=False, allow_nan=False))
+        _write_daily_summary(root, args.trade_date)
         if args.email_to:
             return _send_from_logs(root, args, intraday=True)
         return
@@ -203,7 +266,7 @@ def main(argv=None):
                 raise ValueError(f'duplicate daily bar: {args.trade_date} {symbol}')
             if symbol:
                 prices[symbol] = row.get('close')
-        for spec in default_strategy_specs():
+        for spec in resolve_strategy_specs(root / 'strategies.json'):
             state = root / (spec.name + '.json')
             if not state.exists():
                 continue
@@ -225,6 +288,8 @@ def main(argv=None):
                 out.write(json.dumps(mark, ensure_ascii=False, allow_nan=False) + '\n')
             _write_json(state, {**saved, 'last_eod_date': args.trade_date, 'ledger': ledger.to_dict()})
             print(json.dumps(mark, ensure_ascii=False, allow_nan=False))
+        update_macro_regime_history(args.td_config, root / 'macro_regime_history.jsonl', end_date=args.trade_date)
+        _write_daily_summary(root, args.trade_date)
         if args.email_to:
             return _send_from_logs(root, args, intraday=False)
         return
