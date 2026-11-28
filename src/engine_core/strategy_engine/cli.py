@@ -7,10 +7,10 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
-from .adapters import load_dataset, extract_regime_history, load_backtest_snapshots, load_live_shadow_snapshot, update_macro_regime_history
+from .adapters import load_dataset, extract_regime_history, load_backtest_snapshots, load_live_shadow_snapshot, update_macro_regime_history, load_live_c6_preopen_inputs
 from .engine import RegimeHistoryStore, StrategyEngine, default_strategy_specs, resolve_strategy_specs
 from .ledger import SingleAccountLedger
-from .mailer import build_intraday_shadow_email, build_eod_shadow_email, build_daily_summary_payload, render_daily_summary_md, send_shadow_email
+from .mailer import build_intraday_shadow_email, build_eod_shadow_email, build_daily_summary_payload, render_daily_summary_md, send_shadow_email, build_c6_preopen_email
 from dataclasses import asdict
 
 
@@ -141,6 +141,22 @@ def _send_from_logs(root, args, *, intraday):
     return asdict(receipt)
 
 
+def _c6_preopen(args, trade_date):
+    payload = load_live_c6_preopen_inputs(trade_date, args.td_config, args.shadow_dir, args.stock_static)
+    response = {'contract': 1, 'status': 'ok', 'artifacts': [], **payload}
+    if not payload['is_ice']:
+        response.update(detail='skipped_non_ice', email_status='skipped')
+        return response
+    if not args.email_to:
+        raise ValueError('email recipient required for ICE day')
+    options = {'recipients': [x.strip() for x in args.email_to.split(',')]}
+    if args.subject_prefix is not None:
+        options['subject_prefix'] = args.subject_prefix
+    receipt = send_shadow_email(build_c6_preopen_email(trade_date, payload, **options))
+    response.update(detail='c6_preopen completed', email_status=receipt.status, email_receipt=asdict(receipt))
+    return response
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='python -m engine_core.strategy_engine')
     sub = parser.add_subparsers(dest='command', required=True)
@@ -169,11 +185,16 @@ def main(argv=None):
     eod.add_argument('--td-config', required=True)
     eod.add_argument('--shadow-dir', required=True)
     guardian = sub.add_parser('guardian-run')
-    guardian.add_argument('--mode', required=True, choices=('intraday', 'eod'))
+    guardian.add_argument('--mode', required=True, choices=('intraday', 'eod', 'c6-preopen'))
     guardian.add_argument('--td-config', required=True)
     guardian.add_argument('--shadow-dir', required=True)
     guardian.add_argument('--stock-static')
-    for command_parser in (shadow, eod, guardian):
+    preopen = sub.add_parser('c6-preopen')
+    preopen.add_argument('--trade-date', required=True)
+    preopen.add_argument('--td-config', required=True)
+    preopen.add_argument('--shadow-dir', required=True)
+    preopen.add_argument('--stock-static')
+    for command_parser in (shadow, eod, guardian, preopen):
         command_parser.add_argument('--email-to')
         command_parser.add_argument('--subject-prefix')
     args = parser.parse_args(argv)
@@ -182,6 +203,10 @@ def main(argv=None):
             request = json.load(sys.stdin)
             trade_date = request.get('trade_date') or request.get('date') or datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
             date.fromisoformat(trade_date)
+            if args.mode == 'c6-preopen':
+                response = _c6_preopen(args, trade_date)
+                print(json.dumps(response, ensure_ascii=False, allow_nan=False))
+                return 0
             command = ['shadow-run' if args.mode == 'intraday' else 'shadow-eod',
                        '--trade-date', trade_date, '--td-config', args.td_config, '--shadow-dir', args.shadow_dir]
             if args.mode == 'intraday' and args.stock_static:
@@ -206,6 +231,15 @@ def main(argv=None):
             response = {'contract': 1, 'status': 'failed', 'error_code': 'SHADOW_ERROR',
                         'retryable': True, 'artifacts': [], 'detail': str(exc),
                         'email_status': 'error' if args.email_to else 'skipped'}
+            code = 1
+        print(json.dumps(response, ensure_ascii=False, allow_nan=False))
+        return code
+    if args.command == 'c6-preopen':
+        try:
+            response = _c6_preopen(args, args.trade_date)
+            code = 0
+        except Exception as exc:
+            response = {'contract': 1, 'status': 'failed', 'retryable': True, 'artifacts': [], 'detail': str(exc)}
             code = 1
         print(json.dumps(response, ensure_ascii=False, allow_nan=False))
         return code

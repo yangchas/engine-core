@@ -532,3 +532,72 @@ def test_eod_temperature_midrank_causal_and_rolling():
     revised = compute_macro_b1_series(changed)
     assert revised[:-1] == records[:-1]
     assert revised[-1]['eod_temp'] == pytest.approx(550 / 6)
+
+
+def test_c6_preopen_selection_and_mail(tmp_path, monkeypatch, capsys):
+    import io
+    import sys
+    from datetime import date, timedelta
+    from engine_core.strategy_engine import adapters, cli
+    from engine_core.report_mailer import SendReceipt
+    from engine_core.sentiment_review.adapters import td_reader
+    day = date(2026, 11, 23)
+    (tmp_path / 'macro_regime_history.jsonl').write_text('\n'.join(json.dumps(x) for x in [
+        {'trade_date': '2026-11-20', 'eod_temp': 25.0},
+        {'trade_date': '2026-11-23', 'eod_temp': 99.0}]))
+    symbols = [f'300{i:03d}' for i in range(10)] + ['301001', '600001']
+    class Reader:
+        def __init__(self, config): pass
+        def read(self, table, start, end):
+            assert table == 'daily_kline' and end == '2026-11-22'
+            for i in range(20):
+                for n, symbol in enumerate(symbols):
+                    close = 9.0 + n * .03
+                    if symbol == '300006': close = 12.0
+                    if symbol == '300007': close = 9.9
+                    yield {'ts': (day - timedelta(days=20-i)).isoformat(), 'symbol': symbol,
+                           'close': close, 'pre_close': 10.0, 'high': 15.0, 'low': 8.0}
+        def read_ticks(self, trade_date, cut):
+            assert (trade_date, cut) == ('2026-11-23', '09:25:00')
+            return [{'symbol': s, 'ts': trade_date+' 09:25:00', 'px_milli': 9000,
+                     'pc_milli': 10000, 'amt_yuan': 9999999 if s == '300005' else 10000000} for s in symbols]
+    monkeypatch.setattr(td_reader, 'TDReader', Reader)
+    monkeypatch.setattr(adapters, '_read_names', lambda path: {s: ('ST测试' if s == '300008' else '退市' if s == '300009' else '测试') for s in symbols})
+    payload = adapters.load_live_c6_preopen_inputs(day.isoformat(), 'cfg', tmp_path)
+    assert payload['macro_as_of'] == '2026-11-20'
+    assert [r['symbol'] for r in payload['candidates']] == [f'300{i:03d}' for i in range(5)]
+    sent = []
+    def send(msg):
+        sent.append(msg)
+        return SendReceipt('sent', 1, 123, .1, None)
+    monkeypatch.setattr(cli, 'send_shadow_email', send)
+    monkeypatch.setattr(sys, 'stdin', io.StringIO('{"trade_date":"2026-11-23"}'))
+    args = ['guardian-run', '--mode', 'c6-preopen', '--td-config', 'cfg', '--shadow-dir', str(tmp_path), '--email-to', '412826313@qq.com']
+    assert cli.main(args) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['email_status'] == 'sent' and result['email_receipt']['recipient_count'] == 1
+    msg = sent[0]
+    assert str(msg['To']) == '412826313@qq.com' and '选出5只' in str(msg['Subject'])
+    for kind in ('plain', 'html'):
+        body = msg.get_body(preferencelist=(kind,)).get_content()
+        assert '300000' in body and '09:30:05' in body and '不替补' in body
+    monkeypatch.setattr(cli, 'send_shadow_email', lambda msg: (_ for _ in ()).throw(RuntimeError('SMTP failed')))
+    monkeypatch.setattr(sys, 'stdin', io.StringIO('{"trade_date":"2026-11-23"}'))
+    assert cli.main(args) == 1
+    assert json.loads(capsys.readouterr().out)['retryable'] is True
+
+
+def test_c6_preopen_non_ice_and_missing_temperature(tmp_path, monkeypatch, capsys):
+    from engine_core.strategy_engine import adapters, cli
+    from engine_core.sentiment_review.adapters import td_reader
+    path = tmp_path / 'macro_regime_history.jsonl'
+    path.write_text(json.dumps({'trade_date': '2026-11-20', 'eod_temp': 30.0}))
+    monkeypatch.setattr(td_reader, 'TDReader', lambda **kw: pytest.fail('unexpected TD query'))
+    monkeypatch.setattr(cli, 'send_shadow_email', lambda msg: pytest.fail('unexpected email'))
+    args = ['c6-preopen', '--trade-date', '2026-11-23', '--td-config', 'cfg', '--shadow-dir', str(tmp_path), '--email-to', '412826313@qq.com']
+    assert cli.main(args) == 0
+    response = json.loads(capsys.readouterr().out)
+    assert response['detail'] == 'skipped_non_ice' and response['prev_eod_temp'] == 30.0
+    path.write_text(json.dumps({'trade_date': '2026-11-20', 'eod_temp': None}))
+    with pytest.raises(ValueError, match='missing prior eod_temp'):
+        adapters.load_live_c6_preopen_inputs('2026-11-23', 'cfg', tmp_path)

@@ -75,6 +75,19 @@ def _page(content):
     return '<!doctype html><html><body style="margin:0;background:#f3f4f6;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,\'PingFang SC\',\'Microsoft YaHei\',sans-serif;font-size:12px;line-height:1.45"><div style="max-width:760px;margin:0 auto;padding:8px"><div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px">' + content + '</div></div></body></html>'
 
 
+def build_c6_preopen_email(trade_date, payload, *, recipients, subject_prefix='[C6 09:26 冰点实盘信号]'):
+    picks = payload['candidates']
+    subject = f"{subject_prefix} {trade_date} 温度={payload['prev_eod_temp']:.1f}° | 选出{len(picks)}只"
+    headers = ['序号', '代码', '名称', '20日位置(pos20)', '昨日涨跌幅%', '09:25竞价额(万)', '09:25开盘价', '09:25涨幅%']
+    rows = [[str(i), p['symbol'], p.get('name') or '未知', _num(p.get('pos20_prev')),
+             _num(p.get('prev_pct_chg'), signed=True), _num(p['amt25_yuan'] / 10000),
+             _num(p.get('price25')), _num(p.get('p25'), signed=True)] for i, p in enumerate(picks, 1)]
+    instruction = '09:30:05 卖一挂单等权买入（50%资金袖），次日 09:45 卖一退出；若一字涨停买不到直接放弃、不替补'
+    lines = [subject, ' | '.join(headers), *(' | '.join(row) for row in rows), instruction]
+    markup = _page(f'<h2>{_esc(subject)}</h2>' + _table(headers, [[_esc(cell) for cell in row] for row in rows]) + f'<p>{_esc(instruction)}</p>')
+    return _message(subject, lines, recipients, markup)
+
+
 def _comparison(value, threshold, unit, digits=2):
     if not isinstance(value, (int, float)):
         return f'未知 vs {threshold:.{digits}f}{unit}'

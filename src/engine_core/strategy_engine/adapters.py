@@ -273,6 +273,49 @@ def _ticks_after(reader, day, cut, lower):
     # Compare full time strings so sub-second ticks after the boundary remain eligible.
     return {s: r for s, r in rows.items() if str(r.get('ts'))[11:] > lower}
 
+
+def load_live_c6_preopen_inputs(trade_date, td_config, shadow_dir, stock_static_path=None):
+    from datetime import date, timedelta
+    from decimal import Decimal
+    from math import isfinite
+    from pathlib import Path
+    from .engine import RegimeHistoryStore
+
+    day = date.fromisoformat(trade_date)
+    history = RegimeHistoryStore(Path(shadow_dir) / 'macro_regime_history.jsonl').before(trade_date)
+    last = history[-1] if history else {}
+    temp = last.get('eod_temp')
+    if not isinstance(temp, (int, float)) or isinstance(temp, bool) or not isfinite(temp):
+        raise ValueError('missing prior eod_temp')
+    result = {'prev_eod_temp': temp, 'prev_date': last['trade_date'], 'macro_as_of': last['trade_date'],
+              'is_ice': temp <= 25.0, 'candidates': []}
+    if not result['is_ice']:
+        return result
+    from engine_core.sentiment_review.adapters.td_reader import TDReader
+    reader = TDReader(config=td_config)
+    bars = _bars(reader, (day - timedelta(days=90)).isoformat(), (day - timedelta(days=1)).isoformat())
+    dates = sorted(d for d in bars if d < trade_date)
+    if not dates:
+        raise ValueError('missing prior daily bars')
+    ticks = _ticks(reader, trade_date, '09:25:00')
+    if not ticks:
+        raise ValueError('missing 09:25 ticks')
+    names = _read_names(stock_static_path)
+    rows = _auction_candidates(bars, dates, names, ticks, {}, {}, {}, {})
+    for row in rows:
+        bar = bars[dates[-1]].get(row['symbol'], {})
+        if row['prev_pct_chg'] is not None:
+            row['prev_pct_chg'] = float((Decimal(str(bar['close'])) / Decimal(str(bar['pre_close'])) - 1) * 100)
+        px = ticks[row['symbol']].get('px_milli')
+        row['price25'] = px / 1000 if isinstance(px, (int, float)) and isfinite(px) and px > 0 else None
+    result['candidates'] = sorted((r for r in rows
+        if r['symbol'].startswith(('300', '301')) and r.get('name')
+        and 'ST' not in r['name'].upper() and '退' not in r['name']
+        and r['prev_is_lu'] is False and r['prev_pct_chg'] is not None and r['prev_pct_chg'] <= -5.0
+        and isinstance(r['amt25_yuan'], (int, float)) and isfinite(r['amt25_yuan']) and r['amt25_yuan'] >= 10_000_000
+        and r['pos20_prev'] is not None), key=lambda r: (r['pos20_prev'], r['symbol']))[:5]
+    return result
+
 def load_live_shadow_snapshot(trade_date, td_config, kaipan_cache_dir=None, stock_static_path=None, shadow_dir=None):
     from datetime import date, timedelta
     from engine_core.sentiment_review.adapters.td_reader import TDReader
